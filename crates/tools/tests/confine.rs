@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 use letibot_tools::exec::confine::{
     BWRAP_ENV, Boundary, ConfinePlan, Confinement, Egress, Grant, HomeView, Namespace,
-    NoConfinement, NsState, Seal, SealKind, Unconfined, ViewSpec,
+    NoConfinement, NsState, Seal, SealKind, TmpView, Unconfined, ViewSpec,
 };
 use letibot_tools::exec::{Bwrap, ExecError, HostProcesses, ProcessHost, ScopeKind, SpawnRequest};
 use letibot_tools::testing::{confined_harness, confined_harness_with};
@@ -996,6 +996,154 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
     // ...and a variable the caller declared on purpose crosses, because otherwise
     // `--clearenv` would silently drop what a tool asked for.
     assert!(text.contains("declared=on-purpose"), "{text}");
+}
+
+#[test]
+fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
+    // **The two-call scratch idiom, measured on the kernel.** A command's `/tmp` was a fresh
+    // tmpfs, so a heredoc patch written by one call was gone by the next, and the failure —
+    // `cat: /tmp/x: No such file or directory` — reads as a broken shell rather than as the
+    // boundary (MEASURED 2026-10-27). `TmpView::Session` binds one directory of the session's
+    // own there instead.
+    //
+    // The runs go through [`Confinement::wrap`] and a plain `/bin/sh` rather than through
+    // `HostProcesses`: a cgroup v2 subtree is different apparatus, and a test that needed one
+    // to measure a mount view would skip on boxes that can bind perfectly well. This is the
+    // same invocation `Bwrap::probe` itself makes.
+    let dir = std::env::temp_dir().join(format!("letibot-tmp-{}", std::process::id()));
+    let project = dir.join("project");
+    let session_tmp = dir.join("session-tmp");
+    std::fs::create_dir_all(&project).expect("project");
+    let project = project.canonicalize().unwrap_or(project);
+
+    let bound = match Bwrap::probe(
+        ViewSpec::project_only(&project).with_tmp(TmpView::Session(session_tmp.clone())),
+        Egress::Denied,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "a_file_written_to_tmp");
+        }
+    };
+
+    /// One confined `/bin/sh -c`, and what it said.
+    fn run<C: Confinement>(c: &C, project: &Path, command: &str) -> (String, i32) {
+        let argv = c
+            .wrap(&ConfinePlan {
+                cwd: project,
+                env: &[],
+            })
+            .expect("a command line");
+        let out = std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .arg("/bin/sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .expect("the helper runs");
+        let said = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        (said, out.status.code().unwrap_or(-1))
+    }
+
+    let (wrote, code) = run(&bound, &project, "echo kept > /tmp/probe.txt; echo wrote");
+    assert_eq!(code, 0, "the first call writes: {wrote}");
+    let (read, code) = run(&bound, &project, "cat /tmp/probe.txt");
+    assert_eq!(code, 0, "the next call must find it: {read}");
+    assert!(read.contains("kept"), "{read}");
+    // **And it is a real file on this box**, in the directory the view bound — not something the
+    // helper kept in a memory filesystem that happened to survive.
+    assert!(
+        session_tmp.join("probe.txt").is_file(),
+        "the write landed in the session's own directory: {}",
+        session_tmp.display()
+    );
+
+    // The HOST's `/tmp` is still absent: the view binds the session's directory, never the
+    // machine's, which holds other programs' sockets and whatever the operator was doing.
+    let host_only = std::env::temp_dir().join(format!("letibot-host-{}", std::process::id()));
+    std::fs::write(&host_only, "host bytes").expect("a file of the host's");
+    let (absent, _) = run(&bound, &project, &format!("cat {}", host_only.display()));
+    assert!(
+        !absent.contains("host bytes") && absent.contains("No such file"),
+        "the host's /tmp must not be in the view: {absent}"
+    );
+
+    // **The contrast that makes this a measurement**: the default view is unchanged, and a
+    // command there really does start with an empty `/tmp`.
+    let plain = Bwrap::probe(ViewSpec::project_only(&project), Egress::Denied)
+        .expect("the same boundary, without a session /tmp");
+    let (gone, _) = run(&plain, &project, "cat /tmp/probe.txt");
+    assert!(
+        gone.contains("No such file"),
+        "a view with no session /tmp is still a fresh tmpfs per command: {gone}"
+    );
+
+    let _ = std::fs::remove_file(&host_only);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_sessions_tmp_is_created_at_open_and_removed_at_close() {
+    // **The wiring, and the two facts that matter about the directory**: it exists before any
+    // command runs (a `--bind` of a path that is not there is a helper failure at every spawn and
+    // says nothing about why), and it is gone when the session closes, so a daemon does not keep
+    // one directory per session id for the rest of its life.
+    //
+    // No cgroup and no spawn: `HostProcesses::with_tree` + `NoScopes` is enough, because the
+    // question is about a view and a directory rather than about a process.
+    use letibot_tools::backend::{ExecBackend, HostBackend};
+    use letibot_tools::exec::NoScopes;
+
+    let dir = std::env::temp_dir().join(format!("letibot-stmp-{}", std::process::id()));
+    let project = dir.join("project");
+    let session_tmp = dir.join("session-tmp");
+    std::fs::create_dir_all(&project).expect("project");
+    let b = match Bwrap::probe(ViewSpec::project_only(&project), Egress::Denied) {
+        Ok(b) => b,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dir);
+            return no_boundary(&e, "a_sessions_tmp_is_created_at_open");
+        }
+    };
+    let host = std::sync::Arc::new(HostProcesses::with_tree(
+        &project,
+        Box::new(NoScopes::new("this test starts no process")),
+    ));
+    host.replace_confinement(Box::new(b));
+    let backend = HostBackend::executable_with(&project, host)
+        .expect("a backend over the fixture root")
+        .with_session_tmp(&session_tmp)
+        .expect("the session's /tmp is bound");
+
+    assert!(
+        session_tmp.is_dir(),
+        "the probe makes it, so the bind cannot fail at a spawn: {}",
+        session_tmp.display()
+    );
+    let boundary = backend.boundary().expect("a measured boundary");
+    assert_eq!(boundary.view.tmp, TmpView::Session(session_tmp.clone()));
+    assert!(
+        boundary.view.summary().contains("there for the next"),
+        "the disclosure says what it is for: {}",
+        boundary.view.summary()
+    );
+
+    assert_eq!(
+        backend.close(),
+        None,
+        "a host backend has no sentence to add"
+    );
+    assert!(
+        !session_tmp.exists(),
+        "the session is over, so its /tmp goes with it: {}",
+        session_tmp.display()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

@@ -3740,6 +3740,20 @@ impl Harness {
             }
         }
         let backend = backend.with_scratch_dir(&scratch);
+        // **The session's own `/tmp`, for a command that runs inside a boundary.** A confined
+        // command's `/tmp` used to be a fresh tmpfs, so a half-written patch in one call was
+        // gone in the next — MEASURED 2026-10-27, and the failure reads as a broken shell
+        // rather than as the boundary (`cat: /tmp/x: No such file or directory`, with `ls -d
+        // /tmp` succeeding). It is a directory of its own rather than the daemon's whole
+        // scratch, so `rm -rf /tmp/*` inside one session cannot reach the jobs' capture files
+        // or another session's `/tmp`, and it is created and removed by the backend
+        // (`HostBackend::with_session_tmp` / `close`). A session with no boundary is returned
+        // unchanged: its `/tmp` is already this machine's, which is the persistence this is
+        // for.
+        let session_tmp = scratch.join("tmp").join(&cfg.session_id);
+        let backend = backend
+            .with_session_tmp(&session_tmp)
+            .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
         // One boxed backend from here on, whichever substrate: the host one built
         // above, or a firecode VM booted on a copy of the tree `Config::vm_copy_source` names.
         let (backend, backend_described, backend_writable, monitors): (

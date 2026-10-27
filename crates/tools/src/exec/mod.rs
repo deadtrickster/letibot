@@ -98,7 +98,8 @@ pub mod terminal;
 pub use ask::{Waiting, last_line, waiting_for_an_answer};
 pub use confine::{
     Boundary, Bwrap, ConfinePlan, Confinement, Egress, EnvSource, Grant, HomeView, Namespace,
-    NoConfinement, NsState, Piece, Presence, Seal, SealKind, Session, Unconfined, ViewSpec,
+    NoConfinement, NsState, Piece, Presence, Seal, SealKind, Session, TmpView, Unconfined,
+    ViewSpec,
 };
 pub use host::{
     Adopted, Aggregate, DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion,

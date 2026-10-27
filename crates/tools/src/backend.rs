@@ -402,6 +402,11 @@ pub struct HostBackend {
     /// The session's scratch directory, set by the daemon. `None` when the session
     /// has no scratch, and a tool that wants one gets a refusal rather than a guess.
     scratch: Option<PathBuf>,
+    /// **This session's `/tmp`**, when its commands run inside a boundary — the one
+    /// directory [`HostBackend::with_session_tmp`] bound there. Kept so that closing the
+    /// session can remove what its commands left behind, which nothing else knows the name
+    /// of.
+    session_tmp: Option<PathBuf>,
 }
 
 impl HostBackend {
@@ -420,6 +425,7 @@ impl HostBackend {
             promote: Arc::new(std::sync::Mutex::new(None)),
             processes: None,
             scratch: None,
+            session_tmp: None,
         })
     }
 
@@ -467,6 +473,41 @@ impl HostBackend {
             host.set_scratch_dir(dir.as_ref());
         }
         self
+    }
+
+    /// **Give this session a `/tmp` that outlives one command**, by binding `dir` there.
+    ///
+    /// A confined session's `/tmp` was a fresh tmpfs per command, so a file one call wrote was
+    /// gone in the next — MEASURED 2026-10-27, and the failure reads as a broken shell rather
+    /// than as a boundary (`cat: /tmp/x: No such file or directory`, with `ls -d /tmp`
+    /// succeeding and `TMPDIR` empty). Agents write scratch there constantly: a heredoc patch
+    /// in one call, `git apply` in the next.
+    ///
+    /// **A new view and a new probe, for the reason [`HostBackend::grant_into_view_impl`]
+    /// gives**: the argv is built once, so what was measured has to be what runs. A backend
+    /// with no view — unconfined, or a VM's — is returned unchanged and says nothing: its `/tmp`
+    /// is already the machine's own, which is the persistence this is for.
+    ///
+    /// The directory is created by the probe, and removed by [`ExecBackend::close`].
+    pub fn with_session_tmp(mut self, dir: impl AsRef<Path>) -> Result<Self, BackendError> {
+        let dir = dir.as_ref().to_path_buf();
+        let Some(host) = self.processes.as_ref() else {
+            return Ok(self);
+        };
+        // **The boundary that was measured is the basis of the one that replaces it** — the
+        // view and the egress decision both, so a re-probe cannot quietly change a decision
+        // nobody asked it to revisit.
+        let Some(boundary) = host.boundary() else {
+            return Ok(self);
+        };
+        let widened = boundary
+            .view
+            .with_tmp(crate::exec::TmpView::Session(dir.clone()));
+        let confine = crate::exec::Bwrap::probe(widened, boundary.egress)
+            .map_err(|e| BackendError::Io(e.to_string()))?;
+        host.replace_confinement(Box::new(confine));
+        self.session_tmp = Some(dir);
+        Ok(self)
     }
 
     /// A backend that can change the operator's tree.
@@ -974,6 +1015,20 @@ impl ExecBackend for HostBackend {
     fn home_path(&self) -> Option<String> {
         let h = self.home.to_string_lossy().to_string();
         (!h.is_empty()).then_some(h)
+    }
+
+    /// **The session is over, so its `/tmp` goes with it.** The directory holds whatever a
+    /// confined command left there, and nothing outside this session can want it; leaving it
+    /// would be a scratch directory per session id, accumulating on the operator's runtime dir
+    /// for the life of the daemon. Best effort, and deliberately silent: a session whose
+    /// cleanup failed is not a session whose work did not land, and the answer this returns is
+    /// the one the operator reads — a remote host's branch, a VM's copy. There is no such
+    /// sentence here.
+    fn close(&self) -> Option<String> {
+        if let Some(dir) = &self.session_tmp {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        None
     }
 
     fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {

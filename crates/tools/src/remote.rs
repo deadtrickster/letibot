@@ -1179,6 +1179,11 @@ static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<String, crate::exec::confine:
 /// not be the operator's, because that directory is the one the boundary exists to leave
 /// outside. `~/.cargo` and `~/.rustup` are still the operator's, read-only — see
 /// [`crate::exec::confine::GRANT_CANDIDATES`].
+///
+/// **`<HOME_DIR>/<short>/tmp` is the session's `/tmp`**, bound there by
+/// [`confine_a_checkout`]: one directory per session, beside that session's home, so a file one
+/// command writes survives to the next and nothing of the host's `/tmp` is visible. See
+/// [`crate::exec::confine::TmpView`].
 pub const HOME_DIR: &str = ".letibot-home";
 
 /// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
@@ -2390,6 +2395,13 @@ fn confine_a_checkout(
     // writes objects and moves the branch's ref there, and it is this session's own mirror.
     let provisional = ViewSpec::project_only(worktree)
         .with_home(HomeView::Dir(PathBuf::from(home)))
+        // **`/tmp` is this session's own directory on that machine** — created beside the home
+        // by `place`, and bound at `/tmp` so a file one call writes is there for the next (see
+        // `TmpView`). A fresh tmpfs per command is what a two-call scratch idiom silently
+        // loses: a patch written by one call and applied by the next.
+        .with_tmp(crate::exec::confine::TmpView::Session(
+            PathBuf::from(home).join("tmp"),
+        ))
         .granting(Grant::ReadWrite {
             path: PathBuf::from(mirror),
             why: "the repository this checkout is a worktree of — its objects, refs and the \
@@ -2934,9 +2946,16 @@ impl SshBackend {
                 ),
                 _ => {
                     let dir = format!("{root}/{HOME_DIR}/{short}");
+                    // **The session's home, and its `/tmp` beside it.** A confined command's
+                    // `/tmp` was a fresh tmpfs there too, so a file one call wrote was gone in
+                    // the next (see `TmpView`). `dir/tmp` is the same lifetime as `dir` — both
+                    // are letibot's own directories on that machine, both are made here, and
+                    // neither is removed when the session ends, because the checkout, its
+                    // commits and what a failed session left in its home are what an operator
+                    // goes looking for afterwards.
                     ssh.must(
-                        "making the session's own home on that machine",
-                        &format!("mkdir -p {}", quote(&dir)),
+                        "making the session's own home and its /tmp on that machine",
+                        &format!("mkdir -p {} {}", quote(&dir), quote(&format!("{dir}/tmp"))),
                     )
                     .map_err(place)?;
                     let measured = confine_a_checkout(&ssh, &dir, &worktree, &mirror, &spec.egress);

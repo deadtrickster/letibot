@@ -55,6 +55,20 @@
 //! roots, and never by stat'ing the host: whether the file exists outside is not a
 //! fact this note needs, and not a fact it should disclose.
 //!
+//! # `/tmp` belongs to a session, not to a command
+//!
+//! Rule 4 is about a path *outside* the view. `/tmp` is the one that is **inside** it and is
+//! still not the host's, and for a long time it was a fresh tmpfs per command: safe, and a
+//! trap. An agent writes its scratch there constantly — a heredoc patch in one call and
+//! `git apply` in the next, a build log redirected and then read — and the second call answers
+//! `No such file or directory` with nothing to say that this is the boundary and not a broken
+//! shell (MEASURED 2026-10-27: `echo hello > /tmp/x` then `cat /tmp/x`, with `ls -d /tmp`
+//! succeeding and `TMPDIR` empty). So a caller that knows its session may name one directory
+//! ([`TmpView::Session`]) and have it bound at `/tmp`; the default stays the fresh tmpfs,
+//! because a view that claims nothing about a session is still right for a caller that does not
+//! have one. What does not change either way: **the host's `/tmp` is never bound**, at any
+//! path, under any name — it holds other programs' sockets and whatever the operator was doing.
+//!
 //! # Credentials: what is usable without being readable
 //!
 //! The authorised case is real and a project-only view breaks it. Three mechanisms
@@ -346,6 +360,37 @@ pub enum HomeView {
     Dir(PathBuf),
 }
 
+/// What `/tmp` is inside the view.
+///
+/// **`/tmp` is where an agent's scratch lives**, and a filesystem that forgets it between two
+/// calls makes every use of it look like a broken shell. MEASURED 2026-10-27: a session whose
+/// tools ran inside this boundary wrote a probe to `/tmp/x` in one call and read it in the
+/// next — *No such file or directory* — and the same shape hit a build log redirected to
+/// `/tmp/clippy.log` and read back by a later call. Nothing announces it: `ls -d /tmp`
+/// succeeds and `TMPDIR` is empty.
+///
+/// Nothing of the host's `/tmp` may become visible either way — it holds other programs'
+/// sockets and whatever the operator was doing — so this is a choice between *a fresh
+/// filesystem per command* and *one letibot-owned directory per session*, never a bind of the
+/// host's own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmpView {
+    /// A fresh tmpfs per command: private to it, empty at its start, gone at its end. The
+    /// default, because it claims nothing — and the one that silently breaks a two-call
+    /// scratch idiom, so a caller that knows its session's directory should say so.
+    PerCommand,
+    /// One letibot-owned directory, bound read-write at `/tmp`, so a file one call of the
+    /// session writes is there for the next call of **that** session and for no other.
+    /// Created by [`Bwrap::probe`] if it is not there, like [`HomeView::Dir`].
+    Session(PathBuf),
+}
+
+/// The sentence a [`Presence::Replaced`] for `/tmp` carries when a session's directory is
+/// bound there — see [`TmpView`]. It says the thing an `ENOENT` under `/tmp` has to say, which
+/// is no longer *this command started empty* and is still not *the host's*.
+const SESSION_TMP_WHAT: &str = "this session's own directory, bound here: it survives between the calls of one session \
+     and holds none of the host's files";
+
 /// A path put inside the view on purpose, with the sentence that put it there.
 ///
 /// Every variant carries a `why`, for the same reason [`super::Protected::why`]
@@ -512,6 +557,9 @@ pub struct ViewSpec {
     /// The read-only system roots a command needs to be a command at all.
     pub system: Vec<PathBuf>,
     pub home: HomeView,
+    /// What `/tmp` is — see [`TmpView`], and note that `/var/tmp` and `/run` stay fresh
+    /// tmpfs filesystems either way.
+    pub tmp: TmpView,
     pub grants: Vec<Grant>,
 }
 
@@ -563,12 +611,19 @@ impl ViewSpec {
             project: project.into(),
             system: SYSTEM_ROOTS.iter().map(PathBuf::from).collect(),
             home: HomeView::Tmpfs,
+            tmp: TmpView::PerCommand,
             grants: Vec::new(),
         }
     }
 
     pub fn with_home(mut self, home: HomeView) -> ViewSpec {
         self.home = home;
+        self
+    }
+
+    /// Give this session a `/tmp` that outlives a command — see [`TmpView`].
+    pub fn with_tmp(mut self, tmp: TmpView) -> ViewSpec {
+        self.tmp = tmp;
         self
     }
 
@@ -623,6 +678,14 @@ impl ViewSpec {
         for (p, what) in REPLACED_ROOTS {
             let p = Path::new(p);
             if path == p || path.starts_with(p) || p.starts_with(path) {
+                // **`/tmp` is still not the host's, and it is no longer emptied between
+                // commands when the session has a directory there.** Both halves matter to
+                // the note an `ENOENT` under it produces, so the sentence follows the view
+                // rather than the constant.
+                let what = match &self.tmp {
+                    TmpView::Session(_) if p == Path::new("/tmp") => SESSION_TMP_WHAT,
+                    _ => what,
+                };
                 return Presence::Replaced { what };
             }
         }
@@ -645,6 +708,16 @@ impl ViewSpec {
                  $HOME is empty every run)"
             )),
             HomeView::Dir(d) => s.push_str(&format!("; $HOME is {} (rw)", d.display())),
+        }
+        match &self.tmp {
+            TmpView::PerCommand => {
+                s.push_str("; /tmp is a FRESH TMPFS each command (so a file one call writes is gone in the next)")
+            }
+            TmpView::Session(d) => s.push_str(&format!(
+                "; /tmp is {} (rw), this session's own, so a file one call writes is there for \
+                 the next",
+                d.display()
+            )),
         }
         if self.grants.is_empty() {
             s.push_str("; no grants");
@@ -857,8 +930,7 @@ impl Boundary {
                 "{list} — {} inside this session's filesystem view, but {} not the \
                  host's, so anything the host keeps there is absent and anything \
                  written there does not reach it. This `ENOENT` is the boundary too, \
-                 in a different way from a path that is simply outside: the \
-                 directory exists and can be used, it just starts empty.",
+                 in a different way from a path that is simply outside: {}",
                 if replaced.len() == 1 {
                     "this is"
                 } else {
@@ -868,6 +940,15 @@ impl Boundary {
                     "it is"
                 } else {
                     "they are"
+                },
+                // **The session's `/tmp` is the one replaced root that does not start empty**
+                // — it holds what earlier calls of this session left. Saying *it just starts
+                // empty* there would be a note about a file the model itself wrote.
+                if replaced.iter().any(|(_, what)| *what == SESSION_TMP_WHAT) {
+                    "the directory exists and can be used, and what it holds is this \
+                     session's own, written by an earlier call and not by the host."
+                } else {
+                    "the directory exists and can be used, it just starts empty."
                 },
             ));
         }
@@ -1213,6 +1294,20 @@ impl Bwrap {
                 "`$HOME` was declared as `{}` and it could not be created ({e}). A \
                  confined command needs a writable `$HOME` that is NOT the \
                  operator's home.",
+                d.display()
+            )));
+        }
+        // **The session's `/tmp` is made here, once, because a `--bind` of a path that is not
+        // there is a helper failure at every spawn and not a setup error at the one place that
+        // could explain it.** It is not created empty-and-then-forgotten: this is the directory
+        // a session's scratch files live in, and [`TmpView::Session`] is why it exists.
+        if let TmpView::Session(d) = &view.tmp
+            && let Err(e) = std::fs::create_dir_all(d)
+        {
+            return Err(ExecError::NoConfinement(format!(
+                "this session's `/tmp` was declared as `{}` and it could not be created \
+                 ({e}). Without it every command would fail at the helper's own bind, \
+                 which is a boundary failure and not the command's answer.",
                 d.display()
             )));
         }
@@ -1950,8 +2045,23 @@ fn pieces_of(
     arg(&mut a, "/proc");
     arg(&mut a, "--dev");
     arg(&mut a, "/dev");
-    arg(&mut a, "--tmpfs");
-    arg(&mut a, "/tmp");
+    // **`/tmp` is the session's, not the command's**, when the caller has a directory for it.
+    // A fresh tmpfs here is the safe default and it silently eats a two-call scratch idiom —
+    // see [`TmpView`]. `/var/tmp` stays a fresh tmpfs either way: nothing in an agent's idiom
+    // writes there, and the one thing `/var/tmp` means on a host is *survives a reboot*, which
+    // no sandbox directory of ours may claim. `/run` stays fresh for the reason it exists in
+    // this list at all — it holds the agent socket and the tmpfs home, both bound after this.
+    match &view.tmp {
+        TmpView::PerCommand => {
+            arg(&mut a, "--tmpfs");
+            arg(&mut a, "/tmp");
+        }
+        TmpView::Session(dir) => {
+            arg(&mut a, "--bind");
+            arg(&mut a, dir.display().to_string());
+            arg(&mut a, "/tmp");
+        }
+    }
     arg(&mut a, "--tmpfs");
     arg(&mut a, "/var/tmp");
     arg(&mut a, "--tmpfs");
@@ -2402,6 +2512,87 @@ mod tests {
         // The note must not claim the path exists on the host. It is not stat'ed
         // and the sentence does not assert it either way.
         assert!(!n.contains("exists on"), "{n}");
+    }
+
+    #[test]
+    fn a_session_tmp_is_bound_at_tmp_and_nothing_replaces_it() {
+        // **The two-call scratch idiom.** A command's `/tmp` was a fresh tmpfs, so a file one
+        // call wrote was gone in the next — and nothing announces it (`ls -d /tmp` succeeds).
+        // The replacement is a bind of the session's own directory, and this test is the argv
+        // half: `--tmpfs /tmp` must be gone and `--bind <dir> /tmp` must be there.
+        let dir = PathBuf::from("/var/lib/letibot/scratch-1/tmp/s-a");
+        let a = build_argv(
+            Path::new("/usr/bin/bwrap"),
+            &ViewSpec::project_only("/proj").with_tmp(TmpView::Session(dir.clone())),
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: Path::new("/proj"),
+                env: &[],
+            },
+        );
+        let joined = a.join(" ");
+        assert!(!joined.contains("--tmpfs /tmp"), "{joined}");
+        assert!(
+            joined.contains(&format!("--bind {} /tmp", dir.display())),
+            "the session's own directory, bound at /tmp: {joined}"
+        );
+        // `/var/tmp` and `/run` are still fresh filesystems: the one thing `/var/tmp` means on
+        // a host is *survives a reboot*, which no sandbox directory of ours may claim, and
+        // `/run` holds the agent socket and the tmpfs home.
+        assert!(joined.contains("--tmpfs /var/tmp"), "{joined}");
+        assert!(joined.contains("--tmpfs /run"), "{joined}");
+
+        // And the default view is unchanged: one fresh tmpfs at `/tmp`, bound to nothing.
+        let d = build_argv(
+            Path::new("/usr/bin/bwrap"),
+            &ViewSpec::project_only("/proj"),
+            &Egress::Denied,
+            &ConfinePlan {
+                cwd: Path::new("/proj"),
+                env: &[],
+            },
+        )
+        .join(" ");
+        assert!(d.contains("--tmpfs /tmp"), "{d}");
+    }
+
+    #[test]
+    fn a_replaced_tmp_says_the_session_owns_it_and_not_that_it_starts_empty() {
+        // The disclosure and the absence note both read off the view, so a `/tmp` that outlives
+        // a command must not describe itself as one that does not.
+        let dir = PathBuf::from("/var/lib/letibot/scratch-1/tmp/s-a");
+        let v = ViewSpec::project_only("/proj").with_tmp(TmpView::Session(dir.clone()));
+        let Presence::Replaced { what } = v.classify(Path::new("/tmp/host-file")) else {
+            panic!("a session /tmp is still not the host's /tmp");
+        };
+        assert!(what.contains("this session's own"), "{what}");
+        assert!(what.contains("survives between the calls"), "{what}");
+        assert!(
+            v.summary().contains(&dir.display().to_string()),
+            "{}",
+            v.summary()
+        );
+        assert!(
+            v.summary().contains("there for the next"),
+            "{}",
+            v.summary()
+        );
+        // The note an `ENOENT` under it produces follows the same fact.
+        let b = Bwrap {
+            helper: PathBuf::from("/usr/bin/bwrap"),
+            boundary: Boundary {
+                view: v,
+                ..boundary_with(vec![])
+            },
+        };
+        let notes = b.absence_notes("cat: /tmp/gone.txt: No such file or directory");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("survives between the calls"),
+            "{}",
+            notes[0]
+        );
+        assert!(!notes[0].contains("starts empty"), "{}", notes[0]);
     }
 
     #[test]

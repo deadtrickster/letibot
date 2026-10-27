@@ -357,7 +357,17 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         "--ro-bind-try /usr /usr",
         "--proc /proc",
         "--dev /dev",
-        "--tmpfs /tmp",
+        // **`/tmp` is the session's own directory on that machine**, not a fresh tmpfs: a file
+        // one call writes is there for the next call of the same session. It lives beside the
+        // session's `$HOME`, both under the host's `root` — never the operator's `/tmp`.
+        &format!(
+            "--bind {0}/letibot-remote/.letibot-home/{SHORT}/tmp /tmp",
+            std::fs::canonicalize(&rig.home)
+                .unwrap_or_else(|_| rig.home.clone())
+                .display()
+        ),
+        // And `/var/tmp` is still a fresh filesystem per command, as it is locally.
+        "--tmpfs /var/tmp",
         // The project, read-write, at its own path.
         &format!("--bind {} {}", b.worktree_path(), b.worktree_path()),
         // The operator's toolchain, read-only — and the one file a commit needs.
