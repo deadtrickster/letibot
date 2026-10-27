@@ -2761,6 +2761,8 @@ mod reader_floor {
             "a floor above this build is refused by a view too"
         );
     }
+}
+
 /// **A v33 store gains the supervisor's `process` table, and nothing else moves** — v34's arm in
 /// the shape v29-v33 use: one new table, `IF NOT EXISTS`, no existing row read or rewritten.
 ///
