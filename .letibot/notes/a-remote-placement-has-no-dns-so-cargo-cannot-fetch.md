@@ -35,3 +35,37 @@ checkout on the box and use a path dependency while building.
 
 Before promising a build against a rev, ask the box: `git -C /home/dead/.cargo/git/db/<name>-* cat-file -t <rev>`.
 `fatal: could not get object info` means no fetch, no build, and a blocked task — and it is one command.
+
+## UPDATE 2026-10-27 (wt-r2): the rev WAS in the db, and the next wall was the read-only `~/.cargo`
+
+The note above ends *"put the rev in `/home/dead/.cargo/git/db`"* — and for rano `bf3fa48` somebody
+had: `git -C /home/dead/.cargo/git/db/rano-* cat-file -t bf3fa48…` answers `commit`. A re-pin still
+failed, one step later, with a different sentence:
+
+```
+failed to make directory '/home/dead/.cargo/git/checkouts/rano-…/bf3fa48': Read-only file system
+```
+
+`touch /home/dead/.cargo/git/checkouts/probe` → the same. **`~/.cargo` is mounted READ-ONLY in this
+placement**, so a rev that is in the object store still cannot be *checked out*: the db is read, the
+checkout directory is written, and there is nowhere to write it. (`~/.cargo/registry` is fine to
+read under `--offline`; nothing else in the placement writes there.)
+
+### What works: a session-local `CARGO_HOME` with the read-only halves symlinked
+
+```sh
+SESS=$HOME                       # /home/dead/letibot-remote/.letibot-home/<n>
+mkdir -p $SESS/cargo-home/git/checkouts
+ln -sfn /home/dead/.cargo/registry   $SESS/cargo-home/registry
+ln -sfn /home/dead/.cargo/git/db     $SESS/cargo-home/git/db
+export CARGO_HOME=$SESS/cargo-home
+```
+
+`cargo metadata --offline` then checks `bf3fa48` out under `$SESS/cargo-home/git/checkouts/rano-…/`
+from the local db (no network), and every later `cargo build/test --offline` finds it. The registry
+symlink is read-only and enough: `--offline` never extracts anything (`registry/src` is already
+populated, 1.2 GB, and is read). `~/.cargo/bin` does not need to be in the new home — `PATH` still
+points at it.
+
+**Every cargo command in the session needs that export** beside `CARGO_TARGET_DIR`, or the second
+command re-resolves against the read-only home and fails with the mkdir sentence again.
