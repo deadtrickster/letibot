@@ -217,6 +217,16 @@ pub enum Construct {
     /// to be wrong in, and it is GuardFall's class exactly: the string inspected is
     /// not the arguments delivered.
     BraceExpansion,
+    /// A **whole command where a WORD was expected**: `time ( … )`, `! ( … )`. This
+    /// grammar hangs the compound off the `command` node in the argument position, and its
+    /// commands RUN — they are walked and listed as their own stages — but how a compound's
+    /// value relates to this stage's argv is not something that can be said, and `time` and
+    /// `!` are reserved words rather than programs.
+    ///
+    /// Named separately from [`Construct::ParseError`] on purpose: the tree here has no
+    /// `ERROR` node at all, and calling it a parse error is how `{1..3}` was once counted as
+    /// one (see `brace_expression` in `construct_of`).
+    CompoundArgument,
     /// The parse contains an `ERROR` or `MISSING` node: the grammar could not read
     /// this text.
     ///
@@ -240,6 +250,7 @@ impl Construct {
             Construct::ExpandedHeredoc => "expanded_heredoc",
             Construct::AnsiCEscapes => "ansi_c_escapes",
             Construct::BraceExpansion => "brace_expansion",
+            Construct::CompoundArgument => "compound_argument",
             Construct::ParseError => "parse_error",
         }
     }
@@ -949,7 +960,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
             // assignments are consumed by `stage`.
             let a = assignment(node, source, out, None);
             out.assignments.push(a);
-            scan_substitutions(node, source, ctx, out);
+            scan_substitutions(node, source, ctx, out, &[]);
         }
         _ => {
             for child in &node.children {
@@ -1109,12 +1120,12 @@ fn redirected(
             // they are not walked twice.
             for k in kids(child) {
                 if !is_continuation(k) {
-                    scan_substitutions(k, source, ctx, out);
+                    scan_substitutions(k, source, ctx, out, &[]);
                 }
             }
             tails.push(child);
         } else {
-            scan_substitutions(child, source, ctx, out);
+            scan_substitutions(child, source, ctx, out, &[]);
         }
     }
     // The stages the body itself produced, not the ones inside a `$(…)` in one
@@ -1445,6 +1456,9 @@ fn stage(
     let mut argv = Vec::new();
     let mut assignments = Vec::new();
     let mut tails: Vec<&Node> = Vec::new();
+    // The compounds this stage has already walked, so the substitution scan below does not
+    // descend into them a second time.
+    let mut nested: Vec<usize> = Vec::new();
 
     // `declaration_command` and `unset_command` name themselves with an anonymous
     // keyword child rather than a `command_name`.
@@ -1477,9 +1491,69 @@ fn stage(
                 }
             }
             _ if !child.named && child.kind != "$" => {}
+            // **A whole command where a WORD was expected.** `time ( … )` and `! ( … )` hang
+            // a `subshell` off the `command` node with no field, and this arm used to read it
+            // as one opaque argument — so its commands were never walked at all:
+            // `time (cargo test …)` produced no stage, and the redirect inside it was not
+            // seen either. MEASURED 2026-10-27: 27 commands on lab2x1 (and 2 on the mac).
+            // The commands inside
+            // RUN, so they are walked and listed; the argument position stays unread,
+            // because how a compound's value relates to this stage's argv is not something
+            // this can say.
+            "subshell" | "compound_statement" | "list" | "pipeline" => {
+                walk(child, source, ctx, out);
+                nested.push(child.id);
+                let idx = out.unresolved.len();
+                out.unresolved.push(Unresolved {
+                    construct: Construct::CompoundArgument,
+                    decides: Decides::Argument,
+                    span: Span::of(child),
+                    text: clip(src(child, source), 120),
+                    known_prefix: None,
+                    stage: Some(index),
+                    why: why_of(&Construct::CompoundArgument, Decides::Argument),
+                });
+                argv.push(Word::Unresolved(idx));
+            }
             _ => {
                 argv.extend(argument(child, source, out, index));
             }
+        }
+    }
+
+    // **A brace expansion the grammar split at a space.** `echo {a b,c}` arrives as the two
+    // words `{a` and `b,c}`, and reading each as a literal claims the program receives two
+    // arguments where bash delivers three. The wreckage is only recognisable as a PAIR — one
+    // word that opens a brace it never closes and another that closes one it never opened —
+    // which is why this is here and not in `resolve`: a lone `M-}` (a tmux key name) and a
+    // half-typed `ls {corpus` are literals to bash, and MEASURED 2026-10-27 refusing them
+    // left two of the corpus's commands readable-then-unreadable.
+    let texts: Vec<Option<String>> = argv.iter().map(|w| w.text().map(str::to_string)).collect();
+    if texts
+        .iter()
+        .any(|t| t.as_deref().is_some_and(opens_unclosed))
+        && texts
+            .iter()
+            .any(|t| t.as_deref().is_some_and(closes_unopened))
+    {
+        for (i, t) in texts.iter().enumerate() {
+            let Some(t) = t
+                .as_deref()
+                .filter(|t| opens_unclosed(t) || closes_unopened(t))
+            else {
+                continue;
+            };
+            let idx = out.unresolved.len();
+            out.unresolved.push(Unresolved {
+                construct: Construct::BraceExpansion,
+                decides: Decides::Argument,
+                span: Span::of(node),
+                text: clip(t, 120),
+                known_prefix: None,
+                stage: Some(index),
+                why: why_of(&Construct::BraceExpansion, Decides::Argument),
+            });
+            argv[i] = Word::Unresolved(idx);
         }
     }
 
@@ -1494,15 +1568,30 @@ fn stage(
     // *"`$(...)` nesting past one level are unhandled"* — and it is the reason a
     // grammar was worth the trouble: `kill $(pgrep -f x)` has two programs in it,
     // not one string.
-    scan_substitutions(node, source, ctx, out);
+    scan_substitutions(node, source, ctx, out, &nested);
     for t in tails {
         heredoc_tail(t, source, ctx, out, Some(index));
     }
 }
 
 /// Walk the substitutions hanging under `node`, without re-entering `node` itself.
-fn scan_substitutions(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised) {
+/// Walk the substitutions hanging under `node`, without re-entering `node` itself — and
+/// without descending into `skip`, which is a compound [`stage`] has already walked.
+///
+/// The skip exists for one shape: `time ( … )` hangs a `subshell` off the `command` node in
+/// the argument position, `stage` walks it (its commands run), and the generic recursion here
+/// would then reach the substitutions inside it a second time.
+fn scan_substitutions(
+    node: &Node,
+    source: &str,
+    ctx: &mut Vec<Context>,
+    out: &mut Normalised,
+    skip: &[usize],
+) {
     for child in kids(node) {
+        if skip.contains(&child.id) {
+            continue;
+        }
         match child.kind.as_str() {
             "command_substitution" | "process_substitution" => walk(child, source, ctx, out),
             // The commands nested after a here-document operator are walked by
@@ -1511,11 +1600,11 @@ fn scan_substitutions(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &m
             "heredoc_redirect" => {
                 for k in kids(child) {
                     if !is_continuation(k) {
-                        scan_substitutions(k, source, ctx, out);
+                        scan_substitutions(k, source, ctx, out, skip);
                     }
                 }
             }
-            _ => scan_substitutions(child, source, ctx, out),
+            _ => scan_substitutions(child, source, ctx, out, skip),
         }
     }
 }
@@ -1633,6 +1722,11 @@ fn why_of(construct: &Construct, decides: Decides) -> String {
             "a brace expansion decides {what}: this is one word here and SEVERAL \
              arguments after the shell expands it. Write the arguments out."
         ),
+        Construct::CompoundArgument => format!(
+            "a whole command sits where {what} was expected — `time ( … )`, `! ( … )`. Its \
+             own commands RUN and are listed as their own stages; run them one at a time \
+             rather than nesting one command inside another's argument list."
+        ),
         Construct::ParseError => {
             format!("the grammar could not read this, so {what} is a guess")
         }
@@ -1662,21 +1756,6 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
                     at: node,
                 };
             }
-            // **A brace with no partner is a fragment of something the grammar split.**
-            // MEASURED 2026-10-27: `echo {a b,c}` arrives as the TWO words `{a` and `b,c}` —
-            // the space ended a word — and each of them reads as a literal, which claims the
-            // program receives two arguments where bash delivers `a b c`. Nothing here can
-            // say what a lone `{` is part of, so a word whose braces do not pair up stays
-            // unread. The cost is named: `echo a{b` is a literal to bash and is refused here,
-            // which is a question asked about a rare spelling rather than an answer about a
-            // command nobody wrote.
-            if brace_fragment(&text) {
-                return Resolved::Blocked {
-                    construct: Construct::BraceExpansion,
-                    prefix: None,
-                    at: node,
-                };
-            }
             if glob {
                 Resolved::Glob(text)
             } else {
@@ -1693,13 +1772,23 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
             )
         }
         "number" | "test_operator" | "regex" => Resolved::Literal(src(node, source).to_string()),
+        // **A name, not a value.** `export SKIP_SLT` and `declare -x FOO` put a bare
+        // `variable_name` in the ARGUMENT position — the program receives the name — and the
+        // resolver had no arm for it, so the command fell through to "an unrecognised node
+        // kind" and was reported as a parse error about a tree with no error in it.
+        // MEASURED 2026-10-27: 24 commands on lab2x1, every one of them an `export NAME` in
+        // a gate script. A name cannot be a path or an expansion, so a literal is exactly
+        // what it is.
+        "variable_name" => Resolved::Literal(src(node, source).to_string()),
         // **A `$` that ENDS a word is an anonymous token here.** This grammar wraps `$?`,
         // `$#`, `$@` and even `$$` in a `simple_expansion` when something follows them, but
         // a `$` (or `$$`) in the last position of a word — `echo x$$`, `cargo nextest
         // -E run=^$` — comes back as the token itself, with no wrapper at all. MEASURED
-        // 2026-10-27 on the operator's corpora: 133 commands on lab2x1 and 25 on the mac
-        // were reported as a PARSE ERROR because of this, and not one of them is a parse
-        // error — the tree is whole, and these are bash's own pid and a literal dollar.
+        // 2026-10-27 on the operator's corpora: 133 commands on lab2x1 were reported as a
+        // PARSE ERROR because of this, and not one of them is a parse error — the tree is
+        // whole, and these are bash's own pid and a literal dollar. The census that counts
+        // this class is `corpus_replay::parse_cause`, printed by `examples/gate_corpus`.
+        // (The same table is §4i.7 of `docs/boundary-and-adjudication.md`.)
         "$" => match src(node, source) {
             // A lone `$` is a literal dollar to the shell: `echo x$` prints `x$`.
             "$" => Resolved::Literal("$".to_string()),
@@ -1789,13 +1878,21 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
         },
         "concatenation" => {
             let mut lit = String::new();
+            // The same text with every QUOTED character blanked, so the brace check below
+            // keeps the one fact the merged literal loses: **a brace inside quotes is not a
+            // brace expansion**.
+            let mut bare = String::new();
             let mut glob = false;
             for c in kids(node) {
-                match resolve(c, source, binds) {
-                    Resolved::Literal(s) => lit.push_str(&s),
+                let quoted = matches!(
+                    c.kind.as_str(),
+                    "raw_string" | "string" | "translated_string" | "ansi_c_string"
+                );
+                let part = match resolve(c, source, binds) {
+                    Resolved::Literal(s) => s,
                     Resolved::Glob(s) => {
-                        lit.push_str(&s);
                         glob = true;
+                        s
                     }
                     Resolved::Blocked {
                         construct,
@@ -1812,11 +1909,24 @@ fn resolve<'t>(node: &'t Node, source: &str, binds: &[(String, String)]) -> Reso
                             at,
                         };
                     }
+                };
+                if quoted {
+                    bare.extend(part.chars().map(|_| '\u{1}'));
+                } else {
+                    bare.push_str(&part);
                 }
+                lit.push_str(&part);
             }
             // The braces of `{a,b}.txt` arrive as three separate `word` children, so
             // this is the only place the pattern is visible.
-            if has_brace_expansion(&lit) || brace_fragment(&lit) {
+            //
+            // **And it is the pattern WITHOUT the quoted parts that decides.** MEASURED
+            // 2026-10-27: a `gh api graphql query='{repository(owner:"x", name:"y")…}'`
+            // is one concatenation — `query=` and a quoted string — and read on the merged
+            // literal its GraphQL braces looked like an expansion. 28 commands on the mac
+            // were refused for that, every one of them a query bash passes through
+            // untouched.
+            if has_brace_expansion(&bare) {
                 return Resolved::Blocked {
                     construct: Construct::BraceExpansion,
                     prefix: None,
@@ -1910,29 +2020,20 @@ fn named(construct: Construct, node: &Node, source: &str) -> Construct {
     }
 }
 
-/// Whether this word looks like a FRAGMENT of a brace expansion the grammar split at a
-/// space: it opens a brace it never closes, or closes one it never opened.
+/// Whether this text opens a brace it never closes — one side of a brace expansion that the
+/// grammar split at a space.
 ///
-/// The signature of `{a b,c}`, which arrives as the two words `{a` and `b,c}` — see the
-/// `word` arm of [`resolve`]. Deliberately narrow:
-///
-/// * a LONE `{` or `}` is a literal to bash (`echo {` prints `{`) and is what the grammar
-///   hands over for each of `{a}`'s three children;
-/// * `a{b,c` is a literal to bash and stays one here: it keeps its unbalanced brace in the
-///   MIDDLE, so it cannot be the wreckage of a split — both halves of a split are at an
-///   edge.
-///
-/// A *quoted* brace never reaches here: a `string` node's own text is not checked, so `"{a"`
-/// stays the literal it is.
-fn brace_fragment(s: &str) -> bool {
-    if s == "{" || s == "}" {
-        return false;
-    }
-    let (opens, closes) = (s.matches('{').count(), s.matches('}').count());
-    if opens == closes {
-        return false;
-    }
-    s.starts_with('{') || s.ends_with('}')
+/// `{a b,c}` arrives as the two words `{a` and `b,c}`, and each of them reads as a literal,
+/// which claims the program receives two arguments where bash delivers `a b c`. Neither half
+/// is suspicious ON ITS OWN — `M-}` is a tmux key name and `ls {corpus` is a half-typed line,
+/// and bash hands both on as literals — so the check needs the PAIR; see [`stage`].
+fn opens_unclosed(s: &str) -> bool {
+    s.matches('{').count() > s.matches('}').count()
+}
+
+/// The other half: closes a brace it never opened.
+fn closes_unopened(s: &str) -> bool {
+    s.matches('}').count() > s.matches('{').count()
 }
 
 /// Does this text contain a brace expansion the shell will turn into several words?
@@ -2173,7 +2274,7 @@ fn brace_range(inner: &str) -> Brace {
     }
     // Bash takes the MAGNITUDE of the step and the direction from the endpoints: measured,
     // `{1..3..-1}` is `1 2 3` and `{a..e..-1}` is `a b c d e`.
-    let step = step.unsigned_abs().max(1) as u64;
+    let step = step.unsigned_abs().max(1);
     let (Ok(a), Ok(b)) = (lo.parse::<i64>(), hi.parse::<i64>()) else {
         return char_range(lo, hi, step);
     };
@@ -2355,7 +2456,7 @@ fn decode_ansi_c(text: &str) -> Option<String> {
             // A control character: `\cZ` is `0x1a`, and `\c?` is DEL, which is bash's own
             // exception rather than arithmetic.
             'c' => match it.next() {
-                Some(x) if x == '?' => out.push(0x7f),
+                Some('?') => out.push(0x7f),
                 Some(x) if (x as u32) < 0x80 => out.push((x as u8) & 0x1f),
                 Some(_) => return None,
                 None => out.extend_from_slice(b"\\c"),
@@ -2898,6 +2999,67 @@ mod tests {
         assert!(n("find . -name x -exec rm -f {} ;").is_resolved());
         // `${a,b}` is a parameter expansion and not a brace expansion: the `$` decides it.
         assert!(!n("echo ${a,b}").is_resolved());
+        // **Neither half of a split brace is suspicious on its own.** `M-}` is a tmux key
+        // name and `ls {corpus` is a half-typed line; bash hands both on as literals, and
+        // MEASURED 2026-10-27 refusing either alone left two of the corpus's commands
+        // readable and then unreadable.
+        assert_eq!(
+            argv("tmux send-keys -t nav M-}"),
+            ["send-keys", "-t", "nav", "M-}"]
+        );
+        assert_eq!(argv("ls {corpus"), ["{corpus"]);
+        // Both halves in ONE command is the wreckage of `{a b,c}`: bash delivers three
+        // words and the grammar delivers two, so neither may be called a literal.
+        assert!(!n("echo {a b,c}").is_resolved());
+        // **A brace inside quotes is not an expansion, and the merge must not forget it.**
+        // MEASURED 2026-10-27: a `gh api graphql query='{repository(owner:"x",…)}'` is one
+        // concatenation of `query=` and a quoted string, and read on the MERGED text its
+        // GraphQL braces looked like an expansion — 28 commands on the mac were refused for
+        // that, every one of them a query bash passes through untouched.
+        assert_eq!(
+            argv("gh api graphql query='{repository(owner:\"x\", name:\"y\")}' -f a=b"),
+            [
+                "api",
+                "graphql",
+                "query={repository(owner:\"x\", name:\"y\")}",
+                "-f",
+                "a=b"
+            ]
+        );
+        // A quoted `{` is not a brace: measured, `echo x'{'a,b'}'` prints ONE word `x{a,b}`.
+        assert_eq!(argv("echo x'{'a,b'}'"), ["x{a,b}"]);
+        // A quoted ALTERNATIVE inside unquoted braces is still an expansion (measured:
+        // `echo {a,'b'}` is two words), which this refuses rather than expands — an
+        // alternative holding a quote is a word whose bytes this does not model.
+        assert!(!n("echo {a,'b'}").is_resolved());
+    }
+
+    /// **A whole command in the argument position is walked, not swallowed.**
+    ///
+    /// `time ( … )` hangs a `subshell` off the `command` node with no field, and reading it
+    /// as one opaque argument meant its commands were never walked at all — `time (cargo
+    /// test …)` produced no stage for `cargo`. MEASURED 2026-10-27: 27 commands on lab2x1
+    /// and 2 on the mac, the operator timing a test run.
+    #[test]
+    fn a_compound_in_the_argument_position_is_walked_and_named() {
+        let x = n("time (timeout 900 cargo test -p x 2>&1 | tail -3); echo done");
+        assert!(!x.is_resolved(), "a compound argument was read as a word");
+        // The commands inside RUN, so they are stages — that is the half this used to lose.
+        for p in ["timeout", "tail", "echo"] {
+            assert!(
+                x.binaries().contains(&p),
+                "{p} was not walked: {:?}",
+                x.binaries()
+            );
+        }
+        // And the refusal says what is wrong rather than calling a whole tree a parse error.
+        assert!(
+            x.unresolved
+                .iter()
+                .any(|u| u.construct == Construct::CompoundArgument),
+            "{:?}",
+            x.unresolved
+        );
     }
 
     /// **A brace expansion the text does not decide stays unread** — the direction that
@@ -3010,7 +3172,7 @@ mod tests {
     fn a_dollar_that_ends_a_word_is_the_pid_or_a_literal_and_not_a_parse_error() {
         for cmd in ["echo x$$", "echo a$$b", "echo $$", "echo x$ y$$"] {
             let x = n(cmd);
-            assert!(x.partial == false, "{cmd}");
+            assert!(!x.partial, "{cmd}");
             assert!(
                 !x.unresolved
                     .iter()
