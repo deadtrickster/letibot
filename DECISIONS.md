@@ -322,8 +322,25 @@ will really see, including what a sourced script or a `cd` hook set. A shell tha
 environment is per session and per shell, lives as long as that shell, and is shown on the card
 when it decided the reading (*"`$p` = `/home/…/build`, set by an earlier command"*).
 
-**Not covered by this decision**: `PATH` (R96, still the operator's ruling). A tracked `PATH` is
-recorded like any variable but is NOT used to resolve which binary a stage runs until R96 is
-settled.
+`PATH` is covered too: see D15, settled the same day.
 
 Unblocks: R95.
+
+## D15 — `$PATH` is resolved for adjudication — **SETTLED 2026-10-27**
+
+The operator, 2026-10-27, on R96 (*may a `PATH` the command or the session sets ever be resolved
+for adjudication?*): *"R96 - yes"*. G4 had recommended no.
+
+So `$PATH` resolves like any other variable: from the same command's assignment (G3) and from
+the session's tracked environment (D14).
+
+How, as my reading, so that the reason G4 gave for "no" stops being true rather than being
+ignored: the risk was a shape or a grant naming `cargo` while a later stage, after
+`export PATH=…:$PATH`, runs a different `cargo`. So when `PATH` is resolved, **each stage's
+program is resolved to the file it will run** (found along the resolved `PATH`, as the shell
+would, and observed where the shell can answer), and the stage, the shape and the card name
+that file when it is not the one the bare name finds today (*"`cargo` is
+`/home/…/scratch/bin/cargo`, from a `PATH` this command set"*). A grant given for one binary
+then cannot settle a stage that runs another.
+
+Unblocks: R96, built together with R95 because both read the tracked environment.

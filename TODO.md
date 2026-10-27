@@ -74,7 +74,7 @@ stopped being readable" at 0** on every host:
 **Not parser gaps, and not to be "fixed" here**: `$(…)` output (the inner command is read; its
 bytes are not in the text), `process_substitution_path` (`/dev/fd/N` exists only at runtime),
 `arithmetic_expansion` (reads variables). **Variables a previous command assigned** are R95
-(decided: D14); **`$PATH`** is the operator's ruling (section 3).
+(decided: D14); **`$PATH`** is R96 (decided: D15).
 
 **Done when**: items 1–3 are read, item 4 is classified, the replay table in §4i.2 is re-run and
 updated with the new numbers on all three hosts, and nothing that was readable became unread.
@@ -97,6 +97,11 @@ lifetime across a daemon restart, a migrated session, a confined and a remote sh
 card shows it); the resolver reads the tracked environment; the corpus replay shows the
 cross-command bucket gone without any command becoming unread; the card names a variable the
 session set when it decided the reading.
+
+**And R96, `$PATH`, decided 2026-10-27 (D15): resolved too, built with this.** 527 commands
+on lab2x1 and 1,347 on the mac. When `PATH` is resolved, each stage's program is resolved to the
+file it will run, and the stage, shape and card name that file when it differs from what the
+bare name finds today, so a grant given for one binary cannot settle a stage that runs another.
 
 **Still open?** grep the corpus replay's unread list for variables with no assignment in the
 same command.
@@ -5925,15 +5930,6 @@ choice, not a task pickup.
 
 # 3. BLOCKED ON THE OPERATOR — do not start
 
-- **R96 — `$PATH` in an adjudicated command** (filed 2026-10-27): the largest unread construct
-  left after G4 — 527 commands on lab2x1 and 1,347 on the mac, 1,157 of them for that reason
-  alone (`docs/boundary-and-adjudication.md` §4i.4, §4i.6). Deliberately not resolved: its
-  value is the list of directories a LATER program is found in, so resolving
-  `export PATH=…:$PATH` would let a shape or a session grant settle a command whose later
-  stages run a different binary than the one the table names. **The ruling needed**: may a
-  `PATH` the command (or the session) sets ever be resolved for adjudication, and if so under
-  what condition (for example only when every added directory is inside the checkout or a
-  declared toolchain dir)? G4's recommendation is no.
 - **T5, T25** — 17 open decisions. Several gate everything else.
 - **T22 and T17** — both wait on **D11**. "Until it is decided, M1 remains formally
   unexited."
