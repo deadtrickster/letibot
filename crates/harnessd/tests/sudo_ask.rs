@@ -155,7 +155,9 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
         &path,
         &format!(
             "#!/bin/sh\n\
-             [ $# -eq 0 ] && exit 0\n\
+             # The operator's `!` line runs this with NO arguments, so the probe's own run is\n\
+             # told apart by `write_stub`'s LETIBOT_STUB_PROBE, not by `$#`.\n\
+             [ -n \"$LETIBOT_STUB_PROBE\" ] && exit 0\n\
              # letibot test double for `sudo -A`: the helper is a child whose stdout is a\n\
              # pipe, and this process -- whose own fd 0 is the terminal the daemon holds --\n\
              # blocks reading it. That is the whole of what sudo is here.\n\
