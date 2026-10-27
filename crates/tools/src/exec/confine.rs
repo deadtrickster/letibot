@@ -711,7 +711,12 @@ impl ViewSpec {
         }
         match &self.tmp {
             TmpView::PerCommand => {
-                s.push_str("; /tmp is a FRESH TMPFS each command (so a file one call writes is gone in the next)")
+                // "a new tmpfs", not "FRESH TMPFS": that phrase is the `$HOME` arm's, and a
+                // disclosure is read for it to tell a throwaway home from a kept one.
+                s.push_str(
+                    "; /tmp is a new tmpfs for each command (so a file one call writes is gone \
+                     in the next)",
+                )
             }
             TmpView::Session(d) => s.push_str(&format!(
                 "; /tmp is {} (rw), this session's own, so a file one call writes is there for \
