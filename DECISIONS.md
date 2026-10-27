@@ -369,3 +369,24 @@ The adjudication work (G3, G4, D14, D15) keeps its value where it still decides:
 sessions, the macOS host shell, and the egress and credential decisions above.
 
 Unblocks: R97, and remote packages at `writes-allowed` that build and test without asking.
+
+**D16, amended the same day — what follows on a host with no boundary.** The operator:
+*"if agent sees raw host and can write and execute, unless oracle reads what is about to be
+executed (directly or via test) it is all theater. that is why on linux we hide .ssh and
+profiles. that is why we have leticode. so practically speaking as soon as we allow tests
+execution without questions it must be sandbox of some type."*
+
+So the rule has two halves:
+
+1. **Inside a measured boundary** a command is admitted without a card (above).
+2. **On a raw host** (the macOS host shell today, an unconfined Linux host, a probe that did not
+   answer), a ruling about a command that EXECUTES code is real only if the oracle has read that
+   code: the script it names (`scripts_for` reads these today) **and the code a runner will
+   execute**, which for `cargo test`, `pytest`, `go test` and the like is whatever the agent last
+   wrote. Today the oracle does not read a runner's files, so on a raw host such a command keeps
+   asking, and a standing grant (session or durable) must not admit it: a grant for `cargo test`
+   given yesterday is a grant for today's tests, which nobody read.
+
+The way out of asking is a boundary, not a better oracle: unasked test execution requires a
+sandbox of some type on every platform. On Linux that is `bwrap` + cgroups (local) and RH3
+(remote); on macOS it does not exist yet, which is R98.

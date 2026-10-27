@@ -131,6 +131,40 @@ settled.
 
 ---
 
+## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **OPEN, filed 2026-10-27**
+
+D16 admits a command without a card only inside a measured boundary, and its amendment says
+that on a raw host a command that executes code the agent wrote (a test runner) must keep
+asking, and no standing grant may admit it, because the oracle does not read a runner's files.
+The macOS host shell has no boundary at all (firecode VMs are the only macOS boundary letibot
+has, `docs/firecode-on-macos.md`), so every `cargo test` on the Mac is either asked about or
+theater.
+
+Two halves, the first smaller and first:
+
+1. **Make the rule true on a raw host now.** A `bash` call whose stages run a test runner or a
+   build that executes project code (`cargo test|run|build` with build scripts, `pytest`,
+   `go test`, `npm test`, `make`, a script the session wrote) is not settled by a session or
+   durable grant when the backend is unconfined; it asks every time, and the card says why
+   (*"runs code the agent wrote, on a host with no boundary"*). Measure what this costs on the
+   corpus replay (how many past grants would no longer settle) before landing.
+2. **Give the Mac a boundary**, so the asks in (1) can go away: either macOS's own sandbox
+   (`sandbox-exec` with a generated profile: the checkout writable, the toolchain read-only,
+   `~/.ssh` and profiles absent, network denied; it is deprecated but present and used by
+   other tools) with cgroup-equivalent reaping by process group, or running the session's
+   commands in a firecode VM by default. Write the comparison (what each hides, what each costs
+   per call, what breaks) and build the chosen one behind `confine.rs`'s measured-boundary
+   contract, so D16's admit applies to it unchanged.
+
+**Done when**: (1) on an unconfined backend no grant settles a test run, with a test; (2) a Mac
+session's commands run inside a measured boundary that `~/.ssh` and the profiles are absent
+from, and D16 admits them there.
+
+**Still open?** run `cargo test` in a macOS session at writes-allowed with a session grant for
+it: if no card appears, (1) is not built.
+
+---
+
 ## The review of 2026-10-12 — five read-only reviews of main at `50b3e55`, filed as R89–R93
 
 The operator's ask: *"start review subagents - we need to find edge cases, ux inconsistencies,
