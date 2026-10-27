@@ -635,6 +635,50 @@ fn a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged() {
     assert_eq!(named.replace("release-build · ", ""), bare);
 }
 
+/// **A settlement that carries more than a row** — the one job whose result IS its output (FB).
+///
+/// A `fanout {background: true}` settles as a job, and what the model is waiting for is the per-host
+/// table. [`JobCompletion::detail`] is where [`letibot_tools::exec::ProcessHost::settlement_note`]
+/// puts it, and this is the half that proves it reaches the text rather than merely the queue: the
+/// rows are indented under the bullet that names the job, so a reader cannot mistake them for a
+/// second settlement.
+///
+/// **And an ordinary job is unchanged** — `detail` is empty for every `bash` call, which is the
+/// assertion in [`a_settlement_carries_the_jobs_name_and_an_unnamed_one_is_unchanged`]. This test is
+/// the other half: non-empty is rendered, and it is rendered under its own row.
+#[test]
+fn a_settlement_carries_what_a_job_of_jobs_says_for_itself() {
+    let table = "fanout · 2 planned, 2 answered · 1.2s · work dir `fanout-c1` on each host\n  \
+                 fake1 on fake1 · exited 0 · 0.3s\n  fake2 on fake2 · exited 0 · 0.9s\n\
+                 every cell exited 0";
+    let one = JobCompletion {
+        arrived: std::time::SystemTime::UNIX_EPOCH,
+        kind: BackgroundKind::Job,
+        owner: "s-me".into(),
+        job: "j90".into(),
+        command: "fanout: 2 branch(es) on fake1, fake2".into(),
+        slug: Some("fanout".into()),
+        state: "exited 0".into(),
+        produced: 128,
+        elapsed_ms: 1_200,
+        detail: table.to_string(),
+        memory: None,
+    };
+    let text = completion_notice(&[one], true);
+    assert!(
+        text.contains("  - `fanout · j90` exited 0 after 1.2s\n"),
+        "the row is still one row: {text}"
+    );
+    for line in table.lines() {
+        assert!(
+            text.contains(&format!("    {line}\n")),
+            "`{line}` did not reach the notice, indented under its row: {text}"
+        );
+    }
+    // **The closing is still the door, and it is still where a reader goes for more.**
+    assert!(text.contains(JOB_CLOSING), "{text}");
+}
+
 /// **The notice, byte for byte, as the TUI's compact card parses it.**
 ///
 /// The TUI draws this notice as two lines a job — the operator: *"i dont need job completion

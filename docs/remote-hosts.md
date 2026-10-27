@@ -49,6 +49,18 @@ on `PATH` (measured on lab2x1, 2026-10-26: `cargo` lives in `~/.cargo/bin` there
 it), and a remote session that cannot find `cargo` is a session that can do nothing. The entries
 are expanded by the **remote** shell, once, so `~` is that machine's home and not this one's.
 
+The file has a second kind of section, and it is the **machine the daemon itself runs on**:
+
+```toml
+[local]
+never_touch = ["etcd", "pgfuzz"]     # what letibot must never signal, stop or remove HERE
+```
+
+`[local]` is not a `[host.…]` block — nothing connects to it, and it is not a placement — and it is
+checked where a `process` record names no host (§ *As built (FB)*). `[host.NAME]` also gains
+`reserve`, `flags` and `never_touch` in the remote-host slices; all of them are lists of quoted
+strings on one line, refused by name when they do not parse.
+
 ### The operator's own ssh material is never read
 
 The operator, 2026-10-26: *"letibot is forbidden to touch and even read `~/.ssh`"*. That is a rule
@@ -824,16 +836,11 @@ deadline_s?}`.
 
 ### What this slice does not do, said plainly
 
-* **`fanout` is not itself a background job whose settlement wakes the model.** It blocks for its
-  answer, bounded by `deadline_s`. The reason is structural: a settlement is delivered by
-  `jobwatch`, which waits on `ProcessHost::wait_job` for a handle in **this session's** job table,
-  and a fanout's branches are jobs of other machines' tables. Giving the fanout its own settlement
-  means the session's process host becomes a composite of the hosts it can reach, so that
-  `wait_job(fanout)` blocks on N branches — a restructure of `HostProcesses`/`RemoteProcesses` and
-  `JobRecorder`, not a tool. Until then a long fanout holds its turn; `deadline_s` is what bounds it.
+* **`fanout` blocks for its answer and has no background form of its own** — `background: true` is
+  FB's, below. Until then a long fanout holds its turn; `deadline_s` is what bounds it.
 * **Consequently `job_output` and `job_kill` do not reach a branch.** Its handle is in that host's
-  table, and the row names the output file. `job_kill` on the fanout's own handle cannot stop a
-  branch either; the call's deadline can.
+  table, and the row names the output file. **FB gives both a door** — the parent handle — and the
+  branch handles stay where they are.
 * **The matrix half of RH8 is not built**: capacity placement from `hosts {probe}`, interleaved
   repetitions, resume from a plan file, and the merged result set. `fanout` is the shape those grow
   from and its cell accounting is the audit they need.
@@ -878,6 +885,9 @@ user       = "dead"
 reserve    = 4                       # cores held back for the owner
 flags      = ["heavy", "tmpfs"]      # what the machine is for
 never_touch = ["etcd", "pgfuzz"]     # names letibot must never signal, stop or remove
+
+[local]                              # FB: the same list, for the box the daemon runs on
+never_touch = ["etcd", "pgfuzz"]
 ```
 
 * **`reserve` is a whole number of cores and anything else is refused**, not defaulted. A
@@ -966,9 +976,9 @@ session's close, and the reaper — so there is one answer to *what does ending 
 the door the deadline kill and `teardown_session` both go through: a record whose command matches a
 pattern on its host's list is not signalled, its record stays **`lost`** — nothing was ended, so
 nothing may say `stopped` — its `check_how` is `refused`, and the sentence naming the pattern goes
-to the log. **One hole, said plainly:** `never_touch` is a `[host.NAME]` key, so a record with no host
-(a process on the box this daemon runs on) has no list to check against. A daemon placed *on* lab2x1
-— RH4, later — would have local records and no declaration, and the fix is a list for this box.
+to the log. **A record with no host** — a process on the box this daemon runs on — is checked against
+this box's own list, a `[local]` table in the same file; FB builds that and § *As built (FB)* says
+what it is.
 
 ### Two moments a lease goes back, and the one that is not one
 
@@ -1026,4 +1036,132 @@ refusals, the substring, and `cores − load − reserve`.
   processes ended by the supervisor and its names are its own business.
 * **A lease is not swept for size.** A session that takes a second block on a host it already holds
   one on gets a second block; nothing merges them.
+
+## As built (FB): `fanout` settles as a background job, and `[local]` never_touch
+
+Written 2026-10-26. Two things RH8 and RH9 each said they could not do, done where they said the
+work was — and one of them turned out to need less than the note claimed.
+
+```text
+crates/tools/src/builtins/fanout_bg.rs   `background: true` — the handle, the tracker, the journal
+crates/tools/src/builtins/fanout.rs      the `background` argument, and the one `table` both forms use
+crates/tools/src/exec/host.rs            `Aggregate` — a job of jobs, and the four questions it answers
+crates/tools/src/remote.rs               the `[local]` table, and one copy of the never-touch rule
+crates/harnessd/src/supervise.rs         `may_touch` asks the local list too
+crates/harnessd/src/jobwatch.rs          a settlement carries what a job of jobs says for itself
+```
+
+### One handle in this session's table, and not a composite process host
+
+RH8's note said giving a fanout a settlement *"means the session's process host becomes a composite
+of the hosts it can reach … a restructure of `HostProcesses`/`RemoteProcesses` and `JobRecorder`, not
+a tool"*. **The restructure was not needed, and the smaller shape is better.**
+
+A settlement needs exactly four things from `ProcessHost` — `wait_job`, `job`, `output`,
+`kill_job_as` — plus `jobs()` so a handle resolves. So `ProcessHost` gains one seam,
+`hold(&JobId, Arc<dyn Aggregate>)`, and `HostProcesses` keeps a second table beside its jobs:
+
+* **`Aggregate`** (`crates/tools/src/exec/host.rs`) is *a job of jobs*: `state`, `elapsed`,
+  `produced`, `output`, `wait`, `kill`, `report`. Every read path in `HostProcesses` asks the
+  aggregate table first, so `jobs`, `job_list`, `job_output`, `job_kill`, `job_wait`, `jobwatch` and
+  the activity's `waiting on: job …` are **the code that was already there**.
+* **A composite would have had to answer a harder question**: what `SpawnRequest.host` means, which
+  table `JobView.host` names, and which host's recorder writes the row. This answers none of them,
+  because the fanout's branches are still jobs of their own hosts — each with its own `process`
+  record (RH8), its own deadline and its own group kill. The parent is a *handle*, not a host.
+* **The row a job of jobs answers with says two things plainly**: `pid` is 0 (there is no process,
+  and the same 0 a remote job reports when it exits inside the launch's pid poll), and its scope has
+  no cgroup path (there is no group of ours holding those branches). `kill_job_as` routes to
+  `Aggregate::kill` before it ever looks at a cgroup.
+* **`JobRecorder` skips the `process` record for one** — a pid nothing on this box can be would be
+  refused by the supervisor's identity check on every tick. The `job` row is still written, which is
+  the durable half a restart reads.
+
+### `fanout {background: true}`
+
+`{hosts, command, deadline_s, background: true}` returns ONE handle at once. What it does with it:
+
+* **The branches start in the call, the waiting does not.** A leg that could not start is a row
+  immediately (the blocking form's rule, one call early), and the starts happen before the handle is
+  held so a call that started nothing hands back no handle.
+* **The session must be able to hold it** — `hold` refuses, and the call then stops every branch it
+  just started and answers with that refusal rather than with a handle nothing can reach. A session
+  with no process host is refused *before* the first branch, because branches running with nobody
+  able to reach them is worse than a refusal.
+* **A thread of the fanout's own watches the branches** (`FanoutJob::track_loop`), one pass over
+  them, a breath between passes, bounded by the plan's own deadline. It is the only writer of a
+  row, so a kill and a deadline and a command that exits all produce exactly one ending each.
+* **A job of jobs is a name as well as a handle**: `job_output`, `job_kill` and `job_wait` take
+  `fanout` (or `fanout-2`) exactly as they take a `bash` slug, through the host's own slug record.
+
+**What the model is handed.** Three things, and the third is the one this slice adds:
+
+1. the `Backgrounded` result — the handle, the name, and *its table reaches you on its own*;
+2. `job_output` mid-run reads a **journal**: `<host> · started` for every branch in flight, and the
+   row it becomes once it ends. Append-only, because an offset into a re-rendered table would mean a
+   different thing a second later;
+3. the settlement, and **the settlement carries the table**. `ProcessHost::settlement_note` is the
+   one hook a job has for saying more than its state, and an aggregate is the one kind whose result
+   IS its output — so `completion_notice` prints it under the job's row, cut at 24 lines, and the
+   whole of it is one `job_output` away. **A `bash` settlement is byte for byte what it was**: the
+   hook answers `None` for everything that is not a job of jobs.
+
+**How it ends.** Every branch exited 0 is `Exited { 0 }`; anything else is `Exited { 1 }` — the
+parent's own status is the table's reduction, and the table says which cells. A `job_kill` on the
+handle stops every branch **through its own host and its own process group** (RH1), the parent
+settles as `Killed { by }`, and each branch's `process` record ends `stopped`.
+
+### What FB does not do, said plainly
+
+* **A daemon restart loses the parent's settlement.** The table is in memory and the watcher is a
+  thread of the old process, so nothing wakes the model with the per-host table after a restart.
+  `job_output` on the old handle answers *no job called that* — a refusal, not a hang, and it claims
+  nothing about work still in flight. **The branches survive** (they are `process` records, adopted
+  by RH7's supervisor), so the work is still killed at its deadline or by a session's close. A
+  re-armed parent would need the table in the store; that is a schema change and a supervisor pass,
+  and it is not this slice.
+* **Nothing links a branch row to its fanout parent, and nothing needs to.** The parent has no
+  process, so it has no record for a branch to point at; teardown is per record and already covers
+  every branch (RH8's book), so a `parent` column would be a link nothing reads. Schema stays 35.
+* **One fanout cannot be nested in another.** A branch is a command, and a `fanout` is a tool call —
+  the same line the blocking form draws.
+
+### `never_touch` for this box: the `[local]` table
+
+RH9's *"One hole, said plainly"* said a record with no host had no list to be checked against, and
+that the fix was *"a list for this box"*. It is a section of its own, because this box is not a
+placement — a `[host.…]` block names a machine ssh reaches:
+
+```toml
+[local]
+never_touch = ["etcd", "pgfuzz"]
+```
+
+* **One key, refused by name** like the host blocks': a `[local].never_tuch` typo would leave the
+  operator's workload unprotected and silent, which is the one failure this list exists to prevent.
+* **One copy of the rule** — `remote::never_touch_hit(list, what)` — because three lists read it now
+  (a host's, this box's, and the lease teardown's), and two copies of one rule is how they start to
+  disagree. The match is still a case-insensitive substring, for the reason RH9 gives.
+* **Both doors ask it.** `Supervisor::may_touch` is the one function the deadline kill and
+  `teardown_session` go through, and a record with no host is now checked against this list before
+  one is checked against a host's. The refusal is the same sentence shape — the handle, the pattern,
+  *will not signal, stop or remove it* — the record stays **`lost`** with `check_how` `refused`
+  (teardown) or `expired` (the deadline), and the sentence names the pattern.
+* **An absent `[local]` table is no declaration**, not a default: a box nobody has told us to keep
+  anything on.
+
+### Tests, and what they cost
+
+`crates/tools/tests/fanout.rs` (the RH8 fake-ssh rig, **no network, no cgroup**) drives a background
+fanout against `HostProcesses::with_tree(…, NoScopes)`: the handle is a job of this session's table
+with `pid` 0 and the name `fanout`, the call returns while two `sleep 20` branches run, the journal
+names the row that ended and the branch still `started`, `job_kill` leaves both pids gone and both
+records `stopped` with the parent `Killed`, and the settlement is the same table — including a row
+for a host whose ssh does not resolve.
+
+`crates/harnessd/src/jobwatch/tests.rs` proves the settlement with **no process at all**: a fake
+`Aggregate` held by a `NoScopes` host is watched, `JobSettled` reaches the hub, the completion is
+queued, and its `detail` is the table. `crates/harnessd/src/harness/tests/jobs.rs` proves the table
+reaches the notice text, indented under the job's row, and that an ordinary job's notice is
+unchanged. `crates/harnessd/src/supervise/tests.rs` proves both local never-touch doors.
 

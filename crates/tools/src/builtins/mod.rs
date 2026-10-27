@@ -39,6 +39,9 @@ pub mod digest;
 pub mod edit;
 pub mod external;
 pub mod fanout;
+/// `fanout {background: true}`'s half: the handle that stands for N branches (FB). A module of its
+/// own because it is a second *lifetime* over the same plan, not another verb of the tool.
+pub mod fanout_bg;
 pub mod glob;
 pub mod grep;
 pub mod harness_view;

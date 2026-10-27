@@ -101,8 +101,8 @@ pub use confine::{
     NoConfinement, NsState, Piece, Presence, Seal, SealKind, Session, Unconfined, ViewSpec,
 };
 pub use host::{
-    Adopted, DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion, Protected,
-    SpawnRequest, Waited, job_label,
+    Adopted, Aggregate, DeadlineFired, Deadlines, HostProcesses, JobView, ProcessHost, Promotion,
+    Protected, SpawnRequest, Waited, job_label,
 };
 pub use jobs::{
     DEADLINE_KILL, JobId, JobState, MAX_JOB_NAME, MemoryCap, OutputFile, OutputSlice, Stdin,

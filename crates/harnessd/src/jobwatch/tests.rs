@@ -1170,3 +1170,231 @@ fn a_jobs_process_record_reads_running_then_done() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ------------------------------------------------- a job of jobs (FB)
+
+use letibot_tools::exec::Aggregate as _;
+use std::sync::Condvar;
+
+/// **A job of jobs the test settles by hand** — an [`letibot_tools::exec::Aggregate`] with no
+/// branches behind it.
+///
+/// This is the whole apparatus a fanout's settlement needs, and it is deliberately not a process:
+/// what is under test is the channel its table travels (handle → `wait_job` → `JobSettled` → the
+/// completion → the notice), and a box with no cgroup v2 can prove every hop of it.
+struct Table {
+    state: Mutex<Option<JobState>>,
+    rung: Condvar,
+    report: Mutex<String>,
+}
+
+impl Table {
+    fn new(report: &str) -> Table {
+        Table {
+            state: Mutex::new(None),
+            rung: Condvar::new(),
+            report: Mutex::new(report.to_string()),
+        }
+    }
+
+    /// Settle it the way a fanout's last branch does.
+    fn finish(&self, state: JobState) {
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state);
+        self.rung.notify_all();
+    }
+}
+
+impl letibot_tools::exec::Aggregate for Table {
+    fn command(&self) -> String {
+        "fanout: 2 branch(es) on fake1, fake2".into()
+    }
+
+    fn slug(&self) -> Option<String> {
+        Some("fanout".into())
+    }
+
+    fn state(&self) -> JobState {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .unwrap_or(JobState::Running)
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_millis(1_200)
+    }
+
+    fn ran_for(&self) -> Option<Duration> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|_| Duration::from_millis(1_200))
+    }
+
+    fn produced(&self) -> u64 {
+        self.report.lock().unwrap_or_else(|e| e.into_inner()).len() as u64
+    }
+
+    fn since_last_output(&self) -> Option<Duration> {
+        Some(Duration::from_millis(1_200))
+    }
+
+    /// **The journal is the report here**, because this fake has nothing else to say — what matters
+    /// is that `output` answers at all, which is what `job_output` reads.
+    fn output(&self, from: u64, limit: usize) -> letibot_tools::exec::OutputSlice {
+        let all = self
+            .report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .into_bytes();
+        let bytes: Vec<u8> = all
+            .iter()
+            .skip(from as usize)
+            .take(limit)
+            .copied()
+            .collect();
+        let to = from + bytes.len() as u64;
+        let produced = all.len() as u64;
+        slice_of(bytes, from, to, produced, produced)
+    }
+
+    fn wait(&self, within: Duration) -> Option<JobState> {
+        let began = Instant::now();
+        let mut g = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if let Some(state) = &*g {
+                return Some(state.clone());
+            }
+            let left = within.saturating_sub(began.elapsed());
+            if left.is_zero() {
+                return None;
+            }
+            let (held, _) = self
+                .rung
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner());
+            g = held;
+        }
+    }
+
+    fn kill(&self, _by: &str) -> Vec<letibot_tools::exec::Reaped> {
+        // Nothing to end: this fake starts nothing. `job_kill` on a real one is measured in
+        // `crates/tools/tests/fanout.rs`, where there are branches to stop.
+        Vec::new()
+    }
+
+    fn report(&self) -> String {
+        self.report
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+}
+
+/// A slice of a fake's whole output, spelled once because [`letibot_tools::exec::OutputSlice`] has
+/// six fields and a reader should not have to check two of them against each other.
+fn slice_of(
+    bytes: Vec<u8>,
+    from: u64,
+    to: u64,
+    produced: u64,
+    retained: u64,
+) -> letibot_tools::exec::OutputSlice {
+    letibot_tools::exec::OutputSlice {
+        bytes,
+        from,
+        to,
+        produced,
+        dropped: 0,
+        retained,
+    }
+}
+
+/// **A job of jobs settles through the job channel, and its table is what the model is woken with**
+/// — the whole of FB's settlement claim, with no process and no daemon.
+///
+/// Three hops are asserted and the third is the one this slice adds:
+///
+/// 1. the session says what it is waiting on while the thing runs ([`JobWatchers::watching_now`],
+///    the list `crate::activity::facts_of` turns into `waiting on: job …`);
+/// 2. `JobSettled` reaches the hub and a completion is queued — the channel `bash` already uses, so
+///    the wake needs no new mechanism;
+/// 3. **the completion carries the per-host table** ([`ProcessHost::settlement_note`]), which is the
+///    one thing a `bash` settlement deliberately does not carry.
+#[test]
+fn a_job_of_jobs_settles_through_the_jobs_channel_and_carries_its_table() {
+    let root = std::env::temp_dir().join(format!("letibot-fanout-watch-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // **A host that starts nothing**, because a job of jobs starts nothing here: `hold` is a map,
+    // and every branch behind the handle is a job of another machine's table.
+    let host = Arc::new(HostProcesses::with_tree(
+        &root,
+        Box::new(letibot_tools::exec::NoScopes::new(
+            "a job of jobs is a table of one handle; no process of this box is involved",
+        )),
+    ));
+    let hub = Hub::new("s-jobs");
+    let watchers = JobWatchers::new(&(host.clone() as Arc<dyn ProcessHost>), &hub, None);
+    let table = Arc::new(Table::new(
+        "fanout · 2 planned, 2 answered · 1.2s · work dir `fanout-c1` on each host\n  \
+         fake1 on fake1 · exited 0 · 0.3s\n  fake2 on fake2 · exited 0 · 0.9s\n\
+         every cell exited 0",
+    ));
+    let id = JobId::next();
+    host.hold(
+        &id,
+        Arc::clone(&table) as Arc<dyn letibot_tools::exec::Aggregate>,
+    )
+    .expect("a host holds a job of jobs");
+    // The row a listing draws: a name, a command that says what it is, and no process.
+    let view = host.job(&id).expect("the handle is in the table");
+    assert_eq!(view.slug.as_deref(), Some("fanout"));
+    assert_eq!(view.pid, 0, "no process of its own");
+    assert!(view.state.is_running(), "{view:?}");
+
+    // **1. What the session is waiting on, while it runs.**
+    watchers.watch(id.0.clone());
+    assert_eq!(
+        watchers.watching_now(),
+        vec![(id.0.clone(), BackgroundKind::Job, Some("fanout".into()))],
+        "the activity names the job it is waiting on, by handle and by name"
+    );
+    assert!(
+        watchers.take_completions().is_empty(),
+        "nothing has ended, so nothing is queued"
+    );
+
+    // **2 and 3. It settles, and the settlement carries the table.**
+    table.finish(JobState::Exited { code: 0 });
+    let (word, produced, elapsed_ms) = wait_for_settlement(&hub, &id.0);
+    assert_eq!(word, "exited 0");
+    assert_eq!(produced, table.produced(), "the numbers are the view's");
+    assert!((1_000..2_000).contains(&elapsed_ms), "{elapsed_ms}");
+    let done = wait_for_completion(&watchers);
+    assert_eq!(done.job, id.0);
+    assert_eq!(done.slug.as_deref(), Some("fanout"));
+    assert_eq!(done.state, "exited 0");
+    assert!(
+        done.detail.contains("fanout · 2 planned, 2 answered"),
+        "the settlement carries the per-host table: {done:?}"
+    );
+    assert!(
+        done.detail.contains("fake2 on fake2 · exited 0"),
+        "every row is in it: {done:?}"
+    );
+    // **And the wait is over**: the handle is no longer something the session waits on, which is
+    // what lets `wait` say the turn is free to end.
+    let ended = Instant::now() + Duration::from_secs(5);
+    while !watchers.watching_now().is_empty() && Instant::now() < ended {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        watchers.watching_now().is_empty(),
+        "a settled job is not something the session is still waiting on"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

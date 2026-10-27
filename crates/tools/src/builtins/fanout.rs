@@ -145,12 +145,12 @@ impl Tool for Fanout {
              status, how long it took, the tail of its output — or why it never ran (no such host, \
              a key that is not installed, a host that is down). `hosts` is a list of names from \
              `hosts.toml` or an object mapping each host to its own command; `command` is the \
-             default when the list has none. `local` is this session's own box and takes no ssh. \
-             The work is concurrent; the rows are strict: a host that never answered is a row \
-             saying so, never a missing line, and the other hosts still report. Every branch is a \
-             supervised job written to the process table, so a restart finds it and the session's \
-             close kills it on that host. `deadline_s` (default 600, max 3600) kills a branch that \
-             outlives it and its row says stopped.",
+             default when the list has none. `local` is this session's own box. The work is \
+             concurrent; a host that never answered is a row saying so, never a missing line. \
+             Every branch is a supervised job written to the process table. `deadline_s` (default \
+             600, max 3600) kills a branch that outlives it and its row says stopped. \
+             `background: true` returns ONE handle at once; its settlement is the same per-host \
+             table, delivered on its own.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -163,8 +163,9 @@ impl Tool for Fanout {
                     },
                     "command": {"type": "string", "description": "The command both lists run; required when `hosts` is a list, ignored for hosts that name their own."},
                     "deadline_s": {"type": "integer", "description": "Seconds each branch may run before it is killed and its row says stopped. Default 600, at most 3600. Seconds rather than milliseconds because a fanout's deadline is minutes."},
+                    "background": {"type": "boolean", "description": "Start the branches and return one handle at once instead of waiting for the table. Its settlement — the same one-row-per-host table — reaches you on its own when the last branch ends; `job_output` reads the per-host progress meanwhile, and `job_kill` on the handle stops every branch on every host."},
                     "cwd": {"type": "string", "description": "Where the commands run, on each host: absolute, or relative to the work directory this call made there (`<host root>/fanout-<call>`)."},
-                    "lease": {"description": "Give each branch a block of ports from this session's lease ON ITS OWN HOST, outside that host's ephemeral range: `true` is one port, a number is that many. The block travels to the command as `LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS` and `…_PREFIX` — name the containers and compose projects you start under that prefix, and the teardown removes exactly those. Every block is released when the call ends.", "type": ["boolean", "integer"]}
+                    "lease": {"description": "Give each branch a block of ports from this session's lease ON ITS OWN HOST, outside that host's ephemeral range: `true` is one port, a number is that many. The block travels to the command as `LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS` and `…_PREFIX` — name the containers and compose projects you start under that prefix, and the teardown removes exactly those. Every block is released when the fanout ends (with `background: true`, when its last branch does).", "type": ["boolean", "integer"]}
                 },
                 "required": ["hosts"]
             }),
@@ -230,7 +231,12 @@ impl Fanout {
                 }
             }
         }
-        let fleet = self.fleet(work.to_string()).with_local(local);
+        let fleet = self.fleet(work.to_string()).with_local(local.clone());
+        // **The blocking form is the default and its answer does not change** — `background` is
+        // the caller saying it will take the table as a settlement instead of as a result.
+        if args.get("background").and_then(Value::as_bool) == Some(true) {
+            return super::fanout_bg::start(fleet, plan, held, self.blocks.clone(), local, work);
+        }
         self.run(&fleet, plan, self.blocks.as_deref(), &held)
     }
 }
@@ -474,13 +480,26 @@ impl Fanout {
                 released.extend(blocks.release(lease, "the fanout ended"));
             }
         }
-        Invocation::ok(table(fleet, &plan, &rows, started.elapsed(), &released))
+        Invocation::ok(table(
+            fleet.work(),
+            &fleet.declared(),
+            &plan,
+            &rows,
+            started.elapsed(),
+            &released,
+        ))
     }
 }
 
 /// The answer: a header with the count that matters, then one line per planned cell.
-fn table(
-    fleet: &Fleet,
+///
+/// Two facts about the call rather than about its rows — the work directory it used on every host,
+/// and what `hosts.toml` declares — travel in because the table is built in **two** places now:
+/// the call's own answer, and the settlement that reaches the model later, which has no [`Fleet`]
+/// to read them off ([`super::fanout_bg`]).
+pub(super) fn table(
+    work: &str,
+    declared: &[String],
     plan: &[Leg],
     rows: &[Cell],
     took: Duration,
@@ -496,7 +515,7 @@ fn table(
         plan.len(),
         rows.len(),
         took.as_secs_f32(),
-        fleet.work()
+        work
     );
     for row in rows {
         s.push_str(&format!("  {}\n", row.line()));
@@ -506,7 +525,6 @@ fn table(
     } else {
         s.push_str(&format!("{failed} of {} cells did not exit 0", rows.len()));
         if never > 0 {
-            let declared = fleet.declared();
             if !declared.is_empty() {
                 s.push_str(&format!(
                     " ({never} never ran; this file declares {})",

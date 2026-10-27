@@ -589,6 +589,95 @@ pub trait ProcessHost: Send + Sync {
     fn launcher_failure(&self, _output: &str) -> Option<String> {
         None
     }
+
+    /// **Hold a handle that stands for work running somewhere else** — see [`Aggregate`].
+    ///
+    /// The default is a refusal and not a no-op, because the two are different facts: a
+    /// backend that answered `Ok` and then settled nothing would leave a handle a model waits
+    /// on for ever. `Err` is *this host cannot do that*, and the caller turns it into a
+    /// sentence before it starts the work.
+    fn hold(&self, place: &JobId, agg: Arc<dyn Aggregate>) -> Result<(), ExecError> {
+        let _ = (place, agg);
+        Err(ExecError::Spawn(
+            "this backend cannot hold a job of jobs: it has no table of its own for one handle \
+             to live in, so a job whose settlement waits on N others would settle nowhere"
+                .to_string(),
+        ))
+    }
+
+    /// **What a settling job wants to say for itself, beyond its state and its numbers.**
+    ///
+    /// `None` for every ordinary job, and that is the rule rather than an accident: R93.C3
+    /// settled that a job's settlement carries its ending and not its output, because the model
+    /// can read the output when it wants it. An [`Aggregate`] is the one kind whose *result* is
+    /// its output — the table of cells is the answer a fanout was asked for — so it answers here
+    /// with that text, and the settlement carries it. A host with no aggregates says `None`.
+    fn settlement_note(&self, _job: &JobId) -> Option<String> {
+        None
+    }
+
+    /// **A name a job of jobs may answer to, made unique against every name this host has
+    /// handed out** — the record a `bash` job's `slug` goes through ([`JobView::slug`]), so two
+    /// fanouts in one session cannot be reached by one word.
+    ///
+    /// The default hands the name back unchanged, which is honest for a backend with no such
+    /// record: the caller then refuses to hold the handle rather than giving two jobs one name.
+    fn claim_name(&self, asked: &str) -> String {
+        asked.to_string()
+    }
+}
+
+/// **A job of jobs** — one handle in the session's own table that stands for work running on
+/// other machines, and settles when that work does (FB).
+///
+/// # Why this exists rather than a composite `ProcessHost`
+///
+/// A `fanout` branch is a job of the *host's* table, not this session's: it is spawned through a
+/// per-host `RemoteProcesses`, so `wait_job` here has never heard of it and `jobwatch` — whose
+/// whole job is `wait_job` on this session's host — could not settle it. Making the session's
+/// process host a composite over every host it can reach (`SpawnRequest.host`, `JobView.host`,
+/// `jobs()` merged, a recorder per host) would fix that and change every caller of the seam.
+///
+/// This is the smallest honest version of the same fact: **one handle in this host's table, whose
+/// `wait_job` waits on N branches**, each on its own host through that host's own process group.
+/// `jobs`, `job_output`, `job_kill`, `job_wait`, the activity's `waiting on: job …` and the
+/// settlement that wakes the model are then all the code that was already there.
+///
+/// What it does *not* do is say so after a restart: this table is in memory, so a daemon that
+/// restarts loses the parent. The branches are `process` records and are adopted (RH7); the
+/// parent's settlement is not. `docs/remote-hosts.md` § RH8 says that plainly.
+///
+/// # The two halves a caller must get right
+///
+/// * **`state` is the truth once it is not `Running`**, and `wait` must not report an ending it
+///   has not got: a caller that answered `Exited { code: 0 }` for work still in flight would make
+///   every wait a lie.
+/// * **`output` is a JOURNAL, not a table** — append-only, so an offset stays meaningful while the
+///   thing is running (see [`super::jobs::Capture`] for why the ring's offsets are absolute).
+pub trait Aggregate: Send + Sync {
+    /// The row's command column — what this job of jobs *is*, in one line. There is no single
+    /// command line, and inventing one from the first branch would be a claim about all of them.
+    fn command(&self) -> String;
+    /// **The name the caller would use for it**, if it has one — the same slug a `bash` job may
+    /// carry, so `job_output`/`job_kill`/`job_wait` take a word as well as a handle.
+    fn slug(&self) -> Option<String>;
+    fn state(&self) -> JobState;
+    /// How long it has been going, live, or how long it ran.
+    fn elapsed(&self) -> Duration;
+    /// The same, settled — the number a settlement reports.
+    fn ran_for(&self) -> Option<Duration>;
+    fn produced(&self) -> u64;
+    /// The last time a branch said something, so a wait can report progress and not a bit.
+    fn since_last_output(&self) -> Option<Duration>;
+    fn output(&self, from: u64, limit: usize) -> OutputSlice;
+    /// **Block until it settles**, at most `within`. `None` is *still running*, never a guess.
+    fn wait(&self, within: Duration) -> Option<JobState>;
+    /// **End every branch, on its own host, through its own process group** — and answer what
+    /// was there before the kill, so `job_kill`'s record is a measurement and not a claim.
+    fn kill(&self, by: &str) -> Vec<Reaped>;
+    /// **The table**, for the settlement that wakes the model — the same text the blocking form
+    /// answers with. Empty while it is still running.
+    fn report(&self) -> String;
 }
 
 /// **The run's deadline, and the thread that enforces it.**
@@ -875,6 +964,13 @@ pub struct HostProcesses {
     ///
     /// [`shell`]: HostProcesses::with_shell
     console_shell: Vec<String>,
+    /// **The handles that stand for work running elsewhere** — [`Aggregate`], by id.
+    ///
+    /// A table of its own rather than a field on [`Job`], because a job of jobs has no process: no
+    /// cgroup, no waiter thread, no `Child`. Everything above this layer asks the same four
+    /// questions of it that it asks of a job (`state`, `output`, `wait`, `kill`), and the two
+    /// tables are read together, which is why `jobs()` lists both.
+    aggregates: Mutex<std::collections::HashMap<JobId, Arc<dyn Aggregate>>>,
     /// What this host calls its session scope.
     ///
     /// **Unique per host, not the constant `s`.** Two sessions in one daemon share
@@ -1028,6 +1124,7 @@ impl HostProcesses {
             scratch: Mutex::new(None),
             shell: vec!["/bin/sh".into(), "-c".into()],
             console_shell: super::console::shell(),
+            aggregates: Mutex::new(std::collections::HashMap::new()),
             session_name: unique("s"),
         };
         h.protect_self_and_ancestors();
@@ -1275,6 +1372,58 @@ impl HostProcesses {
         self.by_id.lock().expect("jobs by id").get(id).cloned()
     }
 
+    /// **The job of jobs held under this id**, if one is — the lookup every read path in
+    /// [`ProcessHost`] makes before it goes looking for a process.
+    fn aggregate(&self, id: &JobId) -> Option<Arc<dyn Aggregate>> {
+        self.aggregates.lock().expect("aggregates").get(id).cloned()
+    }
+
+    /// **The row a job of jobs answers with.**
+    ///
+    /// Two fields are not what they are on a job, and both are said rather than faked:
+    ///
+    /// * **`pid` is 0** — there is no process, and a made-up number would name somebody's. It is
+    ///   the same 0 a remote job reports when it exits inside the launch's pid poll, which is
+    ///   already the vocabulary for *this host cannot point at a process*.
+    /// * **`scope` has no cgroup path** — the work is in other machines' groups, and inventing a
+    ///   path here would be a cgroup a `job_kill` could try to empty. [`Aggregate::kill`] is where
+    ///   it is ended instead, and `kill_job_as` routes there first.
+    ///
+    /// The scope's *name* is this host's session, which is the true half: the session owns the
+    /// handle, and that is what a listing should say.
+    fn aggregate_view(&self, id: &JobId, agg: &dyn Aggregate) -> JobView {
+        JobView {
+            memory_cap: MemoryCap::NotAsked,
+            memory: None,
+            id: id.clone(),
+            command: agg.command(),
+            slug: agg.slug(),
+            scope: self.session_scope_id(),
+            owner: self.session_scope_id(),
+            cwd: String::new(),
+            pid: 0,
+            // **`Asked` and not `Promoted`.** A fanout the model backgrounded is the model's own
+            // request; it was never in the foreground for anybody to move.
+            background: Some(Backgrounding::Asked),
+            state: agg.state(),
+            elapsed: agg.elapsed(),
+            ran_for: agg.ran_for(),
+            produced: agg.produced(),
+            since_last_output: agg.since_last_output(),
+            output_file: None,
+        }
+    }
+
+    /// The session scope's id, as a [`ScopeId`] — with no cgroup path, for a caller that only
+    /// needs the name (see [`HostProcesses::aggregate_view`]).
+    fn session_scope_id(&self) -> ScopeId {
+        ScopeId {
+            kind: ScopeKind::Session,
+            name: self.session_name.clone(),
+            path: PathBuf::new(),
+        }
+    }
+
     /// **The slug this spawn takes, made unique against every name this session has
     /// handed out.**
     ///
@@ -1332,12 +1481,15 @@ impl HostProcesses {
 
     /// Every job id this host knows, for clause 1's benefit when one is unknown.
     pub fn job_ids(&self) -> Vec<JobId> {
-        self.jobs
+        let mut out: Vec<JobId> = self
+            .jobs
             .lock()
             .expect("jobs")
             .iter()
             .map(|j| j.id.clone())
-            .collect()
+            .collect();
+        out.extend(self.aggregates.lock().expect("aggregates").keys().cloned());
+        out
     }
 
     fn record(&self, r: Reaping) -> Reaping {
@@ -1933,12 +2085,62 @@ impl ProcessHost for HostProcesses {
     /// is the one that *enforces* it, and that is the whole of [`Deadlines`]: the run's own
     /// thread reports the deadline, and this thread ends the run.
     fn arm_deadline(&self, job: &JobId, after: Duration) {
+        // **A job of jobs arms nothing** — every branch carries its own deadline in its own
+        // `process` record (RH7/RH8), where the supervisor enforces it on the machine that runs
+        // it. A second clock here would be a second answer to *when is it out of time*.
+        if self.aggregate(job).is_some() {
+            return;
+        }
         if let Some(j) = self.find(job) {
             self.deadlines.arm(j, after);
         }
     }
 
+    /// **Take a handle that stands for work running elsewhere** — see [`Aggregate`].
+    ///
+    /// The name it answers to is the aggregate's own ([`Aggregate::slug`]), claimed by the tool
+    /// that made it through this host's own slug record — so two fanouts in one session cannot be
+    /// given the same one, and nothing here has to know what a fanout is.
+    fn hold(&self, place: &JobId, agg: Arc<dyn Aggregate>) -> Result<(), ExecError> {
+        if self.find(place).is_some() || self.aggregate(place).is_some() {
+            return Err(ExecError::Spawn(format!(
+                "`{place}` is already a job of this host, so a second one under that handle would \
+                 be two things with one name"
+            )));
+        }
+        self.aggregates
+            .lock()
+            .expect("aggregates")
+            .insert(place.clone(), agg);
+        Ok(())
+    }
+
+    fn settlement_note(&self, job: &JobId) -> Option<String> {
+        self.aggregate(job).map(|a| a.report())
+    }
+
+    fn claim_name(&self, asked: &str) -> String {
+        self.claim_slug(asked)
+    }
+
     fn wait_job(&self, id: &JobId, deadline: Duration) -> Result<Waited, ExecError> {
+        // **A job of jobs settles here, not in a cgroup.** One wait, N branches, each watched
+        // by the thread that started it — so the answer to `jobwatch` is *it happened* only when
+        // every one of them has ended.
+        if let Some(agg) = self.aggregate(id) {
+            let started = Instant::now();
+            return match agg.wait(deadline) {
+                Some(state) => Ok(Waited::Happened {
+                    state: Some(state),
+                    took: started.elapsed(),
+                }),
+                None => Ok(Waited::Deadline {
+                    took: started.elapsed(),
+                    produced: agg.produced(),
+                    since_last_output: agg.since_last_output(),
+                }),
+            };
+        }
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         let started = Instant::now();
         let state = job.wait_until(deadline);
@@ -1993,25 +2195,68 @@ impl ProcessHost for HostProcesses {
     }
 
     fn job(&self, id: &JobId) -> Option<JobView> {
-        self.find(id).map(|j| Self::view(&j))
+        match self.aggregate(id) {
+            Some(agg) => Some(self.aggregate_view(id, &*agg)),
+            None => self.find(id).map(|j| Self::view(&j)),
+        }
     }
 
     fn jobs(&self) -> Vec<JobView> {
-        self.jobs
+        let mut out: Vec<JobView> = self
+            .jobs
             .lock()
             .expect("jobs")
             .iter()
             .map(|j| Self::view(j))
-            .collect()
+            .collect();
+        // **A job of jobs is a row like any other** — after the runs, because it stands for work
+        // those runs are not: it is a table of its own, and a listing that interleaved the two
+        // would suggest the parent was one more process on this box.
+        let aggs: Vec<(JobId, Arc<dyn Aggregate>)> = self
+            .aggregates
+            .lock()
+            .expect("aggregates")
+            .iter()
+            .map(|(id, a)| (id.clone(), Arc::clone(a)))
+            .collect();
+        for (id, agg) in aggs {
+            out.push(self.aggregate_view(&id, &*agg));
+        }
+        out
     }
 
     fn output(&self, id: &JobId, from: u64, limit: usize) -> Result<OutputSlice, ExecError> {
+        // **The journal, not a table** — see [`Aggregate::output`].
+        if let Some(agg) = self.aggregate(id) {
+            return Ok(agg.output(from, limit));
+        }
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         let cap = job.capture.lock().expect("capture");
         Ok(cap.slice(from, limit))
     }
 
     fn kill_job_as(&self, id: &JobId, by: &str) -> Result<Reaping, ExecError> {
+        // **A job of jobs is ended branch by branch**, on each branch's own host through that
+        // host's own process group (RH1) — there is no cgroup of ours holding them, and a
+        // `kill -TERM -<pgid>` here would reach processes this box cannot see.
+        if let Some(agg) = self.aggregate(id) {
+            let observed = agg.kill(by);
+            let scope = self.session_scope_id();
+            return Ok(self.record(Reaping {
+                scope,
+                at: std::time::SystemTime::now(),
+                mechanism: "each branch's own process group, on its own host",
+                observed,
+                survivors: Vec::new(),
+                waited: Duration::ZERO,
+                // Nothing of this host's was removed: the parent has no cgroup of its own.
+                removed: false,
+                note: Some(format!(
+                    "`{id}` is a job of jobs: every branch was ended on the machine it ran on, \
+                     and the parent's own settlement follows when the last of them has stopped"
+                )),
+            }));
+        }
         let job = self.find(id).ok_or(ExecError::NoSuchJob(id.0.clone()))?;
         // Mark first, so the waiter thread does not overwrite `Killed` with the
         // SIGKILL it is about to see. F5: the reason it stopped is a fact and the

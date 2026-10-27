@@ -531,6 +531,12 @@ impl Fleet {
         Some((view.state.clone(), run.started.elapsed()))
     }
 
+    /// **What a started leg is, as the host that runs it sees it** — the pid `job_kill`'s record
+    /// names, and the state a background fanout journals. `None` when the host has lost the job.
+    pub fn view(&self, run: &Running) -> Option<JobView> {
+        self.host(&run.leg.host).ok()?.job(&run.job)
+    }
+
     /// **Wait one leg out**, bounded. [`Waited::Deadline`] means *still running* and is never read
     /// as a finish — the caller decides what its own deadline does about that.
     pub fn wait(&self, run: &Running, within: Duration) -> Waited {

@@ -241,18 +241,28 @@ impl Supervisor {
     /// **May letibot signal this process at all?** — the never-touch list (RH9), asked *before*
     /// anything is signalled and never after.
     ///
-    /// A named host is the only case a list can be read for: `never_touch` is a key of a
-    /// `[host.NAME]` table, and a record with no host is a process on the box this daemon runs on,
-    /// where no declaration exists. That is said rather than papered over: a daemon placed ON
-    /// lab2x1 (RH4) would have local records and no list to check them against, and the fix is a
-    /// list for this box — a later decision, and not one this slice can invent.
+    /// **Two lists, one rule.** A record with a host is checked against that host's `[host.NAME]`
+    /// `never_touch`; a record with **no host** is a process on the box this daemon runs on, and it
+    /// is checked against the `[local]` table's list (FB) — which is the hole RH9 left open, closed
+    /// with the same sentence shape and the same match. A box whose file has no `[local]` table has
+    /// nothing declared for itself, and that is not an error: it is a machine nobody has told us to
+    /// keep anything on.
     fn may_touch(&self, rec: &ProcessRecord) -> Result<(), String> {
-        let Some(host) = &rec.host else {
-            return Ok(());
-        };
         let hosts = match &self.hosts {
             Some(file) => letibot_tools::remote::Hosts::load_from(file),
             None => letibot_tools::remote::Hosts::load(),
+        };
+        let Some(host) = &rec.host else {
+            return match hosts.local().never_touch_hit(&rec.command) {
+                Some(pattern) => Err(format!(
+                    "`{}` on this box matches never_touch `{pattern}`, so letibot will not signal, \
+                     stop or remove it — it is this machine's owner's own work. The record is left \
+                     as it was and this tick tries nothing further; if the pattern is too broad it \
+                     is one word in the `[local]` table of `hosts.toml`.",
+                    rec.handle
+                )),
+                None => Ok(()),
+            };
         };
         let Some(declared) = hosts.get(host) else {
             // A record naming a host this file no longer declares: nothing is known about it, and

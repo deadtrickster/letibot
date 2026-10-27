@@ -10,9 +10,11 @@
 #[path = "support/fake_remote.rs"]
 mod fake_remote;
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use letibot_tools::builtins::fanout::Fanout;
+use letibot_tools::exec::{HostProcesses, JobId, NoScopes, ProcessHost};
 use letibot_tools::fleet::{NoBook, ProcessBook, ProcessNote};
 use letibot_transcript::ToolOutcome;
 use serde_json::json;
@@ -306,4 +308,302 @@ fn a_run_with_no_daemon_writes_no_records_and_still_works() {
             "fanout-nobook",
         );
     assert_eq!(answer.outcome, ToolOutcome::Ok, "{}", answer.payload);
+}
+
+// ------------------------------------------------- `background: true` (FB)
+
+/// **The session's own job table, on a box with no cgroup to delegate.**
+///
+/// A backgrounded fanout needs a host to *hold* its handle — one map — and nothing else: the
+/// branches are jobs of the fake remotes' own tables, so no process of this box is ever started.
+/// `NoScopes` says exactly that, which is why this rig runs on a container as happily as on a
+/// desktop: the absence of a process-lifetime tree is a fact about the host, not about the test.
+fn session_host(tag: &str) -> Arc<HostProcesses> {
+    let root = std::env::temp_dir().join(format!(
+        "letibot-fanout-bg-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&root).expect("root");
+    Arc::new(HostProcesses::with_tree(
+        &root,
+        Box::new(NoScopes::new(
+            "a fanout branch is a job of the host it runs on, so this test's own host needs no \
+             process-lifetime tree at all",
+        )),
+    ))
+}
+
+/// The handle a backgrounded fanout answered with, or the failed invocation.
+fn handle_of(answer: &letibot_tools::runtime::Invocation) -> String {
+    match &answer.outcome {
+        ToolOutcome::Backgrounded { handle, how, .. } => {
+            assert_eq!(
+                *how,
+                letibot_transcript::Backgrounding::Asked,
+                "the model asked for this one"
+            );
+            handle.clone()
+        }
+        other => panic!(
+            "a backgrounded fanout hands back a handle: {other:?} — {}",
+            answer.payload
+        ),
+    }
+}
+
+/// The journal `job_output` would read, as the model would read it.
+fn journal(host: &HostProcesses, handle: &str) -> String {
+    host.output(&JobId(handle.to_string()), 0, 64 * 1024)
+        .expect("the journal")
+        .text()
+}
+
+/// **A backgrounded fanout answers ONE handle at once**, and that handle is a job of THIS session's
+/// table — the whole of what `jobwatch` needs to settle it.
+#[test]
+fn a_background_fanout_answers_one_handle_at_once() {
+    let rig = Rig::new("bg-at-once", &["fake1", "fake2"]);
+    let host = session_host("at-once");
+    let began = Instant::now();
+    let answer = tool(&rig).answer(
+        &json!({"hosts": ["fake1", "fake2"], "command": "sleep 20", "background": true}),
+        Some(host.clone() as Arc<dyn ProcessHost>),
+        "fanout-bg",
+    );
+    let took = began.elapsed();
+    let handle = handle_of(&answer);
+    // **At once is the claim**, and it is a measurement: the branches sleep twenty seconds and
+    // the call came back while they were still running.
+    assert!(
+        took < Duration::from_secs(10),
+        "a backgrounded fanout took {took:?} to answer"
+    );
+    let view = host
+        .job(&JobId(handle.clone()))
+        .expect("the handle is a job of this session's table");
+    assert!(view.state.is_running(), "{view:?}");
+    assert_eq!(
+        view.slug.as_deref(),
+        Some("fanout"),
+        "by name as well as id"
+    );
+    assert_eq!(view.pid, 0, "a job of jobs has no process of its own");
+    assert!(
+        view.command.contains("2 branch(es) on fake1, fake2"),
+        "the row says what it is: {}",
+        view.command
+    );
+    let _ = host.kill_job(&JobId(handle));
+}
+
+/// **`job_output` mid-run reads the per-host progress**: a row per branch that has ended, and a
+/// `started` line for every branch that is still running.
+#[test]
+fn job_output_mid_run_names_the_rows_that_ended_and_the_ones_still_running() {
+    let rig = Rig::new("bg-progress", &["fake1", "fake2"]);
+    let host = session_host("progress");
+    let answer = tool(&rig).answer(
+        &json!({
+            "hosts": {"fake1": "true", "fake2": "sleep 20"},
+            "background": true
+        }),
+        Some(host.clone() as Arc<dyn ProcessHost>),
+        "fanout-progress",
+    );
+    let handle = handle_of(&answer);
+    let id = JobId(handle.clone());
+    let arrived = fake_remote::until(Duration::from_secs(20), || {
+        journal(&host, &handle).contains("fake1 on fake1 · exited 0")
+    });
+    let text = journal(&host, &handle);
+    assert!(
+        arrived,
+        "the branch that exited never reached the journal: {text}"
+    );
+    assert!(
+        text.contains("fake2 on fake2 · started"),
+        "the branch still running is a row too: {text}"
+    );
+    assert!(
+        !text.contains("fake2 on fake2 · exited"),
+        "a branch that has not ended has no ending: {text}"
+    );
+    // **And the handle is still running** — the journal's `started` line is not a verdict.
+    assert!(
+        host.job(&id).map(|v| v.state.is_running()).unwrap_or(false),
+        "{text}"
+    );
+    let _ = host.kill_job(&id);
+}
+
+/// **`job_kill` on the handle ends every branch, on every host, and each branch's record says
+/// `stopped`** — not `done`, because nothing about that ending is the command's own.
+#[test]
+fn job_kill_stops_every_branch_and_every_record_says_stopped() {
+    #[derive(Default)]
+    struct Book {
+        ended: std::sync::Mutex<Vec<(String, String)>>,
+    }
+    impl ProcessBook for Book {
+        fn started(&self, _p: &ProcessNote) {}
+        fn ended(
+            &self,
+            handle: &str,
+            state: letibot_tokencore::store::ProcState,
+            _exit: Option<i32>,
+        ) {
+            self.ended
+                .lock()
+                .expect("book")
+                .push((handle.to_string(), state.word().to_string()));
+        }
+    }
+    let rig = Rig::new("bg-kill", &["fake1", "fake2"]);
+    let host = session_host("kill");
+    let book = Arc::new(Book::default());
+    let answer = Fanout::new()
+        .with_file(rig.hosts_file())
+        .with_paths(rig.paths())
+        .with_ssh(rig.ssh_program())
+        .with_bound(Duration::from_secs(5))
+        .with_book(book.clone())
+        .answer(
+            &json!({"hosts": ["fake1", "fake2"], "command": "sleep 30", "background": true}),
+            Some(host.clone() as Arc<dyn ProcessHost>),
+            "fanout-kill",
+        );
+    let handle = handle_of(&answer);
+    let id = JobId(handle.clone());
+    // **The pids before the kill**, so the assertion afterwards is about the processes and not
+    // about the rows: a row that says `stopped` over a live branch is the claim-versus-fact
+    // failure this whole feature is against.
+    let jobs = rig
+        .remote_root()
+        .join("fanout-kill")
+        .join(".letibot-remote")
+        .join("jobs");
+    let pids: Vec<u32> = std::fs::read_dir(&jobs)
+        .expect("the job directory")
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "pid"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+    assert_eq!(pids.len(), 2, "two branches wrote a pid file: {pids:?}");
+    host.kill_job(&id).expect("the handle is killable");
+    // The tracker writes each branch's ending one pass later, so the settlement is the thing to
+    // wait for — it is the same wait the daemon's watcher makes.
+    let settled = fake_remote::until(Duration::from_secs(20), || {
+        host.job(&id)
+            .map(|v| !v.state.is_running())
+            .unwrap_or(false)
+    });
+    assert!(
+        settled,
+        "the fanout did not settle after the kill: {}",
+        journal(&host, &handle)
+    );
+    assert!(
+        journal(&host, &handle).contains("stopped"),
+        "a killed branch is a row saying so: {}",
+        journal(&host, &handle)
+    );
+    for pid in &pids {
+        if let Some(command) = pid_command(*pid) {
+            assert!(
+                !command.contains("sleep 30"),
+                "branch pid {pid} is still running: {command}"
+            );
+        }
+    }
+    let ended = book.ended.lock().expect("book").clone();
+    assert_eq!(ended.len(), 2, "one record per branch: {ended:?}");
+    assert!(
+        ended.iter().all(|(_, state)| state == "stopped"),
+        "every branch's record says something ended it: {ended:?}"
+    );
+    let state = host.job(&id).expect("still listed").state;
+    assert!(
+        matches!(state, letibot_tools::exec::JobState::Killed { .. }),
+        "the parent says who ended it, not `exited`: {state:?}"
+    );
+}
+
+/// **The settlement is the table the blocking form answers with** — an unreachable host is a row
+/// there too, and the rows that ran still report. This is what `jobwatch` delivers to the model.
+#[test]
+fn the_settlement_is_the_per_host_table_including_a_host_that_could_not_be_reached() {
+    let mut rig = Rig::new("bg-settle", &["fake1"]);
+    rig.unreachable();
+    let host = session_host("settle");
+    let answer = tool(&rig).answer(
+        &json!({"hosts": ["fake1", "gone"], "command": "true", "background": true}),
+        Some(host.clone() as Arc<dyn ProcessHost>),
+        "fanout-settle",
+    );
+    let handle = handle_of(&answer);
+    let id = JobId(handle.clone());
+    let settled = fake_remote::until(Duration::from_secs(20), || {
+        host.job(&id)
+            .map(|v| !v.state.is_running())
+            .unwrap_or(false)
+    });
+    assert!(
+        settled,
+        "the fanout never settled: {}",
+        journal(&host, &handle)
+    );
+    let table = host
+        .settlement_note(&id)
+        .expect("a job of jobs says what it did");
+    assert!(table.contains("2 planned, 2 answered"), "{table}");
+    assert!(table.contains("fake1 on fake1 · exited 0"), "{table}");
+    assert!(
+        table.contains("gone on gone · never ran"),
+        "an unreachable host is a row and not a failure of the whole: {table}"
+    );
+    assert!(table.contains("Could not resolve hostname"), "{table}");
+    assert!(table.contains("1 of 2 cells did not exit 0"), "{table}");
+    // **And the journal ends with the same table**, so a reader of `job_output` after the end sees
+    // what the settlement said rather than only the lines it was built from.
+    assert!(
+        journal(&host, &handle).contains("fake1 on fake1 · exited 0"),
+        "{}",
+        journal(&host, &handle)
+    );
+}
+
+/// **A session with no process host is refused before a branch starts** — the handle would settle
+/// nowhere, and branches running with nobody able to reach them is worse than a refusal.
+#[test]
+fn a_background_fanout_with_no_process_host_is_refused_and_starts_nothing() {
+    let rig = Rig::new("bg-nohost", &["fake1"]);
+    let answer = tool(&rig).answer(
+        &json!({"hosts": ["fake1"], "command": "sleep 30", "background": true}),
+        None,
+        "fanout-nohost",
+    );
+    // **The refusal names the missing thing in its SUBJECT** — the reason a reader acts on — and the
+    // body says what to do instead.
+    match &answer.outcome {
+        ToolOutcome::Failed { reason } => {
+            assert!(reason.contains("no process host"), "{reason}");
+        }
+        other => panic!("expected a refusal: {other:?} {}", answer.payload),
+    }
+    assert!(
+        answer.payload.contains("blocks for its table"),
+        "the refusal says what to do instead: {}",
+        answer.payload
+    );
+    // **Nothing ran**: the work directory was never made on the fake remote, so there is no job
+    // directory to have a pid in.
+    assert!(
+        !rig.remote_root().join("fanout-nohost").exists(),
+        "a refused call started nothing on the host"
+    );
 }

@@ -1335,6 +1335,14 @@ impl JobRecorder {
     /// `cmd:<the command>` for one on a host, which is the marker [`crate::supervise::SshProbe`]
     /// greps for on the far side.
     pub(crate) fn process(&self, view: &letibot_tools::exec::JobView) {
+        // **A job of jobs has no process to write down.** Its `pid` is 0 and its branches are
+        // records of their own (RH8's book), so a `process` row for it would name a pid nothing on
+        // this box can be — the supervisor's identity check would refuse it every tick. The `job`
+        // row is written for it all the same ([`JobRecorder::start`]), which is the durable half a
+        // restart reads.
+        if view.pid == 0 && self.placement.is_none() {
+            return;
+        }
         let identity = match &self.placement {
             Some(_) => format!("cmd:{}", view.command),
             None => match crate::supervise::identity_of(view.pid) {
@@ -1517,6 +1525,13 @@ fn watch_one(
                 // honest answer and draws exactly the id the notice drew before.
                 let slug = view.as_ref().and_then(|v| v.slug.clone());
                 let memory = view.as_ref().and_then(|v| v.memory_clause());
+                // **And what the job says for itself, when it is a job of jobs** — a fanout's
+                // answer IS its per-host table, so the settlement carries it and the model does not
+                // have to know to go and read it. `None` for every ordinary job, which is why this
+                // changes nothing about what a `bash` settlement says (R93.C3).
+                let detail = host
+                    .settlement_note(&JobId(job.clone()))
+                    .unwrap_or_default();
                 hub.publish(SessionEvent::JobSettled {
                     job: job.clone(),
                     state: word.clone(),
@@ -1537,7 +1552,7 @@ fn watch_one(
                     state: word,
                     produced,
                     elapsed_ms,
-                    detail: String::new(),
+                    detail,
                     arrived: SystemTime::now(),
                 });
                 settled.lock().expect("job watchers").insert(job.clone());

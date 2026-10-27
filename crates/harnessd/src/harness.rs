@@ -1303,6 +1303,15 @@ fn completion_notice(done: &[JobCompletion], mine: bool) -> String {
         if let Some(m) = &c.memory {
             s.push_str(&format!("    memory: {m}\n"));
         }
+        // **The one job whose result IS its output** — a fanout's per-host table, which
+        // [`letibot_tools::exec::ProcessHost::settlement_note`] answers with and nothing else does.
+        // Indented under the row it belongs to, and carried in `detail` rather than read from a
+        // stream, because the job has usually been reaped by the time this is built.
+        if !c.detail.is_empty() {
+            for line in c.detail.lines() {
+                s.push_str(&format!("    {line}\n"));
+            }
+        }
     }
     if mine {
         // R93.C1: the closing named `job_wait` on every completion, said "you do not need to wait"

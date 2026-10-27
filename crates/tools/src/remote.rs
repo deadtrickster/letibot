@@ -159,22 +159,10 @@ impl Host {
         }
     }
 
-    /// **The pattern on this host's never-touch list that matches `what`**, if one does.
-    ///
-    /// The match is **a case-insensitive substring**, and that is the safe direction rather than the
-    /// lazy one. A name on the far side is a process's command line, a compose project or a
-    /// container — `etcd-fuzz`, `/usr/local/bin/pgfuzz -t 3600`, `flowy-dogfood-pg-1` — and the
-    /// operator declared the workload, not its spelling. A rule that missed `etcd-fuzz-0` because
-    /// it was written `etcd` would be the one failure this list exists to prevent, and it would be
-    /// silent: the thing is stopped, and nobody is told. A rule that is too broad refuses a
-    /// teardown the session could have had, and **says which pattern refused it** — a failure a
-    /// person can act on with one word of `hosts.toml`.
+    /// **The pattern on this host's never-touch list that matches `what`**, if one does —
+    /// [`never_touch_hit`]'s rule, over this host's list.
     pub fn never_touch_hit(&self, what: &str) -> Option<&str> {
-        let lower = what.to_lowercase();
-        self.never_touch
-            .iter()
-            .find(|p| !p.is_empty() && lower.contains(&p.to_lowercase()))
-            .map(String::as_str)
+        never_touch_hit(&self.never_touch, what)
     }
 
     /// **What is left of this machine for anyone else** — `cores − load − reserve`, with the load
@@ -207,6 +195,9 @@ impl Host {
 /// user     = "dead"
 /// key      = "~/.config/letibot/keys/lab2x1"
 /// root     = "~/letibot-remote"
+///
+/// [local]
+/// never_touch = ["etcd", "pgfuzz"]
 /// ```
 ///
 /// A missing file means no hosts, and that is not a fault: a box that places
@@ -214,6 +205,49 @@ impl Host {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Hosts {
     hosts: BTreeMap<String, Host>,
+    /// **What the operator said about THIS box** — the `[local]` table.
+    ///
+    /// A section of its own rather than a `[host.local]`, because this box is not a placement: a
+    /// `[host.…]` block names a machine ssh reaches, and `local` is the one that needs no ssh at
+    /// all. What it holds is the one declaration a process on this box can be checked against, and
+    /// it is the same list, matched the same way, as [`Host::never_touch`] — a `process` record
+    /// with no host was the hole RH9 left open, and this is the sentence that closes it.
+    local: LocalBox,
+}
+
+/// **The `[local]` table** — what this box's owner keeps for themselves.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalBox {
+    /// **What letibot must never signal, stop or remove on this machine.** One key, because it is
+    /// the only question a process-record check can ask about a box that is not a placement: a
+    /// `reserve` or a `root` here would be a placement decision about a machine nobody places on.
+    pub never_touch: Vec<String>,
+}
+
+impl LocalBox {
+    /// See [`never_touch_hit`] — one list, one rule, one spelling of the match.
+    pub fn never_touch_hit(&self, what: &str) -> Option<&str> {
+        never_touch_hit(&self.never_touch, what)
+    }
+}
+
+/// **The pattern on a never-touch list that matches `what`**, if one does — the ONE copy of the
+/// rule, because three lists read it ([`Host::never_touch`], [`LocalBox::never_touch`] and the
+/// leases) and two copies of one rule is how they start to disagree.
+///
+/// The match is **a case-insensitive substring**, and that is the safe direction rather than the
+/// lazy one. A name is a process's command line, a compose project or a container — `etcd-fuzz`,
+/// `/usr/local/bin/pgfuzz -t 3600`, `flowy-dogfood-pg-1` — and the operator declared the workload,
+/// not its spelling. A rule that missed `etcd-fuzz-0` because it was written `etcd` would be the
+/// one failure this list exists to prevent, and it would be silent: the thing is stopped, and
+/// nobody is told. A rule that is too broad refuses a teardown the session could have had, and
+/// **says which pattern refused it** — a failure a person can act on with one word of
+/// `hosts.toml`.
+pub fn never_touch_hit<'a>(list: &'a [String], what: &str) -> Option<&'a str> {
+    let lower = what.to_lowercase();
+    list.iter()
+        .find(|p| !p.is_empty() && lower.contains(&p.to_lowercase()))
+        .map(String::as_str)
 }
 
 /// Where the operator's hosts are written. `$LETIBOT_HOSTS` is a **test's** door and
@@ -307,7 +341,33 @@ impl Hosts {
             put.insert(key.to_string(), v.trim().to_string());
         }
         let mut hosts = BTreeMap::new();
+        let mut local = LocalBox::default();
         for (sec, kv) in sections {
+            // **`[local]` is THIS box**, and it is read before `[host.…]` because it is not one: a
+            // host block names a machine ssh reaches and this section names what the machine
+            // underneath the daemon keeps for itself. One key, refused by name like the host
+            // blocks', because a `[local].never_tuch` typo would leave the operator's own workload
+            // unprotected and silent — the one failure this list exists to prevent.
+            if sec == "local" {
+                if let Some(key) = kv.keys().find(|k| k.as_str() != "never_touch") {
+                    return Err(format!(
+                        "`[local].{key}` is not a key this section has: never_touch. `[local]` \
+                         declares what letibot must never signal, stop or remove on the machine \
+                         the daemon runs on — nothing else about this box is a placement, so \
+                         there is nothing else to say here."
+                    ));
+                }
+                local.never_touch = match kv.get("never_touch") {
+                    Some(raw) => path_list(raw).ok_or_else(|| {
+                        format!(
+                            "`[local].never_touch` must be one line of quoted strings — \
+                             `never_touch = [\"a\", \"b\"]` — and `{raw}` is not that."
+                        )
+                    })?,
+                    None => Vec::new(),
+                };
+                continue;
+            }
             let Some(raw_name) = sec.strip_prefix("host.") else {
                 continue;
             };
@@ -407,7 +467,13 @@ impl Hosts {
                 },
             );
         }
-        Ok(Hosts { hosts })
+        Ok(Hosts { hosts, local })
+    }
+
+    /// **What this box's owner keeps for themselves** — the `[local]` table, empty when the file
+    /// says nothing about this machine.
+    pub fn local(&self) -> &LocalBox {
+        &self.local
     }
 
     pub fn get(&self, name: &str) -> Option<&Host> {
@@ -446,7 +512,9 @@ impl Hosts {
              worktrees live, default `~/letibot-remote`), `mise` (the toolchain wrapper, \
              default: found once and cached), `reserve` (cores held back for the owner), \
              `flags` (words such as `heavy` or `tmpfs`) and `never_touch` (process, compose \
-             and container names letibot must never signal, stop or remove there).",
+             and container names letibot must never signal, stop or remove there). The machine \
+             this daemon runs on has a section of its own — `[local]` with `never_touch` — which \
+             is what a process record with no host is checked against.",
             hosts_file().display()
         )
     }

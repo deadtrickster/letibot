@@ -905,13 +905,111 @@ fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A record on this box has no list to check** — `never_touch` is a `[host.NAME]` key, and this
-/// box is not in the file. Said here so the hole is a fact with a test rather than a surprise.
+/// **The operator's own workload on THIS box is not ours to end either** (FB) — the hole RH9 left
+/// open, closed.
+///
+/// `never_touch` used to be a `[host.NAME]` key, so a record with no host — a process on the machine
+/// the daemon runs on — had no list to be checked against at all, and the two doors that signal
+/// anything (`teardown_session` and the deadline kill) went through without asking. `[local]` is
+/// that list now, read by the same function and refused in the same sentence shape.
+///
+/// Both doors are measured here, because they are two call sites of one rule and the second is the
+/// one nobody thinks about: a **deadline** is letibot's own clock, and it is exactly as capable of
+/// killing the operator's fuzz as a teardown is.
 #[test]
-fn a_local_record_has_no_never_touch_list_and_that_is_said() {
+fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
+    let dir = std::env::temp_dir().join(format!("letibot-never-local-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let file = dir.join("hosts.toml");
+    // **A file with a `[local]` table and no `[host.…]` block at all**, because that is the shape
+    // that matters: the box the daemon runs on, and nothing else declared.
+    std::fs::write(&file, "[local]\nnever_touch = [\"etcd\", \"pgfuzz\"]\n").expect("hosts.toml");
+
+    let theirs = {
+        let mut r = rec("s-a", "j-etcd", None, 4242);
+        r.command = "/usr/local/bin/etcd-fuzz --rounds 1000".into();
+        // Past its deadline from the first tick, so the deadline door is the one that asks first.
+        r.deadline_ms = Some(1_000);
+        r
+    };
+    let ours = {
+        let mut r = rec("s-b", "j-build", None, 4243);
+        r.command = "cargo test --offline".into();
+        r.deadline_ms = Some(1_000);
+        r
+    };
+    let store = store_with(&[theirs.clone(), ours.clone()]);
+    let fake = Fake::new(vec![Say::Alive, Say::Alive]);
+    let sup = Supervisor::with_clock(
+        Arc::clone(&store),
+        Arc::clone(&fake) as Arc<dyn Probe>,
+        clock(2_000),
+    )
+    .with_hosts(file.clone());
+
+    // **The refusal, in words** — the sentence the operator reads, naming the pattern.
+    let refused = sup
+        .may_touch(&theirs)
+        .expect_err("this box's own etcd fuzz is on the never-touch list");
+    assert!(refused.contains("etcd"), "{refused}");
+    assert!(refused.contains("on this box"), "{refused}");
+    assert!(refused.contains("will not signal"), "{refused}");
+    assert!(refused.contains("j-etcd"), "{refused}");
+    assert!(refused.contains("`[local]`"), "{refused}");
+    // And the session's own build is not refused — the rule is the list, not the box.
+    sup.may_touch(&ours).expect("our own build may be ended");
+
+    // **The deadline door**: one tick past both deadlines ends the build and leaves theirs alone.
+    let tick = sup.tick();
+    assert_eq!(tick.expired, vec!["j-build".to_string()], "{tick:?}");
+    let killed = fake.kills();
+    assert_eq!(killed.len(), 1, "only one kill was sent: {killed:?}");
+    assert_eq!(killed[0], (None, 4243), "the build's pid, not the fuzz's");
+    {
+        let held = store.lock().unwrap();
+        let left = held.process("s-a", "j-etcd").unwrap().expect("a row");
+        assert_eq!(
+            left.state,
+            ProcState::Lost,
+            "nothing was ended, so nothing may say `stopped`"
+        );
+        let ended = held.process("s-b", "j-build").unwrap().expect("a row");
+        assert_eq!(ended.state, ProcState::Stopped);
+    }
+
+    // **The teardown door**: the same record, the same refusal — and this time the sentence goes to
+    // the log while the row stays `lost` with `check_how = refused`.
+    let torn = sup.teardown_session("s-a", "the session closing");
+    assert_eq!(torn.len(), 1, "the fuzz record was the only one open there");
+    assert_eq!(
+        fake.kills().len(),
+        1,
+        "a teardown sent no second kill: {:?}",
+        fake.kills()
+    );
+    let held = store.lock().unwrap();
+    let left = held.process("s-a", "j-etcd").unwrap().expect("a row");
+    assert_eq!(left.state, ProcState::Lost);
+    assert_eq!(left.check_how.as_deref(), Some("refused"));
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A `[local]` table that says nothing leaves this box unprotected, and that is not an error** —
+/// a machine nobody has told us to keep anything on. The pair to the test above: the refusal comes
+/// from the list, and an absent list is *no declaration* rather than a silent default.
+#[test]
+fn a_local_record_with_no_list_is_not_refused() {
     let mut r = rec("s-a", "j1", None, 4242);
     r.command = "/usr/local/bin/etcd-fuzz".into();
-    let sup = Supervisor::new(store_with(&[r.clone()]), Fake::new(vec![]));
+    let dir = std::env::temp_dir().join(format!("letibot-never-nolist-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let file = dir.join("hosts.toml");
+    std::fs::write(&file, "[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("hosts.toml");
+    let sup = Supervisor::new(store_with(&[r.clone()]), Fake::new(vec![])).with_hosts(file);
     sup.may_touch(&r)
-        .expect("a record with no host has no declaration to read");
+        .expect("a box with no `[local]` table declares nothing to protect");
+    let _ = std::fs::remove_dir_all(&dir);
 }
