@@ -506,6 +506,24 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
+    /// **Where the whole of a job's output lives, as the HOST spells it** — or `None` when it
+    /// lives nowhere but this process's own window ([`JobView::output_file`] is the other half:
+    /// a path a reader *here* can open).
+    ///
+    /// The two are one fact with two readers and they cannot be one field. A remote job's output
+    /// is a file on that machine (`<worktree>/.letibot-remote/jobs/<n>.out`), and the supervisor
+    /// needs that path because it is what a restarted daemon reads — while `read` and `tail` here
+    /// could not open it, which is exactly why it is not [`JobView::output_file`].
+    ///
+    /// One caller: [`crate::fleet`], which writes a fanout branch's `process` record. A host with
+    /// no such file says `None` rather than inventing a path, and the `harnessd` supervisor's
+    /// exit-file convention is then simply not there — which is the truth for a job whose status
+    /// this box can ask the kernel for.
+    fn job_log(&self, job: &JobId) -> Option<String> {
+        let _ = job;
+        None
+    }
+
     /// The live handle for a job, so a monitor can be declared against the job
     /// itself rather than against an id it would have to look up every tick.
     ///

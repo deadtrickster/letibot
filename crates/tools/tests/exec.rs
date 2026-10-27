@@ -465,10 +465,14 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         letibot_tools::builtins::retrieval::Unavailable,
     ))
     .unwrap();
-    // The runner role seats nine; with the ceiling raised to 16 for leticode it
+    // The runner role seats eleven; with the ceiling raised to 16 for leticode it
     // is under the ceiling rather than over it, but its own number still stands.
+    // **Eleven since RH8's `fanout` and `scenario`** — the operator's ask, 2026-10-26: *"since we
+    // introduced remote hosts we can do map reduce now — usually agents hand roll orchestration that
+    // span multiple hosts"*. Both take their own seat rather than trading for one, and the runner's
+    // number moves with them, here, where somebody deciding can read it.
     let role = roles::m2_runner();
-    assert_eq!(role.max_tools, 9, "the runner's own number is 9");
+    assert_eq!(role.max_tools, 11, "the runner's own number is 11");
     assert_eq!(
         letibot_tools::runtime::DEFAULT_MAX_TOOLS,
         16,
@@ -487,9 +491,11 @@ fn the_exec_surface_of_each_role_is_exactly_what_was_decided() {
         );
     }
     let seated = reg.resolve_role(&role).unwrap();
-    assert_eq!(seated.len(), 9);
+    assert_eq!(seated.len(), 11);
     assert!(seated.names().contains(&"bash".to_string()));
     assert!(seated.names().contains(&"monitor".to_string()));
+    assert!(seated.names().contains(&"fanout".to_string()));
+    assert!(seated.names().contains(&"scenario".to_string()));
 
     // The orchestrator names no exec tool at all, and that has not moved.
     for name in EXEC_TOOLS {
@@ -538,6 +544,12 @@ const EXEC_TOOLS: &[&str] = &[
     "job_list",
     "job_output",
     "monitor",
+    // **`fanout` and `scenario` are exec surface too** (RH8): a seat that cannot run a command
+    // here has no business running one on three machines, so they are on this list and the two
+    // guards below cover them — `m1_orchestrator` must not gain them and `m2_coder`'s set must
+    // stay the one decision it was.
+    "fanout",
+    "scenario",
 ];
 
 // ----------------------------------------------------- output and denominators

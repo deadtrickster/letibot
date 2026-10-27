@@ -1142,6 +1142,15 @@ pub mod roles {
                 // answer (`PS_USE.md`), as a read-only table that never lists
                 // this process. Seated with the shell, which is what it looks at.
                 "ps",
+                // **`fanout` and `scenario`: work on many hosts at once** (RH8). The operator,
+                // 2026-10-26: *"since we introduced remote hosts we can do map reduce now — usually
+                // agents hand roll orchestration that span multiple hosts, say 'run this server
+                // tests here and that server there', either on both separately or on both
+                // together"*. Seated beside `bash` and `hosts`, because a seat that can reach one
+                // machine at a time is the seat that hand-rolls `ssh … &` and a `ps` poll — 641
+                // lines of `fleet.sh` in the session these two exist to replace.
+                "fanout",
+                "scenario",
                 // `harness`: what this session is running inside. Read-only, and
                 // it is how a model stops asking the operator to read their own
                 // terminal aloud.
@@ -1244,7 +1253,11 @@ pub mod roles {
         // pane is the whole of what a polymorphic harness is for, and trading two working verbs
         // away for it would be the wrong half of the choice — the same argument `hosts` made one
         // entry above. Declared here, where somebody deciding can read it.
-        r.max_tools = 33;
+        // **Thirty-five since RH8's `fanout` and `scenario`**, and they move the declared ceiling
+        // by two, to 35, for `hosts`' reason one entry above: a session that can reach many
+        // machines is exactly the session that needs a verb for it, and trading away two working
+        // verbs to pay for the capability would be the wrong half of the choice.
+        r.max_tools = 35;
         r
     }
 
@@ -1458,6 +1471,12 @@ pub mod roles {
     /// ceiling that is quietly raised for everybody is not a ceiling; one role
     /// declaring its own number, with the trade written down, is a decision
     /// somebody can reverse.
+    ///
+    /// **Eleven since RH8's `fanout` and `scenario`**, and they take their own seats rather than
+    /// trading for one: a runner seat that can start a shell on this box but cannot run the same
+    /// command on four machines is the seat the Stroppy session worked around with 641 lines of
+    /// `fleet.sh` — and this is the seat that runs builds and tests, which is what a fleet is for.
+    /// The ceiling moves here, declared, for the reason the ninth seat moved it.
     pub fn m2_runner() -> Role {
         let mut r = Role::new(
             "runner",
@@ -1471,9 +1490,11 @@ pub mod roles {
                 "job_wait",
                 "job_kill",
                 "monitor",
+                "fanout",
+                "scenario",
             ],
         );
-        r.max_tools = 9;
+        r.max_tools = 11;
         r
     }
 
@@ -3040,8 +3061,9 @@ mod tests {
         // given up — a seat that can place a child on another machine and cannot list the
         // machines is a seat that guesses. **Thirty-two since `plugin` and `plugin_hooks`**
         // (P2): a pane written and loaded in the session, which is the point of the plugin plan
-        // and is nothing a seat without them can do.
-        assert_eq!(seat.tools.len(), 32, "{:?}", seat.tools);
+        // and is nothing a seat without them can do. **Thirty-four since RH8's `fanout` and
+        // `scenario`**, which took their own seats for the same reason `hosts` did.
+        assert_eq!(seat.tools.len(), 34, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

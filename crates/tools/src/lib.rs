@@ -103,6 +103,9 @@ pub mod events;
 pub mod exec;
 pub mod files;
 pub mod firecode;
+// **`fanout` and `scenario`, and the engine under them** (RH8): work on many hosts at once, each
+// leg a job of that host's own table and a `process` record the daemon's supervisor owns.
+pub mod fleet;
 pub mod gatekeeper;
 pub mod grant;
 pub mod head_run;
@@ -348,6 +351,13 @@ pub fn runner_tools(
     reg.register(Box::new(builtins::jobs::JobWait))?;
     reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
+    // **Work on many machines** (RH8). Registered with the exec surface, and proved by nothing
+    // here: a registry that names a role's tool and does not hold it is refused at resolve, so a
+    // seat seated `leticode` or `runner` opens only where these two exist. What is behind them is
+    // `crate::fleet`, and the daemon binds the process book
+    // ([`builtins::fanout::Fanout::with_book`]) so a started branch is a supervisor record.
+    reg.register(Box::new(builtins::fanout::Fanout::new()))?;
+    reg.register(Box::new(builtins::scenario::Scenario::new()))?;
     Ok(reg)
 }
 

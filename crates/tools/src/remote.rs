@@ -702,6 +702,19 @@ pub fn flags(key: &Path, control: &Path, paths: &Paths) -> Vec<String> {
     v
 }
 
+/// **A host's `root` as the remote shell must spell it** — `~` expanded THERE, once, and the rest
+/// quoted.
+///
+/// The rake this exists for, measured (RH1, and again by RH4): **`~` inside single quotes is a
+/// literal character**, so `mkdir -p '~/letibot-remote'` makes a directory called `~` under the
+/// current one, and every path this client builds from then on names a place nobody meant. Quoting
+/// exists to stop the shell expanding things; a root is the one path that WANTS the expansion, so
+/// it is spliced in as `"$HOME"/…` with only the remainder quoted — the same rule
+/// [`Host::path`](struct.Host.html) entries follow, in one function so the two cannot drift.
+pub fn expand_root(root: &str) -> String {
+    one_entry(root)
+}
+
 /// letibot's runtime directory — the launcher's rule, restated here because this crate is
 /// **below** the launcher (`crates/letibot` depends on this one, not the other way round).
 pub fn rundir() -> PathBuf {
@@ -4113,6 +4126,13 @@ impl ProcessHost for RemoteProcesses {
     fn jobs(&self) -> Vec<JobView> {
         let all: Vec<Arc<RemoteJob>> = self.jobs.lock().unwrap_or_else(|e| e.into_inner()).clone();
         all.iter().map(|j| self.view(j)).collect()
+    }
+
+    /// **Where the whole of a job's output is on that machine** — the job directory's `<n>.out`,
+    /// which is the path the supervisor reads and the exit file's name is derived from. This box
+    /// cannot open it, which is why it is not [`JobView::output_file`].
+    fn job_log(&self, job: &JobId) -> Option<String> {
+        self.find(job).map(|j| j.out.clone())
     }
 
     /// **The output is a file on the remote**, so a read is `tail -c` from where the
