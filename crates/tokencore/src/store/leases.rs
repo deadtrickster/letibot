@@ -177,7 +177,7 @@ pub struct Ask<'a> {
     pub now_ms: i64,
 }
 
-/// **The block to take, or `None` when the host has nothing left above its ephemeral range.**
+/// **The block to take, or `None` when the host has nothing left outside its ephemeral range.**
 ///
 /// Pure, and that is the point: the rule that two sessions never share a port is a few lines of
 /// arithmetic and is tested as arithmetic. [`Store::allocate_lease`] adds the lock.
@@ -194,23 +194,42 @@ pub fn pick(
     ephemeral: (u16, u16),
     ports: u16,
 ) -> Option<(u16, u16)> {
-    let want = ports.max(1);
-    // **`+ 1` in `u32`, never saturating.** A saturating add clamps a host whose range ends at 65535
+    let want = ports.max(1) as u32;
+    let fits = |first: u32, end: u32| -> Option<(u16, u16)> {
+        let mut first = first;
+        while first + want - 1 <= end {
+            let last = (first + want - 1) as u16;
+            let port = first as u16;
+            let touches_held = held.iter().any(|(a, b)| port <= *b && last >= *a);
+            let touches_busy = (port..=last).any(|p| busy.contains(&p));
+            if !touches_held && !touches_busy {
+                return Some((port, last));
+            }
+            first += 1;
+        }
+        None
+    };
+    // **Above the range first**, where nothing else on the box expects to find a listener.
+    // `+ 1` in `u32`, never saturating: a saturating add clamps a host whose range ends at 65535
     // back INTO its own range and hands out the kernel's last ephemeral port — the one thing this
     // function exists to prevent.
-    let mut first = (ephemeral.1 as u32 + 1).max(FIRST_PORT as u32);
-    while first + (want as u32) - 1 <= u16::MAX as u32 {
-        let last = (first + (want as u32) - 1) as u16;
-        let port = first as u16;
-        let touches_held = held.iter().any(|(a, b)| port <= *b && last >= *a);
-        let touches_busy = (port..=last).any(|p| busy.contains(&p));
-        if !touches_held && !touches_busy {
-            return Some((port, last));
-        }
-        first += 1;
-    }
-    None
+    let above = (ephemeral.1 as u32 + 1).max(FIRST_PORT as u32);
+    // **Then below it**, from [`LOW_FIRST`] to the port before the range starts. A range that ends
+    // at 65535 leaves nothing above it — macOS's default (49152-65535) and some Linux tunings —
+    // and a lease engine that only looked above refused every request there. MEASURED 2026-10-27:
+    // every lease test failed in the Mac gate with *no free block … above 49152-65535*.
+    fits(above, u16::MAX as u32).or_else(|| {
+        let start = ephemeral.0 as u32;
+        (start > LOW_FIRST as u32)
+            .then(|| fits(LOW_FIRST as u32, start - 1))
+            .flatten()
+    })
 }
+
+/// **Where a block below the ephemeral range may start.** Under it sit the registered ports that
+/// well-known services listen on (databases, caches, dev servers), and a lease is a promise that
+/// nothing else is there.
+pub const LOW_FIRST: u16 = 10000;
 
 const COLUMNS: &str = "id, host, session_id, prefix, port_first, port_last, ephemeral, taken_ms, released_ms, released_by";
 
@@ -262,7 +281,7 @@ impl Store {
         }
         let Some((first, last)) = pick(&held, ask.busy, ask.ephemeral, ask.ports) else {
             return Err(StoreError::Refused(format!(
-                "there is no free block of {} port(s) on {} left above its ephemeral range \
+                "there is no free block of {} port(s) on {} left outside its ephemeral range \
                  {}-{}, and this build does not hand out ports inside that range — the kernel \
                  gives those away to anybody's outgoing connection. Already held there: {}. \
                  Release a lease (`hosts` shows them) or ask for fewer ports.",
@@ -550,14 +569,15 @@ mod tests {
     fn an_exhausted_host_is_refused_in_words() {
         let store = Store::open_in_memory().expect("a store");
         let none = busy(&[]);
-        // 65534 would fit, and 65535 is the last port there is — so three do not.
+        // 65534 would fit above, 65535 is the last port there is, and the range starts at the
+        // lowest port a block below it may use — so three fit nowhere.
         let e = store
             .allocate_lease(&Ask {
                 session: "s-a",
                 host: Some("lab2x1"),
                 prefix: "letibot-a",
                 ports: 3,
-                ephemeral: (32768, 65533),
+                ephemeral: (LOW_FIRST, 65533),
                 busy: &none,
                 now_ms: 1,
             })
@@ -565,7 +585,7 @@ mod tests {
         let said = e.to_string();
         assert!(said.contains("no free block of 3"), "{said}");
         assert!(said.contains("lab2x1"), "{said}");
-        assert!(said.contains("32768-65533"), "{said}");
+        assert!(said.contains("10000-65533"), "{said}");
     }
 
     /// **The block, as the environment a session's containers read.**
@@ -635,8 +655,13 @@ mod tests {
     /// **Nothing inside the ephemeral range is ever handed out**, whatever the run would fit.
     #[test]
     fn nothing_inside_the_range_is_offered() {
-        // A block that would have to start inside the range has nowhere to go at all.
-        assert_eq!(pick(&[], &busy(&[]), (32768, 65535), 1), None);
+        // A range that ends at the top leaves only below it — never inside it.
+        assert_eq!(
+            pick(&[], &busy(&[]), (32768, 65535), 1),
+            Some((LOW_FIRST, LOW_FIRST))
+        );
+        // A range that covers everything from LOW_FIRST up leaves nothing at all.
+        assert_eq!(pick(&[], &busy(&[]), (LOW_FIRST, 65535), 1), None);
         // And one that only just fits at the top does.
         assert_eq!(
             pick(&[], &busy(&[]), (32768, 65533), 2),
@@ -647,7 +672,7 @@ mod tests {
     /// Exhaustion is `None`, which the store turns into a refusal naming what is left.
     #[test]
     fn an_exhausted_host_has_no_block() {
-        let all: Vec<(u16, u16)> = vec![(61000, 65535)];
+        let all: Vec<(u16, u16)> = vec![(61000, 65535), (LOW_FIRST, 32767)];
         assert_eq!(pick(&all, &busy(&[]), (32768, 60999), 1), None);
     }
 

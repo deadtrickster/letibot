@@ -248,14 +248,14 @@ fn two_sessions_get_disjoint_blocks_outside_the_ephemeral_range() {
         .expect("beta's block");
 
     assert!(
-        a.port_first > hi && a.port_last > hi,
-        "alpha's block {}-{} is above the host's range {lo}-{hi}",
+        a.port_first > hi || a.port_last < lo,
+        "alpha's block {}-{} is outside the host's range {lo}-{hi}",
         a.port_first,
         a.port_last
     );
     assert!(
-        b.port_first > hi,
-        "beta's block {}-{} is above the host's range {lo}-{hi}",
+        b.port_first > hi || b.port_last < lo,
+        "beta's block {}-{} is outside the host's range {lo}-{hi}",
         b.port_first,
         b.port_last
     );
@@ -601,8 +601,8 @@ fn a_scenarios_port_comes_out_of_the_lease() {
         })
         .unwrap_or_else(|| panic!("a port after the words:\n{text}"));
     assert!(
-        port > hi,
-        "the port came from the block, above the box's range {lo}-{hi}: {port}\n{text}"
+        port > hi || port < lo,
+        "the port came from the block, outside the box's range {lo}-{hi}: {port}\n{text}"
     );
     // Every block this call took went back, and the answer says so.
     assert!(text.contains("lease: "), "{text}");

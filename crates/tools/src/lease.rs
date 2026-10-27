@@ -112,7 +112,12 @@ fi
 if command -v ss >/dev/null 2>&1; then
   ss -ltnH 2>/dev/null | awk '{print $4}'
 elif command -v netstat >/dev/null 2>&1; then
-  netstat -ltn 2>/dev/null | awk 'NR>2 {print $4}'
+  # A BSD netstat (macOS) has no `-l`: given `-ltn` it lists connections and leaves the
+  # listening sockets out, so a busy port looked free (MEASURED 2026-10-27, the Mac gate).
+  case "$(uname -s)" in
+    Linux) netstat -ltn 2>/dev/null | awk 'NR>2 {print $4}' ;;
+    *) netstat -an -p tcp 2>/dev/null | awk '$NF=="LISTEN" {print $4}' ;;
+  esac
 fi
 exit 0
 "#
