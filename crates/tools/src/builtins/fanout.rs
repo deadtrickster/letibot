@@ -392,14 +392,19 @@ impl Fanout {
             std::thread::sleep(Duration::from_millis(120));
         }
         for run in &running {
-            let fate = fates
-                .iter()
-                .find(|(l, _)| l == &run.leg.label)
-                .map(|(_, f)| f.clone())
-                .unwrap_or(Fate::Stopped {
-                    why: "the fanout ended before it settled".to_string(),
-                    took: run.started.elapsed(),
-                });
+            let fate = match fates.iter().find(|(l, _)| l == &run.leg.label) {
+                Some((_, f)) => f.clone(),
+                // **Unreachable by the loop above, and written as a kill anyway**: a row that says
+                // `stopped` must be about a process something stopped, so the leg is ended here
+                // before it is described. A claim-versus-fact guard, not a branch anybody expects.
+                None => {
+                    fleet.stop(run, "the fanout ending");
+                    Fate::Stopped {
+                        why: "the fanout ended before it settled".to_string(),
+                        took: run.started.elapsed(),
+                    }
+                }
+            };
             fleet.record_end(run, &fate);
             done.push(fleet.cell(run, None, fate));
         }

@@ -617,7 +617,7 @@ impl Fleet {
                     )),
                 };
             }
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(check.pace());
         }
     }
 
@@ -719,6 +719,21 @@ impl Ready {
             Ready::Port(p) => format!("port {p}"),
             Ready::Log(p) => format!("log /{p}/"),
             Ready::Check(c) => format!("check `{}`", one_line(c, 60)),
+        }
+    }
+
+    /// **How often this check may be asked**, and the three numbers are three different costs.
+    ///
+    /// A port is a TCP connect *there*, and 150 ms is already faster than a service that is going
+    /// to come up; a log line is one read of the role's own output file (a round trip, so a little
+    /// slower); and a `check` is a **job of its own** — a launcher written, a `setsid` start, a pid
+    /// polled — so asking it every 150 ms would spend two hundred processes on a thirty-second
+    /// wait. One a second is what a readiness probe costs elsewhere, and it is what this books.
+    pub fn pace(&self) -> Duration {
+        match self {
+            Ready::Port(_) => Duration::from_millis(150),
+            Ready::Log(_) => Duration::from_millis(300),
+            Ready::Check(_) => Duration::from_secs(1),
         }
     }
 
