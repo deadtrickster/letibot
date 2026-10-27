@@ -262,6 +262,17 @@ pub enum Action {
         name: String,
         consented: bool,
     },
+    /// **A person's answer to a confirmation ANOTHER head asked for** (`PROTOCOL_VERSION` 54,
+    /// B8) — `leticode_mode` asking for `allow-all` on a package's session.
+    ///
+    /// Its own action rather than a second spelling of [`Action::Mode`], because the frame is a
+    /// different one: `Mode` sets a point and says *the person confirmed it*, while this settles
+    /// a request by its id and says nothing about the point except through the daemon's record
+    /// of what was asked.
+    ModeConsent {
+        req_id: String,
+        yes: bool,
+    },
     /// Take back every prompt this head queued that the running turn has not
     /// consumed yet — the companion of a recall: Up pulled the queued line into
     /// the composer to edit it, and the original must not land behind the edit.

@@ -456,6 +456,44 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// **Ask a PERSON to confirm the point that needs one** — `PROTOCOL_VERSION` 54, B8.
+    ///
+    /// Not [`HeadClient::set_mode`] with `consented: true`, which no head should ever send on
+    /// another one's behalf: this asks, the daemon puts the confirmation in front of the OTHER
+    /// heads attached to the session, and the point moves only when one of them answers. The
+    /// answers are [`ServerFrame::ModeSettled`] (correlated by this `client_request_id`) and the
+    /// request is refused by [`ServerFrame::Rejected`] when nobody is attached to ask.
+    pub fn mode_confirm(&mut self, expected_seq: u64, name: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ModeConfirm {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            name: name.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// **A person's answer to somebody else's request for a confirmation** —
+    /// `PROTOCOL_VERSION` 54.
+    ///
+    /// `req_id` is the one [`ServerFrame::ModeConfirm`] carried, so one head's `yes` settles the
+    /// request it was shown and nothing else. A `no` applies nothing and the daemon says so.
+    pub fn mode_consent(
+        &mut self,
+        expected_seq: u64,
+        req_id: &str,
+        yes: bool,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ModeConsent {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            req_id: req_id.to_string(),
+            yes,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// A slash command for the daemon, as typed minus the `/`.
     pub fn slash(&mut self, expected_seq: u64, line: &str) -> Result<String, ClientError> {
         let client_request_id = self.next_id();

@@ -191,6 +191,25 @@ pub enum CommandKind {
         /// construction site should have to say which it means.
         consented: bool,
     },
+    /// **A head ASKS for the point that needs a person** (`PROTOCOL_VERSION` 54, B8).
+    ///
+    /// Not [`CommandKind::Mode`] with `consented: false` and a hope: that command means *set
+    /// it*, and setting a point without consent is refused by the harness for the reason the
+    /// point exists. This one means *put the question in front of somebody*, and what the
+    /// harness does with it is decide whether anybody has to be asked at all — a point that
+    /// needs no confirmation is applied by this command too, and settled as applied.
+    ModeConfirm {
+        name: String,
+    },
+    /// **A person's answer to that ask**, from the head the card was sent to.
+    ///
+    /// Sent by a head, never by the daemon, and the harness accepts it only while the request
+    /// is open and only from a head that was asked — see `Harness::answer_mode_confirm`. A
+    /// `yes` opens one point for one session; a `no` applies nothing.
+    ModeConsent {
+        req_id: String,
+        yes: bool,
+    },
     /// **An operator's own call, admitted before it runs** — R24 part two, decision 4.
     ///
     /// Carries what it must for the daemon to write the admission as a person's act:
@@ -453,6 +472,8 @@ impl CommandKind {
             CommandKind::Answer { .. } => "answer",
             CommandKind::AnswerTodo { .. } => "answer-todo",
             CommandKind::Mode { .. } => "mode",
+            CommandKind::ModeConfirm { .. } => "mode-confirm",
+            CommandKind::ModeConsent { .. } => "mode-consent",
             CommandKind::Slash { .. } => "slash",
             CommandKind::ReadJobOutput { .. } => "read-job-output",
             CommandKind::OperatorCall { .. } => "operator-call",
@@ -1098,9 +1119,24 @@ impl Hub {
     /// frame that is one stale, and a terminal survives that by construction — the next
     /// repaint carries the whole screen anyway.
     pub fn push_frame(&self, frame: ServerFrame) {
+        self.push_frame_where(frame, |_| true);
+    }
+
+    /// **A frame to the heads a predicate names** — the same door [`Hub::push_frame`] is, with
+    /// one head's answer `false`.
+    ///
+    /// The caller today is a mode confirmation (`PROTOCOL_VERSION` 54): the card goes to every
+    /// head that may decide **except the one that asked**, and the settle goes to all of them. It
+    /// is a frame rather than an event for `push_frame`'s own reason — a card is about now and is
+    /// nobody's history — and selecting by predicate rather than by id list because the daemon
+    /// holds the head ids and the predicate IS the rule (*asked*, not *excluded from a list*).
+    pub fn push_frame_where(&self, frame: ServerFrame, want: impl Fn(&str) -> bool + Copy) {
         {
             let mut g = self.lock();
             for h in &mut g.heads {
+                if !want(&h.id) {
+                    continue;
+                }
                 if h.side.len() >= MAX_SIDE {
                     h.side.pop_front();
                 }
@@ -1108,6 +1144,29 @@ impl Hub {
             }
         }
         self.cv.notify_all();
+    }
+
+    /// **A frame to ONE head**, for the refusal that belongs to the head that asked and to no
+    /// other — a `Rejected` carries no addressee, and sending one to every head would tell the
+    /// person's screen about a machine's request.
+    pub fn push_frame_to(&self, head_id: &str, frame: ServerFrame) {
+        self.push_frame_where(frame, |id| id == head_id);
+    }
+
+    /// **The heads that may answer a card**, except the one that asked — the answer to *whom do
+    /// we put this in front of*, in the words `Hub::deciding_heads` already uses.
+    ///
+    /// Empty means nobody attached can answer: a request to open `allow-all` then has no head to
+    /// route to, and the asking program is told so rather than left waiting for a person who is
+    /// not there. The asker is excluded because a program that could answer its own request would
+    /// be consenting for the person the request exists to consult.
+    pub fn deciding_heads_except(&self, except: &str) -> Vec<String> {
+        self.lock()
+            .heads
+            .iter()
+            .filter(|h| h.caps.can_decide && h.id != except)
+            .map(|h| h.id.clone())
+            .collect()
     }
 
     /// Attach content to an already-appended transcript row, **and fan it out**.
@@ -1566,7 +1625,17 @@ impl Hub {
             // decision is: a read-only head is watching, and an answer is attributed to a person.
             // Everything else about it — does the row exist, does it still ask this, is the
             // answer one the row offered — is the board's to say, and the board is the harness's.
-            if matches!(kind, CommandKind::AnswerTodo { .. }) && !can_decide {
+            //
+            // **A mode's consent too** (54), and this check is the same one for the same reason:
+            // a watching head is not a person who may open `allow-all` on somebody's session. The
+            // other half — *was this head ASKED* — cannot be decided here, because the pending
+            // request lives in the harness; `Harness::answer_mode_confirm` refuses one from a
+            // head the card never reached.
+            if matches!(
+                kind,
+                CommandKind::AnswerTodo { .. } | CommandKind::ModeConsent { .. }
+            ) && !can_decide
+            {
                 return ServerFrame::Rejected {
                     client_request_id,
                     reason: REJECT_READ_ONLY.into(),
@@ -1704,6 +1773,24 @@ impl Hub {
                         ""
                     }
                 ),
+                // **Stale-tolerant, because the head that asked while the screen moved
+                // still meant it.** Neither of these is a mutation of its own: the ask puts
+                // a question in front of somebody, and the answer settles a question whose
+                // identity is the `req_id` — a seq that has moved since says nothing about
+                // whether that consent is still the one being waited for, and the pending
+                // record is what decides that.
+                (CommandKind::ModeConfirm { name }, true) => {
+                    format!("{REJECT_STALE_SEQ}: asked anyway — the `{name}` confirmation")
+                }
+                (CommandKind::ModeConfirm { name }, false) => {
+                    format!("asked for the `{name}` confirmation")
+                }
+                (CommandKind::ModeConsent { yes, .. }, _) => if *yes {
+                    "the confirmation is answered"
+                } else {
+                    "the confirmation is refused"
+                }
+                .into(),
                 // **Redacted, because this note is appended to the session log.** The
                 // model picker's key card sent `/models P --key K` here, and the key went
                 // into the log in plaintext and back to every head in `Accepted`. The

@@ -873,6 +873,18 @@ pub struct App {
     /// confined, and a head that guesses that wrong asks nothing at exactly the
     /// coordinate worth asking at.
     pub(crate) mode_confirm: Option<String>,
+    /// **A confirmation the DAEMON put up, because another head asked for it** — B8's
+    /// `leticode_mode`, where the bridge wants `allow-all` for a session and cannot be the
+    /// person whose box is the boundary.
+    ///
+    /// It rides the same card as the operator's own `/mode allow-all` (`mode_confirm`), on
+    /// purpose: one warning, one set of keys, one place the answer is read. What it adds is the
+    /// `req_id` the answer has to name — a `yes` from this card settles the request that asked
+    /// for it and applies the point, and `Action::ModeConsent` is a different frame from the
+    /// operator's own `Action::Mode` because the daemon has to be told WHICH request was
+    /// answered — and the identity of the head that asked, so the card can say a machine wanted
+    /// this rather than letting the person read it as their own keystroke.
+    pub(crate) mode_asked: Option<AskedMode>,
     /// **The new-todo card: title and detail, the composer being the field** — leticl's
     /// `*todo-draft*`, and the shape `mode_confirm` already keeps one screen over.
     ///
@@ -1809,6 +1821,22 @@ pub struct App {
     pub(crate) model_pending: Option<String>,
 }
 
+/// **A confirmation another head asked for** — B8's `leticode_mode`, as this screen holds it.
+///
+/// Beside [`App::mode_confirm`] rather than instead of it, because the two are the same card
+/// with two different answers: the operator's own `/mode allow-all` is their keystroke and is
+/// sent as `Mode { consented: true }`, while this one is somebody else's request and has to be
+/// answered by its id — `ModeConsent { req_id, yes }` — or the daemon has no way to know which
+/// request was settled. `by` is the asking head's identity, so the card can say a machine wanted
+/// this rather than letting the person read it as their own thought.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskedMode {
+    pub req_id: String,
+    pub by: String,
+    /// The point being confirmed — `allow-all`, the only one that is ever asked about.
+    pub name: String,
+}
+
 /// **The two words an echo can carry** (R16). Constants because both the renderer and
 /// the tests name them, and a mark that is spelled twice is a mark that can be spelled
 /// differently.
@@ -2000,6 +2028,7 @@ impl App {
             theme_problems: Vec::new(),
             pick: None,
             mode_confirm: None,
+            mode_asked: None,
             todo_draft: None,
             todo_template: crate::prefs::TodoTemplate::Off,
             todo_seed: Vec::new(),

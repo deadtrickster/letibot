@@ -975,6 +975,9 @@ impl Link {
                     Action::Mode { name, consented } => {
                         self.client.set_mode(app.seq, &name, consented)?;
                     }
+                    Action::ModeConsent { req_id, yes } => {
+                        self.client.mode_consent(app.seq, &req_id, yes)?;
+                    }
                     Action::Slash { line } => {
                         self.client.slash(app.seq, &line)?;
                     }

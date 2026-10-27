@@ -7,6 +7,74 @@ use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::Warned;
 
 impl App {
+    /// **A confirmation of `allow-all` that another head asked for, and how it ended** —
+    /// `PROTOCOL_VERSION` 54, B8.
+    ///
+    /// The daemon posts the request to every head of the session that may decide except the
+    /// one that made it, so this is *a machine wants `allow-all` for this session* arriving on a
+    /// person's screen. It raises the same card the operator's own `/mode allow-all` raises —
+    /// same warning, same keys, same `mode_confirm` — and records what differs: the request's
+    /// id, which the answer has to name, and who asked.
+    ///
+    /// **`ModeSettled` is the card going away, whoever said what.** Another head may have
+    /// answered first (the daemon settles with whoever does, exactly as it settles a decision),
+    /// and the person's own `yes` comes back here too — so the settlement says what happened
+    /// rather than leaving a screen quietly showing a question that is over. A settlement for a
+    /// request this head is not holding is dropped: it is somebody else's card.
+    pub(crate) fn on_mode_card(&mut self, frame: ServerFrame) -> Disposition {
+        match frame {
+            ServerFrame::ModeConfirm {
+                session_id,
+                req_id,
+                name,
+                asked_by,
+            } => {
+                if session_id == self.session_id {
+                    self.mode_confirm = Some(name.clone());
+                    self.mode_asked = Some(AskedMode {
+                        req_id,
+                        by: asked_by,
+                        name,
+                    });
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
+            ServerFrame::ModeSettled {
+                session_id,
+                req_id,
+                name,
+                applied,
+                answer,
+                said,
+                ..
+            } => {
+                let mine = self.mode_asked.as_ref().is_some_and(|a| a.req_id == req_id);
+                if mine {
+                    // Taken on every path: the question is over whether or not this head was
+                    // the one that answered it, and a card left up would own the keyboard for
+                    // a request nobody can settle any more.
+                    self.mode_asked = None;
+                    self.mode_confirm = None;
+                    self.redraw = true;
+                }
+                if session_id == self.session_id && mine {
+                    let who = if answer == "yes" {
+                        "confirmed"
+                    } else {
+                        "declined"
+                    };
+                    self.say(&format!(
+                        "`{name}` {who}{}: {said}",
+                        if applied { "" } else { " — not applied" }
+                    ));
+                }
+                Disposition::Control
+            }
+            _ => Disposition::Control,
+        }
+    }
+
     /// **A list the daemon answered with**: sessions, jobs, the merge queue, shell suggestions, todos, settings. One family of [`App::apply`]'s arms, moved here
     /// verbatim; `apply` hands it only these frames.
     pub(crate) fn on_lists(&mut self, frame: ServerFrame) -> Disposition {

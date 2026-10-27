@@ -198,12 +198,13 @@ mod tests {
         assert_eq!(r["result"]["serverInfo"]["name"], "letibot-mcp");
     }
 
-    /// **Ten tools, each with a schema** — the design's table, and the shape MCP requires.
+    /// **Twelve tools, each with a schema** — the design's table, and the shape MCP requires.
+    /// Ten from B1–B6, plus B8's `leticode_transcript` and `leticode_mode`.
     #[test]
-    fn tools_list_lists_the_ten_tools_with_schemas() {
+    fn tools_list_lists_the_twelve_tools_with_schemas() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 10, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 12, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");
@@ -232,6 +233,27 @@ mod tests {
         assert_eq!(
             attach["inputSchema"]["properties"]["watch_only"]["type"],
             "boolean"
+        );
+        // B8's transcript publishes its cursor and its cap, so a client can see that `since` is
+        // the number the last answer handed back rather than a seq or a row id.
+        let transcript = tools
+            .iter()
+            .find(|t| t["name"] == "leticode_transcript")
+            .expect("leticode_transcript is in tools/list");
+        assert_eq!(
+            transcript["inputSchema"]["properties"]["since"]["type"],
+            "integer"
+        );
+        assert_eq!(&transcript["inputSchema"]["required"], &json!(["session"]));
+        // And `leticode_mode` takes a point and nothing else: there is no argument through which
+        // a caller could consent on somebody's behalf.
+        let mode = tools
+            .iter()
+            .find(|t| t["name"] == "leticode_mode")
+            .expect("leticode_mode is in tools/list");
+        assert_eq!(
+            &mode["inputSchema"]["required"],
+            &json!(["session", "mode"])
         );
     }
 

@@ -98,6 +98,8 @@ holds one head connection per leticode session it started or attached to, so ask
 | `leticode_send` | `session`, `text` | `{queued: true}` — an operator line into the running session (queued behind a running turn, as the head's own) |
 | `leticode_status` | `session` | `{state: running\|idle\|asking\|failed, placement, turn, todos, last_message, report?, cost_usd, tokens, pending_asks, activity, waiting_on}` — `activity` is what the daemon says the session is waiting on (`quiet`, or `busy` with the entries tagged by kind) and `waiting_on` is the same list in a reader's words (`["job j8032", "monitor ci"]`); `placement` is `host`, or `host:NAME` when its tools run on another machine |
 | `leticode_events` | `session`, `since` (cursor) | the compact progress since the cursor: tool calls (name + one line), job starts and ends, failures, asks, the **subagents a session spawns** (slug, the branch their task named, how they ended) — never banner or memwatch lines — and the next cursor |
+| `leticode_transcript` | `session`, `since` (cursor), `limit` (default 100), `reasoning` (default false) | the session's CONVERSATION, row by row, as the daemon serves it to a head — prompts, answers, tool calls (name + arguments) and tool results (outcome + payload), full text up to the `cap` the answer states, plus `next` as the cursor (B8) |
+| `leticode_mode` | `session`, `mode` | `{mode, applied, answer, said}` — a point that needs nobody is applied at once (`answer: nobody`); `allow-all` on a box with no boundary is put in front of the operator as the card a terminal shows for `/mode allow-all`, and applies only on their `yes` (B8) |
 | `leticode_asks` | `session` | the pending permission asks: id, the call (tool, arguments), the options the gate offers |
 | `leticode_answer` | `session`, `ask`, `option` (one the ask offered), `note` | `{answered: true}` — sent as the protocol's `Answer`, so it lands in the decision corpus like the operator's own |
 | `leticode_diff` | `session` | the worktree's branch against its merge base: `git log --oneline` and `git diff --stat`, plus the full diff when asked |
@@ -246,6 +248,147 @@ busy* works; a child that finished before the attach is history and is not annou
 **Following one reviewer's own turns needs a second `leticode_attach` on that child's session id** —
 a child's turns are on its own hub, and the parent is told only that it started and ended.
 
+## As built (B8)
+
+Written 2026-10-26. Two tools, and the second one needed a protocol.
+
+### `leticode_transcript`: the conversation, not the store
+
+The operator's Claude Code pane follows a package's session read-only and tailed, and until B8 it
+did that through `leticode_events` — a progress ring whose texts are cut to one line. Reading the
+session store directly is their ruling against: *"not a good idea"*. Right for two reasons that
+are not taste. `sessions.db` is one file every daemon on the box shares, so a reader there sees
+sessions it was never told about; and a row there is the STORE's shape (tokens, a hash chain,
+`item_json`), where what a reader wants is the item.
+
+So the tool asks the daemon what a head would be handed: `ClientFrame::Peek { shape: Rows }`, whose
+answer is the session's own snapshot — *"the same thing an attach answers with"* — and renders each
+`SnapshotItem` as a row of its own. **No file is opened and no second reader exists**; a session
+this bridge only WATCHES answers the same read, because reading is not acting on somebody's session.
+
+The row vocabulary is one word per item kind — `user`, `assistant`, `tool_result`, `system`,
+`reasoning`, `segment_mark` — plus three facts a reader cannot derive:
+
+* **`i`, the row's position in the SESSION**, and `next`, the cursor to ask from. The arithmetic is
+  against the snapshot's `items_dropped`, because a snapshot is the TAIL of a conversation: a
+  cursor counting window positions would silently re-read or skip every time the window moved. A
+  cursor older than the window gets the rows that remain and a `dropped` count — the rule
+  `leticode_events` already follows for its ring.
+* **`cap`, stated in every answer**, and `cut` on any string that was cut at it: 8 000 CHARACTERS
+  (not bytes — a reader counting what it got and a cap counting bytes disagree the first time a row
+  carries a glyph). Generous on purpose: this is a reader's view, not a model's context, and the
+  whole point is that an orchestrator can read a real tool result rather than its first line.
+* **`content: null` for a row the daemon announced and has not reconciled** — *there is a row here
+  and this build cannot show you what is in it*, which is a different statement from an empty
+  message and is drawn as one.
+
+A tool result carries its `outcome` in the same words `leticode_events` files a call under
+(`ok`, `failed`, `denied`, `not_run`, `backgrounded` …), and for `failed`/`not_run` the reason;
+`backgrounded` also carries its job handle and the call that gets its output. A user row carries
+`speaker` (`operator`/`agent`), so a reader can tell the person's words from a notice the harness
+wrote — and `attachments` names the pictures and files by type, never their bytes: an image's
+`data_ref` is a data URI of the whole file, and a reader that asked for the conversation did not
+ask for that. `reasoning` is left out unless the caller asks for it (default false): it is the one
+part of a transcript nothing downstream reads, and a tail of `+ 0 + 0` costs a reader more than it
+buys.
+
+If a head asks for a session the daemon does not hold, the read is answered with `Rejected` — and
+the bridge turns that into an error naming the session rather than waiting out its patience: a
+`peek` is the one frame whose answer carries no client id, so the refusal is keyed by
+`peek:<session>` and folded for exactly this waiter.
+
+### `leticode_mode`: the bridge asks, a person answers
+
+A bridge session's point was fixed at `leticode_start`, and the bridge sends `consented: false`
+there — so `allow-all` on an unconfined session could only be reached by a person typing
+`/mode allow-all` into a head attached to it. That is the right rule (a person's answer about their
+own box is not a program's to give) and a hole in the workflow: a package that needs the point has
+no way to ask for it.
+
+**`Mode { name, consented }` could not carry this.** It is a head saying *set it, and I confirm
+it*, and a head that is a program is exactly what must not confirm. So the ask and the set are two
+frames, in `PROTOCOL_VERSION` 54:
+
+| frame | direction | meaning |
+|---|---|---|
+| `ClientFrame::ModeConfirm { name }` | head → daemon | *put the confirmation for this point in front of a person* — it consents to nothing |
+| `ServerFrame::ModeConfirm { req_id, name, asked_by }` | daemon → the OTHER heads | the card, on every head that declared `can_decide` except the one that asked |
+| `ClientFrame::ModeConsent { req_id, yes }` | head → daemon | a person's answer, which settles the request it names |
+| `ServerFrame::ModeSettled { req_id, client_request_id, name, applied, answer, said }` | daemon → every head | how it ended: the asker's answer, and every other head's card coming down |
+
+**The rule is structural, not a promise.** The daemon pushes the card to every attached head with
+`Caps::can_decide` **except the asking head** (`Hub::deciding_heads_except`, `Hub::push_frame_where`),
+and `Harness::answer_mode_confirm` refuses a consent from any head that was not asked. So a program
+asks, a person answers, and one head cannot do both for one request. The bridge has no code path
+that sends `consented: true` and none that sends `ModeConsent`; its half is `Head::ask_mode`, whose
+whole vocabulary is the point's name.
+
+**Three ends, and the caller is told which:**
+
+* **the point needs nobody** — `writes-allowed`, `read-only`, `allow-all` inside a VM — is applied
+  at once and settled `answer: nobody, applied: true`. Whether a point needs a person is the
+  DAEMON's fact (`Harness::mode_needs_consent`: `allow-all` on a session with no `Confinement`),
+  not a table in the bridge, so the two cannot disagree about which points are questions.
+* **nobody can be asked** — the session's only decidable head is the one that asked — is a
+  `Rejected` written on the asker's own stream: *”`allow-all` on this session needs the operator's
+  confirmation in a head … run `leticode --session <id>`”*. Nothing is changed, and the sentence
+  names the command that opens the head.
+* **a person answers.** `yes` applies the point through the same `Harness::set_mode_consented` the
+  operator's `/mode` reaches — one path into that state, two frames arriving at it — and `no`
+  applies nothing and says so on the settle frame.
+
+**The card on the person's screen is the same card `/mode allow-all` raises** (`App::mode_confirm`),
+with one line in front of it naming the head that asked, and it is answered by `Action::ModeConsent`
+— a frame carrying the request's id — because the daemon has to settle the one request it raised.
+A settlement takes the card down whoever answered it: another head may have said yes first, and a
+card left up would own the keyboard for a request nobody can settle. A `ModeConfirm` for a session
+this head is not in is ignored, and so is a settlement for a request it is not holding.
+
+**Nothing is written down for the point.** The consented `allow-all` lives for this session, as
+`set_mode_consented` has always said (`It lasts for this session only: nothing was written down,
+and a daemon restart drops it`), and B8 does not change that: a request a program made and a person
+agreed to is not the project's standing point, and writing the row would make that sentence false
+in the very message the person read. `/mode allow-all` typed at a head still writes the row, with
+the stamp — that is the operator's own act about their own project.
+
+**One open request per session, and a new ask supersedes it**: a requester whose own patience ran
+out would otherwise leave a card up that refuses every later attempt. The superseded request is
+settled `answer: nobody, applied: false` with the reason, so the screen that was showing it takes it
+down before the new one lands.
+
+**What a caller reads back is the point IN FORCE, not the point it asked for** — a consented
+`allow-all` on a bare host lands on `allow-all (this box, consented)`, the same coordinate with the
+boundary told truthfully, and an answer that said `allow-all` would be naming something no session
+is at.
+
+### What is measured, and where
+
+`crates/bridge/tests/transcript.rs` (its own binary, because the environment is process-wide): a
+turn's rows come back in order with their content; a 9 000-character answer comes back at exactly
+`cap` characters with `cut: true`; the cursor from before a second turn returns that turn's rows and
+nothing older; and a `watch_only` attach reads the same conversation. The daemon is harnessd's own
+`Daemon::serve` over a real store; only the MODEL is a fake, on loopback.
+
+`crates/bridge/tests/mode_consent.rs`: `read-only` applies and says `nobody` was asked; `allow-all`
+with no other head refuses, naming `leticode --session <id>`, and the session's settings row is
+where it was; the same request with a real `tui` head attached — which answers the card on its own
+thread, because the ask blocks until it is settled — applies, and the settings row afterwards is the
+CONSENTED spelling; and their `no` applies nothing and leaves the row where it was. Every *did it
+change* is read back from the daemon through a second, watching head (`can_decide: false`), so no
+assertion is made against the tool's own report of its work.
+
+The TUI's half is `a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id`
+(`crates/tui/src/app/tests/settings.rs`): the card names who asked, `y` sends `ModeConsent` with the
+request's id, `Esc` sends it with `no`, a settlement clears the card, and a settlement for somebody
+else's request does not.
+
+**This box cannot run the two bridge suites that need a delegated cgroup** — `end_to_end.rs` and
+`no_spin.rs` both seat `--bash`, whose backend is `HostBackend::executable`, and that fails in
+`Harness::open` with *"a delegated cgroup v2 subtree is needed; … it is not writable"*. That is
+apparatus rather than this change: neither file is modified here, and the path that fails
+(`Harness::open`'s backend construction) is one B8 does not touch. B8's two files seat the writable
+backend instead and run anywhere.
+
 ## Packages
 
 | id | builds | depends on |
@@ -257,3 +400,4 @@ a child's turns are on its own hub, and the parent is told only that it started 
 | Q1 | a bridge-started daemon runs `--no-queue`: no lease, no model-facing queue notices | B1 |
 | B5 | `leticode_queue`, `leticode_submit`, `leticode_queue_verb`, the `wait-queue` verb | Q1, a stable queue |
 | B6 | `leticode_attach`: a head that JOINS a running daemon on a session it did not start, `watch_only` by default (no prompt, no answer, no interrupt, `can_decide: false` so a watcher is never counted as somebody who answers); the subagents a session spawns folded into `leticode_events` one line each | B1, B2 |
+| B8 | `leticode_transcript` (the conversation as rows — prompts, answers, calls, results, a cursor and a stated cap — read from the daemon, never the store) and `leticode_mode` (the point that needs nobody applies; `allow-all` asks the operator through a head and applies only on their yes); protocol 54's four mode-confirmation frames | B1, B2, B6 |

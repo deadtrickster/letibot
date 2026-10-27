@@ -456,6 +456,120 @@ fn the_wheel_and_a_click_leave_the_allow_all_card_standing() {
     );
 }
 
+/// **A confirmation the DAEMON raised — another head asked for `allow-all`** (B8) — is the same
+/// card, with two differences: it says who asked, and its answer names the request.
+///
+/// The bridge cannot consent for a person, so it asks; the daemon puts the card in front of the
+/// heads that may decide, and this is the one the person is looking at. The answer is
+/// `Action::ModeConsent` — a frame carrying the request's id — rather than the operator's own
+/// `Action::Mode`, because the daemon has to settle the request it raised and no other.
+#[test]
+fn a_confirmation_another_head_asked_for_is_the_same_card_answered_by_its_id() {
+    let mut a = App::new(plain_cfg(120));
+    a.apply(mode_settings(
+        "writes allowed",
+        &["writes allowed", "allow-all"],
+    ));
+    a.session_id = "s-1".into();
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-1".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    // The same warning, and the asking head named — a card a machine raised must not read as
+    // the person's own keystroke.
+    let screen = a.screen(120, 40).join("\n");
+    assert!(screen.contains("privilege escalation"), "{screen}");
+    assert!(
+        screen.contains("requested by `mcp`") || screen.contains("`mcp`"),
+        "the card does not say who asked: {screen}"
+    );
+
+    // `y` answers THE REQUEST, not a point the head invented.
+    assert_eq!(
+        a.key(Key::Char('y')),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-1".into(),
+            yes: true
+        })
+    );
+    assert!(a.mode_confirm.is_none() && a.mode_asked.is_none());
+
+    // A `no` is an answer too, and it is sent: a person declining is a fact the daemon has to
+    // record, or the request stays open.
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-2".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    assert_eq!(
+        a.key(Key::Esc),
+        Some(Action::ModeConsent {
+            req_id: "h2:req-2".into(),
+            yes: false
+        })
+    );
+
+    // **The settlement takes the card away, whoever answered.** Another head may have said yes
+    // first (the daemon settles with whoever answers), and a card left up would own the keyboard
+    // for a request nobody can settle.
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-3".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    a.apply(ServerFrame::ModeSettled {
+        session_id: "s-1".into(),
+        req_id: "h2:req-3".into(),
+        client_request_id: String::new(),
+        name: "allow-all (this box, consented)".into(),
+        applied: true,
+        answer: "yes".into(),
+        said: "dead@box confirmed it".into(),
+    });
+    assert!(a.mode_confirm.is_none(), "the card outlived its request");
+    assert!(a.mode_asked.is_none());
+
+    // And a settlement for a request this head is not holding leaves it alone.
+    a.apply(ServerFrame::ModeConfirm {
+        session_id: "s-1".into(),
+        req_id: "h2:req-4".into(),
+        name: "allow-all".into(),
+        asked_by: "mcp".into(),
+    });
+    a.apply(ServerFrame::ModeSettled {
+        session_id: "s-1".into(),
+        req_id: "h2:somebody-elses".into(),
+        client_request_id: String::new(),
+        name: "allow-all".into(),
+        applied: false,
+        answer: "no".into(),
+        said: "nothing changed".into(),
+    });
+    assert!(
+        a.mode_confirm.is_some(),
+        "another head's card was dismissed"
+    );
+
+    // **The operator's own `/mode allow-all` while that card is up** is still their keystroke,
+    // and it must not settle somebody else's request: the answered card is theirs.
+    a.take_mode("allow-all".into());
+    assert!(
+        a.mode_asked.is_none(),
+        "the daemon's request rode the operator's card"
+    );
+    assert_eq!(
+        a.key(Key::Char('y')),
+        Some(Action::Mode {
+            name: "allow-all".into(),
+            consented: true
+        })
+    );
+}
+
 /// **An older daemon greens what it always greened.** No `models.keyless` row means
 /// a daemon from before it existed, and the fallback is `local` alone — which is
 /// precisely the behaviour this head had before, so nothing reads as newly broken.

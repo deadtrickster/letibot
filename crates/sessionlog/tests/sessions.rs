@@ -160,6 +160,17 @@ fn frame_kind(f: &ServerFrame) -> String {
                 .join(", ")
         ),
         ServerFrame::Resync { .. } => "Resync".into(),
+        // **The two of a mode confirmation**, named by their ids: a diagnostic that saw one
+        // without the other is exactly what this function exists to show.
+        ServerFrame::ModeConfirm { req_id, name, .. } => {
+            format!("ModeConfirm({req_id}, {name})")
+        }
+        ServerFrame::ModeSettled {
+            req_id,
+            applied,
+            answer,
+            ..
+        } => format!("ModeSettled({req_id}, {answer}, applied={applied})"),
         ServerFrame::Accepted { .. } => "Accepted".into(),
         ServerFrame::Rejected { reason, .. } => format!("Rejected({reason})"),
         ServerFrame::Bye { reason } => format!("Bye({reason})"),

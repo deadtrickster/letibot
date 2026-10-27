@@ -2405,6 +2405,38 @@ pub struct Harness {
     /// builds — and `plugin scaffold`/`build` work there, because they are file and cargo
     /// operations on the session's own plugin directory.
     plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
+    /// **The mode confirmation a head asked for and nobody has answered**
+    /// (`PROTOCOL_VERSION` 54, B8). One per session: a second ask supersedes it.
+    mode_confirm: Option<PendingModeConfirm>,
+}
+
+/// **A confirmation of `allow-all` that is waiting for a person** — the daemon's half of the
+/// card raised by another head's ask.
+///
+/// The `asked` list is the rule and not bookkeeping: the card went to those heads, and only
+/// those heads can answer it. The bridge that asked for it is never among them, which is what
+/// makes *the bridge never consents for itself* structural rather than a promise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingModeConfirm {
+    /// The id the asker's own `client_request_id` was turned into; the card and the settle
+    /// frame are correlated by it.
+    pub req_id: String,
+    /// The asker's own request name, echoed back on the settle so that head can stop waiting
+    /// without having had to learn `req_id` first.
+    pub client_request_id: String,
+    /// The point being confirmed, as the asking head spelled it.
+    pub name: String,
+    /// The head ids the card was pushed to.
+    pub asked: Vec<String>,
+}
+
+/// The sentence a superseded request leaves behind — its asker's wait ends with the daemon's
+/// own words rather than with the new requester's.
+fn superseded(name: &str) -> String {
+    format!(
+        "the `{name}` confirmation was superseded by a newer request before anybody answered \
+         it, so nothing changed; the newer one is on the screen now"
+    )
 }
 
 /// **A switch waiting for the turn in flight to end** — recorded, said, and applied where the
@@ -5899,6 +5931,10 @@ impl Harness {
             // Filled by `Sessions::open_plugins` for a session the daemon serves; `None` reads
             // `plugin scaffold`/`build` only, and says so by name (see the field).
             plugin_slot: plugin_slot.clone(),
+            // Nothing has asked for a confirmation yet — and a request outlives no restart by
+            // design: a card is about now, and the head that was waiting for the answer is a
+            // process that stopped with the daemon.
+            mode_confirm: None,
         };
         // The recovered anchor rolled forward to the ledger as rebuilt, so the pair
         // every `Config` reader converts with is the count of THIS conversation from the
@@ -7130,6 +7166,255 @@ impl Harness {
         self.wiring.adjudicator = adjudicator;
         self.publish_settings();
         Ok(said)
+    }
+
+    /// **Does the point asked for need a PERSON's answer here** — the two facts
+    /// [`Harness::set_mode_consented`] reads from `supplies`, asked on their own.
+    ///
+    /// `allow-all` requires a confinement, and a session on a bare host has none; that is the
+    /// one point in the tree whose opening is a person's answer rather than a structural fact
+    /// (`Mode::ALLOW_ALL_HERE`). A session that never recorded what it can supply — a fixture
+    /// — is answered `true`, the fail-closed direction, because consent cannot be honoured
+    /// against a list nobody computed.
+    pub fn mode_needs_consent(&self, mode: letibot_tools::mode::Mode) -> bool {
+        if mode.name != letibot_tools::mode::Mode::ALLOW_ALL.name {
+            return false;
+        }
+        match &self.supplies {
+            Some((have, _)) => !have.contains(&letibot_tools::mode::Prereq::Confinement),
+            None => true,
+        }
+    }
+
+    /// **A head ASKS for the point that needs a person** (`PROTOCOL_VERSION` 54, B8).
+    ///
+    /// The bridge can want `allow-all` for a package's session and cannot be the person whose
+    /// box is the boundary, so it asks instead of setting: the confirmation is pushed to the
+    /// session's OTHER heads that may decide, and the point moves only when one of them says
+    /// yes ([`Harness::answer_mode_confirm`]).
+    ///
+    /// Three things this decides, and they are the whole of what the requester is told:
+    ///
+    /// * **The point needs nobody's confirmation** — `writes-allowed`, `read-only`, a VM-placed
+    ///   `allow-all` — so it is applied here and settled `applied`. A program asking for a point
+    ///   no person has to approve is not a question for a person.
+    /// * **Nobody can be asked** — the session's only head is the one that asked. Then the answer
+    ///   is the refusal the bridge returns to its caller: *needs the operator's confirmation in a
+    ///   head: run `leticode --session <id>`*, which is the command that opens one.
+    /// * **Otherwise the card goes out** and this returns with the request open.
+    ///
+    /// **One open request per session, and a new one supersedes it** — the alternative is a
+    /// requester whose own patience ran out leaving a card up that refuses every later attempt.
+    /// The superseded request is settled `answer: nobody, applied: false`, so the head that was
+    /// asked takes the stale card down before the new one lands.
+    pub fn ask_mode_confirm(
+        &mut self,
+        name: &str,
+        from_head: &str,
+        from_identity: &str,
+        client_request_id: &str,
+    ) -> Result<(), String> {
+        let mode = letibot_tools::mode::Mode::parse(name)?;
+        let session = self.cfg.session_id.clone();
+        // The id is the asker's own request name with the head in front of it: unique across
+        // heads, and one the asking connection can correlate by without being told.
+        let req_id = format!("{from_head}:{client_request_id}");
+        if let Some(open) = self.mode_confirm.take() {
+            let named = open.name.clone();
+            self.settle_mode_confirm(&open, &named, false, "nobody", superseded(&open.name));
+        }
+        if !self.mode_needs_consent(mode) {
+            // **The same `mode_set` line the `/mode` path writes**, because a point that moved
+            // has to be legible afterwards on the session it moved in — and this one moved
+            // without anybody typing it, which is precisely the case a reader would question.
+            let applied = match self.set_mode_consented(mode, false) {
+                Ok(said) => {
+                    self.warn_mode(
+                        "mode_set",
+                        format!("{said}. {} asked for it", from_identity),
+                    );
+                    (true, said)
+                }
+                Err(why) => {
+                    self.warn_mode(
+                        "mode_unconfirmed",
+                        format!(
+                            "`{}` was asked for and could not be applied: {why}",
+                            mode.name
+                        ),
+                    );
+                    (false, why)
+                }
+            };
+            self.hub
+                .push_frame(letibot_sessionlog::protocol::ServerFrame::ModeSettled {
+                    session_id: session,
+                    req_id,
+                    client_request_id: client_request_id.to_string(),
+                    name: if applied.0 {
+                        self.cfg.mode.name.to_string()
+                    } else {
+                        mode.name.to_string()
+                    },
+                    applied: applied.0,
+                    answer: "nobody".into(),
+                    said: applied.1,
+                });
+            return Ok(());
+        }
+        let asked = self.hub.deciding_heads_except(from_head);
+        if asked.is_empty() {
+            return Err(format!(
+                "`{}` on this session needs the operator's confirmation in a head, and no \
+                 head that may decide is attached to `{session}` besides the one that asked. \
+                 Nothing was changed: run `leticode --session {session}`, or ask the operator \
+                 to, and call this again",
+                mode.name
+            ));
+        }
+        self.hub.push_frame_where(
+            letibot_sessionlog::protocol::ServerFrame::ModeConfirm {
+                session_id: session,
+                req_id: req_id.clone(),
+                name: mode.name.to_string(),
+                asked_by: from_identity.to_string(),
+            },
+            // **Never the head that asked.** A program that could answer its own request
+            // would be consenting for the person the request exists to consult.
+            |head| asked.iter().any(|a| a == head),
+        );
+        self.mode_confirm = Some(PendingModeConfirm {
+            req_id,
+            client_request_id: client_request_id.to_string(),
+            name: mode.name.to_string(),
+            asked,
+        });
+        Ok(())
+    }
+
+    /// **A head's answer to that ask** — `yes` applies the point, `no` applies nothing.
+    ///
+    /// Refused by name when no request is open, when the id is not the open one, and when this
+    /// head was not asked. That last check is the structural half of *the bridge never consents
+    /// for itself*: the daemon sent the card to a set of heads, and only those heads can answer
+    /// it.
+    pub fn answer_mode_confirm(
+        &mut self,
+        req_id: &str,
+        yes: bool,
+        head: &str,
+        identity: &str,
+    ) -> Result<(), String> {
+        let Some(open) = self.mode_confirm.as_ref() else {
+            return Err(format!(
+                "no mode confirmation is open on this session, so `{req_id}` settles nothing"
+            ));
+        };
+        if open.req_id != req_id {
+            return Err(format!(
+                "the open confirmation is `{}`, not `{req_id}`",
+                open.req_id
+            ));
+        }
+        if !open.asked.iter().any(|a| a == head) {
+            return Err(format!(
+                "`{req_id}` was not put in front of this head: only the heads that were asked \
+                 can answer a mode confirmation, and this one asked for it"
+            ));
+        }
+        let open = self.mode_confirm.take().expect("just checked");
+        if !yes {
+            let named = open.name.clone();
+            self.settle_mode_confirm(
+                &open,
+                &named,
+                false,
+                "no",
+                format!(
+                    "{identity} did not confirm `{}`, so nothing changed — the session stays \
+                     where it was",
+                    open.name
+                ),
+            );
+            self.warn_mode(
+                "mode_declined",
+                format!(
+                    "`{}` was asked for and the confirmation was declined by {identity}: the \
+                     approval point did not move",
+                    open.name
+                ),
+            );
+            return Ok(());
+        }
+        let mode = letibot_tools::mode::Mode::parse(&open.name)?;
+        match self.set_mode_consented(mode, true) {
+            Ok(said) => {
+                let in_force = self.cfg.mode.name;
+                self.settle_mode_confirm(
+                    &open,
+                    in_force,
+                    true,
+                    "yes",
+                    format!("{identity} confirmed: {said}"),
+                );
+                self.warn_mode(
+                    "mode_confirmed",
+                    format!("`{}` confirmed by {identity} in a head: {said}", open.name),
+                );
+                Ok(())
+            }
+            Err(why) => {
+                // **A yes the session cannot carry is not applied**, and the person is told by
+                // the settle frame as well as by their own screen: `applied: false` with the
+                // prerequisite check's own words.
+                let named = open.name.clone();
+                self.settle_mode_confirm(&open, &named, false, "yes", why.clone());
+                self.warn_mode(
+                    "mode_unconfirmed",
+                    format!(
+                        "`{}` was confirmed by {identity} and could not be applied: {why}",
+                        open.name
+                    ),
+                );
+                Err(why)
+            }
+        }
+    }
+
+    /// **How a confirmation ended, to every head** — the asker's answer and the other heads'
+    /// dismissal of the card, in one frame.
+    ///
+    /// `name` is **the point that is now in force** when it applied, which is not always the
+    /// point that was asked for: a consented `allow-all` on a bare host lands on
+    /// [`letibot_tools::mode::Mode::ALLOW_ALL_HERE`], the same coordinate with the boundary
+    /// told truthfully. A caller that read `allow-all` back would be told the point it asked
+    /// for rather than the one its session is at.
+    fn settle_mode_confirm(
+        &self,
+        open: &PendingModeConfirm,
+        name: &str,
+        applied: bool,
+        answer: &str,
+        said: String,
+    ) {
+        self.hub
+            .push_frame(letibot_sessionlog::protocol::ServerFrame::ModeSettled {
+                session_id: self.cfg.session_id.clone(),
+                req_id: open.req_id.clone(),
+                client_request_id: open.client_request_id.clone(),
+                name: name.to_string(),
+                applied,
+                answer: answer.to_string(),
+                said,
+            });
+    }
+
+    fn warn_mode(&self, code: &str, detail: String) {
+        self.hub.publish(SessionEvent::Warning {
+            code: code.to_string(),
+            detail,
+            compaction: None,
+        });
     }
 
     /// Push the settings this session runs under to the registry, where the

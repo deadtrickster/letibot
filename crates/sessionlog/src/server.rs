@@ -1795,6 +1795,39 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            // **The ASK, and the person's answer to it** (`PROTOCOL_VERSION` 54, B8). Both ride
+            // the command queue like `Mode` does — the worker is the one writer of the session's
+            // state, and the pending request is harness state. What is decided here and nowhere
+            // else: a consent from a head that declared `can_decide: false` is refused at the door
+            // (`Hub::submit`), and the rest of it — was this head ASKED, is the request still
+            // open — is the harness's, because that is where the open request lives.
+            Ok(ClientFrame::ModeConfirm {
+                client_request_id,
+                expected_seq,
+                name,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::ModeConfirm { name },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
+            Ok(ClientFrame::ModeConsent {
+                client_request_id,
+                expected_seq,
+                req_id,
+                yes,
+            }) => {
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::ModeConsent { req_id, yes },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::ReadJobOutput {
                 client_request_id,
                 job,

@@ -807,7 +807,32 @@ use crate::view::Snapshot;
 /// on the event side changes, so a version-52 head talking to a version-53 daemon is
 /// unaffected — which is the direction that matters, because the head that sends this one is
 /// a migration and not a screen.
-pub const PROTOCOL_VERSION: u32 = 53;
+///
+/// # 54: a head can ASK for the confirmation another head answers
+///
+/// Four frames, and they are one feature: [`ClientFrame::ModeConfirm`] (ask),
+/// [`ServerFrame::ModeConfirm`] (the card, to the other heads), [`ClientFrame::ModeConsent`]
+/// (a person's answer) and [`ServerFrame::ModeSettled`] (how it ended, to everybody).
+///
+/// **Why [`ClientFrame::Mode`] could not grow this.** `Mode { name, consented }` is a head
+/// saying *set it, and I confirm it* — and a head that is a program is exactly what must not
+/// confirm. The Claude Code bridge (`docs/claude-code-bridge.md`, B8) can ask for `allow-all`
+/// for a package's session and cannot answer for the person whose box is the boundary; today
+/// that point can only be reached by somebody typing `/mode allow-all` into a head attached to
+/// that session. So the ask and the set are two frames, and the ask carries no `consented` at
+/// all: consent is a separate message from somebody the daemon will only accept it from.
+///
+/// **The daemon's rule, and it is structural rather than a promise.** The card goes to every
+/// attached head with `caps.can_decide` **except the one that asked**, and `ModeConsent` is
+/// accepted only from a head the card was sent to. A program asks, a person answers, and no
+/// head can do both for one request. The bridge has no code path that sends `consented: true`
+/// and none that sends `ModeConsent`.
+///
+/// **New variants are a bump**, by 49's and 52's rule: an older peer has no arm for one and
+/// would fail to decode it mid-session — and these travel in both directions, so a version-53
+/// daemon would fail to parse the ask and a version-53 head the card. Nothing on the event
+/// side changes, so a session never touched by a bridge reads exactly as it did.
+pub const PROTOCOL_VERSION: u32 = 54;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1884,6 +1909,41 @@ pub enum ClientFrame {
         #[serde(default)]
         consented: bool,
     },
+    /// **Ask a PERSON to confirm the point that needs one** — added at
+    /// `PROTOCOL_VERSION` 54.
+    ///
+    /// [`ClientFrame::Mode`] sets a point; this one only ASKS. The two are separate frames
+    /// because they are separate acts, and the whole of B8 turns on the difference: a head
+    /// that is a program can want `allow-all` for a session and cannot be the person whose
+    /// answer opens it. Sending this posts the confirmation to every OTHER head attached to
+    /// the session that declared `can_decide` — the asker is never asked, and is therefore
+    /// never able to answer — and the point is applied only when one of them says yes.
+    ///
+    /// The requester learns the outcome from [`ServerFrame::ModeSettled`], correlated by the
+    /// `req_id` the daemon minted. Three answers can come back instead: the point needs
+    /// nobody's confirmation (it is applied at once and settled `applied`), nobody else is
+    /// attached to ask ([`ServerFrame::Rejected`] naming the command that opens a head), or
+    /// the name is not a point this build knows (also `Rejected`).
+    ModeConfirm {
+        client_request_id: String,
+        expected_seq: u64,
+        name: String,
+    },
+    /// **A person's answer to a [`ClientFrame::ModeConfirm`]**, sent by the head they read
+    /// the card on — added at `PROTOCOL_VERSION` 54.
+    ///
+    /// `yes` is a consent and nothing else: it is read only by the head that was ASKED (the
+    /// daemon refuses one from anywhere else, and from the head that asked), and it opens
+    /// only the one point that was asked about. A `no` applies nothing and says so.
+    ModeConsent {
+        client_request_id: String,
+        expected_seq: u64,
+        /// The `req_id` [`ServerFrame::ModeConfirm`] carried. An id that is no longer open
+        /// is refused, the way an answer to a closed decision is: a consent to a question
+        /// asked ten minutes ago is input arriving from nowhere.
+        req_id: String,
+        yes: bool,
+    },
     /// A slash command the head does not handle itself, handed to the daemon as
     /// the line the operator typed, without the leading `/`: `flowy login
     /// lab2x1`, `models deepseek/deepseek-chat`. One frame for every such verb,
@@ -2803,6 +2863,61 @@ pub enum ServerFrame {
         #[serde(default)]
         snapshot: Option<Box<Snapshot>>,
     },
+    /// **A confirmation a head asked for, put in front of the heads that may answer it** —
+    /// added at `PROTOCOL_VERSION` 54, the other half of [`ClientFrame::ModeConfirm`].
+    ///
+    /// Sent to **every attached head that declared `can_decide` except the one that asked**.
+    /// That exclusion is the design and not a courtesy: a head that asked for `allow-all` and
+    /// then answered its own request would be a program consenting for a person, which is the
+    /// one thing the consent exists to prevent. A head that gets this raises the same
+    /// confirmation card `/mode allow-all` raises — the same warning, the same keys — and
+    /// answers with [`ClientFrame::ModeConsent`].
+    ///
+    /// Not an event on the session log, and not in a snapshot: a card is about NOW, and the
+    /// asker is answered by the wait it is already in (the tool call that sent the request).
+    /// The one consequence worth stating: a head that attaches after this frame was sent does
+    /// not see the card. That is the same shape as [`ServerFrame::Secret`], and it is the
+    /// honest one — the requester's own patience is what ends the wait, and a card raised on a
+    /// screen somebody opened a minute ago would be a question with nobody left to answer it.
+    ModeConfirm {
+        session_id: String,
+        /// The daemon's own id for this request, which is also the name a [`Reply`] and the
+        /// settle frame are correlated by.
+        req_id: String,
+        /// The point being confirmed, spelled as the requester spelled it (`allow-all`).
+        name: String,
+        /// **Who asked**, so the card can say so and the person can put it down to a machine
+        /// rather than to their own keystroke. `identity` of the asking head.
+        asked_by: String,
+    },
+    /// **How a confirmation ended** — added at `PROTOCOL_VERSION` 54.
+    ///
+    /// To every head of the session, for two different reasons: the head that ASKED reads it
+    /// as the answer to the request it is waiting on, and every head that was asked takes the
+    /// card off the screen (another head may have answered first — the daemon settles a
+    /// confirmation with whoever answers, exactly as it settles a decision).
+    ///
+    /// `applied` is *is the point in force now*, which is a different question from `yes`: a
+    /// point that needs nobody's confirmation is applied and settled `applied` without a person
+    /// ever being asked, and a `yes` that the session's own prerequisites refuse is not
+    /// applied. `said` is the daemon's sentence either way, so a caller can print why.
+    ModeSettled {
+        session_id: String,
+        req_id: String,
+        /// **The asking head's own request id**, so the head that asked can correlate the answer
+        /// without having been told the `req_id` first — and everyone else reads `""`. The
+        /// requester sent `client_request_id` with the ask, so echoing it is the whole of what
+        /// it needs to stop waiting; the card's `req_id` is what the OTHER heads know it by.
+        #[serde(default)]
+        client_request_id: String,
+        name: String,
+        applied: bool,
+        /// `yes`, `no`, or `nobody` — the three ways this ends. Not the identity: a caller
+        /// that needs *which* person said yes reads the session log, where the sentence
+        /// `set_mode_consented` wrote names them.
+        answer: String,
+        said: String,
+    },
     /// The answer to [`ClientFrame::FetchRow`]: a window of one row's body.
     ///
     /// `total` is the whole body's length, so the head knows **what is on either side of
@@ -3125,6 +3240,8 @@ mod tests {
                 | ClientFrame::ListSessions { .. }
                 | ClientFrame::ListTodos { .. }
                 | ClientFrame::Mode { .. }
+                | ClientFrame::ModeConfirm { .. }
+                | ClientFrame::ModeConsent { .. }
                 | ClientFrame::NewSession { .. }
                 | ClientFrame::OperatorCall { .. }
                 | ClientFrame::OperatorResult { .. }
@@ -3224,6 +3341,8 @@ mod tests {
                 | ServerFrame::StandingNotes { .. }
                 | ServerFrame::Queues { .. }
                 | ServerFrame::Peeked { .. }
+                | ServerFrame::ModeConfirm { .. }
+                | ServerFrame::ModeSettled { .. }
                 | ServerFrame::RowFetched { .. }
                 | ServerFrame::Diagnostic { .. }
                 | ServerFrame::ShellSuggestions { .. }
@@ -3241,8 +3360,17 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 53,
-            "the match above was last reconciled with the frame list at 53 — 53 added \
+            PROTOCOL_VERSION, 54,
+            "the match above was last reconciled with the frame list at 54 — 54 added the \
+             four frames of one feature: `ClientFrame::ModeConfirm` (a head ASKS for the point \
+             that needs a person), `ServerFrame::ModeConfirm` (the card, to every other head \
+             that declared `can_decide`), `ClientFrame::ModeConsent` (that head's answer) and \
+             `ServerFrame::ModeSettled` (how it ended, to everybody). New variants in both \
+             directions, so a version-53 peer fails to parse whichever arrives first — the \
+             version-4 argument. The reason `Mode` could not grow a field instead is the \
+             feature: `Mode` with `consented: true` is a HEAD confirming, and the whole point is \
+             that the head asking (the Claude Code bridge, B8) must never be the one that \
+             answers. 53 added \
              `ClientFrame::CloseSession`, which closes ONE session and lets go of its harness \
              (a version-52 daemon fails to parse it, the version-4 argument; a head either \
              sends it or does not, so an EVENT-side skew does not arise). It exists because a \

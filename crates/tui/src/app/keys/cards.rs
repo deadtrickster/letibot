@@ -36,16 +36,33 @@ impl App {
                 _ => {}
             }
             let name = self.mode_confirm.take().unwrap();
+            // **Which card this was, and it decides which frame goes out.** The operator's own
+            // `/mode allow-all` is a point THEY asked for and is sent as `Mode { consented }`;
+            // a card another head asked for (B8) is that head's request and is answered by its
+            // id, so the daemon can settle the one request the person was shown and no other.
+            let asked = self.mode_asked.take();
             self.redraw = true;
-            return ControlFlow::Break(match k {
-                Key::Char('y') | Key::Char('Y') | Key::Enter => {
+            let yes = matches!(k, Key::Char('y') | Key::Char('Y') | Key::Enter);
+            return ControlFlow::Break(match (asked, yes) {
+                (Some(asked), yes) => {
+                    self.say(if yes {
+                        "allow-all confirmed for this session"
+                    } else {
+                        "allow-all cancelled — the mode did not change"
+                    });
+                    Some(Action::ModeConsent {
+                        req_id: asked.req_id,
+                        yes,
+                    })
+                }
+                (None, true) => {
                     self.say("allow-all confirmed for this session");
                     Some(Action::Mode {
                         name,
                         consented: true,
                     })
                 }
-                _ => {
+                (None, false) => {
                     self.say("allow-all cancelled — the mode did not change");
                     None
                 }

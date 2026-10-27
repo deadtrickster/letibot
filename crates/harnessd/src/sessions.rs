@@ -5244,6 +5244,73 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            // **A head ASKS for the point that needs a person** (`PROTOCOL_VERSION` 54, B8), and
+            // **a person ANSWERS it**. Two arms rather than one because they come from different
+            // heads and mean different things: the ask is a program asking, and the consent is
+            // somebody saying yes about their own box. The policy — does this point need anybody,
+            // is there anybody to ask, was this head among the ones asked — is the harness's, in
+            // `Harness::ask_mode_confirm` and `Harness::answer_mode_confirm`, because the open
+            // request lives there and the supplies that decide *needs a person* are its facts.
+            //
+            // **A refusal goes back to the head that asked, and to no other.** `Rejected` carries
+            // no addressee, so it is written on that head's own stream (`Hub::push_frame_to`); the
+            // sentence also lands on the session's log, where the operator can see that a package
+            // was asking for something and could not be answered.
+            CommandKind::ModeConfirm { name } => {
+                let said = match self.harness(session_id) {
+                    Ok(h) => h.ask_mode_confirm(
+                        name,
+                        &cmd.head_id,
+                        &cmd.identity,
+                        &cmd.client_request_id,
+                    ),
+                    // **A session that cannot be opened is a session that cannot be asked
+                    // about**, and the words the open failed with are the answer.
+                    Err(e) => Err(e.to_string()),
+                };
+                match said {
+                    Ok(()) => Outcome::Ignored,
+                    Err(why) => {
+                        if let Some(hub) = &hub {
+                            hub.push_frame_to(
+                                &cmd.head_id,
+                                letibot_sessionlog::protocol::ServerFrame::Rejected {
+                                    client_request_id: cmd.client_request_id.clone(),
+                                    reason: why.clone(),
+                                    expected_seq: 0,
+                                    actual_seq: hub.head_seq(),
+                                },
+                            );
+                        }
+                        self.warn(session_id, "mode_confirm_refused", why.clone());
+                        Outcome::Failed(why)
+                    }
+                }
+            }
+            CommandKind::ModeConsent { req_id, yes } => {
+                let said = match self.harness(session_id) {
+                    Ok(h) => h.answer_mode_confirm(req_id, *yes, &cmd.head_id, &cmd.identity),
+                    Err(e) => Err(e.to_string()),
+                };
+                match said {
+                    Ok(()) => Outcome::Ignored,
+                    Err(why) => {
+                        if let Some(hub) = &hub {
+                            hub.push_frame_to(
+                                &cmd.head_id,
+                                letibot_sessionlog::protocol::ServerFrame::Rejected {
+                                    client_request_id: cmd.client_request_id.clone(),
+                                    reason: why.clone(),
+                                    expected_seq: 0,
+                                    actual_seq: hub.head_seq(),
+                                },
+                            );
+                        }
+                        self.warn(session_id, "mode_consent_refused", why.clone());
+                        Outcome::Failed(why)
+                    }
+                }
+            }
             CommandKind::Mode { name, consented } => {
                 let mode = match letibot_tools::mode::Mode::parse(name) {
                     Ok(m) => m,

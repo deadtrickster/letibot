@@ -17,6 +17,8 @@
 //! * [`tools`] — the ten verbs from the design's table, and the `wait` verb whose exit code
 //!   is the wake-up.
 //! * [`report`] — the brief's closing report, parsed into the fields a reviewer reads.
+//! * [`rows`] — a session's transcript rows as the daemon serves them, which is what
+//!   `leticode_transcript` answers with (B8): full text, a cursor, and never the store file.
 //!
 //! [`mcp`] is the wire Claude Code speaks, and it is deliberately the thinnest layer of
 //! them all: JSON-RPC over lines, three methods, no library.
@@ -34,4 +36,5 @@ pub mod diff;
 pub mod head;
 pub mod mcp;
 pub mod report;
+pub mod rows;
 pub mod tools;

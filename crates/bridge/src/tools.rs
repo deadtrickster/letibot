@@ -41,6 +41,13 @@ pub const DEFAULT_MODE: &str = "writes-allowed";
 /// that produced more has produced more than a caller reads in one go.
 pub const EVENTS_LIMIT: usize = 50;
 
+/// **How long `leticode_mode` waits for the confirmation it asked for.** Two minutes: long
+/// enough for a person to read the card and answer it, short enough that a tool call does not
+/// look hung. The daemon keeps the request open past this — an answer that arrives later still
+/// applies the point, with the caller already told that nobody had answered — because the
+/// alternative is a card that expires under the person reading it.
+pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
+
 /// What the bridge holds: one attached head per session it started or joined, by session id.
 ///
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time by
@@ -390,6 +397,64 @@ impl Bridge {
         Ok(out)
     }
 
+    /// **The conversation itself**, from a cursor, as the daemon serves it to a head —
+    /// `leticode_transcript` (B8).
+    ///
+    /// Not the store, and that is the operator's ruling rather than a preference: one SQLite
+    /// file is shared by every daemon on the box, its rows are the store's shape rather than the
+    /// conversation's, and a reader there sees sessions it was never told about. What this asks
+    /// for instead is `ClientFrame::Peek { shape: Rows }` — the same rows an attach to that
+    /// session is handed — so a package's pane follows the conversation the way a second TUI
+    /// would, with full text up to [`crate::rows::CAP`] and a cursor that only moves forward.
+    ///
+    /// **A watched session answers this too.** Reading is not acting: a `watch_only` attach
+    /// holds no prompt, no answer and no interrupt, and every one of those is a write to
+    /// somebody else's session where a read is not.
+    pub fn transcript(
+        &self,
+        session: &str,
+        since: Option<u64>,
+        limit: Option<u64>,
+        reasoning: bool,
+    ) -> Result<Value, String> {
+        let h = self.head(session)?;
+        let limit = limit.unwrap_or(crate::rows::LIMIT as u64).clamp(1, 1000) as usize;
+        let snap = h.rows(&h.session, head::PEEK_PATIENCE)?;
+        let mut out = crate::rows::page(&snap, since.unwrap_or(0), limit, reasoning);
+        out["session"] = json!(session);
+        Ok(out)
+    }
+
+    /// **Move the session's approval point, and ask a PERSON for the one that needs them** —
+    /// `leticode_mode` (B8).
+    ///
+    /// **The bridge never consents.** `allow-all` on a box with no structural boundary is a
+    /// person's answer about their own machine, and a program that sent `consented: true` for it
+    /// would be exactly the lie the consent exists to prevent. So the ask goes to the daemon,
+    /// which puts the confirmation in front of every OTHER head attached to the session, and the
+    /// point moves only if one of them says yes. With nobody attached to ask, the daemon refuses
+    /// with the command that opens a head, and this tool returns that refusal and changes
+    /// nothing.
+    ///
+    /// **A point that needs nobody is applied at once** — `writes-allowed`, `read-only`, and
+    /// `allow-all` inside a VM — and the daemon says `nobody` was asked.
+    pub fn set_mode(&self, session: &str, mode: &str) -> Result<Value, String> {
+        if mode.trim().is_empty() {
+            return Err("`mode` is empty: name the approval point, e.g. `writes-allowed`".into());
+        }
+        let h = self.head(session)?;
+        let settled = h.ask_mode(mode.trim(), MODE_PATIENCE)?;
+        Ok(json!({
+            "session": session,
+            "mode": settled.name,
+            "applied": settled.applied,
+            // Who settled it, in one word: `yes` (a person in a head), `no` (a person in a
+            // head), or `nobody` (no person had to be asked).
+            "answer": settled.answer,
+            "said": settled.said,
+        }))
+    }
+
     /// Interrupt and leave. The session stays on disk, so any head can reopen it.
     pub fn stop(&self, session: &str) -> Result<Value, String> {
         let h = self.head(session)?;
@@ -678,6 +743,42 @@ pub fn list() -> Value {
                  },
                  "required": ["session"]
              })),
+        tool("leticode_transcript",
+             "The session's CONVERSATION, row by row, as the daemon serves it to a head — the \
+              same rows a terminal attached to that session is drawing. Full text: the \
+              operator's prompts, the model's answers, every tool call (name and arguments) and \
+              every tool result (outcome and payload). Long strings are cut only beyond the cap \
+              this answer states (`cap`, 8000 characters), and a row that was cut says so. Pass \
+              the `next` of the last answer as `since` and you get only what is new. It reads \
+              the daemon, never the session store; it works on a session this bridge holds and \
+              on one it only watches.",
+             json!({
+                 "type": "object",
+                 "properties": {
+                     "session": { "type": "string", "description": "The session id." },
+                     "since": { "type": "integer", "minimum": 0, "description": "The `next` cursor of the last answer — how many rows you have already read. Omitted: from the oldest row the daemon still holds (which says `dropped` for the ones it does not)." },
+                     "limit": { "type": "integer", "minimum": 1, "description": "How many rows to answer with. Default 100, at most 1000." },
+                     "reasoning": { "type": "boolean", "description": "Include the model's own reasoning blocks as rows. Default false: they are the one part of a transcript nothing downstream reads." }
+                 },
+                 "required": ["session"]
+             })),
+        tool("leticode_mode",
+             "Move the session's approval point. A point that needs nobody is applied at once \
+              (`writes-allowed`, `read-only`, `allow-all` inside a VM). `allow-all` on a box with \
+              no boundary needs the OPERATOR's confirmation: the daemon puts the same card a \
+              terminal shows for `/mode allow-all` in front of the heads attached to that \
+              session, and the point moves only when a person says yes — this bridge never \
+              consents on its own. With nobody attached to ask, nothing is changed and the \
+              answer is `needs the operator's confirmation in a head: run leticode --session \
+              <id>`.",
+             json!({
+                 "type": "object",
+                 "properties": {
+                     "session": { "type": "string", "description": "The session id." },
+                     "mode": { "type": "string", "description": "The approval point: `writes-allowed`, `read-only`, `allow-all`, … The daemon's own set decides which; a name it does not know is refused by name." }
+                 },
+                 "required": ["session", "mode"]
+             })),
         tool("leticode_stop",
              "Interrupt a running turn and detach this bridge from the session. The session \
               stays on disk, so `letibot --session <id>` or another head can reopen it.",
@@ -710,6 +811,8 @@ pub fn names() -> Vec<&'static str> {
         "leticode_send",
         "leticode_status",
         "leticode_events",
+        "leticode_transcript",
+        "leticode_mode",
         "leticode_asks",
         "leticode_answer",
         "leticode_diff",
@@ -783,6 +886,18 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let limit = arg_count(args, "limit")?;
             bridge.events(&session, since, limit)
         }
+        "leticode_transcript" => {
+            let session = arg_str(args, "session")?;
+            let since = arg_count(args, "since")?;
+            let limit = arg_count(args, "limit")?;
+            let reasoning = arg_bool(args, "reasoning", false)?;
+            bridge.transcript(&session, since, limit, reasoning)
+        }
+        "leticode_mode" => {
+            let session = arg_str(args, "session")?;
+            let mode = arg_str(args, "mode")?;
+            bridge.set_mode(&session, &mode)
+        }
         "leticode_asks" => bridge.asks(&arg_str(args, "session")?),
         "leticode_answer" => {
             let session = arg_str(args, "session")?;
@@ -841,15 +956,15 @@ pub fn wait(worktree: &str, session: &str, deadline: Instant) -> (i32, String) {
 mod tests {
     use super::*;
 
-    /// **Ten tools, each with a schema and a required list** — the count and the names the
-    /// design's table fixes, with `leticode_events` added by package B2 and `leticode_attach`
-    /// by B6. A tool added to `tools/list` and forgotten in `call` (or the other way round)
-    /// is the defect this pairs against.
+    /// **Twelve tools, each with a schema and a required list** — the count and the names the
+    /// design's table fixes, with `leticode_events` added by B2, `leticode_attach` by B6, and
+    /// `leticode_transcript` and `leticode_mode` by B8. A tool added to `tools/list` and
+    /// forgotten in `call` (or the other way round) is the defect this pairs against.
     #[test]
-    fn the_ten_tools_are_listed_with_schemas() {
+    fn the_twelve_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 10, "{listed}");
+        assert_eq!(tools.len(), 12, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
@@ -977,6 +1092,34 @@ mod tests {
             .expect_err("not a whole number");
             assert!(e.contains("`since`"), "{bad}: {e}");
         }
+        // The transcript's cursor is the same kind of number, and its `reasoning` flag is a
+        // boolean: a client that sent `"true"` would otherwise get the default and be told
+        // nothing about it.
+        let e = call(
+            &b,
+            "leticode_transcript",
+            &json!({ "session": "s-1", "since": "2" }),
+        )
+        .expect_err("not a whole number");
+        assert!(e.contains("`since`"), "{e}");
+        let e = call(
+            &b,
+            "leticode_transcript",
+            &json!({ "session": "s-1", "reasoning": "yes" }),
+        )
+        .expect_err("not a boolean");
+        assert!(e.contains("`reasoning`"), "{e}");
+        // And `leticode_mode` names both of its fields, because neither can be defaulted: a
+        // point nobody asked for and a session nobody named are two different refusals.
+        let e = call(&b, "leticode_mode", &json!({ "session": "s-1" })).expect_err("no mode");
+        assert!(e.contains("`mode`"), "{e}");
+        let e = call(&b, "leticode_mode", &json!({ "mode": "read-only" })).expect_err("no session");
+        assert!(e.contains("`session`"), "{e}");
+        // An empty point is refused before anything is sent: it names no point at all.
+        let e = b
+            .set_mode("s-1", "  ")
+            .expect_err("an empty point is not a point");
+        assert!(e.contains("`mode` is empty"), "{e}");
     }
 
     /// A session this bridge does not hold is refused by name, and the refusal says what it

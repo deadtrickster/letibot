@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use letibot_sessionlog::activity::{Activity, Waiting};
 use letibot_sessionlog::client::{ClientError, HeadClient, Inbound, pump};
 use letibot_sessionlog::event::{DeltaTarget, Envelope, SessionEvent, TodoEntry};
-use letibot_sessionlog::protocol::{Ack, Caps, ServerFrame};
+use letibot_sessionlog::protocol::{Ack, Caps, PeekShape, ServerFrame};
 use letibot_sessionlog::view::{
     CallState, OpenDecision, Snapshot, SnapshotItem, TurnState as ViewTurnState,
 };
@@ -83,7 +83,29 @@ const LINE: usize = 120;
 /// line of a report is usually the sentence that says what the turn was for.
 const MESSAGE_LINE: usize = 160;
 
-/// One option a permission ask offers.
+/// **How many mode answers a head keeps.** A caller collects its own the moment it lands; the
+/// rest are the tail of a conversation about `allow-all` that nobody is reading.
+pub const SETTLED_KEEP: usize = 8;
+
+/// **How long a reader waits for the daemon to answer a `Peek`.** One round trip on the
+/// connection that asked: the daemon answers off its own view, and a session it does not hold
+/// is refused at once. The patience is for a daemon that has stopped talking, not for one that
+/// is thinking.
+pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
+
+/// **The answer to one request for a mode confirmation** — the point, whether it is in force,
+/// who settled it in one word, and the daemon's own sentence.
+///
+/// `answer` is `yes`, `no` or `nobody`, and `applied` is a different question: a point that needs
+/// nobody's confirmation is applied and settled `nobody`, and a `yes` the session cannot carry is
+/// `yes` with `applied: false` and the prerequisite check's words in `said`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModeSettled {
+    pub name: String,
+    pub applied: bool,
+    pub answer: String,
+    pub said: String,
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskOption {
     pub option_id: String,
@@ -462,6 +484,20 @@ pub struct State {
     pub turned: bool,
     /// The compact progress `leticode_events` answers from.
     pub events: Ring,
+    /// **The rows the last `Peek { shape: Rows }` answered with**, and the session they are
+    /// rows OF. Kept rather than folded into the transcript, because this head's whole design
+    /// is that it holds no transcript: `leticode_transcript` asks for the window it needs, when
+    /// it needs it, and reads the `items_dropped` in the answer to know where that window sits.
+    pub peek: Option<(String, Snapshot)>,
+    /// How many answers have landed, so a reader can tell a fresh one from the one it was
+    /// already holding when it sent its own request.
+    pub peeks: u64,
+    /// **A refused `Peek`**, by the session it named — so the wait ends with the daemon's own
+    /// sentence instead of timing out about an answer that arrived.
+    pub peek_error: Option<(String, String)>,
+    /// **How the mode confirmations this head asked for ended**, by the `client_request_id`
+    /// they were asked with. Bounded by [`SETTLED_KEEP`].
+    pub mode_settled: Vec<(String, ModeSettled)>,
     /// `Some(reason)` when the daemon closed the connection; every later send says so
     /// rather than failing on a dead socket two frames later.
     pub closed: Option<String>,
@@ -579,7 +615,61 @@ impl State {
                     .map(|j| j.id)
                     .collect();
             }
-            ServerFrame::Rejected { reason, .. } => self.rejection = Some(reason),
+            ServerFrame::Rejected {
+                client_request_id,
+                reason,
+                ..
+            } => {
+                // **A refused `Peek` has to wake the reader that is waiting for rows**, because
+                // the answer is a `Rejected` keyed by the id the daemon mints for a peek
+                // (`peek:<session>` — it is the only correlation that frame has, since `Peeked`
+                // carries no client id). Without this, a peek of a session the daemon does not
+                // hold would sit out the patience and then report a timeout about an answer that
+                // had already arrived.
+                if let Some(on) = client_request_id.strip_prefix("peek:") {
+                    self.peek_error = Some((on.to_string(), reason.clone()));
+                }
+                self.rejection = Some(reason);
+            }
+            // **The rows `leticode_transcript` asked for.** `Peek { shape: Rows }` is answered
+            // with the session's own snapshot — the same rows an attach is handed — and it is
+            // kept together with the session it names, because a reader waiting on it must be
+            // sure it is not the answer to somebody else's read.
+            ServerFrame::Peeked {
+                session_id,
+                snapshot: Some(snap),
+                ..
+            } => {
+                self.peek = Some((session_id, *snap));
+                self.peeks += 1;
+            }
+            // **How a mode confirmation ended** (`PROTOCOL_VERSION` 54, B8) — the answer to
+            // `leticode_mode`'s ask, from a person's head or from nobody at all.
+            ServerFrame::ModeSettled {
+                client_request_id,
+                name,
+                applied,
+                answer,
+                said,
+                ..
+            } => {
+                if !client_request_id.is_empty() {
+                    // Bounded: a session that has been asked a dozen times is a dozen answers a
+                    // caller has already collected, and a head lives for the package.
+                    if self.mode_settled.len() >= SETTLED_KEEP {
+                        self.mode_settled.remove(0);
+                    }
+                    self.mode_settled.push((
+                        client_request_id,
+                        ModeSettled {
+                            name,
+                            applied,
+                            answer,
+                            said,
+                        },
+                    ));
+                }
+            }
             ServerFrame::Bye { reason } => self.closed = Some(reason),
             _ => {}
         }
@@ -1278,6 +1368,14 @@ impl Head {
             activity: g.activity.clone(),
             turned: g.turned,
             events: g.events.clone(),
+            // **Not carried across**: the peeked rows and the mode answers are read by the two
+            // verbs that ask for them ([`Head::rows`], [`Head::ask_mode`]) and by nothing that
+            // takes this copy — a transcript cloned on every `leticode_status` poll would be
+            // work nobody asked for, which is `Head::events`' own argument one field over.
+            peek: None,
+            peeks: g.peeks,
+            peek_error: None,
+            mode_settled: Vec::new(),
             closed: g.closed.clone(),
             rejection: g.rejection.clone(),
         }
@@ -1409,6 +1507,128 @@ impl Head {
         c.set_mode(0, mode, false)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// **The session's own rows, as the daemon serves them to a head** — `leticode_transcript`.
+    ///
+    /// `Peek { shape: Rows }` is the wire's own answer to *what would an attach to this session
+    /// be handed*: the daemon's view of the conversation, its newest rows, with
+    /// `items_dropped` saying how many came before the window. It is the same read for a session
+    /// this bridge holds and for one it is only watching — a read is not an act on the session,
+    /// so a watcher may take it — and it moves no seat and settles no card.
+    ///
+    /// **Asked every time rather than kept.** This head holds no transcript by design (see
+    /// `State`), and a fresh read is what lets a caller's cursor be the daemon's own numbering
+    /// rather than a count of frames this process happened to be attached for.
+    pub fn rows(&self, session: &str, patience: Duration) -> Result<Snapshot, String> {
+        let (before, was, closed) = {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            (g.peeks, g.peek_error.clone(), g.closed.clone())
+        };
+        if let Some(why) = closed {
+            return Err(format!("the daemon closed this connection: {why}"));
+        }
+        {
+            let mut c = self.said_client()?;
+            c.peek(session, PeekShape::Rows)
+                .map_err(|e| format!("asking the daemon for `{session}`'s rows: {e}"))?;
+        }
+        let deadline = Instant::now() + patience;
+        loop {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            // **A refusal, said rather than waited out.** The daemon mints `peek:<session>` as
+            // the id of a refused peek, and the fold keeps it — so a session this daemon does
+            // not hold answers with its own sentence instead of a timeout ten seconds later.
+            if let Some((on, why)) = g.peek_error.clone()
+                && on == session
+                && g.peek_error != was
+            {
+                return Err(format!("the read of `{session}`'s rows was refused: {why}"));
+            }
+            if g.peeks > before
+                && let Some((on, snap)) = &g.peek
+                && on == session
+            {
+                return Ok(snap.clone());
+            }
+            if let Some(why) = &g.closed {
+                return Err(format!("the daemon closed this connection: {why}"));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let (next, _) = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(next);
+        }
+        Err(format!(
+            "the daemon did not answer the read of `{session}`'s rows within {patience:?} — the \
+             socket is up, so this is a daemon that is not serving that session"
+        ))
+    }
+
+    /// **Ask the daemon to put a confirmation in front of a person** — `leticode_mode`, B8.
+    ///
+    /// The one route to `allow-all` that this bridge has, and it is deliberately not a set: the
+    /// request goes to the daemon, whose rule is that any head attached to the session EXCEPT
+    /// this one may answer it. So the answer that comes back is a person's, or nobody's — the
+    /// bridge has no frame in it that consents to anything on its own behalf.
+    ///
+    /// The point may need nobody: `writes-allowed`, `read-only`, and `allow-all` inside a VM are
+    /// applied by the daemon and settled `applied`, which is why this returns the daemon's own
+    /// sentence rather than a verdict of its own.
+    pub fn ask_mode(&self, name: &str, patience: Duration) -> Result<ModeSettled, String> {
+        self.may_write()?;
+        // What this head had already been refused, so a refusal from BEFORE the ask is not read
+        // as the answer to it. The tools are called one at a time by one client, so the only
+        // `Rejected` that can arrive between the send and the answer is this request's.
+        let refused_before = {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            g.rejection.clone()
+        };
+        let id = {
+            let mut c = self.said_client()?;
+            // `expected_seq = 0` for `prompt`'s reason: a request is not a position, and a
+            // bridge must never be the head that loses a race to a person's typing.
+            c.mode_confirm(0, name).map_err(|e| e.to_string())?
+        };
+        let deadline = Instant::now() + patience;
+        loop {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some((_, settled)) = g.mode_settled.iter().find(|(on, _)| on == &id) {
+                return Ok(settled.clone());
+            }
+            // **A refusal is the answer.** The daemon writes a `Rejected` on this connection
+            // when nobody is attached to ask, and the sentence names the command that opens a
+            // head — the caller's next move — so it is returned as itself.
+            if let Some(why) = g.rejection.clone()
+                && g.rejection != refused_before
+            {
+                return Err(why);
+            }
+            if let Some(why) = &g.closed {
+                return Err(format!("the daemon closed this connection: {why}"));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let (next, _) = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(next);
+        }
+        Err(format!(
+            "the `{name}` confirmation was put in front of the session's heads and nobody \
+             answered within {patience:?}. Nothing was changed: the request is still open on the \
+             daemon, and an answer that arrives later applies the point with nobody listening"
+        ))
     }
 
     /// The sentence a watching head answers every verb with, and `Ok` for a head that holds

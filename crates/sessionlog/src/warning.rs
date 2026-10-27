@@ -256,6 +256,21 @@ pub const TABLE: &[(&str, Class)] = &[
     // A consented `allow-all` is this session's and was deliberately NOT written to the
     // project row. Consent is the thing working; the row not moving is the point.
     ("mode_session_only", Class::Routine),
+    // **A confirmation another head asked for, and its two answers** (`PROTOCOL_VERSION` 54,
+    // B8: `leticode_mode`). All three are routine: `mode_confirmed` is the person agreeing,
+    // `mode_declined` is a person declining — which is the card working, not a fault — and
+    // both are exactly the sentences a reader wants without any red on the screen. The one
+    // that stays a failure is `mode_unconfirmed`, where a yes was given and the session could
+    // not carry the point.
+    ("mode_confirmed", Class::Routine),
+    ("mode_declined", Class::Routine),
+    ("mode_unconfirmed", Class::Failure),
+    // **A confirmation nobody could be asked about** — a program wanted the point and the
+    // session has no other head. Routine and not a refusal *of the work*: the sentence names
+    // the command that opens a head, and nothing was attempted. `mode_consent_refused` is the
+    // other half — an answer from a head that was not asked — and is a refusal by name.
+    ("mode_confirm_refused", Class::Routine),
+    ("mode_consent_refused", Class::Refused),
     // The model server did not answer and the round is being taken again. The retry is
     // the handling — and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
@@ -995,6 +1010,11 @@ mod the_register_census {
         "job_output_refused",
         "mode_set_refused",
         "mode_unknown",
+        // **A consent from a head that was not asked** (`PROTOCOL_VERSION` 54, B8): the frame is
+        // well formed and the head is not one the card reached, so the fix is that head's — it
+        // answered a question somebody else was asked. Same register as `mode_set_refused`, which
+        // is the same channel's other refusal.
+        "mode_consent_refused",
         // **`!send` with nothing of yours running**, or with the run already over. The reader
         // typed a line and there was no command of theirs to give it to — the same shape as
         // `!term` with no pane, which is `job_output_refused`'s shape too: the act is well
@@ -1227,10 +1247,16 @@ mod the_register_census {
         //     store it serves and opened it anyway, because the store's reader floor says older
         //     code still reads it; `store::floor` is the mechanism and the red line on the head's
         //     status row is the saying of it.
-        assert_eq!(TABLE.len(), 157, "the table's size");
-        assert_eq!(count(Class::Routine), 60);
-        assert_eq!(count(Class::Refused), 12, "the twelve in READER_INPUT");
-        assert_eq!(count(Class::Failure), 85);
+        //   · **162, not 157**: a mode confirmation (`PROTOCOL_VERSION` 54, B8) — the point another
+        //     head asked for and a person answered. `mode_confirmed` and `mode_declined` are
+        //     Routine (the card working, in either direction), `mode_confirm_refused` is Routine
+        //     (a program asked and there was no head to put it in front of), `mode_unconfirmed` is
+        //     a Failure (a yes the session could not carry) and `mode_consent_refused` is Refused
+        //     (an answer from a head that was not asked).
+        assert_eq!(TABLE.len(), 162, "the table's size");
+        assert_eq!(count(Class::Routine), 63);
+        assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
+        assert_eq!(count(Class::Failure), 86);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

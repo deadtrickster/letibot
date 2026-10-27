@@ -58,6 +58,12 @@ impl App {
             | ServerFrame::Accepted { .. }
             | ServerFrame::Rejected { .. }
             | ServerFrame::Bye { .. }) => self.on_replies(frame),
+            // **A confirmation of `allow-all` that another head asked for, and how it ended**
+            // (`PROTOCOL_VERSION` 54, B8). Neither a list nor a reply to anything this head
+            // sent: the card is the daemon's and the answer is the person's.
+            frame @ (ServerFrame::ModeConfirm { .. } | ServerFrame::ModeSettled { .. }) => {
+                self.on_mode_card(frame)
+            }
             frame @ ServerFrame::Event { .. } => self.on_event_frame(frame),
             frame @ (ServerFrame::TermAttached { .. }
             | ServerFrame::TermStatus { .. }

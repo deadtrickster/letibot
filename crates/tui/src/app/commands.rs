@@ -28,6 +28,10 @@ impl App {
         // name it has to recognise, and it is the daemon's own spelling.
         if name == "allow-all" {
             self.mode_confirm = Some(name);
+            // **This card is the operator's own**, so nothing another head asked for may still
+            // be riding it: an answer that carried a stale request id would settle somebody
+            // else's question with this person's keystroke (B8).
+            self.mode_asked = None;
             self.redraw = true;
             return None;
         }
