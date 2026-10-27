@@ -25,8 +25,9 @@
 //! | `$PWD` | the directory the call runs in, **after a literal `cd`** earlier in the command |
 //! | `$HOME` | the harness's own home, the same value every path in [`crate::intent`] is placed against |
 //! | `$X` where `X` is assigned earlier **as its own statement**, or by `export`/`declare`/`typeset`/`readonly` | the value the text gives it |
+//! | `$?`, `$$`, `$!`, `$#`, `$RANDOM`, `$PIPESTATUS`, … — **the shell's own numbers** | the number `0`, because a number is not a place (see [`NUMERIC`]) |
 //! | `$(…)`, a backquote, `$((…))`, `<(…)`, `$'…'`, `{a,b}` | unresolved, as they were |
-//! | `$RANDOM`, `$?`, `$$`, a name nobody assigned | unresolved, as they were |
+//! | `$@`, `$*`, `$1`, `$0`, a name nobody assigned | unresolved, as they were |
 //! | `X=1 cmd $X` | unresolved: bash expands the argument list BEFORE the prefix assignment lands, and `X=1 echo $X` prints an empty line — so treating it as `1` would be a false claim about what runs |
 //!
 //! # Why the text is rewritten rather than the words patched
@@ -61,6 +62,117 @@ use super::Surroundings;
 /// pathology rather than a budget.
 const ROUNDS: usize = 8;
 
+/// **The shell's own numbers: expansions whose value is a count, a status or a pid.**
+///
+/// None of them is in the text, and none of them ever will be — and that is not a reason
+/// to refuse the command, because **a number is not a place**. What an unknown word costs
+/// the gate is scope: an unresolvable argument widens the action to
+/// `Region::Unbounded` (`intent::Baseline::widen_argument`), which is outside everything
+/// and which no session grant can cover. A value that can only be `0`–`255` (`$?`), a
+/// count (`$#`), a pid (`$$`, `$!`) or a small integer (`$RANDOM`, `$LINENO`) reaches no
+/// directory that a number does not already name.
+///
+/// # The measurement that made this a rule
+///
+/// MEASURED 2026-10-26, the operator's three corpora (161,099 bash decisions): after `$PWD`
+/// and the earlier assignments were resolved, **`$?` was the largest single reason a
+/// command was still unresolved — 6,019 commands, 4,827 of them unresolved for that alone**
+/// — and every one of them was the same idiom: a build or a test, then `echo "exit=$?"` to
+/// say how it went. The ruling of 2026-10-02 already says what that costs and how to read
+/// it, in the operator's own words about this very shape — *"`$?` inside `echo` widens
+/// nothing `echo` can act on, so it is admitted even in a narrow mode — which is the
+/// actually-correct answer, not a concession"*. It was not admitted, because the parser's
+/// refusal outranked the reading. This list is that ruling applied where it belongs.
+///
+/// # What is written back, and why `0` rather than a placeholder of another shape
+///
+/// A number, because the value IS a number: `echo "exit=0"`, `head -$?` → `head -0`. The
+/// alternative — keeping the word unresolved — claims the command is unreadable, which is
+/// false: the program, its arguments and every path in them are all read. The one thing
+/// this can get wrong is WHICH number, and a number names a file only when a program
+/// treats it as a filename — `cat $?`, `rm dir/$?` — where the difference is one digit of
+/// one path inside the same region, not a different region, program or intent.
+///
+/// **What is deliberately absent**: `$@`, `$*`, `$1`, `$0`, `$-` and every name nobody
+/// assigned. Those CAN be paths, so they stay unresolved and fail closed. `${!x}` (indirect)
+/// is a name, not a number, and `named()` reports its `x` rather than its `!` — it never
+/// arrives here.
+const NUMERIC: &[&str] = &[
+    // The special parameters. `$#` is a count, `$$` and `$!` pids, `$?` a status.
+    "?",
+    "$",
+    "!",
+    "#",
+    // The shell's counter and identity variables.
+    "RANDOM",
+    "LINENO",
+    "SECONDS",
+    "BASHPID",
+    "PPID",
+    "UID",
+    "EUID",
+    "SHLVL",
+    "EPOCHSECONDS",
+    "EPOCHREALTIME",
+    "PIPESTATUS",
+    "BASH_SUBSHELL",
+];
+
+/// What a numeric expansion is written back as. See [`NUMERIC`].
+const NUMERIC_WORD: &str = "0";
+
+/// Whether this expansion's value is one of the shell's numbers.
+fn numeric(name: &str) -> bool {
+    NUMERIC.contains(&name)
+}
+
+/// **Whether the expansion is exactly one name's value — and nothing done to it.**
+///
+/// The grammar nests a great deal inside one `expansion` node and hands every one of them
+/// the same `variable_name`: `${#X}` (a LENGTH), `${X%.*}` (a suffix stripped), `${X/a/b}`
+/// (replaced), `${X:0:3}` (a slice), `${!X}` (the value of the variable X NAMES) and
+/// `${arr[0]}` (one element of an array). A resolver keyed on the name alone writes the
+/// value of `X` for all six, which is a claim about a command the operator did not write.
+///
+/// MEASURED 2026-10-26 on the grammar's own tree: `${!X}` and `${#X}` come back with the
+/// transform in an `operator` child and the name `X` beside it, so the reported NAME cannot
+/// tell them apart from `${X}` — and for `${PIPESTATUS[0]}` the reported name is the whole
+/// braces content, `{PIPESTATUS[0]}`, because the `variable_name` is inside a `subscript`.
+/// The check is therefore lexical and exact, against the operator's own text.
+fn plain(text: &str, name: &str) -> bool {
+    text == format!("${name}") || text == format!("${{{name}}}")
+}
+
+/// A number the shell keeps, read from the TEXT of the expansion.
+///
+/// `${PIPESTATUS[0]}` and `${PIPESTATUS[@]}` are allowed because every element of a
+/// numeric array is a number; any other subscript stays unresolved, since `${arr[0]}` is
+/// one element of a value this module does not model. A transform is never a number:
+/// `${#X}` is a length and `${!X}` is another variable's value, and neither is in [`NUMERIC`]
+/// under that spelling.
+fn numeric_text(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('$') else {
+        return false;
+    };
+    let Some(inner) = rest.strip_prefix('{').and_then(|t| t.strip_suffix('}')) else {
+        return numeric(rest);
+    };
+    if numeric(inner) {
+        return true;
+    }
+    let Some((name, index)) = inner.split_once('[') else {
+        return false;
+    };
+    let Some(index) = index.strip_suffix(']') else {
+        return false;
+    };
+    numeric(name)
+        && !index.is_empty()
+        && index
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '@' || c == '*')
+}
+
 /// **The command with every parameter it already fixes written out.**
 ///
 /// Returns the (possibly unchanged) text and a note per substitution, for the audit row:
@@ -84,25 +196,80 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             let Construct::ParameterExpansion { name } = &u.construct else {
                 continue;
             };
-            let Some(value) = value_at(&timeline, name, u.span.start) else {
+            // **Only the expansions that ARE the value of one name.** `${#X}`, `${X%.*}`,
+            // `${!X}` and `${arr[0]}` are other expressions of it — see [`plain`], which is
+            // the one place that decides, so a transform added to the grammar cannot
+            // silently become a value here.
+            let text = n.source.get(u.span.start..u.span.end).unwrap_or("");
+            // **What the text states comes first**: `X=/tmp; cat $X` is about `/tmp`, and no
+            // rule about numbers may overrule a value somebody wrote down.
+            if plain(text, name)
+                && let Some(value) = value_at(&timeline, name, u.span.start)
+                && let Some(word) = as_one_word(&value)
+            {
+                splices.push((
+                    u.span.start,
+                    u.span.end,
+                    format!("`${name}` is `{word}`"),
+                    word.to_string(),
+                ));
                 continue;
-            };
-            let Some(word) = as_one_word(&value) else {
-                continue;
-            };
-            splices.push((u.span.start, u.span.end, name.clone(), word.to_string()));
+            }
+            // Then the shell's own numbers — see [`NUMERIC`] for the measurement and for
+            // what the claim is (and is not).
+            if numeric_text(text) {
+                splices.push((
+                    u.span.start,
+                    u.span.end,
+                    format!(
+                        "`${name}` is a number the shell keeps rather than a value in this \
+                         text — a status, a count or a pid — and a number is not a place, so \
+                         it is read as `{NUMERIC_WORD}`; nothing the gate places depends on \
+                         which number it turns out to be"
+                    ),
+                    NUMERIC_WORD.to_string(),
+                ));
+            }
         }
         if splices.is_empty() {
             break;
         }
+        // **One splice per span, and no two splices may touch the same byte.** A `for` body
+        // is walked once per pass with the SAME byte offsets — that is what the unrolling in
+        // `shell` does — so a `$?` inside a loop body is reported once per iteration against
+        // one place in the text; and a nested construct is reported at both the outer and the
+        // inner span. Applying two splices to one place replaces the value AND the bytes
+        // after it: MEASURED 2026-10-26 on lab2x1, commands where `echo "rc=$?"` became
+        // `echo "rc=0` with the closing quote eaten and the rest of the command failed to
+        // parse. Keeping the FIRST of an overlapping run is the safe choice: the dropped
+        // one stays unresolved, the text is re-read next round, and nothing is claimed about
+        // bytes two splices disagree over.
         splices.sort_by_key(|(start, _, _, _)| *start);
-        for (start, end, _, word) in splices.iter().rev() {
-            if *end <= text.len() && start < end {
-                text.replace_range(*start..*end, word);
+        let mut disjoint: Vec<(usize, usize, String, String)> = Vec::new();
+        for s in splices {
+            if disjoint.last().is_some_and(|k| s.0 < k.1) {
+                continue;
+            }
+            disjoint.push(s);
+        }
+        let mut next = text.clone();
+        for (start, end, _, word) in disjoint.iter().rev() {
+            if *end <= next.len() && start < end {
+                next.replace_range(*start..*end, word);
             }
         }
-        for (_, _, name, word) in splices {
-            let note = format!("`${name}` is `{word}`");
+        // **A substitution may never make a command LESS parseable than it was.** A span is
+        // a claim about bytes, and a wrong one replaces the value AND its neighbour — which
+        // is how `echo "rc=$?"` once became `echo "rc=0` and the rest of the line stopped
+        // parsing. The whole round is abandoned rather than applied: the command keeps its
+        // constructs and stays unread, which is the fail-closed direction and is the same
+        // answer the parser would have given. MEASURED 2026-10-26: 36 commands on lab2x1
+        // still arrive here, and every one of them stays unread.
+        if !n.partial && shell::normalise(&next).partial {
+            break;
+        }
+        text = next;
+        for (_, _, note, _) in disjoint {
             if !notes.contains(&note) {
                 notes.push(note);
             }

@@ -842,6 +842,14 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
 /// The `$?` widens nothing — `echo` takes a string, not a place — so the command
 /// reads as it would with a literal `$?` replaced by `0`, and the point admits it.
 ///
+/// **And since 2026-10-26 it is read that way in the resolver, not only in this
+/// paragraph** (`intent::parameters::NUMERIC`): the ruling said what the reading should
+/// be, and until then the parser's refusal still outranked it, so the row said *the
+/// meaning was never resolved* about a command whose every word is known. The first half
+/// of this test was written against THAT behaviour — admitted, but unread — and it now
+/// asserts the ruling: the same call, read, and admitted by the point because it is a
+/// build with a status printed after it.
+///
 /// **Measured at the point that has the rule in it**: `ALLOW_ALL_HERE`, which is
 /// `exec: Admit` and `OperatorConsented`, with an adjudicator that FAILS if it is
 /// consulted. Nothing is asked, which is the whole of what "for allow all mode"
@@ -866,16 +874,33 @@ fn the_operators_echo_dollar_question_is_admitted_at_allow_all_and_asks_elsewher
         GateDecision::Admit,
         "allow-all is the point that admits this; the adjudicator refuses everything"
     );
-    // And the row still says what was not read, which is the disclosure that replaces
-    // the refusal.
-    assert!(!permissive.log[0].request.resolved);
+    // And the row says what was READ — which since 2026-10-26 is the whole command:
+    // `$?` is a number the shell keeps, a number is not a place, and the note that says
+    // so travels with the reading so a person can check it against their own line.
     assert!(
-        permissive.log[0]
+        permissive.log[0].request.resolved,
+        "the operator's own command is still unread: {}",
+        permissive.log[0].request.baseline
+    );
+    assert!(
+        !permissive.log[0]
             .request
             .baseline
             .contains("the meaning was never resolved"),
-        "the row must still say what was never read: {}",
+        "the row claims a resolution that did not happen: {}",
         permissive.log[0].request.baseline
+    );
+    let findings = &permissive.log[0]
+        .request
+        .reading
+        .as_ref()
+        .expect("a command has a reading")
+        .findings;
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.contains("a number is not a place")),
+        "nothing said what `$?` became: {findings:?}"
     );
 
     // The same command where the point does not admit exec: a person decides, and no

@@ -1578,7 +1578,6 @@ fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
 
     for cmd in [
         "cat $(which x)",  // the value is produced by running something
-        "cat $RANDOM",     // nothing assigned it
         "cat $X",          // nothing assigned it
         "X='/w a' cat $X", // a prefix assignment is not in force for its own arguments
         "cat $X; X=/w/f",  // assigned after the use, which is not "earlier"
@@ -1599,6 +1598,97 @@ fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
     assert!(b("echo \"p=$PWD\"").resolved);
     assert!(b("export PATH=/w/bin; cat $PATH").resolved);
     assert!(!b("export F=-DFOO=1; cat $F").resolved);
+}
+
+/// **The shell's own numbers resolve, because a number is not a place.**
+///
+/// MEASURED 2026-10-26, the three corpora (161,099 bash decisions): after `$PWD` and the
+/// assignments, `$?` was the largest single remaining reason a command was unread — 6,019
+/// commands, 4,827 of them unread for that alone — and the shape was one idiom: a build or
+/// a test, then `echo "exit=$?"` to say how it went. The operator's ruling of 2026-10-02
+/// already says how to read that (*"`$?` inside `echo` widens nothing `echo` can act on"*);
+/// what stood in the way was the parser calling the whole command unreadable.
+///
+/// What it must NOT become is a licence for the parameters that CAN be paths: `$@`, `$*`,
+/// `$1` and `$0` stay unread, and so does every name nobody assigned.
+#[test]
+fn the_shells_own_numbers_resolve_because_a_number_is_not_a_place() {
+    for cmd in [
+        "cargo test --offline -p letibot-tools; echo \"exit=$?\"",
+        "grep -q x /w/f && echo 0 || echo $?",
+        "printf 'pid=%s\\n' $$",
+        "echo $#",
+        "echo ${PIPESTATUS[0]}",
+        "echo $RANDOM",
+    ] {
+        let x = b(cmd);
+        assert!(x.resolved, "{cmd} is still unread: {:?}", x.command);
+        // The number names no place, so nothing may be widened by it: an `Unbounded`
+        // region here would be the same refusal under a new name.
+        assert!(
+            !x.regions.contains(&Region::Unbounded),
+            "{cmd} widened a number to everywhere: {:?}",
+            x.regions
+        );
+        // And the claim is on the record, in the words a person reading the card sees.
+        assert!(
+            x.findings
+                .iter()
+                .any(|f| f.contains("a number is not a place")),
+            "{cmd} said nothing about the number: {:?}",
+            x.findings
+        );
+    }
+    // The arguments the shell is handed are NOT numbers, and they stay unread.
+    for cmd in ["cat $1", "cat $@", "cat $0", "cat $*"] {
+        assert!(!b(cmd).resolved, "{cmd} was claimed to be readable");
+    }
+}
+
+/// **A transform of a value is not the value**, and the six spellings of it.
+///
+/// MEASURED 2026-10-26 on the grammar's own tree: `${!X}`, `${#X}` and `${PIPESTATUS[0]}`
+/// all come back as an `expansion` whose `variable_name` is `X`, `X`, `PIPESTATUS` — the
+/// grammar keeps the transform in an `operator` or `subscript` child and the name is the
+/// same. So a resolver that reads the NAME writes `$X`'s value where the shell writes a
+/// length, a slice, a replacement or another variable's value.
+#[test]
+fn a_transformed_expansion_is_not_the_value_it_transforms() {
+    for cmd in [
+        "X=/w/f; cat ${#X}",      // a LENGTH
+        "X=/w/f; cat ${X%.*}",    // a suffix stripped
+        "X=/w/f; cat ${X/a/b}",   // replaced
+        "X=/w/f; cat ${X:0:3}",   // a slice
+        "X=Y; Y=/w/f; cat ${!X}", // the value of the variable X NAMES
+        "A=(/w/f); cat ${A[0]}",  // one element of an array
+    ] {
+        assert!(
+            !b(cmd).resolved,
+            "{cmd} was read as the value of its name: {:?}",
+            b(cmd).command
+        );
+    }
+    // The braced spelling of a value with nothing done to it still resolves.
+    assert!(b("X=/w/f; cat ${X}").resolved);
+}
+
+/// **A body walked once per pass reports one span once per pass, and it is spliced ONCE.**
+///
+/// The unrolling in `shell` walks a loop body once per value with the same byte offsets,
+/// so `$?` inside the body is one place in the text and one unresolved entry per pass.
+/// Two splices at one span replace the value and the byte after it — measured 2026-10-26
+/// on lab2x1: 72 commands where `echo "rc=$?"` became `echo "rc=0` with the closing quote
+/// eaten, and the rest of the line then failed to parse.
+#[test]
+fn one_span_is_spliced_once_however_many_passes_reported_it() {
+    let (text, notes) = super::parameters::resolve("for c in a b; do echo \"rc=$?\"; done", &env());
+    assert_eq!(text, "for c in a b; do echo \"rc=0\"; done");
+    assert!(
+        notes.iter().any(|n| n.contains("a number is not a place")),
+        "{notes:?}"
+    );
+    // And through the whole reading, which is what the gate sees.
+    assert!(b("for c in a b; do echo \"rc=$?\"; done").resolved);
 }
 
 /// **The stage that names a grant is the one doing the work, not the last one.**
