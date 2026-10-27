@@ -408,6 +408,58 @@ look or behave differently from the built-in ones.
   rendered view is not yet reported — the gate reports diffs of the JSON answers, which is the same
   fact before it is drawn.)*
 
+#### Feeds: where a pane's data comes from (built 2026-10-27)
+
+A pane never runs a program for its data. What it needs, the host already has — the daemon's session
+list, this session's monitors, its jobs, its todos, the repository's state — so a pane **declares**
+which of those it reads and is handed exactly those, under their names:
+
+```toml
+feeds = ["sessions"]        # session list (fed) · monitors · jobs · todos · git (planned)
+```
+
+```jsonc
+// pane_<name>: in  — `feeds` holds only what the answering layer declared
+{"v":2, "state":{…}, "look":{…}, "event":null, "folded":{"<row id>":true},
+ "feeds":{"sessions":{…}}, "size":{"w":120,"h":40}}
+```
+
+**The planned feeds, and what each will carry** — one more entry in that map each, and no format
+change:
+
+| feed | is | first wanted by |
+|---|---|---|
+| `sessions` | the daemon's sessions: id, title, slug, parent, origin, live/running, rows, heads, model, workspace, waits-on-you, paused nags — plus `here` and `home` | the session list (built) |
+| `monitors` | this session's monitors: armed, last look, fired, what each is watching | a monitors pane |
+| `jobs` | the session's background jobs: handle, command, state, bytes, tail | a jobs pane |
+| `todos` | the session's todo rows, with their waits and their questions | a todo board |
+| `git` | the head's own reading of the repository — `GitState` in `crates/tui/src/gitfield.rs`: branch, detached, ahead/behind, stash, the action in progress, conflict/staged/unstaged/untracked counts — plus the changed-file list a pane would show | a repo/status pane |
+
+A feed is read-only data the host is already showing; it adjudicates nothing, and declaring it is
+the whole of the grant. **A pane gets no `exec` look today**: `look::EXEC_REFUSED`
+(`crates/harnessd/src/plugins/look.rs`) refuses one, and it stays refused until D17 is built — after
+which the rule is who wrote the layer: a layer the operator wrote (or pinned by hash) may exec from
+a pane, and a model's may not. Nothing here builds that.
+
+**Acts.** What a row's Enter does is a verb the HOST performs, declared in the same manifest so a
+reviewer reads it:
+
+```toml
+actions = ["switch", "fold"]          # today: switch to a session, fold a row
+```
+
+```jsonc
+"enter": {"switch":"s-1793…"} | {"fold":true} | {"event":"expand"}
+```
+
+A view carrying an undeclared act is refused (`View::validate_for`) and the head draws what is
+below it. The next verb (`disarm`, `fire`, `open`) is one more word in that list and one more arm in
+the head — not a new mechanism.
+
+**As built (2026-10-27)**: `crates/plugin-sdk/src/pane.rs` (the input, `Feed`, `Act`, `Fold`,
+`Cell`), `crates/sessionlog/src/pane.rs` (C3's `Row`/`Tree` grown to match), `crates/plugins`'s
+`Manifest` (`feeds`, `actions`). The first pane to use all of it is the session list below.
+
 ### Not hooks
 
 Dialect parsers and tokencore (per-token hot path), the store and transcript, the allow side of
@@ -801,6 +853,43 @@ why its work runs between the session's turns when the two share a server.
     it can call below and edit the built-in's tree. The session picker is the way out of a broken
     session, so it must not depend on a plugin: past the built-in, the head draws a plain list
     through the same rano primitive.
+
+    **Built? Yes — 2026-10-27.** *(The plan's one change from what was written: the C3 input a
+    pane is handed is a set of **FEEDS** rather than one sessions-shaped input, and the acts a
+    row's key performs are declared beside them — the session list needed both, and the operator's
+    next panes (monitors, jobs, todos, a repository's own state) are then one feed each rather
+    than a second contract. §4.9's "Feeds" is the contract.)*
+
+    | piece | where |
+    |---|---|
+    | the table, the build script, `install` | `crates/builtins` (`build.rs` compiles `plugins/builtin/*`; `lib.rs` is `table()` and `Stack::register_builtin_bytes`) |
+    | the guest's ABI half | `plugins/builtin/abi` — `rano_abi`, `rano_alloc`, the answer arena, the result block |
+    | **the session list** | `plugins/builtin/sessions` — the groups, the names, the counts, the acts and so the hint line; its own native tests are `src/tests.rs` |
+    | the bytes path | `letibot_plugins::Loader::load_bytes`, `Stack::register_builtin_bytes`, and `letibot_plugins::Layer::trusted` (D17's place) |
+    | the head's host | `crates/tui/src/app/sessions_pane.rs` — its own stack (the session's, the project's, the user's, then the built-ins), the feed, the acts, the fold state, and the way out |
+    | the C3 additions | `crates/plugin-sdk/src/pane.rs` (`Input`, `Feed`, `Act`, `Fold`, `Cell`), `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `Tree::empty`, `View::validate_for`) |
+    | the example | `plugins/examples/sessions-override` — a project layer that calls below, renames a group and hides its rows |
+
+    Four things differed from the plan as written, and each is a decision a reader should see:
+
+    * **The pane is answered by the HEAD, not by the daemon.** Every other pane is the daemon's
+      (`crates/harnessd/src/plugins.rs`), and this one could not be: the list is how a person gets
+      out of a broken session, and a picker that waits on the daemon is a picker that is
+      unavailable exactly when it is wanted. The head already holds every fact the list is drawn
+      from (the `Sessions` frame) and, through `rano`, already links the engine — so it builds the
+      same stack from the same scopes and answers in-process. `rano.rs`'s *the head links no JIT*
+      was already untrue in practice (rano is a hard dependency of the head), and this makes it
+      useful.
+    * **The way out is the head's OWN list**, unchanged — `App::session_picker` — rather than a new
+      plainer renderer: the code that draws it today is the code that must keep working the day a
+      layer breaks, so it is the code that was already there.
+    * **The drawing was pinned before the port**: `crates/tui/src/app/tests/data/sessions-list-*.txt`
+      (two pictures of one daemon, taken from the head's list before the port) plus
+      `the_heads_list_and_the_plugins_list_draw_the_same_rows`, which renders both paths at one
+      width and requires them identical. The port's only drawing change is the numbers column, and
+      that was a bug found by the pin, not a decision.
+    * **A built-in is a layer, so it can be masked by name** — a project's `sessions` sits above it
+      in the stack and may `mask` the hook as any layer may.
 11. **Script layers: a layer that is source text, with no toolchain.** A layer today is a Rust
     crate compiled to wasm, so writing one needs cargo and the wasm target, which most boxes and
     most operators do not have. A JavaScript engine compiled to wasm (QuickJS, as Javy embeds

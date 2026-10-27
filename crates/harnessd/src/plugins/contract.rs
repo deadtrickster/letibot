@@ -395,7 +395,7 @@ result.
 {input}
 ```
 
-* `v` — the contract version, always `1`.
+* `v` — the contract version, always `2`.
 * `state` — what this pane returned in its last answer's `state`, or `null` on the first call. A
   plugin is stateless between calls: anything it must remember it returns, and the host keeps it
   (§1 principle 5).
@@ -405,6 +405,14 @@ result.
   a person pressed one of the pane's own actions.
 * `size` — `{{"w": <columns>, "h": <rows>}}`, the rectangle the head is drawing in. Lay out for
   it: a dashboard wrapped for a screen nobody has is a dashboard nobody reads.
+* `feeds` — **the facts the host hands you**, and only the ones your `plugin.toml` DECLARES:
+  `feeds = ["sessions"]` in the manifest, `{{"sessions": {{…}}}}` here. A pane never runs a program
+  for its data (§1 principle 1). Fed today: `sessions` — the daemon's sessions (`id`, `title`,
+  `slug`, `parent`, `origin`, `live`, `running`, `heads`, `items`, `stored`, `model`, `workspace`,
+  `waits_on`, `nags_paused`) plus `here` and `home`. Named and not yet fed: `monitors`, `jobs`,
+  `todos`, `git`.
+* `folded` — what the PERSON has opened or closed, by row id (see the row's `open`). The host keeps
+  it, so a fold is instant and survives your next answer: read it, and honour it.
 
 ## The output — a worked example
 
@@ -448,6 +456,21 @@ An action is `{{"key": "s", "label": "start", "say": "…"}}`, `{{"key": "r", "l
 "look": true}}` or `{{"key": "x", "label": "expand", "event": "expand"}}` — exactly ONE of the
 three. `say` types a line into the session's model as the operator; `look` re-runs the look now;
 `event` calls the pane again with `{{"item": <the stop's id>, "action": <the word>}}`.
+
+**A row may also carry `enter` — what the Enter key does on it — and the HOST performs it.** The
+verbs are declared in the manifest too (`actions = ["switch", "fold"]`), and a view reaching one
+that is not declared is refused:
+
+```json
+"enter": {{"switch": "<session id>"}}     // go to that session (the session list's rows)
+       | {{"fold": true}}                 // open or close this row; the host keeps the state
+       | {{"event": "<word>"}}            // call the pane again with {{"item","action"}}
+```
+
+A row also carries `facts` (the right-hand column), `under` (the faint line beneath it), `number`
+(what a person types to reach it), `depth` (a list you have already walked) and `open`
+(`true`/`false`/`"fixed"` — a row no key can fold). `cells` may be a string or
+`{{"text": "…", "role": "strong"}}`.
 
 ## What the host refuses
 

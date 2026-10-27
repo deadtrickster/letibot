@@ -168,10 +168,14 @@ fn text<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
 /// on its own first frame, which is the cheapest defect to find.
 pub fn synthetic_input() -> Value {
     serde_json::json!({
-        "v": 1,
+        "v": letibot_plugin::pane::V,
         "state": null,
         "look": null,
         "event": null,
+        // **The feeds are the layer's, by declaration** (`plugin.toml`'s `feeds`): this is a pane
+        // that asked for the session list, which is the one a project's first layer usually wants.
+        "feeds": {"sessions": {"sessions": [], "here": "", "home": ""}},
+        "folded": {},
         "size": {"w": 100, "h": 30},
     })
 }
@@ -626,7 +630,7 @@ mod tests {
     #[test]
     fn the_synthetic_input_is_a_first_frame_a_pane_can_deserialise() {
         let input = synthetic_input();
-        assert_eq!(input["v"], 1);
+        assert_eq!(input["v"], 2, "the pane contract this host speaks");
         // Every key present, because a plugin deserialises this into a struct and a missing key
         // is a plugin that cannot tell *no look* from *an empty one*.
         for key in ["state", "look", "event"] {
@@ -635,6 +639,10 @@ mod tests {
         }
         assert_eq!(input["size"]["w"], 100);
         assert_eq!(input["size"]["h"], 30);
+        // **And the one feed a pane may count on being explained**: a first frame names the map
+        // and its shape, so a plugin reading `feeds.sessions` is not guessing.
+        assert!(input["feeds"]["sessions"]["sessions"].is_array(), "{input}");
+        assert_eq!(input["folded"], serde_json::json!({}));
     }
 
     #[test]

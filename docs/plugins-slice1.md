@@ -111,7 +111,7 @@ pub struct GateReport { pub passed: bool, pub build_log: String, pub load: Resul
                         pub fuel: Vec<(String, u64)>, pub diffs: Vec<ReplayDiff>, pub failure: Option<String> }
 ```
 
-## C3. The pane contract (hook `pane_<name>`, JSON, `"v": 1`)
+## C3. The pane contract (hook `pane_<name>`, JSON, `"v": 2`)
 
 The dashboard language is serenedash's (`github.com/deadtrickster/serenedash`), which the operator
 pointed at: **an overview of panels, every panel a summary with a full view behind its own key**;
@@ -210,6 +210,57 @@ A summary line under the title counts findings by severity, as serenedash's does
 
 **The view is also data.** The same JSON is what an agent reads (a later `pane read` tool), the way
 serenedash's `--once --format json` is what its MCP server returns.
+
+### As built, 2026-10-27 — `"v": 2`: feeds, acts, and the row shape a list needs
+
+The session list became a built-in layer (`docs/plugins-plan.md` §7 step 10), and the list needed
+three things a dashboard did not. **The manifest's `contract` stays 1**: every change below is an
+added field or an added word, and an added field is not a version (§1, principle 6) — a layer
+written against `"v": 1` still loads and still draws. The pane INPUT is `"v": 2`, so a plugin can
+tell which host is asking.
+
+**Feeds.** A pane never runs anything for its data: what it needs the host already has. A layer
+declares which facts it reads in its `plugin.toml` and the host hands it exactly those, by name:
+
+```toml
+feeds = ["sessions"]       # sessions | monitors | jobs | todos | git
+```
+
+```jsonc
+{"v":2, "feeds":{"sessions":{…}}}   // only the feeds the answering layer declared
+```
+
+`sessions` is fed today. `monitors`, `jobs`, `todos` and `git` are named in the contract — the
+operator's next panes — and each is one more feed, not a format change. A feed is data the host
+already shows (the daemon's session list, the repository's own state), so it adjudicates nothing
+and is granted by being declared and reviewed with the layer.
+
+**Acts the host performs.** A row may carry an `enter` act — what Enter does on it — and the verbs
+are declared too, so a view cannot reach one nobody reviewed:
+
+```toml
+actions = ["switch", "fold"]
+```
+
+```jsonc
+"enter": {"switch": "s-1793…"}   // go to that session
+       | {"fold": true}          // open or close this row; the HOST keeps the fold state
+       | {"event": "expand"}     // call the pane again with {"item","action"}
+```
+
+A view carrying an act its layer did not declare is refused (`View::validate_for`), and the head
+draws what is below it. The next verb a pane needs — `disarm` a monitor, `fire` one now — is one
+more word in that list.
+
+**Fold state is the host's, by row id.** `Input::folded` carries what the person has opened and
+closed; the layer decides which rows CAN fold and how they start. A fold is then instant (a map and
+a redraw), and survives the next answer, because it travels back in the input.
+
+**The row grew what a list draws**: `cells` may be a string or `{"text","role"}`, and a row also
+carries `facts` (the right-hand column), `under` (the faint line beneath it), `number` (what
+`/switch N` types), `depth` (a flat list that has already walked its own tree) and `open`
+(`true`/`false`/`"fixed"` — a row no key can fold). `Row::detail` keeps its meaning: prose read
+whole on Enter.
 
 ## C4. The wire (protocol 51)
 
