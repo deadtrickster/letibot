@@ -35,18 +35,35 @@ use letibot_code::shell::Word;
 /// *what am I being asked about* is the question, and *it runs the project's code* is the
 /// reason the answer is not remembered.
 pub fn runs_project_code(baseline: &Baseline) -> Option<String> {
+    find(baseline).map(|f| f.what)
+}
+
+/// **The bucket the runner falls in**, for a report that has to be read at a glance —
+/// `cargo test`, `cargo build`, `pytest`, `make`, `a script in the checkout`.
+///
+/// The sentence [`runs_project_code`] answers is what a CARD prints, so it names the file
+/// (`bash scripts/check-fmt.sh`); a table of those is a table of one row per path. This is the
+/// same traversal, the same judgement and the same `None` — only the label differs — so a
+/// corpus report cannot drift from what the gate does.
+pub fn runs_project_code_kind(baseline: &Baseline) -> Option<String> {
+    find(baseline).map(|f| f.kind)
+}
+
+/// What one stage was found to run: the sentence a card prints, and the bucket a report
+/// counts.
+struct Found {
+    what: String,
+    kind: String,
+}
+
+fn find(baseline: &Baseline) -> Option<Found> {
     let command = baseline.command.as_ref()?;
-    for stage in &command.stages {
-        if let Some(what) = stage_runs_project_code(stage) {
-            return Some(what);
-        }
-    }
-    None
+    command.stages.iter().find_map(stage_runs_project_code)
 }
 
 /// One simple command, read the way the gate reads it: unwrap the wrapper, then ask what the
 /// real program is.
-fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<String> {
+fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<Found> {
     let spelled = stage.program.literal()?;
     let argv: Vec<String> = stage
         .argv
@@ -85,13 +102,23 @@ fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<String>
         .iter()
         .any(|root| program.starts_with(root));
     if program.contains('/') && !system {
-        return Some(format!("`{program}` — a program in this checkout"));
+        return Some(Found {
+            what: format!("`{program}` — a program in this checkout"),
+            kind: "a program in the checkout".into(),
+        });
     }
     if let Some(verb) = subcommand_that_runs_code(name, argv) {
-        // A program that is its own verb (`pytest`) names itself and nothing else.
+        // A program that is its own verb (`pytest`) names itself and nothing else, on the card
+        // and in the bucket alike: `cargo test` and `cargo build` are two rows of a report.
         return Some(match verb.is_empty() {
-            true => format!("`{name}`"),
-            false => format!("`{name} {verb}`"),
+            true => Found {
+                what: format!("`{name}`"),
+                kind: name.to_string(),
+            },
+            false => Found {
+                what: format!("`{name} {verb}`"),
+                kind: format!("{name} {verb}"),
+            },
         });
     }
     // **A script handed to an interpreter** — `bash scripts/check.sh`, `python3 tool.py`.
@@ -100,7 +127,10 @@ fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<String>
     if let Some(path) = crate::intent::script_argument(name, argv)
         && is_relative_or_inside(&path)
     {
-        return Some(format!("`{name} {path}` — a script in this checkout"));
+        return Some(Found {
+            what: format!("`{name} {path}` — a script in this checkout"),
+            kind: "a script in the checkout".into(),
+        });
     }
     None
 }

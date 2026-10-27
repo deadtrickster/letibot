@@ -194,3 +194,114 @@ fn a_file_that_is_not_a_decision_array_is_refused() {
     assert!(e.contains("gate-corpus-not-an-array.json"), "{e}");
     let _ = std::fs::remove_file(&path);
 }
+
+// ---------------------------------------------------------------------------
+// What D16 and R98(1) would change, over the same fixture
+// ---------------------------------------------------------------------------
+
+/// **The D16 column over the fixture, counted by row.** Four calls a person answered, all at
+/// `writes-allowed`; three of them are in-checkout exec and would not have been cards inside a
+/// measured boundary; the fourth is a `grep`, which is judged a READ and is admitted at every
+/// point without a card already — so counting it would be claiming a saving that exists.
+#[test]
+fn the_d16_column_counts_the_cards_a_boundary_would_not_have_raised() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/gate-corpus-tiny.json");
+    let u = unasked(&path, &env()).expect("the fixture corpus must measure");
+    assert_eq!(u.rows, 10, "ten decisions in the fixture");
+    assert_eq!(u.commands, 9, "the `edit` row has no command");
+    assert_eq!(
+        u.cards_writes_allowed, 4,
+        "four human answers, all at this point"
+    );
+    assert_eq!(u.d16, 3, "the two `cargo test -p` rows and the `--lib` one");
+    assert_eq!(u.cards_any_point, 4, "and no human answer at another point");
+    assert_eq!(u.d16_any_point, 3);
+}
+
+/// **The R98 column counts STANDING answers, and the fixture shows why the distinction matters.**
+/// Its one project-code command (`cd … && export … && cargo test`) was settled by `gate:mode` —
+/// the point admitting it — and a point that admits will go on admitting whatever a grant says,
+/// so that call is not one R98 changes. The row beside it, `tail -5 /var/log/x.log`, was settled
+/// by a `permission` rule and is not project code. Zero, for two different right reasons.
+#[test]
+fn the_r98_column_ignores_what_the_mode_settled_and_what_is_not_project_code() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/gate-corpus-tiny.json");
+    let u = unasked(&path, &env()).expect("the fixture corpus must measure");
+    assert_eq!(u.r98_total, 0, "{:?}", u.r98);
+    assert_eq!(u.r98_would_ask, 0);
+}
+
+/// **A standing settle at `allow-all` is not a cost of the switch**, and this is the row that
+/// says so. The mode admits exec there whatever a grant says — so R98 turning the grant off
+/// changes nothing, and a report that counted it would overstate what the switch costs by the
+/// population that mostly runs it (the operator's own box).
+#[test]
+fn a_standing_settle_at_allow_all_is_not_a_card_the_switch_costs() {
+    let path =
+        std::env::temp_dir().join(format!("gate-corpus-unasked-{}.json", std::process::id()));
+    let row = |id: &str, mode: &str, command: &str| {
+        format!(
+            "{{\"request_id\":\"{id}\",\"session_id\":\"s-u\",\"decided_ms\":1,\
+              \"tool\":\"bash\",\"mode\":\"{mode}\",\"tier\":\"may_approve\",\
+              \"verdict\":\"selected\",\"verdict_by\":\"gate:shape\",\
+              \"baseline\":\"ask — intents [execute_code] over [workspace]\",\
+              \"arguments_json\":\"{{\\\"command\\\":\\\"{command}\\\"}}\"}}"
+        )
+    };
+    std::fs::write(
+        &path,
+        format!(
+            "[{},{},{},{}]",
+            row("a", "writes allowed", "cargo test"),
+            row("b", "allow-all", "cargo build"),
+            row("c", "allow-all (this box, consented)", "cargo clippy"),
+            row("d", "writes allowed", "cargo fmt --all"),
+        ),
+    )
+    .unwrap();
+    let u = unasked(&path, &env()).expect("a hand-written corpus measures");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(u.r98_total, 3, "three runners, and `cargo fmt` is not one");
+    assert_eq!(
+        u.r98_would_ask, 1,
+        "only the \"writes allowed\" row would have been a card: {:?}",
+        u.r98_would_ask_by_runner
+    );
+    assert_eq!(u.r98_would_ask_by_runner.get("cargo test"), Some(&1));
+}
+
+/// **A standing answer over a runner is counted**, by the runner's bucket — and a shape over
+/// something that is not one is not. The three mechanisms count alike (`gate:shape`,
+/// `gate:session-grant`, `gate:permission`): each is a standing answer that R98 stops honouring.
+#[test]
+fn a_standing_answer_over_a_runner_is_counted_by_its_bucket() {
+    let row = |id: &str, by: &str, mode: &str, command: &str| {
+        format!(
+            "{{\"request_id\":\"adj-s-u-{id}\",\"session_id\":\"s-u\",\"decided_ms\":1,\
+              \"tool\":\"bash\",\"mode\":\"{mode}\",\"tier\":\"may_approve\",\
+              \"verdict\":\"selected\",\"verdict_by\":\"{by}\",\
+              \"baseline\":\"ask — intents [execute_code] over [workspace]\",\
+              \"arguments_json\":\"{{\\\"command\\\":\\\"{command}\\\"}}\"}}"
+        )
+    };
+    let path =
+        std::env::temp_dir().join(format!("gate-corpus-unasked2-{}.json", std::process::id()));
+    std::fs::write(
+        &path,
+        format!(
+            "[{},{},{}]",
+            row("a", "gate:shape", "writes allowed", "cargo test"),
+            row("b", "gate:session-grant", "writes allowed", "cargo build"),
+            row("c", "gate:permission", "writes allowed", "cargo fmt --all"),
+        ),
+    )
+    .unwrap();
+    let u = unasked(&path, &env()).expect("a hand-written corpus measures");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(u.r98_total, 2, "`cargo fmt` is not a runner: {:?}", u.r98);
+    assert_eq!(u.r98.get("cargo test"), Some(&1));
+    assert_eq!(u.r98.get("cargo build"), Some(&1));
+    assert_eq!(u.r98_would_ask, 2, "writes-allowed would otherwise ask");
+}

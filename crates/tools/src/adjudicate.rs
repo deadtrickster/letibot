@@ -1981,6 +1981,23 @@ pub struct AdjudicatedGate {
     /// the cards stopped. `None` — a gate nobody wired — records the row and says nothing,
     /// which is the honest answer for a caller that did not ask to be told.
     admissions: Option<Box<dyn AdmissionSink>>,
+    /// **Whether a host with no boundary asks about the project's own code** — R98(1), and
+    /// **off by default**.
+    ///
+    /// The operator, 2026-10-27, on the first cut of this: *"asking on every build/test on the
+    /// Mac would just push them to allow-all (which they already run, unsandboxed)"*. That is
+    /// the measurement that turned a rule into a switch: a gate that asks about every `cargo
+    /// build` on an unconfined box does not make the box safer, it makes the operator reach for
+    /// the point that asks nothing at all — and `allow-all (this box, consented)` is a worse
+    /// state than a granted `cargo test`, because it refuses nothing.
+    ///
+    /// So with this `false` — every session that does not say otherwise — an unconfined host
+    /// behaves exactly as it did before R98 existed: grants, the shape cache and the
+    /// `permission` config settle a test runner like anything else. Set by
+    /// `[permissions] ask_unconfined_code = true` in a `leticode.toml` (see
+    /// `crate::leticode_config::PermissionKeys`), which is a user-level file for a box where
+    /// somebody does want it.
+    unconfined_code_asks: bool,
 }
 
 /// **A call the gate admitted without asking anybody**, and why (D16).
@@ -2011,6 +2028,48 @@ pub struct AdmissionNotice {
 /// [`crate::authorise::DenialSink`] for the channel in the other direction.
 pub trait AdmissionSink: Send + Sync {
     fn admitted(&self, notice: &AdmissionNotice);
+}
+
+/// **D16's rule, split where a corpus can see the halves.**
+///
+/// [`admits_inside_the_boundary`] is what the gate calls (`AdjudicatedGate::admit`, the arm
+/// labelled D16). [`a_command_that_crosses_nothing`] is the same rule with the boundary's own
+/// half left out, for `corpus_replay`'s instrument: a corpus row records the call and the mode
+/// but not the confinement the call ran inside, so the measurement asks *how many cards would
+/// not have been raised if this session had been inside a measured boundary* and says so.
+///
+/// **One implementation of the rule, two callers**, which is the whole reason this is a function
+/// rather than a condition written twice: a replay that restated the condition would be the
+/// second spelling this tree keeps paying for — it would go on answering after the gate had
+/// stopped.
+pub fn a_command_that_crosses_nothing(
+    mode: crate::mode::Mode,
+    access: Access,
+    baseline: &crate::intent::Baseline,
+) -> bool {
+    access == Access::Exec
+        && mode == crate::mode::Mode::WRITES_ALLOWED
+        // **The always-ask list survives the boundary**, which is D16's own word: *"and it is
+        // not in an always-ask tier"*. It is a conjunct here rather than a consequence of the
+        // ones beside it, and that is a fact this test found: `sudo -n true` and `shutdown now`
+        // carry no network intent and no region at all, so the first cut of this rule admitted
+        // both inside a boundary — the privilege and power tiers quietly dropped by a rule that
+        // had been argued about egress and paths. Written as a positive match rather than as
+        // *not always-ask* so that a fourth tier is a compile error here, where the decision is.
+        && matches!(baseline.tier, Tier::Auto | Tier::MayApprove)
+        && !baseline.intents.contains(&crate::intent::Intent::Network)
+        && !baseline.regions.iter().any(|r| r.is_outside())
+}
+
+/// **D16's whole rule**: the call crosses nothing AND the boundary it runs inside was measured
+/// and holds — see [`crate::exec::Boundary::encloses`].
+pub fn admits_inside_the_boundary(
+    boundary: Option<&crate::exec::Boundary>,
+    mode: crate::mode::Mode,
+    access: Access,
+    baseline: &crate::intent::Baseline,
+) -> bool {
+    a_command_that_crosses_nothing(mode, access, baseline) && boundary.is_some_and(|b| b.encloses())
 }
 
 impl AdjudicatedGate {
@@ -2044,6 +2103,7 @@ impl AdjudicatedGate {
             corpus_sink: None,
             unasked: false,
             admissions: None,
+            unconfined_code_asks: false,
         }
     }
 
@@ -2082,6 +2142,14 @@ impl AdjudicatedGate {
     /// in the other direction.
     pub fn with_admission_sink(mut self, sink: Box<dyn AdmissionSink>) -> Self {
         self.admissions = Some(sink);
+        self
+    }
+
+    /// **Make a host with no boundary ask about the project's own code** — R98(1). Off by
+    /// default; see [`AdjudicatedGate::unconfined_code_asks`] for why the default is off and
+    /// `[permissions] ask_unconfined_code` for the one caller.
+    pub fn with_unconfined_code_asks(mut self, on: bool) -> Self {
+        self.unconfined_code_asks = on;
         self
     }
 
@@ -2468,6 +2536,11 @@ impl AdjudicatedGate {
         access: Access,
         baseline: &crate::intent::Baseline,
     ) -> Option<String> {
+        // **Off by default, and the default is the old behaviour** — see
+        // [`AdjudicatedGate::unconfined_code_asks`].
+        if !self.unconfined_code_asks {
+            return None;
+        }
         if access != Access::Exec || self.boundary.is_some() {
             return None;
         }
@@ -3720,12 +3793,8 @@ impl Gate for AdjudicatedGate {
         // says what it says — the question there is answered by a model, not a card, so what
         // D16 removes for the operator is the interruption that point does not have; and the
         // two `allow-all` coordinates already admit exec unasked by their own definition.
-        if access == Access::Exec
-            && self.mode == crate::mode::Mode::WRITES_ALLOWED
+        if admits_inside_the_boundary(self.boundary.as_ref(), self.mode, access, &baseline)
             && let Some(boundary) = &self.boundary
-            && boundary.encloses()
-            && !baseline.intents.contains(&crate::intent::Intent::Network)
-            && !baseline.regions.iter().any(|r| r.is_outside())
         {
             let basis = format!(
                 "admitted: inside the measured boundary (D16). {} entered the namespaces that \

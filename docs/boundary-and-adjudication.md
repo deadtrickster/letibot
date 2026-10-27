@@ -1440,19 +1440,45 @@ answered by a **model**, not a card, so what D16 removes for the operator (an in
 something those points do not have. Narrowing what an oracle is asked about would be a
 calibration change, and the ruling did not make one.
 
-### R98 (1) — where there is no boundary, the test file *is* the program
+### R98 (1) — where there is no boundary, the test file *is* the program … behind a switch
 
 The same sentence read backwards. On a host with **no** measured boundary, a `bash` call whose
 stages run a test runner, a build that executes project code, or a script in the checkout is
-**not settled by a session grant or a durable rule**: it asks every time, and the card says why
-(*"asks every time: it runs code the agent wrote (`cargo test`), and this host has no boundary
-— a grant cannot stand in for the file that will exist by the next run (R98)"*).
+**not settled by a session grant, an approved shape or a `permission` rule**: it asks every time,
+and the card says why (*"asks every time: it runs code the agent wrote (`cargo test`), and this
+host has no boundary — a grant cannot stand in for the file that will exist by the next run
+(R98)"*).
+
+**It is OFF unless a file turns it on**, and that is the operator's ruling on seeing it run
+(2026-10-27): *"asking on every build/test on the Mac would just push them to allow-all (which
+they already run, unsandboxed)"*. A gate that asks about everything on an unconfined box does
+not buy safety — it buys the point that asks nothing, and `allow-all (this box, consented)` is a
+worse state than a granted `cargo test`, because it refuses nothing at all.
+
+```toml
+# ~/.config/letibot/leticode.toml — the box-wide file, or a project's own
+[permissions]
+ask_unconfined_code = true
+```
+
+* **Either level may turn it on and neither can turn it off.** The merge is `or`
+  (`leticode_config::PermissionKeys::overridden_by`): the user file is the operator's own, and a
+  project file is one a session with `write` can edit, so a `false` in a repository must not
+  loosen what the user asked for. A key this build does not know refuses the file by name, like
+  every other key in that file.
+* **With it off — the default — an unconfined session behaves exactly as it did before R98
+  existed**: grants, shapes and `permission` rules settle a runner like anything else.
+  `the_default_leaves_an_unconfined_host_as_it_was` pins both halves of that.
+* **A narrowing in force is disclosed at startup**, naming the file that set it, because an
+  operator who forgot they set it would read the cards as a regression.
 
 - **What counts** (`crates/tools/src/project_code.rs`): `cargo test|run|build|bench|check|clippy`
   `|nextest|miri|doc-test` (a build script is project code and runs on `check` too), `pytest` and
   `python -m pytest`, `go test`, `npm test`/`npm run`, `make`/`just`, an interpreter handed a path
   in the checkout, and any program that is itself a path (`./scripts/test.sh`). Wrappers —
   `sudo`, `env`, `timeout` — are unwrapped first, because that is where a runner goes to hide.
+  A system binary is **not** project code (`/bin/sed` is `sed`); a toolchain under `~/.local/bin`
+  (mise's shims) reads as one, which is the narrow direction and is stated rather than found.
 - **How it binds**, at three places that must agree: the ladder offers no standing rung
   (`Offer`), the three arms that honour a standing answer skip it (session grants, the shape
   cache, the `permission` config's `allow`), and the two that would write one refuse. An answer
@@ -1462,5 +1488,52 @@ stages run a test runner, a build that executes project code, or a script in the
   status`, `cargo fmt`, `grep` and the rest keep their ladders, their grants and their shape
   cache — which the tests pin in the same breath, so a fix that narrowed every ladder would fail
   rather than pass quietly.
+
+#### What the switch would cost, measured on every decision these boxes ever took
+
+`cargo run --offline -p letibot-tools --example d16_corpus -- <host>.json` —
+`corpus_replay::unasked`, over 187,930 recorded decisions (161,097 with a command) exported from
+three hosts. The rule is the gate's own `adjudicate::a_command_that_crosses_nothing` and
+`project_code::runs_project_code`, not a restatement, so the instrument cannot go on answering
+after the gate has stopped.
+
+**D16 first** — the cards a person answered at `writes-allowed`, and how many of them a measured
+boundary would have settled with nobody asked. (A corpus row records the call, the mode and who
+decided, and not the confinement the call ran inside: the column asks the rule *with the
+boundary's half assumed*, which is what "would not have been raised" means.)
+
+| host | decisions | cards at `writes-allowed` | settled by the boundary, no card |
+|---|---:|---:|---:|
+| mac | 32,108 | 251 | **69** (27%) |
+| lab2x1 | 155,192 | 18 | **11** (61%) |
+| lubuntu1 | 630 | 1 | 0 |
+| **all** | 187,930 | 270 | **80** (30%) |
+
+**And R98(1), which is what the switch costs.** *Settles* are rows whose deciding mechanism was a
+standing answer (`gate:shape`, `gate:session-grant`, `gate:permission`) over a command that runs
+the project's own code. *Would ask* is the subset at a point whose exec disposition is `Ask` —
+the calls that become cards; the rest were at `allow-all`, where the mode admits regardless of
+any grant, so the switch changes nothing there.
+
+| runner | mac: settles | mac: would ask | all hosts: settles | all hosts: would ask |
+|---|---:|---:|---:|---:|
+| `cargo test` | 378 | **24** | 2,960 | **575** |
+| a program in the checkout (`./scripts/…`) | 137 | **137** | 176 | **176** |
+| `cargo clippy` | 124 | 0 | 322 | 18 |
+| `cargo build` | 115 | **4** | 485 | **98** |
+| `go test` | 44 | 0 | 136 | 3 |
+| `cargo check` | 20 | **3** | 475 | **74** |
+| a script in the checkout (`bash scripts/…`) | 15 | **3** | 110 | **39** |
+| `python3 -m pytest` | 1 | 0 | 1 | 0 |
+| `cargo run` | 0 | 0 | 6 | 3 |
+| **total** | **834** | **171** | **4,671** | **986** |
+
+Read off the mac column, which is the question the switch was filed for: turning it on there
+costs **171 cards** on this record — and 137 of those are the session's own programs
+(`./scripts/…`, `target/debug/…`), the case the ruling is actually about, while `cargo test`
+costs 24 and the rest of the cargo family costs single digits at a point that would otherwise
+ask. The bulk of the 834 stays free because it is at `allow-all`, where nothing was being asked
+anyway — which is the operator's own objection, in numbers: on a box already at `allow-all` the
+switch would be decorative, and on a box at `writes-allowed` it is 24 `cargo test` cards.
 
 R98's second half — a sandbox on macOS — is not this section and not this slice.

@@ -4926,6 +4926,12 @@ impl Harness {
                     // `bash`) rather than the operator's rule that exec always asks.
                     // Off for the confined seats, which keep the rule.
                     .with_exec_follows_mode(cfg.unconfined)
+                    // **R98(1), off unless a `leticode.toml` says otherwise** — a host with no
+                    // boundary asks about every test runner, build and project script. See
+                    // `letibot_tools::adjudicate::AdjudicatedGate::unconfined_code_asks`: the
+                    // default is the behaviour that predates the rule, because asking about
+                    // every build on an unconfined box buys `allow-all` rather than safety.
+                    .with_unconfined_code_asks(cfg.leticode.permissions.ask_unconfined_code())
                     // opencode's `permission` config (LETIBOT_PERMISSION), so the
                     // allow/deny/ask rules govern before the mode — and a subagent
                     // inherits them.
@@ -5008,6 +5014,22 @@ impl Harness {
                 // A store that cannot answer is a note, never a refusal to start —
                 // the cost of a cold cache is being asked, which is the safe side.
                 let mut g = g;
+                // **A narrowing in force is disclosed**, like every other one: with R98(1) on,
+                // a host with no boundary asks about every build and test the project's own
+                // code is behind, and an operator who forgot they set it would read the cards
+                // as a regression. Silence is the default because the default is off.
+                if cfg.leticode.permissions.ask_unconfined_code() {
+                    notes.push(format!(
+                        "[permissions] ask_unconfined_code is ON{}: a session with no measured \
+                         boundary asks about every test runner, build and project script, every \
+                         time — no session grant, no approved shape and no `permission` rule \
+                         settles one (R98). Only the per-call answer does",
+                        match cfg.leticode.path.as_deref() {
+                            Some(p) => format!(" ({})", p.display()),
+                            None => String::new(),
+                        }
+                    ));
+                }
                 if let Some(st) = &store {
                     let ws = cfg.workspace.display().to_string();
                     match st.approved_shapes(&ws) {

@@ -719,6 +719,165 @@ fn each_row(path: &Path, mut f: impl FnMut(&Row)) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// **What D16 and R98(1) would change, over a corpus** — the two numbers the rulings were filed
+/// on, measured against every decision this operator's boxes ever took.
+///
+/// # What each column is, and the assumption under it
+///
+/// * **`cards_*`** are the calls a PERSON answered — `verdict_by: human:…` — which is what a card
+///   is. The corpus does not record which rung they chose (a denial and an admit are both
+///   `selected`), so these are *cards raised*, not *cards a person cleared*.
+/// * **`d16`** are those a `writes-allowed` session would not have raised **if its backend's
+///   boundary had been measured**. That is the assumption, and it is the only one: a corpus row
+///   records the call, the mode and who decided, and not the confinement the call ran in, so the
+///   measurement is [`crate::adjudicate::a_command_that_crosses_nothing`] — the gate's own rule
+///   minus the boundary half — and it is reported per mode rather than summed over them.
+/// * **`r98`** are settles whose deciding mechanism was a **standing answer** (an approved
+///   shape, a session grant, a `permission` rule) over a command that runs the project's own
+///   code, split by the runner. With `[permissions] ask_unconfined_code` OFF — the default — R98
+///   does nothing; this column is what turning it on would cost.
+#[derive(Debug, Default)]
+pub struct Unasked {
+    pub rows: usize,
+    pub commands: usize,
+    /// Human-answered cards at `writes-allowed` — the population D16 changes.
+    pub cards_writes_allowed: usize,
+    /// …and the ones the boundary rule would have settled with no card.
+    pub d16: usize,
+    /// Human-answered cards at any point, and the same rule over them — context only, because
+    /// D16 is a `writes-allowed` rule and a session that already admits everything has no cards
+    /// to save.
+    pub cards_any_point: usize,
+    pub d16_any_point: usize,
+    /// Standing-answer settles over project code, by runner (R98's cost).
+    pub r98: BTreeMap<String, usize>,
+    pub r98_total: usize,
+    /// …of which at a point that would otherwise have ASKED for an exec call — the ones the
+    /// switch actually costs a card. The rest were at a point whose exec disposition is already
+    /// `Admit` (`allow-all`, in both coordinates), so the grant was not what settled them and
+    /// turning R98 on changes nothing there.
+    pub r98_would_ask: usize,
+    /// …and the same split by runner, for the rows that would ask.
+    pub r98_would_ask_by_runner: BTreeMap<String, usize>,
+}
+
+impl Unasked {
+    fn row(&mut self, r: &Row, env: &Surroundings) {
+        self.rows += 1;
+        if r.tool != "bash" {
+            return;
+        }
+        let Some(cmd) = r.command() else {
+            return;
+        };
+        self.commands += 1;
+        let reading = Reading::of(&cmd, env);
+        let mode = Mode::parse(&r.mode).ok();
+        let writes_allowed = mode == Some(Mode::WRITES_ALLOWED);
+
+        if r.a_human_answered() {
+            // The gate's own rule, minus its boundary half — see the type's doc for why that is
+            // the honest question a corpus can answer.
+            let would = crate::adjudicate::a_command_that_crosses_nothing(
+                Mode::WRITES_ALLOWED,
+                reading.access,
+                &reading.baseline,
+            );
+            self.cards_any_point += 1;
+            if would {
+                self.d16_any_point += 1;
+            }
+            if writes_allowed {
+                self.cards_writes_allowed += 1;
+                if would {
+                    self.d16 += 1;
+                }
+            }
+        }
+
+        let standing = matches!(
+            r.verdict_by.as_str(),
+            "gate:shape" | "gate:session-grant" | "gate:permission"
+        );
+        if standing
+            && reading.access == Access::Exec
+            && let Some(kind) = crate::project_code::runs_project_code_kind(&reading.baseline)
+        {
+            *self.r98.entry(kind.clone()).or_default() += 1;
+            self.r98_total += 1;
+            // **The points that would otherwise ask.** An unparsed mode (the two `allow-all`
+            // spellings are not in `Mode::NAMED`) is not one of them: `allow-all` is where most
+            // of these rows are and the mode admits exec there whatever a grant says.
+            let asks = mode
+                .is_some_and(|m| m.disposition(Access::Exec) != crate::mode::Disposition::Admit);
+            if asks {
+                self.r98_would_ask += 1;
+                *self.r98_would_ask_by_runner.entry(kind).or_default() += 1;
+            }
+        }
+    }
+
+    /// Fold another file's measurement into this one.
+    pub fn merge(&mut self, o: Unasked) {
+        self.rows += o.rows;
+        self.commands += o.commands;
+        self.cards_writes_allowed += o.cards_writes_allowed;
+        self.d16 += o.d16;
+        self.cards_any_point += o.cards_any_point;
+        self.d16_any_point += o.d16_any_point;
+        for (kind, n) in o.r98 {
+            *self.r98.entry(kind).or_default() += n;
+        }
+        self.r98_total += o.r98_total;
+        self.r98_would_ask += o.r98_would_ask;
+        for (kind, n) in o.r98_would_ask_by_runner {
+            *self.r98_would_ask_by_runner.entry(kind).or_default() += n;
+        }
+    }
+
+    /// The table, as the operator reads it. Numbers only: not one command is printed.
+    pub fn render(&self, label: &str) -> String {
+        let mut out = format!(
+            "{label}: {} decisions, {} with a command\n",
+            self.rows, self.commands
+        );
+        out.push_str(&format!(
+            "  D16   cards at writes-allowed: {}   settled by the boundary, no card: {}\n",
+            self.cards_writes_allowed, self.d16
+        ));
+        out.push_str(&format!(
+            "        (every point, for context: {} cards, {} of them in-checkout exec)\n",
+            self.cards_any_point, self.d16_any_point
+        ));
+        out.push_str(&format!(
+            "  R98   standing-answer settles over project code: {}",
+            self.r98_total
+        ));
+        if self.r98_total > 0 {
+            out.push_str(&format!(
+                " ({} of them at a point that would otherwise ask)",
+                self.r98_would_ask
+            ));
+        }
+        out.push('\n');
+        let mut v: Vec<_> = self.r98.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        for (kind, n) in v {
+            let asks = self.r98_would_ask_by_runner.get(kind).copied().unwrap_or(0);
+            out.push_str(&format!("          {:<28} {:>7} {:>7}\n", kind, n, asks));
+        }
+        out
+    }
+}
+
+/// **Measure one corpus file for D16 and R98(1).** `env` is the caller's home/workspace
+/// assumption, for the same reason [`sweep`]'s is.
+pub fn unasked(path: &Path, env: &Surroundings) -> Result<Unasked, String> {
+    let mut out = Unasked::default();
+    each_row(path, |r| out.row(r, env))?;
+    Ok(out)
+}
+
 impl Report {
     /// Fold another file's report into this one, for the total across hosts. Counts add
     /// and the sets union, so a total is the sweep of the concatenated corpora.

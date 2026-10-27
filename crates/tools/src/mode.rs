@@ -425,8 +425,9 @@ impl Mode {
     /// CROSSES the boundary: network egress, a path outside the checkout, the always-ask tiers.
     /// The point's own `exec` disposition stays `Ask` — a point is what the mode promises, and the
     /// admit is the gate's judgement about one condition, not a second disposition. On a host with
-    /// no measured boundary nothing changed: every command asks, and a command that runs the
-    /// project's own code asks every time however it was granted before (R98).
+    /// no measured boundary nothing changed: every command asks, and — **with
+    /// `[permissions] ask_unconfined_code` on, which it is not by default** — a command that runs
+    /// the project's own code asks every time however it was granted before (R98).
     pub const WRITES_ALLOWED: Mode = Mode {
         name: "writes allowed",
         role: "coder",
@@ -441,7 +442,8 @@ impl Mode {
                   confinement letibot has measured — one that crosses nothing and stays in \
                   the checkout (D16). What still asks is what crosses: the network, a path \
                   outside the project, the always-ask list — and, where no boundary was \
-                  measured, any command that runs the project's own code, every time (R98).",
+                  measured, any command that runs the project's own code, every time, if \
+                  `[permissions] ask_unconfined_code` is on (R98; off by default).",
     };
 
     /// The model adjudicates within `MayApprove`.

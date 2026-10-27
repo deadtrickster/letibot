@@ -450,7 +450,8 @@ fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
         Box::new(Asked(asked.0.clone())),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
-    );
+    )
+    .with_unconfined_code_asks(true);
     // Exactly what a human's earlier approval of this shape would have seeded.
     let args = json!({ "command": "cargo test --offline" });
     let seen = g.request_for(&bash(&args));
@@ -476,7 +477,8 @@ fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
         Box::new(Asked(asked.0.clone())),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
-    );
+    )
+    .with_unconfined_code_asks(true);
     let args = json!({ "command": "cargo fmt --all" });
     let seen = g.request_for(&bash(&args));
     g.seed_shapes([(seen.shape.clone().expect("a shape"), seen.class.to_string())]);
@@ -515,7 +517,8 @@ fn the_card_narrows_the_ladder_and_says_why() {
         Box::new(Asked::default()),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
-    );
+    )
+    .with_unconfined_code_asks(true);
     let request = g.request_for(&bash(&json!({ "command": "cargo test --offline" })));
     let ids: Vec<&str> = request.options.iter().map(|o| o.id.as_str()).collect();
     assert!(
@@ -557,6 +560,7 @@ fn a_durable_allow_rule_does_not_settle_a_runner_without_a_boundary() {
         crate::mode::Mode::WRITES_ALLOWED,
         None,
     )
+    .with_unconfined_code_asks(true)
     .with_permission(vec![crate::permission::Rule::new(
         "bash",
         "cargo test*",
@@ -595,7 +599,8 @@ fn an_allow_once_answer_does_not_seed_a_shape_for_a_runner() {
         Box::new(Asked(asked.0.clone())),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
-    );
+    )
+    .with_unconfined_code_asks(true);
     let args = json!({ "command": "cargo test --offline" });
     let call = bash(&args);
     assert_eq!(g.admit(&call), GateDecision::Admit);
@@ -608,6 +613,83 @@ fn an_allow_once_answer_does_not_seed_a_shape_for_a_runner() {
         "the shape of the first answer must not settle the second run"
     );
     assert_eq!(last_by(&g), "human:test", "a person answered again");
+}
+
+// ---------------------------------------------------------------------------
+// R98 (1) — the switch, and what its default is
+// ---------------------------------------------------------------------------
+
+/// **With the switch off — the default — an unconfined host behaves exactly as it did before
+/// R98 existed.**
+///
+/// The operator, on the first cut of this rule: *"asking on every build/test on the Mac would
+/// just push them to allow-all (which they already run, unsandboxed)"*. So the rule is a switch,
+/// and this is the half that says the default is the OLD behaviour, both ways round: a shape
+/// seeded from a past approval still settles a runner, and an `allow_session` answer still
+/// records a grant that settles the next one.
+#[test]
+fn the_default_leaves_an_unconfined_host_as_it_was() {
+    let asked = Asked::default();
+    let mut g = gate_at(
+        Box::new(Asked(asked.0.clone())),
+        crate::mode::Mode::WRITES_ALLOWED,
+        None,
+    );
+    // A shape a previous approval would have seeded — with the switch off it is honoured.
+    let args = json!({ "command": "cargo test --offline" });
+    let seen = g.request_for(&bash(&args));
+    assert_eq!(
+        g.seed_shapes([(seen.shape.clone().expect("a shape"), seen.class.to_string())]),
+        1
+    );
+    let call = bash(&args);
+    assert_eq!(g.admit(&call), GateDecision::Admit);
+    assert_eq!(asked.count(), 0, "the shape answered it, as it always did");
+    assert_eq!(last_by(&g), "gate:shape");
+
+    // And the ladder offers both standing rungs, so an answer can still be remembered.
+    let mut g = gate_at(
+        Box::new(Picks("allow_session")),
+        crate::mode::Mode::WRITES_ALLOWED,
+        None,
+    );
+    let request = g.request_for(&bash(&json!({ "command": "cargo test" })));
+    let ids: Vec<&str> = request.options.iter().map(|o| o.id.as_str()).collect();
+    assert!(
+        ids.contains(&"allow_session") && ids.contains(&"allow_always"),
+        "with R98(1) off the ladder is the one it always was: {ids:?}"
+    );
+    assert_eq!(request.options_note, None, "and nothing is left off it");
+    assert_eq!(
+        g.admit(&bash(&json!({ "command": "cargo test" }))),
+        GateDecision::Admit
+    );
+    assert_eq!(g.grants().len(), 1, "the grant was recorded, as before");
+}
+
+/// **The always-ask tier survives the boundary, and the first cut of D16 lost it.**
+///
+/// `sudo -n true` and `shutdown -h now` carry no network intent and name no path, so a rule
+/// argued about *egress* and *the view* admitted both inside a measured boundary — the privilege
+/// and power lines of the always-ask list, quietly dropped. D16's own words put them back: the
+/// admit holds only where the tier is one a point may move at all.
+#[test]
+fn the_always_ask_tier_still_asks_inside_the_boundary() {
+    for command in ["sudo -n true", "shutdown -h now", "crontab /w/cron.txt"] {
+        let asked = Asked::default();
+        let mut g = gate_at(
+            Box::new(Asked(asked.0.clone())),
+            crate::mode::Mode::WRITES_ALLOWED,
+            Some(measured_and_closed()),
+        );
+        let _ = g.admit(&bash(&json!({ "command": command })));
+        assert_eq!(
+            asked.count(),
+            1,
+            "`{command}` is on the always-ask list and must still be put to somebody"
+        );
+        assert_ne!(last_by(&g), "gate:boundary", "{command}");
+    }
 }
 
 /// **A rung the ladder did not offer is refused, and leaves nothing standing behind it.**
@@ -624,7 +706,8 @@ fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
             Box::new(Picks(rung)),
             crate::mode::Mode::WRITES_ALLOWED,
             None,
-        );
+        )
+        .with_unconfined_code_asks(true);
         let decision = g.admit(&bash(&json!({ "command": "cargo test" })));
         assert!(
             !matches!(decision, GateDecision::Admit),
@@ -640,7 +723,8 @@ fn a_rung_the_ladder_did_not_offer_is_refused_for_a_runner() {
         Box::new(Picks("allow_session")),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
-    );
+    )
+    .with_unconfined_code_asks(true);
     assert_eq!(
         g.admit(&bash(&json!({ "command": "cargo fmt --all" }))),
         GateDecision::Admit

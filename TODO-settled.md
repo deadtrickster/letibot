@@ -1266,9 +1266,12 @@ and the silence.
 
 ## R97 — A command inside a measured boundary is admitted without a card (D16) — **SETTLED 2026-10-27, branch `boundary-admits`**
 
-R98's first half came with it (the amendment of the same day): on an **unconfined** host, a
-command that runs the project's own code is not settled by a grant at all. R98's second half —
-a sandbox on macOS — is not this entry and not this slice.
+R98's first half came with it (the amendment of the same day), **behind a switch that is off by
+default**: on an **unconfined** host, a command that runs the project's own code is not settled
+by a grant — but only where `[permissions] ask_unconfined_code` says so in a `leticode.toml`.
+The operator, on the first cut shipping it on: *"asking on every build/test on the Mac would
+just push them to allow-all (which they already run, unsandboxed)"*. R98's second half — a
+sandbox on macOS — is not this entry and not this slice.
 
 **What was built.** The gate's `admit` gains one arm before the mode (`gate:boundary`): at
 `writes-allowed`, an `Access::Exec` call is admitted with no card when `Boundary::encloses`
@@ -1280,16 +1283,29 @@ operator is also **told**, one transcript line per admission (`HubAdmissions` �
 result). Beside it, R98(1): a call that runs a test runner, a build that executes project code
 or a script in the checkout, on a host with **no** boundary, offers no standing rung on its
 card, is not settled by a session grant, the shape cache or a `permission` `allow`, and writes
-none of them. The predicate is `crates/tools/src/project_code.rs`.
+none of them — with the switch on. With it off, nothing about an unconfined host changed. The
+predicate is `crates/tools/src/project_code.rs`.
 
 **Measured, and what the tests pin** (`adjudicate::tests::boundary`; `project_code`'s own):
 `cargo test`, `bash scripts/check-fmt.sh` and `rm -rf target` are admitted inside a measured
-boundary with the audit row saying why; `curl`, `cargo fetch`, `git push`, `gh`, a write outside
-the checkout, a missing namespace, an open seal, **an unverified seal**, a boundary with egress
-to the host, and the whole set on an unconfined host all still ask; `always-ask` still asks and
-`allow-all` admits by **its own** rule, not this one; a runner on an unconfined host is asked
-about twice in a row however it was answered the first time, and `cargo fmt` in the same fixture
-is still settled by its shape, so neither half is vacuous.
+boundary with the audit row saying why; `curl`, `cargo fetch`, `git push`, `gh`, `sudo`,
+`shutdown`, a write outside the checkout, a missing namespace, an open seal, **an unverified
+seal**, a boundary with egress to the host, and the whole set on an unconfined host all still
+ask; `always-ask` still asks and `allow-all` admits by **its own** rule, not this one; a runner
+on an unconfined host is asked about twice in a row however it was answered the first time —
+with the switch on — while `cargo fmt` in the same fixture is still settled by its shape, so
+neither half is vacuous; and with the switch off (the default) a seeded shape and an
+`allow_session` answer still settle a runner, which is `the_default_leaves_an_unconfined_host_as_it_was`.
+
+**The corpus numbers.** Exported from three hosts (`mac` 32,108 decisions, `lab2x1` 155,192,
+`lubuntu1` 630) and swept by `cargo run --offline -p letibot-tools --example d16_corpus`, which
+uses the gate's own `a_command_that_crosses_nothing` and `project_code::runs_project_code` rather
+than a restatement: **D16** would have settled **80 of the 270** cards people answered at
+`writes-allowed` (mac 69 of 251, lab2x1 11 of 18, lubuntu1 0 of 1). **R98(1)**, if switched on,
+would take back **986** standing-answer settles over project code at points that would otherwise
+ask (4,671 in total across the three hosts, most of them at `allow-all` where the mode admits
+anyway): mac 171 of 834 — 137 of those the session's own programs, 24 `cargo test` — and lab2x1
+815 of 3,837. The per-runner table is in `docs/boundary-and-adjudication.md` §6.
 
 **Two facts found on the way, both fixed here.** `cargo fetch` carried no `network` intent —
 the table named `install`/`publish`/`add`/`update` and not `fetch`, so a gate asking *does this
@@ -1298,10 +1314,9 @@ channel for an admission at all: an admit left a row in the audit and nothing th
 which is why D16's *"so the operator can see it happened"* needed the sink above rather than
 the row alone.
 
-**Not measured.** The corpus replay (R97's *"how many recorded human answers this would have
-settled"*) was **not run**: the corpus is not in this worktree — this session's tools run inside
-a boundary that does not contain `~/letibot-corpus` — and the operator was asked for a copy.
-R97's *done-when* is therefore met by the gate's own tests and the docs, not by the corpus
-number.
+**The corpus replay was the last thing to land** and it is no longer a gap: the operator copied
+`scratch/corpus/{mac,lab2x1,lubuntu1}.json` into the worktree, and the numbers above are what
+`corpus_replay::unasked` reports over them. Nothing under `scratch/` is committed (it is
+gitignored, and the corpus is the operator's).
 
 **Still open?** `git log --oneline -S"gate:boundary" -- crates/tools/src/adjudicate.rs`.
