@@ -199,7 +199,14 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
     // the banner is built from.
     let described = harness.wiring().backend.clone();
     assert!(described.contains("ssh host `fake`"), "{described}");
-    assert!(described.contains("NOT CONFINED"), "{described}");
+    // **Confined or not is MEASURED on the machine behind the fake** — which is the box running
+    // this test: a Linux host with a working `bwrap` says `CONFINED, and measured`, a Mac says
+    // `NOT CONFINED — <why>`. Either is right; what must hold is that the description says which,
+    // rather than assuming one (RH3 took the hardcoded answer out of this sentence).
+    assert!(
+        described.contains("CONFINED, and measured") || described.contains("NOT CONFINED"),
+        "the description says whether the host confines, and how it knows: {described}"
+    );
     assert!(
         described.contains(&format!("remote/{SHORT}")),
         "the description names the branch the work comes back on: {described}"
