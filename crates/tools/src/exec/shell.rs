@@ -176,12 +176,23 @@
 //! **2. A secret stays a person's card.** The secret card owns the keyboard ahead of everything
 //! else in the head, so nothing can be typed while it is up; but the sharper half is here,
 //! because a shell is a place a secret could *land*: this module never takes a secret, never
-//! puts one in a line, and — the part that matters — **the trailer carries `$PWD` and `$?` and
-//! nothing else**. No environment dump, no `env` at session start, no `set -x`. A session whose
-//! state the head displays by *asking the shell for a value* would be a session that prints
-//! whatever that value is into a transcript, and a `sudo` password exported into the
-//! environment is exactly such a value. The cwd and the status are the two facts a head may
-//! read back, and they are the two that cannot be a credential.
+//! puts one in a line, and — the part that matters — **the trailer carries `$PWD`, `$?` and the
+//! exported environment, and no part of any of them is ever printed**. The cwd and the status
+//! are the two facts a head may read back, and they are the two that cannot be a credential.
+//!
+//! **The environment is there since D14/R95** (`docs/boundary-and-adjudication.md` §4j), and it
+//! is a third field rather than a second channel: the adjudicator has to read a command against
+//! the environment the shell really holds, and the shell is the only thing that can say what
+//! that is. Three things keep it from becoming the disclosure the paragraph above is about.
+//! First, **the shell drops every value that is not already one plain word** — the trailer is
+//! emitted by a function this module defines, and a value with a space, a quote, a glob or a
+//! newline in it never leaves the shell (see [`trailer_definition`]). Second, the bytes ride
+//! **inside the OSC trailer**, which is consumed by [`take_turn`] and never forwarded: they are
+//! not in the pane's feed, not in a turn's output, and not in anything a head draws. Third, the
+//! one consumer is [`ShellSession::env`], which the gate reads as values to resolve against and
+//! which masks a credential wherever it is *shown* (`intent::env`). A session whose state the
+//! head displays by *asking the shell for a value* would still be a session that prints whatever
+//! that value is into a transcript; that is not this, and this module has no API for it.
 //!
 //! # The protocol addition it needs: `PROTOCOL_VERSION` 30 → 31
 //!
@@ -434,8 +445,8 @@ impl Default for ShellConfig {
     }
 }
 
-/// **One line's answer**, and the two facts the shell is the authority for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// **One line's answer**, and the facts the shell is the authority for.
+#[derive(Clone, PartialEq, Eq)]
 pub struct Turn {
     /// Everything the shell wrote between the previous trailer and this one, with the echo of
     /// the trailer's own line removed. **This is the pane's feed** — raw bytes, escapes and
@@ -447,6 +458,34 @@ pub struct Turn {
     /// `$PWD`, the shell's own answer. See the module header: **a caller may not report a cwd
     /// it remembered.**
     pub cwd: String,
+    /// **The exported environment the shell held when it wrote this trailer**, as
+    /// `NAME=value;` pairs — see [`trailer_definition`] for the filter and §4j for why the
+    /// adjudicator wants it.
+    ///
+    /// **It is never printed and never travels.** Not on `ServerFrame::ShellTurn` (a head has
+    /// no use for it and a pane would draw it), not in [`std::fmt::Debug`] (below), and not
+    /// in `ShellSession`'s own `Debug`. The one reader is
+    /// `intent::env::SessionEnv::observe`, which keeps a value for resolution and masks a
+    /// credential wherever it is shown.
+    pub env: String,
+}
+
+impl std::fmt::Debug for Turn {
+    /// A `Turn` may hold a credential in [`Turn::env`], so this prints the two facts a reader
+    /// of a log wants — the status and the cwd — and **says the environment is there without
+    /// printing it**. `derive(Debug)` would put every exported token into whatever formatted
+    /// the turn, which is the disclosure the module header's second rule is about.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Turn")
+            .field("bytes", &format_args!("{} byte(s)", self.bytes.len()))
+            .field("status", &self.status)
+            .field("cwd", &self.cwd)
+            .field(
+                "env",
+                &format_args!("{} name(s), not printed", self.env.matches('=').count()),
+            )
+            .finish()
+    }
 }
 
 /// A nonce, unique per session on this box. The pid makes two sessions on one host differ; the
@@ -475,17 +514,76 @@ fn end_fn(mark: &str) -> String {
     format!("__lt_end_{mark}")
 }
 
-/// The line written once, at session start, that defines the trailer's function.
+/// **How many names one trailer may carry.** The shell enforces this as it emits and
+/// `intent::env::SessionEnv` enforces it on the way in: a report over either cap is refused
+/// whole rather than truncated, because half an environment silently resolved is worse than
+/// none.
+pub const ENV_PAIRS: usize = 64;
+
+/// **How many bytes of value one trailer may carry**, for the reason [`ENV_PAIRS`] gives.
+pub const ENV_BYTES: usize = 4096;
+
+/// **The line written once, at session start, that defines the trailer's functions.**
 ///
 /// `$?` is read at the top of the body, where it is still the status of the line before the
 /// call — a function call does not disturb it. `\033` and `\007` are octal because that is the
 /// spelling every shell's `printf` accepts.
+///
+/// # The environment half, and why it is shaped this way
+///
+/// `__lt_env_<nonce>` walks the EXPORTED names (`compgen -e`, bash's) and prints each as
+/// `NAME=value;` — **but only for a value that is already one plain word**, which is what the
+/// `case` glob does ([`PLAIN`]'s set, spelled for the shell). Everything else is dropped here,
+/// in the shell, and that is the design rather than a shortcut:
+///
+/// * **It is the only form the resolver could use.** `intent::parameters::as_one_word` writes a
+///   value back into a command only when it is one plain word, so a value with a space, a
+///   quote, a glob or a `$` in it is a value nothing would ever do anything with.
+/// * **It needs no de-quoter, in either direction.** `export -p` and `declare -x -p` print with
+///   a shell's own quoting (`X="a \" b"`, `$'a\tb'`), one dialect per shell, and a wrong
+///   un-quote is a wrong value — which is worse than an unresolved word. `env -0` does not
+///   exist on macOS (`env` there is BSD's), and `env | base64` is two forks and still parses
+///   ambiguously on a value that contains a newline.
+/// * **It cannot contain the field separator**, so `take_turn` splits the trailer without
+///   escaping anything: `;` is not in the plain set, and a name is `[A-Za-z_][A-Za-z0-9_]*`.
+///
+/// **Cost, measured** 2026-10-27 on lab2x1 (`bash --norc`, 200 iterations, `date +%s%N`): the
+/// trailer without the environment **24 µs/call**, with it **384 µs/call**, one bare `$( )`
+/// fork on the same box **276 µs**, `fork+exec /bin/true` **843 µs**. The 360 µs is the price of
+/// one subshell for `compgen -e`; the loop itself is builtins. A fork-free spelling exists
+/// (`declare -x -p`) and is rejected for the quoting reason above.
+///
+/// **Bounded here** because the byte count is what a `$(…)` in a value can make unbounded: the
+/// loop stops at [`ENV_PAIRS`] names or [`ENV_BYTES`] of value, counted as it goes.
 pub fn trailer_definition(fn_name: &str) -> String {
+    let env_fn = format!("{fn_name}_env");
     format!(
-        "{fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\\007' \
-         \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; }}"
+        "{env_fn}() {{ command -v compgen >/dev/null 2>&1 || return; local n v c=0 b=0; \
+         for n in $(compgen -e); do \
+         case \"${{!n}}\" in ''|*[!{plain}]*) continue;; esac; v=${{!n}}; \
+         [ ${{#v}} -gt {value} ] && continue; \
+         printf '%s=%s;' \"$n\" \"$v\"; c=$((c+1)); b=$((b+${{#n}}+${{#v}}+2)); \
+         [ $c -ge {pairs} ] && return; [ $b -ge {bytes} ] && return; done; }}\n\
+         {fn_name}() {{ printf '\\033]1337;letibot;%s;%s;%s\n' \"$LETIBOT_MARK\" \"$?\" \"$PWD\"; \
+         {env_fn}; printf '\\007'; }}",
+        plain = PLAIN,
+        pairs = ENV_PAIRS,
+        bytes = ENV_BYTES,
+        // The same per-value cap `intent::env` holds: a value the daemon would drop is a
+        // value not worth carrying up a pty.
+        value = crate::intent::env::ENV_VALUE,
     )
 }
+
+/// **The characters a value may hold and still be carried** — the same set
+/// `intent::parameters::as_one_word` splices back, and `intent::env` re-checks on the way in.
+///
+/// Written once here because the shell function is *generated* from it: the filter the shell
+/// applies and the filter the daemon believes are the same list, and a value that one accepts
+/// and the other refuses is the disagreement this constant exists to make impossible. The
+/// hyphen is **last** because that is the only position where a bracket expression reads it as
+/// a character rather than as a range.
+pub const PLAIN: &str = "A-Za-z0-9_./:@%,-";
 
 /// **What to run, and with what.** Pure, so the scope wrapper can be asserted without a
 /// process starting — the same discipline [`super::scope`]'s own tests keep.
@@ -542,11 +640,20 @@ pub fn take_turn(buf: &mut Vec<u8>, mark: &str) -> Result<Option<Turn>, ShellErr
         return Ok(None);
     };
     let raw = String::from_utf8_lossy(&buf[body..body + rel]).into_owned();
-    // `<status>;<cwd>`, and the split is on the FIRST `;` because a path may contain one and
-    // a status may not.
-    let (status, cwd) = raw
+    // **`<status>;<cwd>` then a newline then `<env>`**, and the newline is what keeps this
+    // exact: the status cannot contain one (it is a number), a plain-word value cannot
+    // contain one (see [`PLAIN`]), and the cwd is the only field that could — so the split is
+    // on the FIRST newline and the head is parsed exactly as it was before the third field
+    // existed. A trailer with no newline is a shell this build did not generate (or a report
+    // it refused), and it answers with cwd and status and no environment rather than
+    // mis-splitting a path that happens to contain a `;`.
+    let (head, env) = match raw.split_once('\n') {
+        Some((head, env)) => (head, env),
+        None => (raw.as_str(), ""),
+    };
+    let (status, cwd) = head
         .split_once(';')
-        .ok_or_else(|| ShellError::Start(format!("a trailer with no `;` in it: {raw:?}")))?;
+        .ok_or_else(|| ShellError::Start(format!("a trailer with no `;` in it: {head:?}")))?;
     let status: i32 = status.trim().parse().map_err(|_| {
         ShellError::Start(format!(
             "a trailer whose status is not a number: {status:?}"
@@ -559,6 +666,7 @@ pub fn take_turn(buf: &mut Vec<u8>, mark: &str) -> Result<Option<Turn>, ShellErr
         bytes,
         status,
         cwd: cwd.to_string(),
+        env: env.to_string(),
     }))
 }
 
@@ -614,6 +722,13 @@ pub struct ShellSession {
     /// The last cwd the SHELL reported. `None` until a trailer has been read, because a
     /// starting directory is not an answer — see the module header.
     cwd: Option<String>,
+    /// **The last environment the SHELL reported**, as the trailer's `NAME=value;` pairs.
+    ///
+    /// `None` until a trailer has been read, and `None` for a shell whose report this build
+    /// refused (a mangled trailer, or more than [`ENV_PAIRS`] names). It **replaces** rather
+    /// than accumulates: the shell's report is the whole environment, so an `unset` needs no
+    /// rule of its own — `intent::env::SessionEnv::observe` is where that is cashed in.
+    env: Option<String>,
     scope: Option<ScopeId>,
     tree: Option<Arc<dyn ScopeTree>>,
     /// What the reaper thread saw, once it has seen it.
@@ -628,6 +743,8 @@ impl std::fmt::Debug for ShellSession {
             .field("pid", &self.pid)
             .field("mark", &self.mark)
             .field("cwd", &self.cwd)
+            // **A count, never the report.** See [`Turn::env`]: a credential can be in it.
+            .field("env", &self.env.as_ref().map(|e| e.matches('=').count()))
             .field("scope", &self.scope)
             .field("blocked", &self.blocked)
             .finish()
@@ -712,6 +829,7 @@ impl ShellSession {
             fn_name,
             pending: Vec::new(),
             cwd: None,
+            env: None,
             scope: cfg.scope.clone(),
             tree: cfg.tree.clone(),
             exit,
@@ -731,6 +849,7 @@ impl ShellSession {
         session.write(setup.as_bytes())?;
         match session.read_turn(cfg.ready) {
             Ok(t) => {
+                session.take_env(&t);
                 session.cwd = Some(t.cwd);
                 Ok(session)
             }
@@ -762,6 +881,25 @@ impl ShellSession {
         self.cwd.as_deref()
     }
 
+    /// **The last environment the shell reported**, as `NAME=value;` pairs — the input
+    /// `intent::env::SessionEnv::observe` takes, and the only place it comes from.
+    ///
+    /// `None` before the first trailer, and `None` again if a report was refused, which is the
+    /// fail-closed answer: a tracker with no report resolves nothing beyond what the harness
+    /// itself gives every spawn. See the module header's second rule for why this is not
+    /// printable and [`Turn::env`] for why it is not on the wire.
+    pub fn env(&self) -> Option<&str> {
+        self.env.as_deref()
+    }
+
+    /// The report from a turn, dropped whole when it is empty — a trailer with no third field
+    /// (a shell this build did not generate) must not wipe an environment that was observed.
+    fn take_env(&mut self, turn: &Turn) {
+        if !turn.env.is_empty() {
+            self.env = Some(turn.env.clone());
+        }
+    }
+
     /// Whether the shell has exited. `None` while the reaper is still waiting.
     pub fn exited(&self) -> Option<i32> {
         self.exit.lock().ok().and_then(|e| *e)
@@ -785,12 +923,20 @@ impl ShellSession {
     /// The line a caller passes **must be one a person submitted**: see the module header's
     /// first rule. Nothing here takes a model's turn, and there is no timer.
     pub fn run(&mut self, line: &str, wait: Duration) -> Result<Turn, ShellError> {
-        self.usable()?;
+        // **A shell that has left outranks everything this session was told before.** The
+        // order here was the other way round and it made one answer wrong: a line that timed
+        // out sets `blocked` to `Desynchronised`, and if the shell then *exited* — `exit 3`
+        // under a loaded box is exactly that — the next call was told its predecessor was still
+        // in flight when the truth was simpler and stronger: there is no shell. MEASURED
+        // 2026-10-27: `a_shell_that_exits_is_reported_and_not_waited_on` passed alone five
+        // times of five and failed in two full-suite runs where the box was saturated, and the
+        // panic named the variant rather than the timing.
         if let Some(code) = self.exited() {
             let e = ShellError::Gone(format!("the shell exited with {code}"));
             self.blocked = Some(e.clone());
             return Err(e);
         }
+        self.usable()?;
         let mut write = String::with_capacity(line.len() + self.fn_name.len() + 2);
         write.push_str(line.trim_end_matches('\n'));
         write.push('\n');
@@ -799,6 +945,7 @@ impl ShellSession {
         self.write(write.as_bytes())?;
         let turn = self.read_turn(wait)?;
         self.cwd = Some(turn.cwd.clone());
+        self.take_env(&turn);
         Ok(turn)
     }
 
@@ -811,6 +958,7 @@ impl ShellSession {
     pub fn resync(&mut self, wait: Duration) -> bool {
         match self.read_turn(wait) {
             Ok(t) => {
+                self.take_env(&t);
                 self.cwd = Some(t.cwd);
                 self.blocked = None;
                 true
@@ -1116,6 +1264,92 @@ mod tests {
         assert!(
             text(&t).contains("aliased"),
             "an alias is read at the next line, and the next line is a new read: {:?}",
+            text(&t)
+        );
+        // **And the environment came out in a trailer.** D14/R95: the adjudicator reads a
+        // command against what the shell really holds, so the shell says what that is after
+        // every line. `LT_CARRIED` was set two lines above.
+        let report = s.env().expect("every trailer carries the environment");
+        assert!(
+            report.split(';').any(|p| p == "LT_CARRIED=carried"),
+            "the exported value is not in the trailer: {report}"
+        );
+    }
+
+    /// **The filter the shell applies is the set the resolver accepts, measured both ways.**
+    ///
+    /// The trailer's function drops every value that is not one plain word
+    /// ([`PLAIN`]), and `intent::parameters::as_one_word` writes a value back only when it is
+    /// one. Those two must be the same set or the daemon would resolve with values the
+    /// trailer could never send — so this runs the real shell and asks it about a battery of
+    /// values, one per interesting character and one per way a value stops being one word.
+    #[test]
+    fn the_plain_class_is_exactly_the_set_the_resolver_accepts() {
+        let dir = tmp("plain");
+        let mut s = ShellSession::open(&config(&dir)).expect("a shell session");
+        // Carried: every character `as_one_word` allows.
+        let carried = [
+            ("LT_A", "/home/op/Projects/x"),
+            ("LT_B", "/a/b-c_d"),
+            ("LT_C", "a@b:c%d,e"),
+            ("LT_D", "1729"),
+        ];
+        // Not carried: whitespace, a glob, a shell metacharacter, an empty value.
+        let dropped = [
+            ("LT_E", "a b"),
+            ("LT_F", "a*b"),
+            ("LT_G", "a;b"),
+            ("LT_H", ""),
+            // A tilde is not in the plain set, and it is quoted here so the shell keeps it
+            // as a character rather than expanding it. (A tab cannot be sent at all: an
+            // interactive bash reads the line through readline, where TAB is completion.)
+            ("LT_I", "~"),
+        ];
+        for (n, v) in carried.iter().chain(dropped.iter()) {
+            s.run(&format!("export {n}='{v}'"), LONG).expect("a turn");
+        }
+        let report = s.env().expect("a report").to_string();
+        for (n, v) in carried {
+            assert!(
+                report.split(';').any(|p| p == format!("{n}={v}")),
+                "`{n}={v}` is one plain word and must be carried: {report}"
+            );
+        }
+        for (n, _) in dropped {
+            assert!(
+                !report.split(';').any(|p| p.starts_with(&format!("{n}="))),
+                "`{n}` is not one plain word and must not be carried: {report}"
+            );
+        }
+    }
+
+    /// **A credential is carried, and the session does not print it.** D14's own words —
+    /// *"kept for resolution but never printed"* — so the report holds the value (the shell
+    /// really holds it) and every spelling a reader could reach masks it.
+    #[test]
+    fn a_credential_is_carried_and_never_printed() {
+        let dir = tmp("credential");
+        let mut s = ShellSession::open(&config(&dir)).expect("a shell session");
+        s.run("export LT_TOKEN=ghp_0123456789abcdef4c", LONG)
+            .expect("a turn");
+        let report = s.env().expect("a report").to_string();
+        assert!(
+            report.contains("LT_TOKEN=ghp_0123456789abcdef4c"),
+            "the shell holds it and the report is the shell's answer: {report}"
+        );
+        // **And nothing a person or a log reads prints it.**
+        assert!(
+            !format!("{s:?}").contains("ghp_"),
+            "the session's Debug: {s:?}"
+        );
+        let t = s.run("true", LONG).expect("a turn");
+        assert!(
+            !format!("{t:?}").contains("ghp_"),
+            "the turn's Debug: {t:?}"
+        );
+        assert!(
+            !text(&t).contains("ghp_"),
+            "and it is not in the pane's feed: {:?}",
             text(&t)
         );
     }
