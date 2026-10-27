@@ -828,7 +828,11 @@ mod tests {
 
     /// How long a pane's bytes get before a test calls it a failure. Generous: this is a
     /// poll for a fact on a loaded box, and the assertions are on content and not on speed.
-    const PATIENCE: Duration = Duration::from_secs(10);
+    ///
+    /// Twenty seconds and not ten, because that is what this is: a wait for a fact, where longer is
+    /// only ever a slower green. Nothing in this module asserts that something happened QUICKLY, so
+    /// a box that starves the pane's reader thread for a few seconds must not read as a defect.
+    const PATIENCE: Duration = Duration::from_secs(20);
 
     fn pane(command: &str) -> (TermSession, Arc<Collected>) {
         let cfg = TermConfig {
@@ -1019,10 +1023,23 @@ mod tests {
     /// The program is `sleep 30`, so a close that did not kill would leave the ending
     /// unwritten for half a minute and this test would time out — the wait is the assertion,
     /// and the sentence is the other half.
+    ///
+    /// **The program is proved UP before the pane is asked whether it is live.** It used to be a
+    /// fixed 200 ms sleep and then `live()`, and that made the two different things a loaded box can
+    /// produce — *the pane is live* and *the program never started* — the same observation: a `sh`
+    /// whose `exec` was refused (ENOMEM/EAGAIN on a busy box) exits 127 in a millisecond and the
+    /// assertion reported it as *"a program that is still running is a pane that is live"*, which
+    /// is a sentence about the pane's liveness and not about the box's willingness to start a
+    /// process. One line on the pty is the event that separates them, and `wait_for` is a poll for a
+    /// FACT, so a slow box waits longer instead of failing.
     #[test]
     fn closing_kills_the_program_and_says_the_operator_closed_it() {
-        let (mut s, sink) = pane("sleep 30");
-        std::thread::sleep(Duration::from_millis(200));
+        let (mut s, sink) = pane("echo up; exec sleep 30");
+        assert!(
+            sink.wait_for("up", PATIENCE),
+            "the pane's program must be running before the pane is asked whether it is live: {:?}",
+            sink.text()
+        );
         assert!(
             s.live(),
             "a program that is still running is a pane that is live"

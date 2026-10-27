@@ -157,8 +157,25 @@ fn a_plain_answer_turn(vocab: &Vocab, thought: &str, answer: &str, n_prompt: u64
 /// self-addressed prompt, which is what a delivered check IS: a turn, started by nobody
 /// outside the session.
 fn checks_on(hub: &Hub) -> Vec<String> {
+    checks_timed(hub)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect()
+}
+
+/// The same, each with the moment the hub PUBLISHED it — the daemon's own `ts` and not the
+/// driver's reading of the log.
+///
+/// **A schedule has to be timed on these.** [`wait_for`] notices a delivery on its next poll, so an
+/// instant taken there is late by however long the box took to schedule the poll — which is
+/// exactly the quantity a busy machine changes, and it is why this file used to count deliveries
+/// inside a fixed span and went red when the box was loaded: the span was measured from a moment
+/// the test learned about, not from the delivery. A delivery can only ever be LATE against its own
+/// deadline, so the gap between two of these `ts` values is a LOWER bound on the interval the clock
+/// chose: load can widen it and can never make the ladder look shorter than it was.
+fn checks_timed(hub: &Hub) -> Vec<(u64, String)> {
     hub.retained()
-        .iter()
+        .into_iter()
         .filter_map(|e| match &e.event {
             SessionEvent::TranscriptContent { item, .. } => match &**item {
                 TranscriptItem::User { speaker, parts } if *speaker == Speaker::Agent => {
@@ -170,7 +187,7 @@ fn checks_on(hub: &Hub) -> Vec<String> {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    text.contains("[todo check]").then_some(text)
+                    text.contains("[todo check]").then_some((e.ts, text))
                 }
                 _ => None,
             },
@@ -181,7 +198,7 @@ fn checks_on(hub: &Hub) -> Vec<String> {
 
 /// Wait until `what` is true on the child's hub, or panic with everything the log holds —
 /// the log IS the diagnosis for a schedule failure, and a bare timeout would hide it.
-fn wait_for(hub: &Hub, what: impl Fn(&Hub) -> Option<String>) -> String {
+fn wait_for<T>(hub: &Hub, what: impl Fn(&Hub) -> Option<T>) -> T {
     let began = Instant::now();
     while began.elapsed() < PATIENCE {
         if let Some(found) = what(hub) {
@@ -382,10 +399,10 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
 
     // **And then the nag** — the check names the parent's row, in the child's own voice
     // to itself (`Speaker::Agent`), naming the parent by id.
-    let found = wait_for(&kid.hub, |hub| {
-        checks_on(hub)
+    let (first_at, found) = wait_for(&kid.hub, |hub| {
+        checks_timed(hub)
             .into_iter()
-            .find(|t| t.contains(PARENTS_ROW) && t.contains(parent))
+            .find(|(_, t)| t.contains(PARENTS_ROW) && t.contains(parent))
     });
     assert!(
         found.contains("[todo check]"),
@@ -393,21 +410,37 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     );
 
     // **And the repeat, at the interval the schedule owes rather than on a metronome.** The same
-    // notice comes back — the operator's ruling, and a child is a session — but it comes back at
-    // TWICE the window: `TodoNagClock` doubles the gap per delivery, so three windows hold a check
-    // and its repeat and not three checks. The clock's own unit tests pin the ladder with the times
+    // notice comes back — the operator's ruling, and a child is a session — but `TodoNagClock`
+    // doubles the gap per delivery, so the repeat is due TWO windows after the first delivery and
+    // the delivery after that is four. The wait is therefore for the EVENT (a busy box may take ten
+    // windows to run a turn, and a test that waited three of them counted one delivery where the
+    // schedule owed two) and the RATE is asserted on the pair's own timestamps: a check per window
+    // puts the two a single window apart. The clock's own unit tests pin the ladder with the times
     // injected; what is asserted here is that the child's thread runs the same schedule.
-    sleep_for(WINDOW * 3);
-    let said = checks_on(&kid.hub);
-    assert!(
-        (2..=3).contains(&said.len()),
-        "a check and its repeat inside three windows — not one per window: {said:#?}"
-    );
+    let (repeat_at, repeat) = wait_for(&kid.hub, |hub| {
+        let said = checks_timed(hub);
+        (said.len() >= 2).then(|| said[1].clone())
+    });
     // **The repeat names the same row, in the same words** (R93.B2): it used to say *"you were
     // asked about this one already"*, which the model answered instead of the row.
     assert!(
-        said[0].contains(&format!("{PARENTS_ROW} — Parent {parent}")) && said[0] == said[1],
-        "the repeat is the same notice, because the plan has not moved: {said:#?}"
+        found.contains(&format!("{PARENTS_ROW} — Parent {parent}")),
+        "the check names the parent's row and its author: {found}"
+    );
+    assert_eq!(
+        repeat, found,
+        "the repeat is the same notice, because the plan has not moved"
+    );
+    // **Half again the window**: more than a metronome's gap, comfortably under the ladder's two,
+    // so the millisecond the two `ts` values are stamped in cannot decide the answer.
+    let floor = (WINDOW * 3) / 2;
+    assert!(
+        repeat_at.saturating_sub(first_at) >= floor.as_millis() as u64,
+        "the repeat is due a DOUBLED window ({:?}) after the first delivery and these two are \
+         {}ms apart — one per window would be {:?}: {found}",
+        WINDOW * 2,
+        repeat_at.saturating_sub(first_at),
+        WINDOW
     );
 
     // **THE WAKE ITSELF, which one write cannot prove.** By now the first check has been
@@ -426,8 +459,10 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         )
         .expect("the parent's second write is accepted");
     // The second notice names the second row, which is what tells the two notices apart.
-    let second = wait_for(&kid.hub, |hub| {
-        checks_on(hub).into_iter().find(|t| t.contains(SECOND_ROW))
+    let (second_at, second) = wait_for(&kid.hub, |hub| {
+        checks_timed(hub)
+            .into_iter()
+            .find(|(_, t)| t.contains(SECOND_ROW))
     });
     assert_ne!(
         second, found,
@@ -440,9 +475,26 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     );
 
     // And the second plan's saying is as repeated-not-metronomic as the first's: its own check and
-    // its own repeats, and the first plan's ladder was reset by the move — so the last two entries
-    // are two deliveries of ONE sentence rather than a fresh sentence each time.
-    sleep_for(WINDOW * 4);
+    // its own repeat, the ladder restarted by the move — a different notice is one base window
+    // again, not whatever gap the old one had grown to — and the pair timed the same way, on the
+    // hub's own timestamps.
+    let (second_repeat_at, said_again) = wait_for(&kid.hub, |hub| {
+        let mine: Vec<(u64, String)> = checks_timed(hub)
+            .into_iter()
+            .filter(|(_, t)| *t == second)
+            .collect();
+        (mine.len() >= 2).then(|| mine[1].clone())
+    });
+    assert_eq!(
+        said_again, second,
+        "the repeat is the second plan's own notice, not the first one over again"
+    );
+    assert!(
+        second_repeat_at.saturating_sub(second_at) >= floor.as_millis() as u64,
+        "the second plan's repeat is a doubled window after ITS first delivery and these two are \
+         {}ms apart",
+        second_repeat_at.saturating_sub(second_at)
+    );
     let said = checks_on(&kid.hub);
     assert!(
         said.len() >= 4,
@@ -515,16 +567,6 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     }
 
     kid.release();
-}
-
-/// Wait a fixed span, checking nothing — the *silence* half of a schedule. A sleep and not
-/// a poll because there is no fact to wait FOR: the assertion after it is that nothing
-/// arrived, and a poll would only be a slower way of not looking.
-fn sleep_for(span: Duration) {
-    let until = Instant::now() + span;
-    while Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(50));
-    }
 }
 
 /// A directory that removes itself, because a test that leaks a store per run

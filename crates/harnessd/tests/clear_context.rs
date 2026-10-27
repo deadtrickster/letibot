@@ -34,6 +34,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_harnessd::config::{Config, Seat};
+use letibot_harnessd::harness::JobFate;
 use letibot_harnessd::jobwatch::JobWatchSink;
 use letibot_harnessd::{Dialect, Harness, Parts};
 use letibot_sessionlog::SessionEvent;
@@ -187,6 +188,18 @@ fn user_text(item: &TranscriptItem) -> Option<(Speaker, String)> {
         )),
         _ => None,
     }
+}
+
+/// **Whether the model's answer has come back on this hub** — the reply, and not the prompt that
+/// asked for it: a settlement is owed when a child has FINISHED, and a turn that has been asked is
+/// not a turn that has answered.
+fn answered(hub: &Hub, needle: &str) -> bool {
+    hub.retained().iter().any(|e| match &e.event {
+        SessionEvent::TranscriptContent { item, .. } => {
+            matches!(&**item, TranscriptItem::Assistant { text, .. } if text.contains(needle))
+        }
+        _ => false,
+    })
 }
 
 fn warnings(hub: &Hub) -> Vec<(String, String)> {
@@ -378,13 +391,24 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     // HELD** — nothing on this board waits on the job or the child, so neither may start a turn of
     // its own (`Harness::wake` answers `Ok(None)`) — and it rides in with the next turn the model
     // takes anyway, as one `[meanwhile]` batch. So the loop wakes (which delivers anything that IS
-    // immediate) and, once both have had time to settle, takes the one turn a person would: a
-    // prompt. What is asserted is unchanged — the settlements land in the cleared conversation.
+    // immediate) and, once both have SETTLED, takes the one turn a person would: a prompt. What is
+    // asserted is unchanged — the settlements land in the cleared conversation.
+    //
+    // **"Once both have settled" is read off the settlements, not off a stopwatch.** It used to be
+    // two seconds after the releases, and that was a guess about the box: on a loaded one the job's
+    // own poll and the child's turn both outlast it, so the prompt fired with a settlement still in
+    // flight — its `[meanwhile]` then carried only the half that had arrived, and the loop below sat
+    // out its whole patience waiting for a turn nothing was going to take. The two facts are the
+    // settlement's own: the job is over, and the child's answer is on the child's log. Neither can
+    // become true early, so a busy box makes this wait longer and never makes it wrong.
     let began = Instant::now();
     let mut prompted = false;
     loop {
         let _ = parent.harness.wake().expect("the wake runs");
-        if !prompted && began.elapsed() > Duration::from_secs(2) {
+        if !prompted
+            && matches!(parent.harness.job_fate(&job), JobFate::Ended { .. })
+            && answered(&child_hub, "the child's audit is done")
+        {
             parent
                 .harness
                 .submit("carry on")
