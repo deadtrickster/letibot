@@ -85,6 +85,40 @@ impl Adjudicator for Fixed {
 // The four outcome classes, at the gate.
 // -----------------------------------------------------------------------
 
+/// **A boundary that encloses, for the fixtures whose subject is something a boundary then
+/// admits.** Every namespace entered, both seals tested and held, egress denied — what
+/// `Bwrap::probe` refuses to return anything less than, plus the seals being *held* rather than
+/// merely not-open. See `boundary.rs` for what each clause is about.
+fn measured_boundary() -> crate::exec::Boundary {
+    use crate::exec::{Egress, Namespace, NsState, Seal, SealKind, ViewSpec};
+    let mut ns = std::collections::BTreeMap::new();
+    for n in Namespace::ALL {
+        ns.insert(
+            n,
+            NsState::Entered {
+                inode: format!("{}:[1]", n.proc_name()),
+            },
+        );
+    }
+    let mut seals = std::collections::BTreeMap::new();
+    for k in SealKind::ALL {
+        seals.insert(
+            k,
+            Seal::Held {
+                how: "the fixture says it was tried and did not take".into(),
+            },
+        );
+    }
+    crate::exec::Boundary {
+        mechanism: "bubblewrap 0.11.1 (fixture)".into(),
+        view: ViewSpec::project_only("/w"),
+        egress: Egress::Denied,
+        ns,
+        seals,
+        measured_at: std::time::SystemTime::now(),
+    }
+}
+
 fn pinned() -> crate::intent::Surroundings {
     crate::intent::Surroundings {
         scratch: None,
@@ -140,6 +174,7 @@ fn bash_at<'a>(args: &'a Value, turn_id: &'a str) -> GateCall<'a> {
     }
 }
 
+mod boundary;
 mod breaker;
 mod card;
 mod gate;

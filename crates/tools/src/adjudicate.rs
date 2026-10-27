@@ -1970,6 +1970,47 @@ pub struct AdjudicatedGate {
     /// exists to avoid. Set by [`Gate::admit_unasked`], cleared by it, and read in exactly two
     /// places: [`AdjudicatedGate::advise_on_a_settled_call`] and the ask itself.
     unasked: bool,
+    /// **Where an admission nobody was asked about goes, so the operator sees it happened**
+    /// — D16.
+    ///
+    /// The opposite channel to [`AdjudicatedGate::denials`], and it exists for a reason that
+    /// is not symmetry: an admit used to leave a trace in exactly one place, the audit row,
+    /// and the audit rows are read by `/gate` and by the corpus and by nothing that scrolls.
+    /// A mode change that stops asking has to be *visible while the work is happening*, or
+    /// the operator's only evidence that `writes-allowed` now runs commands unasked is that
+    /// the cards stopped. `None` — a gate nobody wired — records the row and says nothing,
+    /// which is the honest answer for a caller that did not ask to be told.
+    admissions: Option<Box<dyn AdmissionSink>>,
+}
+
+/// **A call the gate admitted without asking anybody**, and why (D16).
+///
+/// Deliberately not a [`crate::authorise::DenialNotice`] with a different sign: a denial
+/// leaves the model's call unanswered and the operator is owed a remedy, while an admission
+/// happened, and what they are owed is to be told what happened in their session. The fields
+/// are the ones a head needs to draw that line and nothing else.
+pub struct AdmissionNotice {
+    pub request_id: String,
+    pub turn_id: String,
+    pub tool: String,
+    /// The one argument a person reads — a command line, a path.
+    pub summary: String,
+    /// Why nobody was asked, in the words the audit row carries.
+    pub basis: String,
+    /// The point the session sits at (`writes allowed`), so a reader can tell an admission
+    /// this rule earned from one `allow-all` made unconditional.
+    pub mode: String,
+    /// What measured the boundary: `bubblewrap 0.11.1` here, a VM's mechanism there.
+    pub boundary: String,
+}
+
+/// **The gate's other exit**, as a seam.
+///
+/// `letibot-tools` holds no hub, no store and no conversation, so an admission cannot reach
+/// the transcript from here. A caller that has one supplies this, exactly as it supplies
+/// [`crate::authorise::DenialSink`] for the channel in the other direction.
+pub trait AdmissionSink: Send + Sync {
+    fn admitted(&self, notice: &AdmissionNotice);
 }
 
 impl AdjudicatedGate {
@@ -2002,6 +2043,7 @@ impl AdjudicatedGate {
             supervise: false,
             corpus_sink: None,
             unasked: false,
+            admissions: None,
         }
     }
 
@@ -2032,6 +2074,14 @@ impl AdjudicatedGate {
     ) -> Self {
         self.boundary = boundary;
         self.boundary_refusal = refusal;
+        self
+    }
+
+    /// **Where an admission nobody was asked about is told**, so the operator sees it
+    /// happened — D16. See [`AdmissionSink`], and [`AdjudicatedGate::denials`] for the channel
+    /// in the other direction.
+    pub fn with_admission_sink(mut self, sink: Box<dyn AdmissionSink>) -> Self {
+        self.admissions = Some(sink);
         self
     }
 
@@ -2393,6 +2443,37 @@ impl AdjudicatedGate {
         }
     }
 
+    /// **R98's first half: does this call run the project's own code on a host with no
+    /// boundary?**
+    ///
+    /// The answer is the thing it runs (`cargo test`, `make`, a script in the checkout), or
+    /// `None`. It is asked in three places — the ladder that offers rungs, the three arms that
+    /// honour a standing one, and the two that record a new one — and it must be one function,
+    /// because a card that offers a grant the matcher refuses is the defect `Offer` exists to
+    /// prevent, in the other direction.
+    ///
+    /// **Why an unconfined host and not a confined one.** D16 settled the other side: where a
+    /// boundary was measured, a per-command ruling protects nothing a test the agent just
+    /// wrote could not do instead. Where there is none, the same sentence argues the opposite
+    /// way — running the test file IS running the agent's code, and a grant the operator
+    /// answered once was an answer about the bytes that existed then. The file changes between
+    /// the answer and the run, and a grant is keyed on a program and a verb, not on a body
+    /// nobody has read. So this asks every time, and the card says why.
+    ///
+    /// A boundary that exists and does not enclose is NOT this case: the host is confined,
+    /// the seal is merely unverified, and D16's admit is what governs there (it refuses, and
+    /// the call asks as it always did).
+    fn runs_project_code_unconfined(
+        &self,
+        access: Access,
+        baseline: &crate::intent::Baseline,
+    ) -> Option<String> {
+        if access != Access::Exec || self.boundary.is_some() {
+            return None;
+        }
+        crate::project_code::runs_project_code(baseline)
+    }
+
     /// **What the ladder may offer for this call** — one computation for the rungs and
     /// for the note that explains an absent one.
     ///
@@ -2419,6 +2500,27 @@ impl AdjudicatedGate {
                 unresolved_names(baseline)
             )
         });
+        // **R98: on a host with no boundary, a call that runs the project's code offers
+        // neither standing rung, and the card says why.** Both, not just the session one: the
+        // durable rule outlives the session and the file it approves is not the file that
+        // will run, so the stronger rung is the one that must go first. This is the one place
+        // the ladder narrows to *only this call*
+        // (`always_ask_options`' shape) while the tier is not an always-ask — the operator's
+        // whole point is that the next run is a different program.
+        if let Some(runs) =
+            self.runs_project_code_unconfined(Self::judged_access(call, baseline), baseline)
+        {
+            return Offer {
+                derived: None,
+                program,
+                session: false,
+                note: Some(format!(
+                    "asks every time: it runs code the agent wrote ({runs}), and this host has \
+                     no boundary — a grant cannot stand in for the file that will exist by the \
+                     next run (R98)"
+                )),
+            };
+        }
         Offer {
             derived,
             program,
@@ -3349,6 +3451,11 @@ impl Gate for AdjudicatedGate {
         // three places that used to read the tool's declared one — see
         // [`ModelAdjudicator::judged_access`] for what turns on it and what must not.
         let access = Self::judged_access(call, &baseline);
+        // **R98's first half, computed once**: `Some(cargo test)` when this call runs the
+        // project's own code and the host it runs on has no boundary. Read by the three arms
+        // below that would otherwise let a standing answer settle it, and by the two that
+        // would otherwise record one.
+        let unconfined_code = self.runs_project_code_unconfined(access, &baseline);
         let mut req = self.request_from(call, &baseline);
         let direction = TaskDirection::of(&req, &baseline);
         let breaker_state = self.breaker.state(&direction);
@@ -3545,7 +3652,7 @@ impl Gate for AdjudicatedGate {
                     self.record(req, d, "refuse", direction.key());
                     return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
                 }
-                crate::permission::Action::Allow => {
+                crate::permission::Action::Allow if unconfined_code.is_none() => {
                     let d = AdjudicationDecision::selected(
                         &req,
                         "allow_once",
@@ -3564,8 +3671,90 @@ impl Gate for AdjudicatedGate {
                     self.record(req, d, "admit", direction.key());
                     return GateDecision::Admit;
                 }
+                // **R98: a rule is a standing answer, and this call is not covered by one.**
+                // An `allow` here — the operator's own config, or an *Always allow* an earlier
+                // card wrote into it — is keyed on a program and a pattern, and it was written
+                // about a file that no longer exists by the time this runs: a test runner on an
+                // unconfined host executes bytes the agent can rewrite between the answer and
+                // the run. The rule is not deleted or disabled; it simply does not settle this
+                // call, and the card this falls through to carries the reason (`options_note`,
+                // from `Offer`).
+                crate::permission::Action::Allow => {}
                 crate::permission::Action::Ask => {}
             }
+        }
+
+        // **D16 — inside a measured boundary, a command is not asked about.**
+        //
+        // The operator's ruling (2026-10-27): *"agent can write any code in the test file and
+        // then do the test. the only real defense is cgroups and namespaces. the rest is
+        // theater."* Where the backend's confinement was MEASURED and holds, a per-command
+        // ruling protects nothing a write the mode already admits could not do instead, so at
+        // `writes-allowed` the command is admitted without a card and the audit row says why.
+        //
+        // **What still asks, and each conjunct below is one of them** — the card's job is now
+        // this list rather than every command:
+        //
+        //  * **what crosses the boundary.** A call whose intents include `network` needs
+        //    egress, and `Boundary::encloses` already requires the boundary's network namespace
+        //    to be the empty one (`Egress::Denied`). So `curl`, `cargo fetch` and `git push`
+        //    ask here exactly as they did; `git push`'s intents say `network`, which is the
+        //    check that catches it even though its regions are the workspace.
+        //  * **a grant that widens the view.** A call naming a path outside the checkout would
+        //    not be doing its work inside the boundary at all: the view contains the checkout
+        //    and read-only system roots, so the path is either absent (the command fails) or
+        //    one the operator would be asked to widen the view for. `regions` is layer A's
+        //    placement of every operand, and `Region::is_outside` is the tree's one answer to
+        //    *is this outside the session's own work* — reused rather than restated, so
+        //    `rm -rf target` is inside and `rm -rf ~/other` is not. `Unbounded` counts as
+        //    outside by its own doc, which is what keeps `rm -rf $X` asking.
+        //  * **the operator-world tiers.** [`Tier::AlwaysAsk`] never reaches here — the list is
+        //    layer A's, and `admits_unasked` refuses it at every point whatever the boundary —
+        //    and `Tier::Blocked` was refused at 1b above.
+        //  * **a host with no boundary**, a platform with none, and a probe that did not
+        //    answer: `self.boundary` is `None` there, so none of this fires. That is the
+        //    mac host shell — [`Mode::WRITES_ALLOWED`] with nothing confining it, where the
+        //    per-command ruling is still the only defence there is.
+        //
+        // And it is `writes-allowed` **only**, which is the ruling's own sentence. `automode`
+        // says what it says — the question there is answered by a model, not a card, so what
+        // D16 removes for the operator is the interruption that point does not have; and the
+        // two `allow-all` coordinates already admit exec unasked by their own definition.
+        if access == Access::Exec
+            && self.mode == crate::mode::Mode::WRITES_ALLOWED
+            && let Some(boundary) = &self.boundary
+            && boundary.encloses()
+            && !baseline.intents.contains(&crate::intent::Intent::Network)
+            && !baseline.regions.iter().any(|r| r.is_outside())
+        {
+            let basis = format!(
+                "admitted: inside the measured boundary (D16). {} entered the namespaces that \
+                 ARE the boundary, both seals were tested and held, egress is denied, this call \
+                 crosses nothing (it names no network intent and no path outside the checkout), \
+                 and it is not on the always-ask list. A ruling about this command would \
+                 protect nothing a write this mode already admits could not do instead — the \
+                 boundary is the defence, so nobody was asked",
+                boundary.mechanism
+            );
+            let d = AdjudicationDecision::selected(&req, "allow_once", "gate:boundary", &basis);
+            self.breaker.admitted(&direction);
+            // **Told, not only recorded.** The audit row is read by `/gate` and by the corpus,
+            // and neither scrolls while the work happens: a mode that stops asking has to say
+            // so where the operator is looking, or the only evidence is the silence.
+            if let Some(sink) = &self.admissions {
+                sink.admitted(&AdmissionNotice {
+                    request_id: req.id.clone(),
+                    turn_id: req.turn_id.clone(),
+                    tool: req.tool.clone(),
+                    summary: req.summary.clone(),
+                    basis: d.basis.clone(),
+                    mode: self.mode.name.to_string(),
+                    boundary: boundary.mechanism.clone(),
+                });
+            }
+            self.advise_on_a_settled_call(&req, "inside a measured boundary (D16)".into());
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
         }
 
         // 2. **The point this session sits at.** See `crate::mode`.
@@ -3693,6 +3882,7 @@ impl Gate for AdjudicatedGate {
         //    time is narrowed to this rather than dropped: reads, searches and
         //    builds stop repeating themselves; deletions still ask.
         if let Tier::MayApprove = req.tier
+            && unconfined_code.is_none()
             && let Some(shape) = &req.shape
             && let Some(seen) = self.approved_shapes.get(shape)
             && *seen == req.class
@@ -3706,16 +3896,18 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        if let Some(g) = self.grants.iter().find(|g| {
-            g.covers(
-                &req.tier,
-                req.resolved,
-                &program,
-                req.class,
-                &baseline.intents,
-            )
-            .is_ok()
-        }) {
+        if unconfined_code.is_none()
+            && let Some(g) = self.grants.iter().find(|g| {
+                g.covers(
+                    &req.tier,
+                    req.resolved,
+                    &program,
+                    req.class,
+                    &baseline.intents,
+                )
+                .is_ok()
+            })
+        {
             let basis = format!(
                 "a standing permission granted this session covers this call: {}",
                 g.why
@@ -3851,6 +4043,7 @@ impl Gate for AdjudicatedGate {
                         if matches!(req.tier, Tier::MayApprove)
                             && decision.by.starts_with("human")
                             && !baseline.intents.contains(&crate::intent::Intent::Destroy)
+                            && unconfined_code.is_none()
                             && let Some(shape) = req.shape.clone()
                         {
                             self.approved_shapes.insert(shape, req.class);
@@ -3879,6 +4072,12 @@ impl Gate for AdjudicatedGate {
                         // `Bash(cargo test:*)` reads; for a file tool it is the path.
                         if k == OptionKind::AllowAlways
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
+                            // **R98: and not for a call that runs the project's code on a
+                            // host with no boundary.** The ladder did not offer this rung
+                            // (`offer_for`), and this is the belt to that brace: an
+                            // answer from an older head, a replayed one, or a test must not
+                            // write a durable rule the gate would then decline to honour.
+                            && unconfined_code.is_none()
                         {
                             // **The operator's own glob wins over the derived one.**
                             //
@@ -3928,6 +4127,7 @@ impl Gate for AdjudicatedGate {
                             }
                         } else if k == OptionKind::AllowSession
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
+                            && unconfined_code.is_none()
                         {
                             // The operator's exec rule of 2026-09-11 refused a session
                             // grant to an exec call, and a `GrantScope::Once` point

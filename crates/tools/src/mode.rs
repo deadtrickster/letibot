@@ -409,13 +409,24 @@ impl Mode {
                   writes a durable rule.",
     };
 
-    /// Writes go through. Exec still asks, and so does the always-ask list.
+    /// Writes go through. Exec still asks, and so does the always-ask list — **except inside a
+    /// boundary letibot has measured**, where a command that crosses nothing is admitted without a
+    /// card (D16, `docs/boundary-and-adjudication.md` §6).
     ///
     /// The asymmetry between `write` and `exec` is §3's, not a hedge: the boundary
     /// guards the filesystem *view*, and nothing yet stops a tool result carrying
     /// secret bytes into the transcript — `bash` is the tool whose result is an
     /// arbitrary byte stream, so it is the one that turns that gap from theoretical
     /// into reachable. A `write` result is shaped by the tool and does not.
+    ///
+    /// **What D16 moved, and what it did not.** The ruling (2026-10-27) is that a per-command
+    /// ruling inside a measured confinement protects nothing a write this point already admits
+    /// could not do instead, so the gate admits exec there and the card's job shrinks to what
+    /// CROSSES the boundary: network egress, a path outside the checkout, the always-ask tiers.
+    /// The point's own `exec` disposition stays `Ask` — a point is what the mode promises, and the
+    /// admit is the gate's judgement about one condition, not a second disposition. On a host with
+    /// no measured boundary nothing changed: every command asks, and a command that runs the
+    /// project's own code asks every time however it was granted before (R98).
     pub const WRITES_ALLOWED: Mode = Mode {
         name: "writes allowed",
         role: "coder",
@@ -426,9 +437,11 @@ impl Mode {
         decider: Decider::Human,
         boundary: Boundary::Operator,
         requires: &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
-        summary: "writes go through without asking. Commands and anything that leaves \
-                  the box still ask, and so does the always-ask list — privilege \
-                  escalation, deletion outside the project, a host never seen before.",
+        summary: "writes go through without asking, and so does a command inside a \
+                  confinement letibot has measured — one that crosses nothing and stays in \
+                  the checkout (D16). What still asks is what crosses: the network, a path \
+                  outside the project, the always-ask list — and, where no boundary was \
+                  measured, any command that runs the project's own code, every time (R98).",
     };
 
     /// The model adjudicates within `MayApprove`.

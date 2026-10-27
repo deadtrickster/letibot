@@ -1361,3 +1361,106 @@ an assumption does not.
   fake is `ScriptedOracle`; what a real one needs is written into that trait — a
   `ModelBrief` and never a string, a `budget()` it is abandoned for overrunning, and a
   `scope()` earned by measurement rather than granted by assumption.
+
+## 6. D16 and R98 — the boundary decides, and where there is none the test *is* the program
+
+Written 2026-10-27, both rulings the operator's. This is what the gate does differently, and
+it is deliberately the last section: everything above still describes the machinery, and what
+changed is **how often it is reached**.
+
+### The measurement that made the ruling
+
+A package session on a remote host at `writes-allowed` asked **over a hundred times** across one
+brief (RH3), and a session on the operator's own box was no better. Two things were wrong with
+every one of those cards, and the operator said the second one plainly:
+
+> *"the thing is - agent can write any code in the test file and then do the test. the only real
+> defense is cgroups and namespaces. the rest is theater."*
+
+A per-command ruling inside a confinement that letibot has **measured** protects nothing a
+freshly written test could not do instead — and that test is a `write`, which `writes-allowed`
+already admits. So the card was not buying a decision; it was buying a keystroke.
+
+### What is admitted, and by what test
+
+At `writes-allowed`, an `Access::Exec` call is admitted with **no card** when all four hold
+(`AdjudicatedGate::admit`, the arm labelled D16):
+
+1. **The backend's confinement is measured and holds.** `Boundary::encloses` —
+   every required namespace entered (user, mount, pid), **both seals `Held`** rather than merely
+   not-open, and the boundary's egress the empty network namespace. The seal clause is stricter
+   than `Boundary::complete`, on purpose: an untested seal makes the claim *nothing here can
+   escape* a claim with its evidence missing, and the ruling is about a boundary that is really
+   there. The reaper (a cgroup on this box, a process group on a remote) is not a fact of
+   `Boundary`; a boundary only ever reaches the gate through a process host that was built with
+   one, so the two arrive together or not at all.
+2. **The call needs no egress.** No `network` intent, and the boundary denies egress anyway —
+   both, because either alone leaves a door. `curl`, `cargo fetch`, `git push` and `npm install`
+   all still ask. (`cargo fetch` did **not** carry a `network` intent until this slice: the table
+   in `intent.rs` named `install`/`publish`/`add`/`update` and not `fetch`, so a gate asking
+   *does this need the network?* answered no about the one command whose whole job it is.)
+3. **No grant would have to widen the view.** Every region layer A placed is inside the
+   session's own work: `Region::is_outside` is the tree's one answer to that question, reused
+   rather than restated. `rm -rf target` is inside; `rm -rf ~/other`, `echo x > /etc/motd` and
+   `rm -rf $X` are not, and still ask.
+4. **Not an always-ask tier.** `Tier::AlwaysAsk` never reaches here — `Mode::admits_unasked`
+   refuses it at every point whatever the boundary — and `Tier::Blocked` is refused before the
+   mode is read at all.
+
+**The row says why**: `by: gate:boundary`, basis beginning *"admitted: inside the measured
+boundary (D16)."* and naming the mechanism that measured it (`bubblewrap 0.11.1`). The
+operator is **also told**, which the row alone could not do: the audit rows are read by `/gate`
+and by the corpus, and neither scrolls while the work happens. One transcript line per
+admission — `HubAdmissions` collects it from the gate, `Harness::flush_gate_admissions` writes
+it at the round boundary, after the round's results and never between a call and its result.
+
+### What still asks
+
+Everything that crosses the boundary, and everything the boundary does not contain:
+
+| | why it still asks |
+|---|---|
+| `curl`, `cargo fetch`, `npm install`, `ssh host` | network egress; and the boundary would deny it, so the card is where a wider view is decided |
+| `git push` | the same, plus `version_control_publish` |
+| `gh …` | the credential tier — `always-ask: credential_use`, unchanged |
+| `sudo`, a delete outside the project, a host never seen | the always-ask list, unchanged at every point on the operator's box |
+| a command naming a path outside the checkout | the region test above |
+| **anything on an unconfined host** | no boundary, so the per-command ruling is the only defence there is |
+
+The macOS host shell, an unconfined Linux host and a probe that did not answer are all the last
+row: `AdjudicatedGate::with_boundary(None, refusal)` is the whole of that state, and none of
+this fires.
+
+### Which points, and why `automode` is left alone
+
+`writes-allowed` **only**, which is the ruling's own sentence. `allow-all` already admits exec
+unasked by its own definition (and by its own row, `gate:mode`). `automode` and
+`automode-edits` still ask — and that is not an oversight: at those points the question is
+answered by a **model**, not a card, so what D16 removes for the operator (an interruption) is
+something those points do not have. Narrowing what an oracle is asked about would be a
+calibration change, and the ruling did not make one.
+
+### R98 (1) — where there is no boundary, the test file *is* the program
+
+The same sentence read backwards. On a host with **no** measured boundary, a `bash` call whose
+stages run a test runner, a build that executes project code, or a script in the checkout is
+**not settled by a session grant or a durable rule**: it asks every time, and the card says why
+(*"asks every time: it runs code the agent wrote (`cargo test`), and this host has no boundary
+— a grant cannot stand in for the file that will exist by the next run (R98)"*).
+
+- **What counts** (`crates/tools/src/project_code.rs`): `cargo test|run|build|bench|check|clippy`
+  `|nextest|miri|doc-test` (a build script is project code and runs on `check` too), `pytest` and
+  `python -m pytest`, `go test`, `npm test`/`npm run`, `make`/`just`, an interpreter handed a path
+  in the checkout, and any program that is itself a path (`./scripts/test.sh`). Wrappers —
+  `sudo`, `env`, `timeout` — are unwrapped first, because that is where a runner goes to hide.
+- **How it binds**, at three places that must agree: the ladder offers no standing rung
+  (`Offer`), the three arms that honour a standing answer skip it (session grants, the shape
+  cache, the `permission` config's `allow`), and the two that would write one refuse. An answer
+  naming a rung that was not offered is refused by the gate's own option check, so an older head
+  cannot push one through either.
+- **What it does not touch**: the tier, the boundary, and any command that is not this. `git
+  status`, `cargo fmt`, `grep` and the rest keep their ladders, their grants and their shape
+  cache — which the tests pin in the same breath, so a fix that narrowed every ladder would fail
+  rather than pass quietly.
+
+R98's second half — a sandbox on macOS — is not this section and not this slice.

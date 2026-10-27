@@ -1682,6 +1682,16 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
             // only `Inspect` for `cargo test` would be the under-declaration
             // `docs/tool-design-brief.md` §3 calls a hole.
             let mut v = vec![ExecuteCode, WriteFile, ReadFile];
+            // **`fetch` is on this list because it is the one that reaches the network
+            // without saying so in its name.** MEASURED 2026-10-27 while writing D16's test:
+            // `cargo fetch` carried `[read_file, write_file, execute_code]` and no `network`,
+            // so a gate asking *does this call need egress?* answered no about a command whose
+            // whole job is to download the registry. `update`, `install`, `publish` and `add`
+            // were already here; `fetch` was the hole beside them. It is not a
+            // `PackageChange` on its own — it fills the cache, it does not install anything.
+            if program == "cargo" && arg(0) == "fetch" {
+                v.push(Network);
+            }
             if program == "cargo" && matches!(arg(0), "install" | "publish" | "add" | "update") {
                 v.push(Network);
                 v.push(PackageChange);

@@ -880,6 +880,45 @@ impl HubDenials {
     }
 }
 
+/// **Where a gate admission goes** (D16) — the channel in the other direction from
+/// [`HubDenials`], and the reason it is a seam rather than a `publish`.
+///
+/// An admission is not a denial and must not be drawn as one: nothing was refused, the model
+/// has its result, and there is no card to answer. What the operator is owed is *to be told it
+/// happened in their session*, which is a transcript row — and a transcript row is the
+/// harness's to write, on the harness's thread. So this collects the sentence and
+/// [`Harness::flush_gate_admissions`] says it at a round boundary.
+pub struct HubAdmissions {
+    lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl HubAdmissions {
+    pub fn new(lines: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        HubAdmissions { lines }
+    }
+}
+
+impl letibot_tools::adjudicate::AdmissionSink for HubAdmissions {
+    fn admitted(&self, notice: &letibot_tools::adjudicate::AdmissionNotice) {
+        // **One line, and the command is the part a reader scans for.** The reason is in the
+        // audit row (`basis`); what a reader of the transcript needs is *which command ran
+        // without me* and *which rule said so*.
+        self.lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!(
+                "admitted without asking — `{}` {} · inside the measured boundary ({}, \
+                 {}), D16 · the row and `/gate` carry the full reason",
+                notice.tool,
+                notice
+                    .summary
+                    .trim_start_matches(&format!("`{}` ", notice.tool)),
+                notice.boundary,
+                notice.mode
+            ));
+    }
+}
+
 impl DenialSink for HubDenials {
     fn denied(&self, notice: &DenialNotice) {
         let (repeat_count, breaker_open) = match notice.repeat {
@@ -2246,6 +2285,14 @@ pub struct Harness {
     /// which is the one place a tool result is appended. See [`Harness::settle_asked`] for
     /// why the person's half of the exchange is written down there and not by the tool.
     asked: crate::answers::AskLog,
+    /// **The calls this session's gate admitted without asking anybody, waiting to be said**
+    /// (D16).
+    ///
+    /// The gate runs inside the runtime, off this struct, so it hands the sentence over rather
+    /// than speaking it — [`Harness::flush_gate_admissions`] writes one transcript row per
+    /// notice at a round boundary, which is the only place a row can go that does not sit
+    /// between a tool call and its result.
+    gate_admissions: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// The session's todo list, shared with the tool that writes it. The harness
     /// is the persister: [`Harness::flush_todos`] compares the board's version
     /// with the last one it handled and does the store write and the
@@ -4765,6 +4812,13 @@ impl Harness {
         // `HeadQuestioner` below is handed, so the two halves cannot drift.
         let asked: crate::answers::AskLog = Default::default();
 
+        // **Where a gate admission nobody was asked about waits to be said** (D16). Created
+        // here, before the gate, for the reason `asked` is: the sink is handed to the gate and
+        // the harness that drains it is built after. The gate runs inside the runtime, where the
+        // harness is NOT in hand — so the sentence is handed over rather than spoken, exactly as
+        // `crate::plugins::PluginHost::take_notices` is.
+        let gate_admissions: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+
         // **The gate, built here so the three seams cannot be skipped.** See
         // `open_with`'s docs for why this is not a parameter.
         let (gate, trail_installed, denials_surfaced): (Box<dyn Gate>, bool, bool) = match (
@@ -4910,7 +4964,10 @@ impl Harness {
                         move || t.claim()
                     })
                     // §4b. Without this a denial reaches the model and stops there.
-                    .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
+                    .with_denial_sink(Box::new(HubDenials::new(hub.clone())))
+                    // **And the other direction** (D16): a call the gate admitted without asking
+                    // is told, not only recorded — see [`Harness::flush_gate_admissions`].
+                    .with_admission_sink(Box::new(HubAdmissions::new(gate_admissions.clone())));
                 let g = match advisor {
                     // **A point whose decider is the MODEL starts supervised.**
                     //
@@ -6059,6 +6116,7 @@ impl Harness {
             bang: None,
             trail,
             asked,
+            gate_admissions,
             todos: todo_board,
             todos_version: 0,
             asks_said: Vec::new(),
@@ -14464,6 +14522,11 @@ impl Harness {
             self.session
                 .append_items(&self.engine, &results, &mut sink)?;
             self.reconcile(&mut sink, &results);
+            // **And the calls this round's gate admitted without asking anybody** (D16). Said
+            // here, after the results and never between them: a notice appended between a call
+            // and its result closes the pairing window and the model reads *no result was
+            // recorded* beside the real one. See [`Harness::flush_gate_admissions`].
+            self.flush_gate_admissions()?;
             // A round can have started or ended a job; refill the mailbox now so a
             // pane opened mid-turn answers with this round's table, not last
             // round's. Cheap: the list is filtered before it is built.
@@ -15209,6 +15272,32 @@ impl Harness {
             .append_items(&self.engine, std::slice::from_ref(&item), &mut sink)?;
         self.reconcile(&mut sink, std::slice::from_ref(&item));
         self.persist()
+    }
+
+    /// **Say the calls the gate admitted without asking anybody** (D16), one transcript row
+    /// each.
+    ///
+    /// Called at the round boundary — after a round's results are on the log and before the
+    /// model generates again — because that is the one point in a turn where a row can be
+    /// appended without landing between a tool call and its result. `pair_tool_calls` reads
+    /// the first non-`tool` row as the end of an answering window, so a notice written
+    /// between them would make the model read *no result was recorded* beside the real one.
+    ///
+    /// A session whose gate has no admission sink (no adjudicator, or a fixture) has an empty
+    /// queue and pays one lock; a session at a point that asks nothing of this kind never
+    /// queues anything at all.
+    fn flush_gate_admissions(&mut self) -> Result<(), HarnessError> {
+        let lines: Vec<String> = {
+            let mut q = self
+                .gate_admissions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            std::mem::take(&mut *q)
+        };
+        for line in lines {
+            self.append_notice("gate", &line)?;
+        }
+        Ok(())
     }
 
     /// Attach content to the rows the log already announced (T13.1).
@@ -24369,5 +24458,47 @@ mod prefix_fingerprint_tests {
             }),
             "`MM-DD HH:MM`, the launcher's own spelling: {said}"
         );
+    }
+}
+
+/// **What a D16 admission says on the transcript** — the one line an operator reads while the
+/// work happens.
+///
+/// The row the gate writes is the record (`/gate`, the corpus); this is the channel beside it,
+/// and the only thing that can go wrong in it is a sentence that does not say which command
+/// ran or which rule said so. The gate's own half — that the sink is called, once per admit,
+/// with the boundary's measured mechanism — is `adjudicate::tests::boundary`'s.
+#[cfg(test)]
+mod gate_admissions {
+    use super::*;
+
+    fn notice() -> letibot_tools::adjudicate::AdmissionNotice {
+        letibot_tools::adjudicate::AdmissionNotice {
+            request_id: "adj-s-test-0001".into(),
+            turn_id: "t1".into(),
+            tool: "bash".into(),
+            summary: "`bash` wants exec access to `cargo test --offline`".into(),
+            basis: "admitted: inside the measured boundary (D16). …".into(),
+            mode: "writes allowed".into(),
+            boundary: "bubblewrap 0.11.1".into(),
+        }
+    }
+
+    /// One line, naming the command and the rule — and no second `bash` in it.
+    #[test]
+    fn the_line_names_the_command_and_the_rule() {
+        use letibot_tools::adjudicate::AdmissionSink;
+        let lines: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        HubAdmissions::new(lines.clone()).admitted(&notice());
+        HubAdmissions::new(lines.clone()).admitted(&notice());
+        let said = lines.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(said.len(), 2, "one line per admission, in order");
+        assert_eq!(
+            said[0],
+            "admitted without asking — `bash` wants exec access to `cargo test --offline` · \
+             inside the measured boundary (bubblewrap 0.11.1, writes allowed), D16 · the row \
+             and `/gate` carry the full reason"
+        );
+        assert_eq!(said[0].lines().count(), 1, "a notice is one line");
     }
 }

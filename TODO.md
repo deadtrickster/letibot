@@ -108,29 +108,6 @@ same command.
 
 ---
 
-## R97 — A command inside a measured boundary is admitted without a card (D16) — **OPEN, filed 2026-10-27**
-
-The operator's ruling D16: inside a confinement letibot has measured (namespaces entered, seals
-held, a cgroup), a per-command ruling protects nothing a freshly written test could not undo, so
-at `writes-allowed` such a command is admitted without asking. What still asks is what crosses
-the boundary: network egress, a grant that widens the view, a command that would run outside a
-boundary, and the operator-world tiers (`gh`, push, credentials).
-
-**Build**: where the gate decides a `bash` call (`grep -rn "fn decide" crates/tools/src`), admit
-`Access::Exec` at `writes-allowed` when the backend's confinement is measured
-(`backend_confined`, RH3 measures it for remote; the local probe for local) and the call needs
-no egress and no widened view; record the reason on the audit row (*"admitted: inside the
-measured boundary (D16)"*). Unconfined, a failed probe, or the macOS host shell: unchanged.
-
-**Done when**: a remote package at `writes-allowed` builds and tests on lab2x1 with no card for
-in-checkout commands, a command that needs the network still asks, an unconfined session still
-asks, and the corpus replay reports how many of the recorded human answers this would have
-settled.
-
-**Still open?** grep the gate for an `Exec` admit conditioned on measured confinement.
-
----
-
 ## R98 — macOS has no boundary for a command, so tests there must ask (D16, amended) — **half 2 BUILT 2026-10-27 (branch `mac-seatbelt`), half 1 OPEN**
 
 D16 admits a command without a card only inside a measured boundary, and its amendment says

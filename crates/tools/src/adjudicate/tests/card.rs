@@ -118,7 +118,13 @@ fn a_readable_command_is_offered_the_session_grant_and_the_card_is_silent() {
 /// in that line carrying no authority at all — and `… | head` offered `head`.
 #[test]
 fn the_session_rung_names_the_program_that_does_the_work() {
-    let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
+    // **A measured boundary**, because R98 takes both standing rungs off the ladder for a runner
+    // on a host with none — and `cargo test` is a runner. The operator's own command is the
+    // subject here, so the fixture moves rather than the command.
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_boundary(Some(measured_boundary()), None)
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED);
     let measured = json!({
         "command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline -p x"
     });
@@ -140,7 +146,11 @@ fn the_session_rung_names_the_program_that_does_the_work() {
     );
 
     // And the grant recorded under it is keyed the same way — the label and the key are one
-    // choice, so a later `cargo test` is covered and a later `export …` is not.
+    // choice, so a later `cargo …` of the same shape is covered and a later `export …` is not.
+    //
+    // **`cargo fmt` and not `cargo test`** (R98): a grant over a runner is deliberately never
+    // honoured on a host with no boundary, so the only command that can demonstrate a grant
+    // here is one that runs nothing the project wrote.
     use std::sync::atomic::{AtomicUsize, Ordering};
     let asked = std::sync::Arc::new(AtomicUsize::new(0));
     let a = asked.clone();
@@ -148,7 +158,7 @@ fn the_session_rung_names_the_program_that_does_the_work() {
         "human:test",
         move |req: &AdjudicationRequest| {
             a.fetch_add(1, Ordering::Relaxed);
-            let opt = if req.target.contains("cargo test") {
+            let opt = if req.target.contains("cargo fmt") {
                 "allow_session"
             } else {
                 "deny"
@@ -162,14 +172,14 @@ fn the_session_rung_names_the_program_that_does_the_work() {
         },
     )))
     .with_surroundings(pinned());
-    let _ = g.admit(&bash_at(&measured, "s#1"));
+    let fmt = json!({"command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo fmt --all"});
+    let _ = g.admit(&bash_at(&fmt, "s#1"));
     let taken = g.grants().first().expect("a grant was taken").clone();
     assert_eq!(taken.coverage[0].program, "cargo");
 
     // The same command again runs unasked — the fixture is not consulted at all.
-    let again = json!({
-        "command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline -p y"
-    });
+    let again =
+        json!({"command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo fmt --check"});
     assert!(matches!(
         g.admit(&bash_at(&again, "s#2")),
         GateDecision::Admit
@@ -252,8 +262,12 @@ fn a_shape_holds_across_a_different_number_of_operands() {
 /// `crate::permission`'s own test: `a_rule_over_export_would_admit_every_variable`.
 #[test]
 fn no_durable_rule_is_offered_over_a_command_that_sets_state() {
+    // A measured boundary for the reason the test above has one: `cargo test` is a runner, and
+    // R98's narrowing would take BOTH rungs away, which is not what this test is about.
     let mut g = AdjudicatedGate::closed()
         .with_surroundings(pinned())
+        .with_boundary(Some(measured_boundary()), None)
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED)
         .with_permission(crate::permission::seed());
     let args =
         json!({"command": "export CARGO_TARGET_DIR=$PWD/target && cargo test --offline -p x"});

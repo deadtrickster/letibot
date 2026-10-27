@@ -1261,3 +1261,47 @@ what is tested is the call and the bound, where both defects would live.
 `the_daemons_exit_returns_promptly_when_nothing_is_running` is the one that catches a hang — an
 empty tree must not cost the grace — and `the_subagent_exit_wait` (sessions.rs) pins the naming
 and the silence.
+
+---
+
+## R97 — A command inside a measured boundary is admitted without a card (D16) — **SETTLED 2026-10-27, branch `boundary-admits`**
+
+R98's first half came with it (the amendment of the same day): on an **unconfined** host, a
+command that runs the project's own code is not settled by a grant at all. R98's second half —
+a sandbox on macOS — is not this entry and not this slice.
+
+**What was built.** The gate's `admit` gains one arm before the mode (`gate:boundary`): at
+`writes-allowed`, an `Access::Exec` call is admitted with no card when `Boundary::encloses`
+holds — every required namespace entered, **both seals `Held`**, egress `Denied` — and the call
+carries no `network` intent and no region outside the session's own work. The row's basis begins
+*"admitted: inside the measured boundary (D16)"* and names the mechanism that measured it; the
+operator is also **told**, one transcript line per admission (`HubAdmissions` →
+`Harness::flush_gate_admissions`, at the round boundary so it never lands between a call and its
+result). Beside it, R98(1): a call that runs a test runner, a build that executes project code
+or a script in the checkout, on a host with **no** boundary, offers no standing rung on its
+card, is not settled by a session grant, the shape cache or a `permission` `allow`, and writes
+none of them. The predicate is `crates/tools/src/project_code.rs`.
+
+**Measured, and what the tests pin** (`adjudicate::tests::boundary`; `project_code`'s own):
+`cargo test`, `bash scripts/check-fmt.sh` and `rm -rf target` are admitted inside a measured
+boundary with the audit row saying why; `curl`, `cargo fetch`, `git push`, `gh`, a write outside
+the checkout, a missing namespace, an open seal, **an unverified seal**, a boundary with egress
+to the host, and the whole set on an unconfined host all still ask; `always-ask` still asks and
+`allow-all` admits by **its own** rule, not this one; a runner on an unconfined host is asked
+about twice in a row however it was answered the first time, and `cargo fmt` in the same fixture
+is still settled by its shape, so neither half is vacuous.
+
+**Two facts found on the way, both fixed here.** `cargo fetch` carried no `network` intent —
+the table named `install`/`publish`/`add`/`update` and not `fetch`, so a gate asking *does this
+need the network?* answered no about the one command whose whole job it is. And the gate had no
+channel for an admission at all: an admit left a row in the audit and nothing that scrolls,
+which is why D16's *"so the operator can see it happened"* needed the sink above rather than
+the row alone.
+
+**Not measured.** The corpus replay (R97's *"how many recorded human answers this would have
+settled"*) was **not run**: the corpus is not in this worktree — this session's tools run inside
+a boundary that does not contain `~/letibot-corpus` — and the operator was asked for a copy.
+R97's *done-when* is therefore met by the gate's own tests and the docs, not by the corpus
+number.
+
+**Still open?** `git log --oneline -S"gate:boundary" -- crates/tools/src/adjudicate.rs`.

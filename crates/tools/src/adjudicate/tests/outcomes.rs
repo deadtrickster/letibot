@@ -646,6 +646,11 @@ fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
         },
     )))
     .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    // **A measured boundary, because R98 would otherwise take both standing rungs away** —
+    // `cargo test` runs the project's own code, and on a host with no boundary that asks every
+    // time by design. This fixture is about which STAGE the durable rule names, so it sits
+    // where the ladder still has one.
+    .with_boundary(Some(measured_boundary()), None)
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
     let _ = g.admit(&bash(&json!({
@@ -728,6 +733,9 @@ fn the_always_allow_label_shows_the_rule_it_writes() {
         },
     )))
     .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    // The ladder over `cargo test` where a boundary is measured: R98 takes both standing rungs
+    // off the ladder for a runner on a host with none, and this fixture is about the label.
+    .with_boundary(Some(measured_boundary()), None)
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
     let _ = g.admit(&bash(&json!({"command": "cargo test -p letibot-tools"})));
@@ -804,21 +812,25 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
     }))
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
-    // `cargo run` is not on the shipped list, so the first call asks.
-    let args = json!({"command": "cargo run --bin x"});
+    // **`sed -i`, and not `cargo run`.** R98 (the amendment of 2026-10-27) says a command that
+    // runs the project's own code is not settled by a durable rule on a host with no boundary —
+    // so this fixture, whose subject IS the rule a durable answer writes, needs a command that
+    // is not a runner. `sed -n*` is on the shipped list and `sed -i` is not, which is why the
+    // first call asks and the rule is what answers the second.
+    let args = json!({"command": "sed -i s/x/y/ crates/tools/src/lib.rs"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
     let rules = written.lock().unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].permission, "bash");
-    assert_eq!(rules[0].pattern, "cargo run*");
+    assert_eq!(rules[0].pattern, "sed*");
     drop(rules);
-    // The second, different `cargo run` is admitted by the rule, nobody asked.
-    let again = json!({"command": "cargo run --bin y -- --flag"});
+    // The second, different `sed -i` is admitted by the rule, nobody asked.
+    let again = json!({"command": "sed -i s/a/b/ crates/tools/src/mode.rs"});
     assert_eq!(g.admit(&bash(&again)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
     // A compound that hides a second command behind the prefix asks.
-    let hidden = json!({"command": "cargo run; rm -rf /w"});
+    let hidden = json!({"command": "sed -i s/x/y/ f; rm -rf /w/elsewhere"});
     assert_eq!(g.admit(&bash(&hidden)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
     // And the shipped list admits a read-only git without asking at all.

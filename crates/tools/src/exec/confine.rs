@@ -959,6 +959,45 @@ impl Boundary {
         }
     }
 
+    /// **Is this a boundary a per-command ruling would buy nothing inside?** — D16.
+    ///
+    /// The operator's ruling (2026-10-27): *"agent can write any code in the test file and
+    /// then do the test. the only real defense is cgroups and namespaces. the rest is
+    /// theater."* So the gate admits a command unasked at `writes-allowed` where this
+    /// answers `true`, and the bar is deliberately higher than [`Boundary::complete`]:
+    ///
+    /// * **Every required namespace entered** — [`Namespace::REQUIRED`], which is `complete`'s
+    ///   own test. A boundary that is missing one is not a boundary.
+    /// * **Both seals `Held`**, not merely *not open*. `complete` tolerates `Unverified`, and
+    ///   it is right to: a boundary whose seal could not be tested from inside still confines,
+    ///   and refusing to run a command in it would be a session that cannot work. But an
+    ///   unknown seal is exactly the state D16's reasoning does not cover — the claim is
+    ///   *nothing a command does here can outlive or escape the boundary*, and an untested
+    ///   seal is a claim with its evidence missing. So a command here asks, as it did before.
+    /// * **Egress denied.** Included rather than left to the caller because it is the same
+    ///   judgement: a boundary that shares the host's network namespace has already decided
+    ///   that something crosses, and what crosses is what a card is still for.
+    ///
+    /// **What this does not answer, and why that is honest.** D16 names three things — the
+    /// namespaces, the seals and *the cgroup that bounds and reaps it* — and the reaper is
+    /// not a fact of this type: it is the process host's (`exec::scope`'s tree, or a remote
+    /// host's `setsid` process group). It cannot leave this question half-asked in the
+    /// admitting direction, because a boundary only ever reaches here through a process host
+    /// that was built with one: a local confined backend builds the scope tree and the
+    /// boundary together and refuses if either is absent
+    /// ([`crate::backend::HostBackend::confined`]), and a remote one is placed by a backend
+    /// whose jobs are its own process group. A session with no reaper has no boundary at all,
+    /// so the two arrive together or not at all.
+    pub fn encloses(&self) -> bool {
+        Namespace::REQUIRED
+            .iter()
+            .all(|n| self.ns.get(n).map(|s| s.entered()).unwrap_or(false))
+            && self.egress == Egress::Denied
+            && SealKind::ALL
+                .iter()
+                .all(|k| self.seals.get(k).map(|s| s.held()).unwrap_or(false))
+    }
+
     /// Something was asked for and did not happen, or could not be confirmed.
     /// **Not** the same as [`Boundary::complete`] being false: a boundary can be
     /// partial in a namespace that is not required, or in a seal that could not be

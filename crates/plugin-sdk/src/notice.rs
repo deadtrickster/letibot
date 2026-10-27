@@ -52,6 +52,11 @@ pub const MERGE_QUEUE: &str = "merge_queue";
 pub const PLUGIN: &str = "plugin";
 /// The session's workspace, or another fact about the ground it stands on.
 pub const WORKSPACE: &str = "workspace";
+/// **A call the gate admitted without asking anybody** (D16) — the sentence that makes a mode
+/// which stopped asking visible in the transcript rather than only in the audit rows. A kind of
+/// its own because a layer that rewords one is rewording a disclosure, and the merge queue's
+/// sentences are not the place to put it.
+pub const GATE: &str = "gate";
 /// A turn that produced no answer being salvaged (§5.7).
 pub const SALVAGE: &str = "salvage";
 
@@ -66,12 +71,22 @@ pub const KINDS: &[&str] = &[
     MERGE_QUEUE,
     PLUGIN,
     WORKSPACE,
+    GATE,
     SALVAGE,
 ];
 
 /// **The kinds whose notice may not be dropped**, only reworded — the host's set, not the
 /// plugin's (`docs/plugins-plan.md` §4.3).
-pub const MUST_SEE: &[&str] = &[JOB, TODO, RESEAT, MERGE_QUEUE, PLUGIN, WORKSPACE, SALVAGE];
+pub const MUST_SEE: &[&str] = &[
+    JOB,
+    TODO,
+    RESEAT,
+    MERGE_QUEUE,
+    PLUGIN,
+    WORKSPACE,
+    GATE,
+    SALVAGE,
+];
 
 /// The export name for one notice kind.
 pub fn hook(kind: &str) -> String {
