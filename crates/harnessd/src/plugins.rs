@@ -1838,6 +1838,18 @@ impl PluginHost {
         });
     }
 
+    /// **The last inputs this session's host asked `hook` with**, newest last — the record
+    /// `docs/plugins-plan.md` §5 calls *"the last inputs of each hook per session, so a layer is
+    /// written and tested against the very call or firing that went wrong"*, and what the gate's
+    /// replay runs over.
+    ///
+    /// Public because the record is the session's, not this module's: a head drawing what a layer
+    /// has been asked, `plugin test`'s replay and a test that wants to see the input a look's result
+    /// came back in all read the same ring, and a second reader of it would be a second record.
+    pub fn recorded(&self, hook: &str) -> Vec<Value> {
+        self.lock().rec.inputs(hook).to_vec()
+    }
+
     /// The tree a look resolves against — the session's own workspace.
     pub fn workspace(&self) -> PathBuf {
         self.workspace.clone()

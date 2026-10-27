@@ -1,0 +1,10 @@
+name = "engine"
+purpose = "the four hook kinds, each answered by one sentence — the fixture `plugin_engine.rs` loads through rano's real engine"
+hooks = [
+  "condition_engine",
+  "notice_job",
+  "on_tool_call",
+  "on_tool_result",
+]
+capabilities = ["read"]
+contract = 1
