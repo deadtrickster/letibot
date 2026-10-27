@@ -1065,6 +1065,15 @@ pub struct Standing {
 pub struct Patched {
     pub out: letibot_plugin::tool_call::ToolCallOut,
     pub by: String,
+    /// **A line the harness puts above the result**, for an answer the model will read as though
+    /// the tool had said it.
+    ///
+    /// `by` is a layer's ID (`s3`, `p1`) — the word every message about a layer uses and the one a
+    /// person needs `plugin stack` beside to read. A note is read *instead of* a result, so it has
+    /// to say whose words these are in the words a person wrote: the host composes it from the
+    /// layer's own name and scope (`PluginHost::layer_sentence`), and this crate keeps no opinion
+    /// about how a layer is named.
+    pub note: Option<String>,
 }
 
 /// **A hook that sees a tool call before the gate** — `on_tool_call`, `docs/plugins-plan.md` §4.1,
@@ -2114,7 +2123,7 @@ impl ToolRuntime {
             .unwrap_or_else(|e| e.into_inner())
             .standing();
         let asked = letibot_plugin::Call::new(call.name.clone(), args.clone());
-        let Some(Patched { out, by }) = hook.before(&asked, &standing) else {
+        let Some(Patched { out, by, note }) = hook.before(&asked, &standing) else {
             return Patch::None;
         };
         let refused = |why: String| {
@@ -2132,10 +2141,21 @@ impl ToolRuntime {
             letibot_plugin::tool_call::Verdict::Refuse(why) => {
                 Patch::Done(refused(why.to_string()))
             }
-            letibot_plugin::tool_call::Verdict::Answer(text) => Patch::Done(
-                ToolResult::new(call.id.clone(), call.name.clone(), ToolOutcome::Ok)
-                    .with_payload(text.to_string()),
-            ),
+            letibot_plugin::tool_call::Verdict::Answer(text) => {
+                let result = ToolResult::new(call.id.clone(), call.name.clone(), ToolOutcome::Ok)
+                    .with_payload(text.to_string());
+                // **The result is somebody else's words, and it says so.** An `answer` never ran
+                // the tool, so nothing in the payload — the layer's own sentence — tells the model
+                // whether a `probe` looked or a `monitor` armed; and a model that cannot tell a
+                // layer's answer from a tool's has been told something untrue about the world.
+                // `[note] …` is where every other harness sentence on a result goes
+                // (`ToolResult::render`), so this is the same channel and not a new one.
+                let result = match note {
+                    Some(note) => result.with_note(note),
+                    None => result,
+                };
+                Patch::Done(result)
+            }
             letibot_plugin::tool_call::Verdict::Rewrite(new_args) => {
                 let text = serde_json::to_string(new_args).unwrap_or_else(|_| "null".into());
                 let rewritten = ToolCall {
@@ -3740,6 +3760,9 @@ mod tests {
     struct FixedHook {
         answer: Option<letibot_plugin::tool_call::ToolCallOut>,
         seen: std::sync::Arc<std::sync::Mutex<Vec<letibot_plugin::Call>>>,
+        /// What a host that knows the layer's NAME would put above the result — see
+        /// [`Patched::note`]. `None` is the `p1` id with nothing said about it.
+        note: Option<String>,
     }
 
     impl CallHook for FixedHook {
@@ -3751,6 +3774,7 @@ mod tests {
             self.answer.clone().map(|out| Patched {
                 out,
                 by: "p1".to_string(),
+                note: self.note.clone(),
             })
         }
     }
@@ -3780,6 +3804,7 @@ mod tests {
         .with_call_hook(std::sync::Arc::new(FixedHook {
             answer,
             seen: calls.clone(),
+            note: None,
         }));
         (rt, seen, calls, ran, d)
     }
@@ -3862,6 +3887,54 @@ mod tests {
         );
         assert_eq!(r.outcome, ToolOutcome::Ok);
         assert!(r.render().contains("already watched for its checks"));
+    }
+
+    /// **An answered call says whose words these are, and that the tool did not run.**
+    ///
+    /// The payload is the layer's sentence and nothing else, so without this line a model reads
+    /// an `answer` exactly as it reads a tool's output — and a `monitor` that never armed or a
+    /// `read` that never looked is then a fact about the world that nobody stated. The line goes
+    /// where every other harness sentence on a result goes (`[note] …`, `ToolResult::render`) and
+    /// the payload is otherwise untouched.
+    #[test]
+    fn an_answered_call_is_attributed_and_the_payload_is_otherwise_unchanged() {
+        let d = crate::backend::tempdir::TempDir::new();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.register(Box::new(RanProbe { ran: ran.clone() }))
+            .unwrap();
+        let rt = ToolRuntime::new(
+            reg,
+            Box::new(crate::backend::HostBackend::new(d.path()).unwrap()),
+        )
+        .with_gate(Box::new(AdmitGate))
+        .with_call_hook(std::sync::Arc::new(FixedHook {
+            answer: Some(letibot_plugin::tool_call::ToolCallOut::answer(
+                "pr-24 is watched for its checks",
+            )),
+            seen: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            note: Some("answered by plugin pr-watch (project); the tool did not run".to_string()),
+        }));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("probe", r#"{"path":"/tmp/x"}"#), &mut sink);
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            r.payload, "pr-24 is watched for its checks",
+            "the payload is the layer's own words, unchanged"
+        );
+        let rendered = r.render();
+        assert_eq!(
+            r.notes,
+            vec!["answered by plugin pr-watch (project); the tool did not run".to_string()]
+        );
+        assert!(
+            rendered.contains("[note] answered by plugin pr-watch (project); the tool did not run"),
+            "the model is not told whose words it is reading: {rendered}"
+        );
+        assert!(
+            rendered.contains("pr-24 is watched for its checks"),
+            "{rendered}"
+        );
     }
 
     /// **`pass`, and a layer that says nothing, both leave the call exactly as it was.**

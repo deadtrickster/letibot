@@ -270,6 +270,14 @@ adjudicated: a layer can narrow a call or refuse it, and a rewritten call that n
 still asks. This is the hook that patches *"the model armed nine monitors for three PRs"* the
 same afternoon it happens.
 
+**An `answer` says who answered it.** It is the one verdict whose payload is the layer's own
+sentence standing in for a result — the tool never ran — so the result the model reads carries one
+line above it: `[note] answered by plugin <name> (<scope>); the tool did not run`. A model that
+cannot tell a layer's answer from a tool's has been told something untrue about the world (a
+`monitor` that never armed, a `read` that never looked), and the line is in the same `[note]`
+channel every other harness sentence on a result uses. A `refuse` needs none — its outcome already
+names the layer.
+
 ### 4.2 `on_tool_result` — what happens after a call
 
 ```jsonc

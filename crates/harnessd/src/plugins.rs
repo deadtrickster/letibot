@@ -1795,6 +1795,23 @@ impl PluginHost {
             .unwrap_or_default()
     }
 
+    /// **The layer `id`, as the sentence a model reads** — its manifest name and its scope,
+    /// `pr-watch (project)`.
+    ///
+    /// `s3` is a layer's identity to every mechanism (the stack view, `disable`, the audit rows),
+    /// and it is nothing to a reader: three characters with no meaning unless they have
+    /// `plugin stack` open beside them. So a sentence that has to tell a model *whose words these
+    /// are* says the name somebody wrote, and the scope that says how far the layer reaches. A
+    /// layer nobody can find (a stacked answer whose layer went away) is answered by its id, which
+    /// is the honest nothing rather than an invented name.
+    pub fn layer_sentence(&self, id: &str) -> String {
+        let inner = self.lock();
+        match inner.stack.layer(id) {
+            Some(l) => format!("{} ({})", l.manifest.name, l.scope),
+            None => id.to_string(),
+        }
+    }
+
     /// **A look the gate would not run**, said **once** — per layer, program and reason, because
     /// the sentence names all three and it is the dedup key.
     ///
@@ -1936,9 +1953,26 @@ impl letibot_tools::runtime::CallHook for CallHooks {
             .unwrap_or_else(|e| e.into_inner())
             .clone()?;
         let answered = host.on_tool_call(&self.hub, call, standing)?;
+        // **An `answer` is somebody else's words standing in for a result.** The tool never ran,
+        // and the payload — the layer's own sentence — cannot say so: it reads exactly like output
+        // a tool produced. So the result carries one line naming the layer in the words a person
+        // wrote (`name (scope)`, not `s3`) and saying the tool did not run. A `refuse` needs none:
+        // its OUTCOME already says a plugin layer refused it, and a rewrite runs and carries its
+        // own note.
+        let note = matches!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Answer(_)
+        )
+        .then(|| {
+            format!(
+                "answered by plugin {}; the tool did not run",
+                host.layer_sentence(&answered.by)
+            )
+        });
         Some(letibot_tools::runtime::Patched {
             out: answered.out,
             by: answered.by,
+            note,
         })
     }
 }
@@ -3185,6 +3219,62 @@ mod tests {
             answered.out.verdict(),
             letibot_plugin::tool_call::Verdict::Answer("pr-24 is watched for its checks")
         );
+    }
+
+    /// **An `answer` verdict reaches the model with one line saying who answered it, in the
+    /// layer's own name and scope** — `docs/plugins-plan.md` §4.1's `answer`, whose payload is a
+    /// layer's sentence and would otherwise read exactly like a tool's output.
+    ///
+    /// The `Answered` id (`s3`, `p1`) is what the stack and the audit rows use, and it is what a
+    /// model must NOT be handed: this is the one place the two are composed, so a change to how a
+    /// layer is named moves here and nowhere else.
+    #[test]
+    fn an_answered_call_is_attributed_by_name_and_scope() {
+        let root = tempdir("call-answer-note");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "knows-it",
+            &[(
+                "on_tool_call",
+                says(json!({"answer": "pr-24 is watched for its checks"})),
+            )],
+        );
+        let host = Arc::new(table_host(&root, &table));
+        let hub = Hub::new("s-plugins");
+        let hooks = CallHooks::new(Arc::new(Mutex::new(Some(host.clone()))), hub.clone());
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        let patched = letibot_tools::runtime::CallHook::before(
+            &hooks,
+            &asked,
+            &letibot_tools::runtime::Standing::default(),
+        )
+        .expect("answers");
+        assert_eq!(
+            patched.note.as_deref(),
+            Some("answered by plugin knows-it (project); the tool did not run"),
+            "the note must name the layer a person wrote, not `{}`",
+            patched.by
+        );
+
+        // **A refusal carries none**, because its outcome already says a layer refused it — and
+        // a pass carries none either, because nothing was said.
+        let refused = tempdir("call-refuse-note");
+        let table = Table::new();
+        table.layer(
+            &refused,
+            "one-watch",
+            &[("on_tool_call", says(json!({"refuse": "already watched"})))],
+        );
+        let host = Arc::new(table_host(&refused, &table));
+        let hooks = CallHooks::new(Arc::new(Mutex::new(Some(host))), hub);
+        let patched = letibot_tools::runtime::CallHook::before(
+            &hooks,
+            &asked,
+            &letibot_tools::runtime::Standing::default(),
+        )
+        .expect("answers");
+        assert_eq!(patched.note, None);
     }
 
     /// **A mask lets the call through untouched** — the hook switched off from that layer down,
