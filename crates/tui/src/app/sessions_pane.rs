@@ -133,6 +133,7 @@ struct Answered {
 impl Host {
     /// The failure the last call recorded, taken — the seam [`App::take_sessions_failure`] reads
     /// through, and the one a test uses to see that a broken layer was SEEN rather than skipped.
+    #[cfg(test)]
     fn take_problem(&self) -> Option<String> {
         self.problem.lock().ok().and_then(|mut p| p.take())
     }
@@ -720,5 +721,10 @@ mod tests {
         );
         let view = answered.view.expect("the built-in answered");
         assert_eq!(view.title, "sessions in this daemon");
+        assert_eq!(
+            host.take_problem(),
+            None,
+            "the built-in answered, so nothing failed"
+        );
     }
 }

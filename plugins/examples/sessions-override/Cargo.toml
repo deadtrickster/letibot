@@ -1,0 +1,29 @@
+[package]
+name = "sessions-override"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the example that overrides the built-in session list: it calls below and edits what it finds"
+
+# **Not a member of letibot's workspace.** This is a guest module for the host's ABI, copied into a
+# project's `.letibot/plugins/`; the workspace must not build, test or gate it (the root manifest
+# excludes `plugins`).
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what the example's own tests link, because the
+# edit it makes is a pure function of two JSON documents and is worth testing without an engine.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# rano ABI v1, as a guest writes it — the input region, the answer arena and the result block. A
+# path, because the example lives in the tree it demonstrates.
+letibot-guest-abi = { path = "../../builtin/abi" }
+serde_json = "1"
+
+[profile.release]
+# A guest module is loaded from a directory and cached: small is what matters here.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

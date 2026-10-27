@@ -1,0 +1,9 @@
+name = "sessions"
+purpose = "this project's session list: one-shots are named for what they are and folded out of the way"
+hooks = ["pane_sessions"]
+capabilities = []
+# What it reads, and the only thing the host hands it. The layer below needs the same feed, and
+# the host builds the map per layer — a layer that asks below does not lend it what it read.
+feeds = ["sessions"]
+actions = ["switch", "fold"]
+contract = 1
