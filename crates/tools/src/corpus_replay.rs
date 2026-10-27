@@ -361,11 +361,61 @@ pub fn parse_cause(n: &Normalised, u: &Unresolved) -> &'static str {
     "the text is not a command this grammar reads"
 }
 
-/// One session's approvals, replayed in the order they were given.
+/// One session's approvals, replayed in the order they were given — **and its variables**.
+///
+/// `vars` is the same-session environment: the assignments the gate READ in the commands
+/// before this one, first assignment winning, `unset` clearing, exactly as the per-session
+/// grant replay treats answers. It is a counterfactual (`Report::env_fixed`) and the report
+/// says so.
 #[derive(Default)]
 struct Session {
     grants: Vec<Grant>,
     shapes: HashMap<String, ActionClass>,
+    vars: BTreeMap<String, String>,
+}
+
+/// **The names a command assigns to the shell, as its own text states them.** The replay's
+/// environment is built from this: a standalone `X=…` statement and an `export`/`declare`
+/// of a literal value, and `unset` for the names a shell would drop.
+///
+/// A value with a space, a glob or any other way of being more than one word is skipped —
+/// the same rule `parameters::as_one_word` applies to a splice, because a replay whose
+/// environment held a value the resolver could never use would count a gain that is not one.
+fn assigned(n: &letibot_code::shell::Normalised, vars: &mut BTreeMap<String, String>) {
+    use letibot_code::shell::Word;
+    let plain = |v: &str| {
+        !v.is_empty()
+            && v.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_-./:@%,".contains(c))
+    };
+    for a in &n.assignments {
+        if let Some(Word::Literal(v)) = Some(&a.value)
+            && plain(v)
+        {
+            vars.insert(a.name.clone(), v.clone());
+        }
+    }
+    for stage in &n.stages {
+        match stage.program_name().unwrap_or("") {
+            "export" | "declare" | "typeset" | "readonly" => {
+                for a in &stage.assignments {
+                    if let Word::Literal(v) = &a.value
+                        && plain(v)
+                    {
+                        vars.insert(a.name.clone(), v.clone());
+                    }
+                }
+            }
+            "unset" => {
+                for w in &stage.argv {
+                    if let Some(t) = w.literal() {
+                        vars.remove(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// One armed approval: what the answer to a card records.
@@ -472,6 +522,35 @@ pub struct Report {
     /// command: a sample is here to classify a finding, not to reproduce the operator's
     /// session.
     pub notes: Vec<String>,
+
+    // --- D14/R95/R96: the session's environment (a same-session counterfactual) --------
+    /// Commands that are unread under today's reading and **readable** once the session's
+    /// own assignments are in scope.
+    ///
+    /// **This is a counterfactual and it is labelled one.** The corpus records no
+    /// environment — a row is a command and a verdict, not the shell's state — so what is
+    /// replayed here is the environment a gate would have built had it tracked the
+    /// assignments it READ, which is what a shell would hold only if every one of them ran.
+    /// It is an upper bound on the gain and no claim at all about the cases where a value
+    /// came from a file the transcript never saw.
+    pub env_fixed: usize,
+    /// Commands that are **readable** today and unread with the environment in scope. It
+    /// must be zero: the whole change is meant to be monotone, and a value that makes a
+    /// command *less* readable is a claim about a shell nobody observed.
+    pub env_broken: usize,
+    /// Commands still unresolved with the session's environment in scope.
+    pub env_unresolved: usize,
+    /// Which variable names bought what: `$p`, `$d`, `$PATH`, `$CARGO_TARGET_DIR`.
+    pub env_names: BTreeMap<String, Constructs>,
+    /// **The names a tracker cannot help with**, counted the same way: a command could not
+    /// place `$X` and **no earlier command in the same session assigned it either**.
+    ///
+    /// This is the half R98 asked for: *how much of the cross-command bucket was set by the same
+    /// session's earlier commands, and how much came from somewhere a session's own history
+    /// cannot see* — the shell profile, the daemon's environment, a value read out of a file, a
+    /// `$(…)`. The names here are the second kind. `appears` counts every command that mentions
+    /// one; `alone` counts the commands where it is the only reason.
+    pub env_nowhere: BTreeMap<String, Constructs>,
 }
 
 impl Report {
@@ -497,6 +576,23 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
     let mut rep = Report::default();
     let mut sessions: HashMap<String, Session> = HashMap::new();
     let mut last_ms: HashMap<String, u64> = HashMap::new();
+    // **The `PATH` this replay resolves `$PATH` against, and what it is.** A record carries
+    // no environment, so there is no `PATH` to read — and the value matters for exactly one
+    // thing: whether `export PATH=…:$PATH` becomes a word this reading can write out. So it
+    // is a stated placeholder rather than this box's, and the report says which. With
+    // `ProgramLookup::None` no stage under it is ever named, so a command that *needs* the
+    // file a bare name runs stays unread — which is the same answer it gets today.
+    const PLACEHOLDER_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+    let base = {
+        let mut e = env.clone();
+        e.session = crate::intent::env::SessionEnv::seeded([(
+            "PATH".to_string(),
+            PLACEHOLDER_PATH.to_string(),
+        )]);
+        e.shell_path = Some(PLACEHOLDER_PATH.to_string());
+        e.programs = crate::intent::ProgramLookup::None;
+        e
+    };
     // See [`Report::notes`]: samples are opt-in because a sweep's default output is a
     // table of counts, and a reader who wants to classify one finding asks for it.
     let show: usize = std::env::var("LETIBOT_CORPUS_SHOW")
@@ -509,6 +605,72 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
         let Some(now) = rep.row(r, env) else {
             return;
         };
+        // **The same command read again with the session's own variables in scope** —
+        // D14/R95/R96, as a counterfactual the report labels. Nothing here observes a shell;
+        // what it measures is how many commands the gate could read if it tracked what its
+        // own text assigned before them.
+        let mut with = base.clone();
+        let session_vars = sessions
+            .get(&r.session_id)
+            .map(|s| s.vars.clone())
+            .unwrap_or_default();
+        if !session_vars.is_empty() {
+            let mut seeded: Vec<(String, String)> =
+                vec![("PATH".to_string(), PLACEHOLDER_PATH.to_string())];
+            seeded.extend(session_vars.iter().map(|(k, v)| (k.clone(), v.clone())));
+            with.session = crate::intent::env::SessionEnv::seeded(seeded);
+        }
+        let tracked = r.command().map(|c| Reading::of(&c, &with));
+        if let Some(t) = &tracked {
+            match (now.resolved(), t.resolved()) {
+                (false, true) => {
+                    rep.env_fixed += 1;
+                    // Which names bought it: the ones this command's reading could not place
+                    // and the tracked one does not even mention.
+                    let after: std::collections::BTreeSet<&String> = t.detail.iter().collect();
+                    for d in &now.detail {
+                        if let Some(name) = d.strip_prefix("parameter_expansion:")
+                            && !after.iter().any(|x| x.as_str() == d)
+                        {
+                            rep.env_names.entry(name.to_string()).or_default().alone += 1;
+                        }
+                    }
+                }
+                (true, false) => rep.env_broken += 1,
+                _ => {}
+            }
+            if !t.resolved() {
+                rep.env_unresolved += 1;
+            }
+            // **And what a session's own history cannot reach.** A name nothing earlier in
+            // the session assigned came from the profile, the daemon, a file or a `$(…)` —
+            // not from an earlier command, so tracking the session cannot buy it.
+            if !now.resolved() {
+                let alone = now.detail.len() == 1;
+                for d in &now.detail {
+                    let Some(name) = d.strip_prefix("parameter_expansion:") else {
+                        continue;
+                    };
+                    let bare = name.trim_start_matches('$');
+                    if session_vars.contains_key(bare) {
+                        continue;
+                    }
+                    let e = rep.env_nowhere.entry(bare.to_string()).or_default();
+                    e.appears += 1;
+                    if alone {
+                        e.alone += 1;
+                    }
+                }
+            }
+            // The session's variables are updated from the SAME reading the gate would have
+            // had, which is why this happens after both readings and not before.
+            if let Some(n) = &t.baseline.command {
+                assigned(
+                    n,
+                    &mut sessions.entry(r.session_id.clone()).or_default().vars,
+                );
+            }
+        }
 
         // `then`, in the record's own words.
         match &r.baseline {
@@ -925,6 +1087,19 @@ impl Report {
         self.oracle_then_unresolved += o.oracle_then_unresolved;
         self.oracle_then_unresolved_now_read += o.oracle_then_unresolved_now_read;
         self.out_of_order += o.out_of_order;
+        self.env_fixed += o.env_fixed;
+        self.env_broken += o.env_broken;
+        self.env_unresolved += o.env_unresolved;
+        for (name, c) in o.env_names {
+            let e = self.env_names.entry(name).or_default();
+            e.appears += c.appears;
+            e.alone += c.alone;
+        }
+        for (name, c) in o.env_nowhere {
+            let e = self.env_nowhere.entry(name).or_default();
+            e.appears += c.appears;
+            e.alone += c.alone;
+        }
         self.notes.extend(o.notes);
     }
 
@@ -1023,6 +1198,39 @@ impl Report {
                  replay is not exactly the order the answers were given\n",
                 self.out_of_order
             ));
+        }
+        // **D14/R95/R96, and the label is part of the number.** The corpus records no
+        // environment, so this is a same-session counterfactual: the assignments the gate
+        // read before each command, not what a shell was observed to hold.
+        out.push_str(&format!(
+            "\n  session environment (COUNTERFACTUAL: the assignments the gate read, not a \
+             shell's report)\n    fixed {} · BROKEN {} · still unresolved {}\n",
+            self.env_fixed, self.env_broken, self.env_unresolved
+        ));
+        if !self.env_names.is_empty() {
+            let mut v: Vec<_> = self.env_names.iter().collect();
+            v.sort_by_key(|(_, c)| std::cmp::Reverse(c.alone));
+            out.push_str(&format!("    {:<24} {:>8}\n", "bought by", "commands"));
+            for (name, c) in v.iter().take(12) {
+                // `name` already carries its `$` — the key is `parameter_expansion:$DB`.
+                out.push_str(&format!("    {:<24} {:>8}\n", name, c.alone));
+            }
+        }
+        if !self.env_nowhere.is_empty() {
+            let mut v: Vec<_> = self.env_nowhere.iter().collect();
+            v.sort_by_key(|(_, c)| std::cmp::Reverse(c.alone));
+            out.push_str(&format!(
+                "    {:<24} {:>8} {:>8}\n",
+                "…and not from any earlier command", "appears", "alone"
+            ));
+            for (name, c) in v.iter().take(12) {
+                out.push_str(&format!(
+                    "    {:<24} {:>8} {:>8}\n",
+                    format!("${name}"),
+                    c.appears,
+                    c.alone
+                ));
+            }
         }
         if !self.notes.is_empty() {
             out.push_str("\n  samples (LETIBOT_CORPUS_SHOW) — no command text:\n");
