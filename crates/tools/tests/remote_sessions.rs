@@ -305,6 +305,15 @@ fn payload(len: usize) -> Vec<u8> {
 /// The fake here breaks `base64 -d` on the far side — every call of it — which is the shape of a
 /// decode that cannot write. What must be true: the target is byte-identical to what it was, and
 /// the tool says the write failed.
+///
+/// **Linux only, and only because of how the break is planted.** The fake shadows `base64` by
+/// putting its own `bin` first on `PATH`, and the fake ssh runs `bash -lc`. On macOS a login
+/// shell runs `/usr/libexec/path_helper`, which rebuilds `PATH` with the system directories in
+/// front — MEASURED 2026-10-27: `PATH=<fake>/bin:/usr/bin:/bin bash -lc 'echo $PATH'` begins
+/// `/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin` — so the real `/usr/bin/base64`
+/// decodes and the write rightly succeeds. The property under test is the script's (`set -e`, the
+/// trap, `mv` only after the checks), which is the same text on both platforms.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_far_side_that_cannot_decode_never_touches_the_target() {
     let fake = Fake::new("decode-broken", "");
