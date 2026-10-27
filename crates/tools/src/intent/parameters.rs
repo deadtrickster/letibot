@@ -282,7 +282,7 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
             // output is still a runtime fact.
             if u.construct == Construct::CommandSubstitutionValue
                 && is_pwd(written)
-                && let Some(value) = value_at(&timeline, "PWD", u.span.start)
+                && let Some((value, _)) = value_at(&timeline, env, "PWD", u.span.start)
                 && let Some(word) = as_one_word(&value)
             {
                 splices.push((
@@ -290,6 +290,7 @@ pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) 
                     u.span.end,
                     format!("`$(pwd)` is `{word}`"),
                     word.to_string(),
+                    None,
                 ));
                 continue;
             }

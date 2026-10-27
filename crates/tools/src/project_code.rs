@@ -233,6 +233,7 @@ mod tests {
                 how: "test fixture".into(),
             },
             seen_hosts: Default::default(),
+            ..Default::default()
         }
     }
 

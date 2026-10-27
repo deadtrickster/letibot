@@ -63,6 +63,7 @@ fn main() -> std::process::ExitCode {
             how: "the seat a session with a shell gets".into(),
         },
         seen_hosts: Default::default(),
+        ..Default::default()
     };
 
     let mut total = Unasked::default();
