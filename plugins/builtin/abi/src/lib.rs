@@ -83,18 +83,26 @@ pub extern "C" fn rano_abi() -> i32 {
 
 /// The input of the hook being called, as bytes — the region `rano_alloc` answered with.
 ///
+/// **`ptr` is an ABSOLUTE address in this module's memory**, not an offset into the arena: `rano_alloc`
+/// answers the arena's own address and the host writes at it, so the window is
+/// `[arena_start + 0, arena_start + IN_CAP)` and a pointer outside it is a host that broke its own
+/// contract — answered *unchanged* rather than by a panic or a slice out of bounds.
+///
 /// # Safety
 ///
-/// Called only from inside a hook, with the `(ptr, len)` rano handed that hook.
+/// Called only from inside a hook, with the `(ptr, len)` rano handed that hook. The bounds check
+/// makes that claim true for every input the host can actually send.
 pub fn input(ptr: i32, len: i32) -> &'static [u8] {
-    let data: &'static [u8] = unsafe { &*INPUT.0.get() };
+    let base = INPUT.0.get() as usize;
     let at = usize::try_from(ptr).unwrap_or(usize::MAX);
-    match at.checked_add(usize::try_from(len).unwrap_or(usize::MAX)) {
-        Some(end) if end <= IN_CAP => &data[at..end],
-        // A host that broke its own contract is answered *unchanged* rather than by a panic: a
-        // trap in a pane must not be how the head finds out.
-        _ => &[],
+    let len = usize::try_from(len).unwrap_or(usize::MAX);
+    let inside = at >= base && at.checked_add(len).is_some_and(|end| end <= base + IN_CAP);
+    if !inside {
+        return &[];
     }
+    // SAFETY: the window just checked is inside the input arena, which lives as long as the
+    // module and is written only between `rano_alloc` and this call.
+    unsafe { core::slice::from_raw_parts(at as *const u8, len) }
 }
 
 /// **Empty the answer arena** — the first thing every hook does, so what it answers does not

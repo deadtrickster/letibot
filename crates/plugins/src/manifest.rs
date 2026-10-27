@@ -131,6 +131,19 @@ pub struct Manifest {
     pub hooks: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub contract: u32,
+    /// **The feeds a `pane` layer reads** — data the host already has (`docs/plugins-plan.md`
+    /// §4.9, `letibot_plugin::pane::Feed`). Empty is a layer that reads none, which is every
+    /// layer that is not a pane and a pane that draws only what it is handed in `state`.
+    ///
+    /// This is a DECLARATION and not a capability: a feed is a read of something the host is
+    /// already showing (the session list, the monitors), so it is granted by being declared and
+    /// reviewed with the layer, and no adjudication is skipped by it.
+    pub feeds: Vec<letibot_plugin::pane::Feed>,
+    /// **The acts a pane's rows may ask the HOST to perform** — `switch`, `fold`
+    /// (`letibot_plugin::pane::Act`). A view whose rows carry an act this list does not name is
+    /// refused, so a layer cannot reach a verb nobody reviewed; the next verb a pane needs is one
+    /// more word here and no new mechanism.
+    pub actions: Vec<String>,
 }
 
 impl Manifest {
@@ -183,6 +196,14 @@ impl Manifest {
             }
             None => return Err("contract: missing (this host speaks 1)".to_string()),
         };
+        // **Both defaulted**, so a layer written before a pane could read a feed or perform an act
+        // keeps loading: an added key is not a version (§1, principle 6).
+        let feeds = strings_opt(&table, "feeds")?
+            .iter()
+            .map(|f| letibot_plugin::pane::Feed::parse(f))
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(|why| format!("feeds: {why}"))?;
+        let actions = strings_opt(&table, "actions")?;
 
         Ok(Manifest {
             name,
@@ -190,6 +211,8 @@ impl Manifest {
             hooks,
             capabilities,
             contract,
+            feeds,
+            actions,
         })
     }
 
@@ -265,6 +288,14 @@ fn strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
             other.type_str()
         )),
         None => Err(format!("{key}: missing")),
+    }
+}
+
+/// The same, for a key an older layer does not have — absent is an empty list.
+fn strings_opt(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
+    match table.get(key) {
+        Some(_) => strings(table, key),
+        None => Ok(Vec::new()),
     }
 }
 

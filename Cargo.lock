@@ -1082,6 +1082,7 @@ dependencies = [
 name = "letibot-plugins"
 version = "0.4.0"
 dependencies = [
+ "letibot-plugin",
  "serde_json",
  "sha2",
  "toml",
@@ -1106,6 +1107,7 @@ dependencies = [
  "letibot-dialect",
  "letibot-llama",
  "letibot-metrics",
+ "letibot-plugin",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",
@@ -1158,7 +1160,10 @@ dependencies = [
 name = "letibot-tui"
 version = "0.4.0"
 dependencies = [
+ "letibot-builtins",
  "letibot-http",
+ "letibot-plugin",
+ "letibot-plugins",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",

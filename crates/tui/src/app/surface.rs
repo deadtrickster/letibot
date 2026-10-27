@@ -218,6 +218,13 @@ impl App {
         });
         self.pane_scroll = 0;
         self.redraw = true;
+        // **The session list's own failure, said where a person will see it.** Opening the list is
+        // the moment their broken layer matters (`app::sessions_pane`).
+        if s == Surface::Picker
+            && let Some(said) = self.take_sessions_failure()
+        {
+            self.say(&said);
+        }
     }
 
     /// **Take `s` off the stack, and every overlay opened from it.** The data an overlay

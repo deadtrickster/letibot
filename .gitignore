@@ -22,3 +22,7 @@ scratch/
 # The example plugin crates are standalone workspaces: their build output is theirs, not this
 # tree's, and a `.wasm` somebody built is a copy at `plugin.wasm` beside it.
 /plugins/examples/*/target/
+# The same for the layers the binary carries (`crates/builtins`): its build script gives each guest
+# a target directory of its own under `OUT_DIR`, and `cargo test` run in a guest's own directory
+# leaves one here.
+/plugins/builtin/*/target/

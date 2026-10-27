@@ -482,9 +482,13 @@ impl App {
     ///
     /// `None` past the last session, and `None` for `0`: the list is numbered from 1.
     pub(crate) fn session_at_number(&self, n: usize) -> Option<usize> {
-        self.session_rows()
+        // **The numbers are the DRAWN list's** — whichever of the two drew it (the plugin's, or
+        // the head's own when the layer cannot answer), because a number that means one thing on
+        // the screen and another here is the two-enumerations defect this list has paid for twice.
+        self.picker_rows()
             .iter()
-            .filter_map(|r| r.idx)
+            .filter(|r| r.number.is_some())
+            .filter_map(|r| r.session)
             .nth(n.checked_sub(1)?)
     }
 
@@ -527,22 +531,6 @@ impl App {
         of.iter()
             .enumerate()
             .any(|(i, g)| *g == group && self.sessions[i].session_id == self.session_id)
-    }
-
-    /// **Open or close an automatic group**, and answer whether anything moved — so a key on a
-    /// `mine` line (which is never folded) says so rather than redrawing nothing.
-    pub(crate) fn toggle_group(&mut self, group: SessionGroup) -> bool {
-        if group.is_mine() {
-            return false;
-        }
-        match self.open_groups.iter().position(|g| *g == group) {
-            Some(at) => {
-                self.open_groups.remove(at);
-            }
-            None => self.open_groups.push(group),
-        }
-        self.redraw = true;
-        true
     }
 
     /// **Whether a row's children are on the list because this head is standing among them.**

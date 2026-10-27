@@ -537,24 +537,32 @@ impl App {
     /// **The words for a row-dependent binding**, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
-            // **What Enter does on the session under the cursor is rano's sentence, not this
-            // head's** — a picker's footer is a function of the row the cursor is on, and this
-            // head used to spell that function a second time here, which is how the two drifted
-            // apart. `SessionPicker::hint_text()` (rano `bf3fa48`) is the same sentence the list
-            // itself draws; the bar reads its FIRST segment and nothing else, because the rest
-            // of it (↑↓, the typed path, esc) is this table's own bindings below.
+            // **What Enter does on the session under the cursor is the ROW's own words** — a
+            // picker's footer is a function of the row the cursor is on, and this head used to
+            // spell that function a second time here, which is how the two drifted apart.
             //
-            // **And `mine` is the row where Enter says nothing** — it is `Fold::Fixed`, so no
-            // `enter …` segment comes out of rano at all, and the binding is dropped from the
-            // bar. A key that does nothing and says nothing is a broken key; a key that does
-            // nothing and is not offered is the truth.
-            (Surface::Picker, Act::Open) => self
-                .session_picker()
-                .hint_text()
-                .as_deref()
-                .and_then(|said| said.split(" · ").next())
-                .and_then(|first| first.strip_prefix("enter "))
-                .map(str::to_string),
+            // **Two sources, one shape.** When the built-in `sessions` layer draws the list
+            // (`app::sessions_pane`) the words are the row's own `enter` act, read by
+            // [`App::list_says`]; when the head draws its own list they are rano's
+            // (`SessionPicker::hint_text`, bf3fa48), whose FIRST segment is this binding's.
+            //
+            // **`mine` is the row where Enter says nothing** — it carries no act at all, so the
+            // binding is dropped from the bar. A key that does nothing and says nothing is a
+            // broken key; a key that does nothing and is not offered is the truth.
+            (Surface::Picker, Act::Open) => {
+                if let Some(list) = self.sessions_list(self.picker_width()) {
+                    list.selected(self.picker_sel)
+                        .and_then(|row| self.list_says(row))
+                        .map(str::to_string)
+                } else {
+                    self.session_picker()
+                        .hint_text()
+                        .as_deref()
+                        .and_then(|said| said.split(" · ").next())
+                        .and_then(|first| first.strip_prefix("enter "))
+                        .map(str::to_string)
+                }
+            }
             // **Said only on a row that waits on something** — `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {

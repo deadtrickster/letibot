@@ -1,0 +1,33 @@
+sessions in this daemon
+
+▸  mine (3)
+      the conversations you opened
+      1  habr · the habr article               generating · 412 rows · 2 heads · qwen-3.8-flash-next
+      s-habr  /home/dead/Projects/letibot
+      2  the rust rewrite · WAITING ON YOU (2)        on disk · 6 rows · 1 head · glm-coding/glm-4.7
+      s-rust  /home/dead/Projects/letibot
+      3  a conversation with a quiet board · nags paused
+      s-paused  /home/dead/Projects/letibot
+ - subagents (3)
+      task children, and their children
+      4  read-it · read the repo                               6 rows · 1 head · qwen-3.8-flash-next
+      s-sub-1  /home/dead/Projects/letibot
+   +  5  run the tests                                         6 rows · 1 head · qwen-3.8-flash-next
+      s-sub-2  /home/dead/Projects/letibot
+ - review queue (2)
+      the review queue's session and its reviewers
+      6  the review queue                                      6 rows · 1 head · qwen-3.8-flash-next
+      s-queue  /home/dead/Projects/letibot
+      7  You are the gatekeeper. review it                     6 rows · 1 head · qwen-3.8-flash-next
+      s-gatekeeper-0123456789ab-sub-1791759365511364772  /home/dead/Projects/letibot
+ - packages (1)
+      conversations a package started (letim)
+      8  make me a landing page                                6 rows · 1 head · qwen-3.8-flash-next
+      s-pkg-1  /home/dead/Projects/letibot
+ - one-shots (1)
+      what a `--prompt` run left behind
+      9  one prompt, one answer                                6 rows · 1 head · qwen-3.8-flash-next
+      s-shot-1  /home/dead/Projects/letibot
+
+  ↑↓ moves · or type a number or part of a name and press enter · /new [title] makes one · /rename …
+  switching does not stop anything: a turn keeps running in the session you left, and it is still t…

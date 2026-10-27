@@ -58,6 +58,7 @@ pub const V: u32 = 1;
 
 pub mod condition;
 pub mod notice;
+pub mod pane;
 pub mod tool_call;
 pub mod tool_result;
 

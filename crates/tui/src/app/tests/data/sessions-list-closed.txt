@@ -1,0 +1,21 @@
+sessions in this daemon
+
+▸  mine (3)
+      the conversations you opened
+      1  habr · the habr article               generating · 412 rows · 2 heads · qwen-3.8-flash-next
+      s-habr  /home/dead/Projects/letibot
+      2  the rust rewrite · WAITING ON YOU (2)        on disk · 6 rows · 1 head · glm-coding/glm-4.7
+      s-rust  /home/dead/Projects/letibot
+      3  a conversation with a quiet board · nags paused
+      s-paused  /home/dead/Projects/letibot
+ + subagents (3)
+      task children, and their children
+ + review queue (2)
+      the review queue's session and its reviewers
+ + packages (1)
+      conversations a package started (letim)
+ + one-shots (1)
+      what a `--prompt` run left behind
+
+  ↑↓ moves · or type a number or part of a name and press enter · /new [title] makes one · /rename …
+  switching does not stop anything: a turn keeps running in the session you left, and it is still t…

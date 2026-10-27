@@ -2,4 +2,11 @@ name = "sessions"
 purpose = "the daemon's sessions: how they are grouped, what each row says, and the keys that act on it"
 hooks = ["pane_sessions"]
 capabilities = []
+# **What it reads**, and the only thing it is handed: the daemon's session list, read-only, which
+# the head already holds and adjudicates nothing about (`docs/plugins-plan.md` §4.9, "Feeds").
+feeds = ["sessions"]
+# **What its rows may ask the host to do**: `switch` to a session, and `fold` a row away. A row
+# carrying an act that is not in this list is refused by the host, so the verbs a layer can reach
+# are the verbs a reviewer read.
+actions = ["switch", "fold"]
 contract = 1

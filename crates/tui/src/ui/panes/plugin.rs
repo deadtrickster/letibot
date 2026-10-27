@@ -170,7 +170,7 @@ impl Target<'_> {
     pub(crate) fn label(&self) -> String {
         match self {
             Target::Line(l) => clean_line(&l.label),
-            Target::Row(r) => clean_line(&r.cells.first().cloned().unwrap_or_default()),
+            Target::Row(r) => clean_line(r.cells.first().map(|c| c.text.as_str()).unwrap_or("")),
             Target::Markdown(text) => clean_line(first_line(text)),
             Target::Finding(f) => {
                 let what = clean_line(&f.what);
@@ -386,6 +386,12 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
         Some(pv::Role::Attention) => Role::Attention,
         Some(pv::Role::Success) => Role::Success,
         Some(pv::Role::Failure) => Role::Failure,
+        // **The three words a list needed and a dashboard did not**: `strong` is *where I am*,
+        // `faint` is *a fact rather than good news*, `pending` is *a turn is running*. They map
+        // to the roles this head already draws those things in.
+        Some(pv::Role::Strong) => Role::Strong,
+        Some(pv::Role::Faint) => Role::Faint,
+        Some(pv::Role::Pending) => Role::Pending,
         Some(pv::Role::Plain) | None => Role::Plain,
     }
 }
@@ -411,7 +417,16 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
         number: None,
         open: None,
         role: Some(role(r.role)),
-        cells: r.cells.iter().map(|c| Cell::new(c.clone())).collect(),
+        cells: r
+            .cells
+            .iter()
+            // **A cell that said nothing takes the row's role**, which is the point of the
+            // untagged spelling: only a cell that means something else carries its own.
+            .map(|c| match c.role {
+                Some(x) => Cell::role(clean_line(&c.text), role(Some(x))),
+                None => Cell::new(clean_line(&c.text)),
+            })
+            .collect(),
         facts: Vec::new(),
         detail: Vec::new(),
         detail_column: None,
@@ -809,7 +824,7 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                         // A row whose first cell the legend documents answers on hover, exactly
                         // as a line does: the record is written where the row is drawn.
                         if !view.legend.is_empty()
-                            && let Some(label) = row.cells.first().map(|c| clean_line(c))
+                            && let Some(label) = row.cells.first().map(|c| clean_line(&c.text))
                             && view.legend.contains_key(&label)
                         {
                             legend.push((out.lines.len() - 1, label));
@@ -846,7 +861,8 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                 // **A table's row**, which is the pane's only flat row: a tree's rows go through
                 // rano's list with their block, above.
                 Item::Row { row, .. } => {
-                    let cells: Vec<String> = row.cells.iter().map(|c| clean_line(c)).collect();
+                    let cells: Vec<String> =
+                        row.cells.iter().map(|c| clean_line(&c.text)).collect();
                     Line::new(vec![
                         Span::role(lead, Role::Faint),
                         Span::role(
@@ -904,7 +920,7 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
             if !view.legend.is_empty()
                 && let Some(label) = match &it {
                     Item::Line { line, .. } => Some(clean_line(&line.label)),
-                    Item::Row { row, .. } => row.cells.first().map(|c| clean_line(c)),
+                    Item::Row { row, .. } => row.cells.first().map(|c| clean_line(&c.text)),
                     _ => None,
                 }
                 && view.legend.contains_key(&label)

@@ -1445,6 +1445,7 @@ mod reviewcard;
 mod screen;
 mod scroll;
 mod session;
+mod sessions_list;
 mod settings;
 mod slugs;
 mod standing;

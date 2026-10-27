@@ -6,6 +6,7 @@
 use super::bindings::Act;
 use super::*;
 use crate::ui::panes::queue::{QRow, Selected, Verb, verb_moves};
+use letibot_plugin::pane::Act as RowAct;
 use std::ops::ControlFlow;
 
 /// The next stop from `at` in a list of `n`, wrapping — the one rule every list's arrows keep.
@@ -200,7 +201,7 @@ impl App {
     fn cursor_act(&mut self, s: Surface, up: bool) -> ControlFlow<Option<Action>> {
         match s {
             Surface::Picker => {
-                let n = self.session_rows().len();
+                let n = self.picker_rows().len();
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
@@ -284,21 +285,19 @@ impl App {
             // The session under the cursor. The empty-composer rule is the binding's: a
             // half-typed id's Enter still means the id, and `submit` takes it.
             Surface::Picker => {
-                let rows = self.session_rows();
-                let Some(row) = rows
-                    .get(self.picker_sel.min(rows.len().saturating_sub(1)))
-                    .copied()
-                else {
+                // **The row's own act, from whichever list is drawn** — `switch` on a session,
+                // `fold` on a group (`app::sessions_pane`): the layer decides which rows act and
+                // how, and the head performs it.
+                let Some(row) = self.picker_row() else {
                     return ControlFlow::Continue(());
                 };
-                // **A group's line opens and closes its group** — the same act `→` and a click
-                // have, and the only act a row with no session behind it could have.
-                let Some(i) = row.idx else {
-                    self.fold_group(row);
+                let Some(act) = row.enter.clone() else {
+                    // **A row with no act on Enter says why it has none** rather than looking
+                    // broken: `mine` is always open, and that is the whole of the answer.
+                    self.say_mine_always_open();
                     return ControlFlow::Break(None);
                 };
-                let id = self.sessions[i].session_id.clone();
-                ControlFlow::Break(self.switch_to(id))
+                ControlFlow::Break(self.perform(&row.id, &act))
             }
             // Changes the row under the cursor when it is one that can change now, and says why
             // when it is not.
@@ -349,57 +348,61 @@ impl App {
     /// of the tree you are in*, which is the gesture, one level up. A `mine` conversation is its
     /// own tree's top and closes itself, exactly as it always did.
     fn picker_fold(&mut self, open: bool) -> ControlFlow<Option<Action>> {
-        let rows = self.session_rows();
-        let Some(&row) = rows.get(self.picker_sel.min(rows.len().saturating_sub(1))) else {
+        // **A row that folds is the row's own act, with this key's direction** — the layer says
+        // which rows fold (`enter: {fold: true}`), the head keeps the state, and `→`/`←` are the
+        // two arrows of the same gesture Enter toggles.
+        let Some(row) = self.picker_row() else {
             return ControlFlow::Continue(());
         };
-        // **→ and ← on a group's line are the group's fold**, which is what `enter` does there
-        // too — one gesture, two keys, because a tree's arrows are where a reader reaches first.
-        let Some(i) = row.idx else {
-            if row.group.is_mine() {
-                self.say_mine_always_open();
-            } else if open != self.open_groups.contains(&row.group) {
-                self.toggle_group(row.group);
+        match &row.enter {
+            Some(RowAct::Fold { .. }) => {
+                self.set_row_fold(&row.id, open);
+                return ControlFlow::Break(None);
             }
+            // **A row with no act on Enter, that also cannot fold**, says why rather than
+            // appearing to swallow the key.
+            None if row.session.is_none() => {
+                self.say_mine_always_open();
+                return ControlFlow::Break(None);
+            }
+            _ => {}
+        }
+        // **A session's ← is the way back up the tree**, which is what the arrows mean on a row
+        // that cannot fold: close the parent this row sits under when the parent is drawn on this
+        // same list, and otherwise close the GROUP the row is drawn in — *back out of the tree you
+        // are in*, one level up.
+        let Some(i) = row.session else {
             return ControlFlow::Break(None);
         };
-        // **The edge this row sits on**: its parent when the parent is drawn on this same list,
-        // which is the rule `push_children` drew the row by — parent on the list AND in this
-        // row's group. (The family view groups nothing, so every row there claims `mine` and the
-        // second half is true by construction.)
-        let of = self.session_groups();
-        let family = self.parent_session().is_some();
-        let under_here = self.sessions[i]
+        if open {
+            let id = self.sessions[i].session_id.clone();
+            self.set_row_fold(&id, true);
+            return ControlFlow::Break(None);
+        }
+        let rows = self.picker_rows();
+        let at = self.picker_sel.min(rows.len().saturating_sub(1));
+        // **The edge a row sits on is its parent WHEN the parent is drawn in the same group** —
+        // that is the rule the list was drawn by, and a parent in another group is not an edge
+        // here. Then ← closes the parent; otherwise it closes the group the row is a root of,
+        // which is *back out of the tree you are in*, one level up.
+        let under_same_group = self.sessions[i]
             .parent_session_id
-            .as_deref()
-            .and_then(|p| self.sessions.iter().position(|s| s.session_id == p))
-            .filter(|&k| family || of.get(k) == Some(&row.group));
-        let want = if open {
-            Some(self.sessions[i].session_id.clone())
-        } else {
-            match under_here {
-                Some(k) => Some(self.sessions[k].session_id.clone()),
-                None => {
-                    if !row.group.is_mine() {
-                        if self.open_groups.contains(&row.group) {
-                            self.toggle_group(row.group);
-                        }
-                        return ControlFlow::Break(None);
-                    }
-                    Some(self.sessions[i].session_id.clone())
+            .clone()
+            .and_then(|parent| {
+                let p = rows.iter().position(|r| {
+                    r.session
+                        .is_some_and(|k| self.sessions[k].session_id == parent)
+                })?;
+                (group_at(&rows, p) == group_at(&rows, at)).then_some(parent)
+            });
+        match under_same_group {
+            Some(parent) => self.set_row_fold(&parent, false),
+            None => {
+                if let Some(group) = group_at(&rows, at) {
+                    let id = rows[group].id.clone();
+                    self.set_row_fold(&id, false);
                 }
             }
-        };
-        if let Some(want) = want {
-            let at = self.expanded.iter().position(|e| *e == want);
-            match (open, at) {
-                (true, None) => self.expanded.push(want),
-                (false, Some(pos)) => {
-                    self.expanded.remove(pos);
-                }
-                _ => {}
-            }
-            self.redraw = true;
         }
         ControlFlow::Break(None)
     }
@@ -687,4 +690,13 @@ impl App {
         self.push_surface(Surface::JobOut);
         Some(Action::ReadJobOutput { job, offset: 0 })
     }
+}
+
+/// **The group line a row is drawn under**, as an index into the drawn list — the nearest row ABOVE
+/// it whose Enter folds something. `None` for a list with no group lines at all, which is the
+/// family view and a daemon that holds one kind of session.
+fn group_at(rows: &[crate::app::sessions_pane::Listed], at: usize) -> Option<usize> {
+    rows[..at]
+        .iter()
+        .rposition(|r| matches!(r.enter, Some(letibot_plugin::pane::Act::Fold { .. })))
 }

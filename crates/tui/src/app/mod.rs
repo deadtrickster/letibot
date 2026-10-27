@@ -275,6 +275,17 @@ pub struct App {
     /// on the session this head is already in, so an untouched list answers Enter
     /// with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
+    /// **The head's stack for the session list's pane** — the built-in `sessions` layer and
+    /// whatever a project or the operator put above it (`crate::app::sessions_pane`). Built on the
+    /// first draw and kept: discovering layers reads the disk.
+    pub(crate) sessions_host: std::cell::RefCell<Option<crate::app::sessions_pane::Host>>,
+    /// **Which rows the person has folded or opened**, by row id — the session list's fold state,
+    /// which belongs to the host and not to the layer (`docs/plugins-plan.md` §7 step 10): a fold
+    /// is instant because it changes this map and the next draw, and survives a re-answer because
+    /// it travels back in the pane's input.
+    pub(crate) picker_folds: std::collections::BTreeMap<String, bool>,
+    /// The key a pane's `event` action asked the head to deliver, until the next ask.
+    pub(crate) sessions_event: std::cell::RefCell<Option<letibot_plugin::pane::Event>>,
     /// **Which session each screen row of the last picker frame belongs to**: `(y, k)` for
     /// every row drawn for session row `k` — its own line and the id line under it. A click
     /// is only trusted for a row this record proves was on the screen, so a click on the
@@ -1931,6 +1942,9 @@ impl App {
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,
+            sessions_host: std::cell::RefCell::new(None),
+            picker_folds: std::collections::BTreeMap::new(),
+            sessions_event: std::cell::RefCell::new(None),
             picker_hits: Vec::new(),
             screen_rows: 0,
             completion: None,
@@ -2377,6 +2391,7 @@ pub(crate) mod reseat;
 pub(crate) mod runclick;
 mod scroll;
 mod session;
+mod sessions_pane;
 pub(crate) mod standing;
 mod surface;
 mod term_pane;

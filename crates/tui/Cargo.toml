@@ -38,6 +38,14 @@ libc = "0.2"
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
 rano = { git = "https://github.com/deadtrickster/rano", rev = "bf3fa48bdea77114df79e2734082a5dadbb21198" }
+# **The layer stack, the plugin SDK and the layers this binary carries** — for ONE pane: the
+# session list, whose policy is a plugin now (`docs/plugins-plan.md` §7 step 10,
+# `src/app/sessions_pane.rs`). The stack carries no engine, the SDK is serde, and `builtins` is the
+# table of modules compiled into this binary — so the head answers that pane in-process, and cannot
+# lose it to a daemon that is the thing it is trying to get out of.
+letibot-plugins.workspace = true
+letibot-plugin.workspace = true
+letibot-builtins.workspace = true
 
 [dev-dependencies]
 # **The real tool runtime, for the one test that has to drive one.** A change detected

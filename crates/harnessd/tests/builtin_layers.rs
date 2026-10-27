@@ -48,6 +48,24 @@ fn project_layer(root: &Path, name: &str) -> PathBuf {
     dir
 }
 
+/// **What a `pane` hook is asked with** — the feed the built-in declares (`plugin.toml`'s
+/// `feeds = ["sessions"]`), and nothing else. A host builds this map from the manifest, so an
+/// answer that needs a feed arrives only when the layer asked for it.
+fn asked_with() -> serde_json::Value {
+    json!({
+        "v": 2,
+        "size": {"w": 100, "h": 40},
+        "feeds": {"sessions": {
+            "sessions": [
+                {"id": "s-one", "title": "the habr article", "origin": "operator", "live": true,
+                 "heads": 1, "items": 6, "model": "qwen", "workspace": "/home/dead/Projects/letibot"},
+            ],
+            "here": "s-one",
+            "home": "/home/dead",
+        }},
+    })
+}
+
 fn tempdir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "letibot-builtin-{tag}-{}-{}",
@@ -92,8 +110,7 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
     // **The real engine answered.** A `View` that parses is the proof that the module loaded, that
     // `rano_abi` was 1, and that the result block held a JSON document: everything before this
     // point in the stack's life is bookkeeping, and this is the one call that runs wasm.
-    let input =
-        json!({"v": 2, "state": null, "look": null, "event": null, "size": {"w": 120, "h": 40}});
+    let input = asked_with();
     let r = stack.call("pane_sessions", &input);
     assert!(r.failures.is_empty(), "{:?}", r.failures);
     assert_eq!(r.by.as_deref(), Some("b-sessions"));
@@ -120,7 +137,7 @@ fn a_project_layer_of_the_same_name_masks_the_builtin() {
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
     assert_eq!(layers, vec!["p1", "b-sessions"]);
 
-    let r = stack.call("pane_sessions", &json!({"v": 2}));
+    let r = stack.call("pane_sessions", &asked_with());
     assert_eq!(
         r.by.as_deref(),
         Some("p1"),
@@ -140,7 +157,7 @@ fn a_layer_that_asks_below_reaches_the_builtin() {
     let tmp = tempdir("below");
     project_layer(&tmp, "sessions");
     let stack = builtin_stack(&tmp);
-    let r = stack.call("pane_sessions", &json!({"v": 2}));
+    let r = stack.call("pane_sessions", &asked_with());
     assert!(r.failures.is_empty(), "{:?}", r.failures);
     let answer = r.answer.expect("an answer");
     // The fixture answers *below found the sessions built-in* only when the built-in's own title

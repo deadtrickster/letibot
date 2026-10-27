@@ -35,8 +35,11 @@ const ARENA: i32 = 8192;
 /// The result block a hook returns: `out_ptr`, `out_len`.
 static mut BLOCK: [u32; 2] = [0, 0];
 
-/// The first call's answer: ask below, with no input of its own.
-static ASK: &[u8] = br#"{"below":{}}"#;
+/// The first call's answer is built in this buffer: `{"below":` + the input it was given + `}`.
+/// **The input is passed through**, because what a layer asks below with is the request it was
+/// asked — a fixture that sent an empty object would be asking the layer below a different
+/// question, and the built-in would have no feed to draw from.
+static mut ASK: [u8; 4096] = [0; 4096];
 
 /// The second call's answers — the built-in's title was in what came back, or it was not.
 static FOUND: &[u8] = br#"{"title":"below found the sessions built-in"}"#;
@@ -57,6 +60,33 @@ pub extern "C" fn rano_alloc(_n: i32) -> i32 {
 }
 
 fn answer(bytes: &'static [u8]) -> i32 {
+    unsafe {
+        let block = core::ptr::addr_of_mut!(BLOCK) as *mut u32;
+        core::ptr::write_unaligned(block, bytes.as_ptr() as u32);
+        core::ptr::write_unaligned(block.add(1), bytes.len() as u32);
+        core::ptr::addr_of_mut!(BLOCK) as i32
+    }
+}
+
+/// `{"below": <input>}` — the request this layer was asked, handed to the layer below it.
+fn ask_below(input: &[u8]) -> i32 {
+    let head = b"{\"below\":";
+    let room = 4096;
+    if head.len() + input.len() + 1 > room {
+        return -1;
+    }
+    unsafe {
+        let buf = &mut *core::ptr::addr_of_mut!(ASK);
+        buf[..head.len()].copy_from_slice(head);
+        buf[head.len()..head.len() + input.len()].copy_from_slice(input);
+        buf[head.len() + input.len()] = b'}';
+        answer_bytes(&buf[..head.len() + input.len() + 1])
+    }
+}
+
+/// [`answer`] for bytes that are not `'static` — they are in this module's own buffer, which
+/// outlives the call.
+fn answer_bytes(bytes: &[u8]) -> i32 {
     unsafe {
         let block = core::ptr::addr_of_mut!(BLOCK) as *mut u32;
         core::ptr::write_unaligned(block, bytes.as_ptr() as u32);
@@ -88,6 +118,6 @@ pub extern "C" fn pane_sessions(ptr: i32, len: i32) -> i32 {
             answer(MISSED)
         }
     } else {
-        answer(ASK)
+        ask_below(input)
     }
 }

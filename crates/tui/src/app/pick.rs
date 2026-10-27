@@ -2,6 +2,7 @@
 //! pick asks for.
 
 use super::*;
+use letibot_plugin::pane::Act as RowAct;
 use letibot_sessionlog::registry::SessionBrief;
 
 impl App {
@@ -58,9 +59,9 @@ impl App {
                 match numbered {
                     Some(n) => {
                         let sessions = self
-                            .session_rows()
+                            .picker_rows()
                             .iter()
-                            .filter(|r| r.idx.is_some())
+                            .filter(|r| r.number.is_some())
                             .count();
                         self.say(&format!(
                             "there is no session {n} in this list — it numbers its sessions, and \
@@ -93,26 +94,17 @@ impl App {
     pub(crate) fn click_picker(&mut self, k: usize) {
         self.picker_sel = k;
         self.redraw = true;
-        let rows = self.session_rows();
-        let Some(row) = rows.get(k).copied() else {
+        // **A row that folds ACTS on a click**, and a session's row only marks: a group has no
+        // session to mark for a later Enter, so a click that only moved the cursor would be a
+        // click that did nothing at all — the same rule Enter follows on the same row.
+        let Some(row) = self.picker_row() else {
             return;
         };
-        if row.idx.is_none() {
-            self.fold_group(row);
+        if row.session.is_none()
+            && let Some(RowAct::Fold { .. }) = row.enter
+        {
+            self.perform(&row.id, &RowAct::fold());
         }
-    }
-
-    /// **Enter or a click on a group's line**: open or close it, or say why nothing moved.
-    ///
-    /// `mine` is the group that cannot fold — its rows are why the list is open — and a key that
-    /// does nothing and says nothing is indistinguishable from a broken one, which is the same
-    /// rule [`App::switch_to`]'s *already here* follows.
-    pub(crate) fn fold_group(&mut self, row: SessionRow) -> bool {
-        if self.toggle_group(row.group) {
-            return true;
-        }
-        self.say_mine_always_open();
-        false
     }
 
     /// **Why nothing moved on a `mine` line** — the one sentence `enter`, `→`, `←` and a click

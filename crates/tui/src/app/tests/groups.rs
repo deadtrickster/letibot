@@ -366,8 +366,7 @@ fn the_bar_follows_the_cursor_onto_a_groups_line() {
         "a folded group says what Enter does to it: {bar}"
     );
     // Opened by hand, the same row says the other half.
-    a.open_groups
-        .push(letibot_sessionlog::SessionGroup::Subagents);
+    a.set_row_fold(letibot_sessionlog::SessionGroup::Subagents.title(), true);
     let bar = a.hint_bar(200);
     assert!(bar.contains("enter folds it away"), "{bar}");
     // `mine` is the row where nothing happens, and the bar does not pretend otherwise: it is

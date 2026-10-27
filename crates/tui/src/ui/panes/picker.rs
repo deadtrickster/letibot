@@ -28,7 +28,13 @@ impl App {
     /// be `y - (header + 2)` as a session INDEX, one row per session, so clicking the second
     /// session selected the third and every id line selected the next one (R67 item 2).
     pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
-        let content = self.session_picker().content(w);
+        // **The list is the plugin's when there is one** (`app::sessions_pane`, the built-in
+        // `sessions` layer); the head's own `SessionPicker` is the way out, and it draws exactly
+        // the rows and the frame this one does.
+        let content = match self.sessions_list(w) {
+            Some(list) => list.content,
+            None => self.session_picker().content(w),
+        };
         let stops = &content.stop_rows;
         let spans = stops
             .iter()

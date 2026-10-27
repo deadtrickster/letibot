@@ -29,6 +29,10 @@ fn main() {
     }
 
     let guests = guests(&root);
+    // **The whole built-in tree is a dependency**, not only each layer's own directory: a layer
+    // may share a crate with its neighbours (`plugins/builtin/abi`), and a build script that only
+    // watched `<layer>/src` would keep a stale module after a change to the shared half.
+    println!("cargo:rerun-if-changed={}", root.display());
     if guests.is_empty() {
         eprintln!(
             "error: {} holds no layer (a layer is a directory with `Cargo.toml` and \

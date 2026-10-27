@@ -12,14 +12,20 @@ description = "the session list, as a built-in plugin: the groups, the names, th
 [workspace]
 
 [lib]
-# The plugin the host loads. There is no `rlib`: nothing links this crate natively — its logic is
-# tested in the host crates, through the real engine, on the built module.
-crate-type = ["cdylib"]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link, because the
+# grouping rule and a row's words are the policy a project overrides and they are worth testing
+# where they live — natively, with no engine and no wasm toolchain in the way.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # rano ABI v1 — the input region, the answer arena and the result block. A path, because the
 # guest and the host that embeds it are one tree.
 letibot-guest-abi = { path = "../abi" }
+# **The pane contract, from the crate that compiles into the host too.** The input it is handed
+# and the cells, folds and acts it answers with are `letibot_plugin::pane`'s, so a field renamed on
+# one side breaks the other's build instead of a sentence nobody reads.
+letibot-plugin = { path = "../../../crates/plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [profile.release]

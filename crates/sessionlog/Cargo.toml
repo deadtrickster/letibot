@@ -9,6 +9,11 @@ build = "build.rs"
 
 [dependencies]
 letibot-transcript.workspace = true
+# **The pane's shared vocabulary** (`letibot_plugin::pane`): a row's cell, its fold and the act a
+# key performs. The SDK, not a copy: the same crate is compiled into a guest plugin, so the words
+# the head parses and the words the plugin writes cannot drift apart. Serde and nothing else, so
+# this adds no engine and no model to everything that depends on the log.
+letibot-plugin.workspace = true
 # The metrics event and its never-blocking channel (TODO R81) — without the `store` feature, so
 # the head that depends on this crate links no SQLite. The hub tap and the feedback frame emit
 # through it; the daemon installs the writer.

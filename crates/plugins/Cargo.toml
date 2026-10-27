@@ -17,3 +17,8 @@ toml.workspace = true
 # module I replayed" check is the SHA-256 of `plugin.wasm` — the hash the ledger and the spill
 # locator already use, so a reader of either recognises it.
 sha2 = "0.10"
+# **The wire's vocabulary, from the crate that compiles into a guest too.** A feed's name and an
+# act's verb are spelled in a manifest this crate parses and in a view a plugin answers, so they
+# live where both sides can see them rather than being spelled twice (serde-only, so this crate
+# stays free of a wasm engine — `docs/plugins-slice1.md` C2).
+letibot-plugin.workspace = true

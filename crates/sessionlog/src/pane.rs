@@ -29,6 +29,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+// **The three words a row shares with the plugin that answered it** — a cell, a fold and the act a
+// key performs. They live in the SDK because the guest compiles that crate too; re-exported here
+// so a reader of the pane contract has one import for its whole vocabulary.
+pub use letibot_plugin::pane::{Act, Cell, Fold, Role};
+
 /// **The keys the host owns on every pane, whatever a plugin says** — C3's list: `q` closes,
 /// `j`/`k` move, `f` is findings, `l` is the legend. A view that binds one of them is refused
 /// (see [`View::validate`]) because the pane's keys are the host's and are templated, not
@@ -44,6 +49,11 @@ fn is_false(b: &bool) -> bool {
 }
 
 fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+/// The same, for a row's depth — absent is the top level.
+pub(crate) fn is_zero_usize(n: &usize) -> bool {
     *n == 0
 }
 
@@ -239,6 +249,11 @@ pub struct Table {
 pub struct Tree {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rows: Vec<Row>,
+    /// **What to draw when there are no rows** — the plugin's own sentence, because *the daemon
+    /// has not answered yet* and *this project keeps no such rows* are two different facts and
+    /// only the layer knows which one its list is. Empty draws nothing.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub empty: String,
 }
 
 /// The body of `{"kv":{"rows":[…]}}`, deserialized before it is flattened to pairs.
@@ -296,14 +311,47 @@ pub struct Bar {
 pub struct Row {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
+    /// **The cells on the left.** A plain string takes the row's role; `{"text", "role"}` says
+    /// what one run is regardless of it (`plugin_sdk::pane::Cell`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub cells: Vec<String>,
+    pub cells: Vec<Cell>,
+    /// **The facts on the right**, drawn faint and flush right — `generating · 412 rows · 2 heads`.
+    /// C3's first draft had none, and a list without a right column is a list whose numbers sit in
+    /// the name's way. A cell here may carry a role like any other.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<Cell>,
+    /// **The faint line(s) UNDER the row** — an id, a path, a legend sentence. Not `detail`: that
+    /// is prose read whole on Enter, and a row whose whole detail is drawn beneath it is a row
+    /// that reads itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub under: Vec<String>,
+    /// The number drawn in the list's left field, or nothing for a row that cannot be typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<usize>,
+    /// **How deep in a FLAT list this row sits** — a plugin that answers the rows already walked
+    /// (the session list does) says so here, because there are no `children` to walk. A nested
+    /// tree leaves it at 0 and the host counts the nesting instead.
+    #[serde(default, skip_serializing_if = "crate::pane::is_zero_usize")]
+    pub depth: usize,
+    /// **Whether this row folds, and which way** (`plugin_sdk::pane::Fold`). Absent is a row that
+    /// said nothing about folding; the host's own fold state (keyed by `id`) wins over whatever
+    /// the plugin said, so a fold is instant and survives the next answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open: Option<Fold>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<Role>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
+    /// **What Enter does on this row**, performed by the host — `switch`, `fold`, `event`
+    /// (`plugin_sdk::pane::Act`). Absent is a row Enter does not act on, and a row with no act
+    /// says nothing about Enter in the hint bar.
+    ///
+    /// An act is declared in the layer's `plugin.toml` (`actions = ["switch"]`), so a view that
+    /// reaches a verb nobody reviewed is refused by [`View::validate_for`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enter: Option<Act>,
     /// A tree's nesting. Empty for a table.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Row>,
@@ -445,19 +493,6 @@ pub fn one_letter(s: &str) -> Option<char> {
     }
 }
 
-/// The palette's roles, as C3 names them. `Plain` is what an absent role means.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Role {
-    Muted,
-    Working,
-    Attention,
-    Success,
-    Failure,
-    #[default]
-    Plain,
-}
-
 /// What a pane asks the host to run before it is asked again.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -490,6 +525,32 @@ impl View {
     /// The daemon refuses a plugin's answer with this before publishing it; a head runs it too,
     /// because a head that draws a pane whose `q` closes it and whose plugin also wanted `q` is
     /// a head whose `q` does something nobody chose.
+    ///
+    /// The acts are [`View::validate_for`]'s — a different question, because it needs the layer's
+    /// manifest.
+    pub fn validate_for(&self, declared: &[String]) -> Result<(), String> {
+        self.validate()?;
+        for p in &self.panels {
+            for block in p.summary.iter().chain(p.view.iter()) {
+                let Block::Tree(t) = block else { continue };
+                for (_, row) in rows_deep(&t.rows) {
+                    let Some(act) = &row.enter else { continue };
+                    if declared.iter().any(|d| d == act.verb()) {
+                        continue;
+                    }
+                    return Err(format!(
+                        "row `{}` asks the host to `{}`, and the layer's `plugin.toml` does not \
+                         declare that action — its `actions` are [{}]",
+                        row.id(),
+                        act.verb(),
+                        declared.join(", ")
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let mut panel_keys: BTreeMap<char, String> = BTreeMap::new();
         for p in &self.panels {
