@@ -189,6 +189,14 @@ jobs:
       # and it passes today. **When the rest of the tree has been formatted in its own
       # commit, replace this with `cargo fmt --all -- --check`** — that is the better
       # gate, and it is waiting on one mechanical commit, not on a decision.
+      # **The built-in plugins' own dependencies.** `crates/builtins/build.rs` builds each
+      # `plugins/builtin/*` crate with a nested `cargo --offline` (no network inside a build
+      # script), and those crates sit outside the workspace with their own lock, so nothing
+      # else downloads their crates. v0.5.0's first release run failed on all three
+      # runners for exactly this: `failed to download serde_json`.
+      - name: Fetch the built-in plugins' dependencies
+        run: for m in plugins/builtin/*/Cargo.toml; do cargo fetch --manifest-path "$m"; done
+
       - name: Format (the files this change touches)
         run: |
           set -eu
