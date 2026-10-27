@@ -2189,11 +2189,26 @@ fn confine_a_checkout(
     ssh: &Ssh,
     home: &str,
     worktree: &str,
+    mirror: &str,
     egress: &crate::exec::Egress,
 ) -> (Option<crate::exec::Bwrap>, Option<String>) {
     use crate::exec::confine::{Grant, HomeView, ViewSpec};
-    let provisional =
-        ViewSpec::project_only(worktree).with_home(HomeView::Dir(PathBuf::from(home)));
+    // **The mirror is part of the checkout, as git sees it.** The checkout is a `git worktree` of
+    // the bare mirror beside it: its `.git` is a one-line pointer into
+    // `<mirror>/worktrees/<short>`, and every object, ref and index lives in the mirror. A view
+    // that bound only the checkout handed the session a tree with no repository — MEASURED
+    // 2026-10-27, the first two packages placed after RH3 (`fatal: not a git repository`), one of
+    // which built a fresh repository to have somewhere to commit. Writable, because a commit
+    // writes objects and moves the branch's ref there, and it is this session's own mirror.
+    let provisional = ViewSpec::project_only(worktree)
+        .with_home(HomeView::Dir(PathBuf::from(home)))
+        .granting(Grant::ReadWrite {
+            path: PathBuf::from(mirror),
+            why: "the repository this checkout is a worktree of — its objects, refs and the \
+                  worktree's own index live there, so without it `git` inside the view has no \
+                  repository and the branch, which is the whole deliverable, cannot be committed"
+                .to_string(),
+        });
     let probe = match ssh.confinement_probe(&provisional, egress) {
         Ok(p) => p,
         Err(why) => return (None, Some(why)),
@@ -2732,7 +2747,7 @@ impl SshBackend {
                         &format!("mkdir -p {}", quote(&dir)),
                     )
                     .map_err(place)?;
-                    let measured = confine_a_checkout(&ssh, &dir, &worktree, &spec.egress);
+                    let measured = confine_a_checkout(&ssh, &dir, &worktree, &mirror, &spec.egress);
                     home = Some(dir);
                     measured
                 }

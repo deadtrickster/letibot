@@ -388,6 +388,14 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
         // directories that do not exist there. The fake ssh puts its own `bin` in front of the
         // fake remote's `PATH`, and this process's `PATH` has no such directory, so a value that
         // carries it can only have come from that shell.
+        // The mirror the checkout is a worktree of, writable — without it `git` inside the view
+        // has no repository (measured: the first packages placed after RH3 could not commit).
+        &format!(
+            "--bind {0}/letibot-remote/the-repo.git {0}/letibot-remote/the-repo.git",
+            std::fs::canonicalize(&rig.home)
+                .unwrap_or_else(|_| rig.home.clone())
+                .display()
+        ),
         "--clearenv",
         "--setenv PATH ",
         // The command, after the `--` that stops the helper reading it as an option.
