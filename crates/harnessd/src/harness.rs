@@ -10194,6 +10194,81 @@ impl Harness {
         crate::pr_watch::told(url, &armed, &refused)
     }
 
+    /// **A plugin layer's look at a tool result** (`docs/plugins-plan.md` §4.2): the text the model
+    /// is about to read, and anything the layer asked to watch.
+    ///
+    /// It changes the payload in place, because that is the one string every later reader uses —
+    /// the progress encoder, the transcript row and the store — so a rewrite that ran after any of
+    /// them would be a result the model read and nobody recorded.
+    fn plugin_result(
+        &self,
+        call: &letibot_transcript::ToolCall,
+        outcome: &str,
+        payload: &mut String,
+    ) {
+        let Some(host) = self.plugin_host() else {
+            return;
+        };
+        let asked = letibot_plugin::Call::new(
+            call.name.clone(),
+            serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null),
+        );
+        let Some(answered) = host.on_tool_result(&self.hub, &asked, outcome, payload) else {
+            return;
+        };
+        let out = answered.out;
+        let text = match out.said() {
+            letibot_plugin::tool_result::Said::Unchanged => None,
+            letibot_plugin::tool_result::Said::Text(text) => Some(text.into_owned()),
+            letibot_plugin::tool_result::Said::Appended(suffix) => {
+                Some(format!("{payload}{suffix}"))
+            }
+        };
+        if let Some(text) = text {
+            *payload = text;
+        }
+        for arm in &out.arm {
+            let said = self.arm_plugin_monitor(arm);
+            payload.push_str(&said);
+        }
+    }
+
+    /// **Arms a monitor a layer asked for**, through the operator's door — the same one
+    /// [`Harness::watch_opened_pr`] uses, and for the same reason: nobody asked this session's
+    /// model for the watch, so no gate is owed it, and the monitor tool's own rules (coalescing,
+    /// the already-watched refusal, the TTL caps) apply unchanged.
+    ///
+    /// The answer is a sentence appended to the call's result, so the model reads what is now
+    /// watching at the moment it caused it.
+    fn arm_plugin_monitor(&self, arm: &letibot_plugin::tool_result::Arm) -> String {
+        let name = arm.plugin.clone();
+        if self
+            .monitors
+            .as_ref()
+            .is_some_and(|m| m.get(&name).is_some())
+        {
+            return format!(
+                "\n[harness] `{name}` is already watching, so the layer's request to arm it again \
+                 was left alone"
+            );
+        }
+        let call = crate::plugins::arm_call(arm);
+        let r = self
+            .runtime
+            .invoke_operator("plugin-arm", &call, &mut letibot_tools::NullToolSink);
+        if r.outcome == letibot_transcript::ToolOutcome::Ok {
+            format!(
+                "\n[harness] `{name}` is watching now (monitor `{name}`); `monitor` with action \
+                 \"retire\" ends it"
+            )
+        } else {
+            format!(
+                "\n[harness] `{name}` was not armed: {}",
+                r.payload.lines().next().unwrap_or("")
+            )
+        }
+    }
+
     /// **Whether the queues' news is this daemon's to tell a model.** False under `--no-queue`
     /// ([`Config::serve_queues`]), and it is the whole of the model-facing half of that flag: a
     /// daemon that holds no lease composes no sentence about a lease — not the emergency
@@ -14244,6 +14319,29 @@ impl Harness {
                 // session writes it down, here, where every other result is appended.
                 if call.name == ASK_USER_QUESTION {
                     asked.extend(self.settle_asked(&mut item));
+                }
+                // **A plugin layer sees the result before the model does** (`docs/plugins-plan.md`
+                // §4.2), and before the harness's own intercept below: the layer is about what the
+                // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
+                if let TranscriptItem::ToolResult {
+                    outcome, payload, ..
+                } = &mut item
+                {
+                    // **A successful result only.** A call that failed did nothing to react to,
+                    // and its result is the failure's own words — which the model has to read
+                    // exactly, not through a layer's opinion of them.
+                    let how = match outcome {
+                        letibot_transcript::ToolOutcome::Ok => {
+                            Some(letibot_plugin::tool_result::OK)
+                        }
+                        letibot_transcript::ToolOutcome::Backgrounded { .. } => {
+                            Some(letibot_plugin::tool_result::BACKGROUNDED)
+                        }
+                        _ => None,
+                    };
+                    if let Some(how) = how {
+                        self.plugin_result(call, how, payload);
+                    }
                 }
                 // **A pull request this call opened is watched from here on** (`pr_watch`), and
                 // the call's own result says so.

@@ -19,6 +19,7 @@
 //! | kind | export | runs | answers |
 //! |---|---|---|---|
 //! | [`notice`] | `notice_<the notice's kind>` | when the harness is about to tell the model something | the sentence, reworded — or dropped |
+//! | [`tool_result`] | `on_tool_result` | on a successful tool result, before the model reads it | a rewritten result, a suffix, monitors to arm |
 //!
 //! The other kinds of `docs/plugins-plan.md` §4 arrive one package at a time, each with the host
 //! wiring that gives it a place in a turn; a kind is not declared here before the host runs it,
@@ -27,11 +28,12 @@
 //! # Two spellings of a hook name, and why the difference is not an accident
 //!
 //! `pane_` and `condition_` are **per subject**: each pane is drawn, each condition is armed, and
-//! the name says which one. `notice_<kind>` (and, in the packages that follow, `on_tool_call` and
-//! `on_tool_result`) is **one hook per kind**: every layer that wants to answer notices of one
-//! kind exports the same name, and they are resolved as a stack — the top answers, the ones below
-//! answer when it asks (`{"below": …}`), one of them may mask the hook, and a layer that traps
-//! falls through to the one beneath (`docs/plugins-plan.md` §1 principle 4, §2.1).
+//! the name says which one. `notice_<kind>` (and, in the packages that follow, `on_tool_call`) is
+//! **one hook per kind**: every layer that wants to answer notices of one kind exports the same
+//! name, and they are resolved as a stack — the top answers, the ones below answer when it asks
+//! (`{"below": …}`), one of them may mask the hook, and a layer that traps falls through to the
+//! one beneath (`docs/plugins-plan.md` §1 principle 4, §2.1). `on_tool_result` is the same rule
+//! with one name for the whole kind: every call's result is the subject.
 //!
 //! # The layer protocol is the stack's, not this crate's
 //!
@@ -53,6 +55,29 @@
 pub const V: u32 = 1;
 
 pub mod notice;
+pub mod tool_result;
+
+/// **One tool call, as a hook sees it**: the name and the arguments the model proposed.
+///
+/// `arguments` is an object, not the model's raw text: a hook that rewrites a call rewrites
+/// fields, and a text blob would make every layer a JSON parser. A call whose arguments are not
+/// JSON never reaches a hook at all — `salvage` owns that case inside the runtime, and a layer
+/// asked about a shape no tool accepts could only guess.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Call {
+    pub name: String,
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+}
+
+impl Call {
+    pub fn new(name: impl Into<String>, arguments: serde_json::Value) -> Call {
+        Call {
+            name: name.into(),
+            arguments,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -82,6 +107,7 @@ mod tests {
 
     #[test]
     fn every_kinds_hook_name_is_one_the_host_finds() {
+        assert!(admitted(tool_result::HOOK), "{}", tool_result::HOOK);
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
             assert!(admitted(&hook), "{hook}");

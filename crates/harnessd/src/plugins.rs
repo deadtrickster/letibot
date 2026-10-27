@@ -1569,6 +1569,74 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|base| base.join("letibot"))
 }
 
+/// What one hook's answer was, and the layer it came from — the by-line a rewrite is reported
+/// with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Answered<T> {
+    pub out: T,
+    pub by: String,
+}
+
+/// **The `monitor` call a layer's `arm` becomes** — the same door the model's own calls and
+/// `pr_watch` use, so the coalescing, the already-watched refusal and the TTL caps are the tool's
+/// and not this function's.
+///
+/// `repeat` is on, matching the harness's own pull-request watch: a watch armed to notice one
+/// push's checks is worth having for the next push's too, and the layer can say otherwise by
+/// retiring it.
+pub fn arm_call(arm: &letibot_plugin::tool_result::Arm) -> letibot_transcript::ToolCall {
+    let name = arm.plugin.clone();
+    let arguments = serde_json::json!({
+        "name": name,
+        "plugin": arm.plugin,
+        "args": arm.args,
+        "repeat": true,
+    });
+    letibot_transcript::ToolCall {
+        id: format!("plugin-arm-{name}"),
+        name: "monitor".into(),
+        arguments: arguments.to_string(),
+    }
+}
+
+impl PluginHost {
+    /// **One result through the `on_tool_result` hook** (`docs/plugins-plan.md` §4.2): the call,
+    /// how it ended, and what the model would read.
+    ///
+    /// `None` when nothing answers the hook (a session with no layers), or when the stack's answer
+    /// is a pass or a mask. An answer that is not the contract is refused and reported, and the
+    /// call's own result stands — a result the model is owed is never lost to a layer's typo.
+    pub fn on_tool_result(
+        &self,
+        hub: &Arc<Hub>,
+        call: &letibot_plugin::Call,
+        outcome: &str,
+        payload: &str,
+    ) -> Option<Answered<letibot_plugin::tool_result::ToolResultOut>> {
+        use letibot_plugin::tool_result::{ToolResultIn, ToolResultOut};
+        let input = ToolResultIn::new(call.clone(), outcome, payload);
+        let input = serde_json::to_value(&input).ok()?;
+        let resolved = self.ask(hub, letibot_plugin::tool_result::HOOK, &input)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.clone().unwrap_or_default();
+        match serde_json::from_value::<ToolResultOut>(answer.clone()) {
+            Ok(out) => Some(Answered { out, by }),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a tool result — \
+                         `payload`, `append` and `arm` are the whole of it: {why}. Its answer \
+                         was {answer}, so the call's own result stands"
+                    ),
+                );
+                None
+            }
+        }
+    }
+}
+
 impl PluginHost {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
@@ -2498,6 +2566,210 @@ mod tests {
                 .iter()
                 .any(|n| n.contains("is not a notice")),
             "the refusal names the shape"
+        );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `on_tool_result` (§4.2): the result, before the model reads it
+    // ---------------------------------------------------------------------------------------
+
+    /// The call every result test here answers: the plan's own example, a pull request opened.
+    fn a_call() -> letibot_plugin::Call {
+        letibot_plugin::Call::new("bash", json!({"command": "gh pr create --fill"}))
+    }
+
+    /// **A layer adds a sentence to a result** — the hook's whole first use: the call printed a
+    /// pull request URL and the model is told what is watching it now.
+    #[test]
+    fn a_layer_appends_to_a_result() {
+        let root = tempdir("result-append");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "watch-pr",
+            &[(
+                "on_tool_result",
+                says(json!({"append": "\n[harness] watching o/r#24 for its checks"})),
+            )],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let answered = host
+            .on_tool_result(&hub, &a_call(), "ok", "https://github.com/o/r/pull/24\n")
+            .expect("a layer answers");
+        assert_eq!(
+            answered.out.said(),
+            letibot_plugin::tool_result::Said::Appended(
+                "\n[harness] watching o/r#24 for its checks"
+            )
+        );
+        assert_eq!(answered.by, "p1");
+        // And the input is the host's own shape: the call as an object, the outcome as a word,
+        // the payload the model would have read.
+        let seen = host.lock().rec.inputs("on_tool_result").to_vec();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["call"]["name"], json!("bash"));
+        assert_eq!(seen[0]["outcome"], json!("ok"));
+        assert_eq!(
+            seen[0]["payload"],
+            json!("https://github.com/o/r/pull/24\n")
+        );
+        assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
+    }
+
+    /// **A layer replaces a result**, and a suffix alone is a different answer.
+    #[test]
+    fn a_layer_replaces_a_result() {
+        let root = tempdir("result-replace");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "shorten",
+            &[("on_tool_result", says(json!({"payload": "opened 24"})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let answered = host
+            .on_tool_result(&hub, &a_call(), "ok", "a very long transcript")
+            .expect("a layer answers");
+        assert_eq!(
+            answered.out.said(),
+            letibot_plugin::tool_result::Said::Text("opened 24".into())
+        );
+    }
+
+    /// **A mask leaves the result exactly as the call produced it** — the hook switched off from
+    /// that layer down, which is what a mask means.
+    #[test]
+    fn a_masked_result_hook_leaves_the_call_own_words() {
+        let root = tempdir("result-mask");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-below",
+            &[("on_tool_result", says(json!({"append": "the layer below"})))],
+        );
+        table.layer(
+            &root,
+            "z-above",
+            &[("on_tool_result", says(json!({"mask": true})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert!(
+            host.on_tool_result(&hub, &a_call(), "ok", "x").is_none(),
+            "a mask answers nothing and asks nothing below it"
+        );
+    }
+
+    /// **A layer asks below and edits what it is told** — the shape §2.1 describes for the
+    /// dotenv-style fix, over a result rather than a notice.
+    #[test]
+    fn a_result_layer_asks_below_and_answers_for_itself() {
+        let root = tempdir("result-below");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "z-above",
+            &[(
+                "on_tool_result",
+                vec![
+                    Some(json!({"below": {"v": 1, "outcome": "ok", "payload": "x"}})),
+                    Some(json!({"append": " (edited)"})),
+                ],
+            )],
+        );
+        table.layer(&root, "a-below", &[("on_tool_result", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let resolved = host
+            .ask(
+                &hub,
+                "on_tool_result",
+                &json!({"v": 1, "outcome": "ok", "payload": "x"}),
+            )
+            .expect("a layer answers");
+        assert_eq!(resolved.by.as_deref(), Some("p2"), "the top layer answers");
+        assert!(
+            resolved.failures.iter().any(|f| f.why.contains("trapped")),
+            "the layer below was asked: {:?}",
+            resolved.failures
+        );
+    }
+
+    /// **A disabled layer is not asked**, and a hook nobody answers is not recorded.
+    #[test]
+    fn a_disabled_result_layer_is_not_asked() {
+        let root = tempdir("result-disabled");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "fix",
+            &[("on_tool_result", says(json!({"append": "patched"})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let id = host.lock().stack.layers()[0].id.clone();
+        host.lock().stack.set_disabled(&id, true).expect("disable");
+        assert!(host.on_tool_result(&hub, &a_call(), "ok", "x").is_none());
+        assert_eq!(host.lock().rec.inputs("on_tool_result").len(), 0);
+    }
+
+    /// **A trapping layer falls to the one below, and the model is told** — a result the model is
+    /// owed is never lost to a layer's trap.
+    #[test]
+    fn a_trapping_result_layer_falls_down_and_is_reported() {
+        let root = tempdir("result-trap");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-working",
+            &[("on_tool_result", says(json!({"append": " from below"})))],
+        );
+        table.layer(&root, "z-broken", &[("on_tool_result", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let answered = host
+            .on_tool_result(&hub, &a_call(), "ok", "x")
+            .expect("the layer below answers");
+        assert_eq!(
+            answered.out.said(),
+            letibot_plugin::tool_result::Said::Appended(" from below")
+        );
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("the layer below it answered")),
+            "and the failure is said to the model"
+        );
+    }
+
+    /// **A session with no layers hands the result back untouched, and records nothing.**
+    #[test]
+    fn a_session_with_no_layers_rewrites_no_result() {
+        let root = tempdir("result-none");
+        let table = Table::new();
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert!(host.on_tool_result(&hub, &a_call(), "ok", "x").is_none());
+        assert!(host.lock().rec.inputs("on_tool_result").is_empty());
+    }
+
+    /// **An `arm` becomes the `monitor` call the model would have typed** — one door for a watch,
+    /// so the coalescing and the refusals are the tool's and not a second implementation's here.
+    #[test]
+    fn an_arm_is_a_monitor_call() {
+        let arm = letibot_plugin::tool_result::Arm::new("coderabbit", json!({"pr": "o/r#24"}));
+        let call = arm_call(&arm);
+        assert_eq!(call.name, "monitor");
+        let args: Value = serde_json::from_str(&call.arguments).expect("an object");
+        assert_eq!(args["name"], json!("coderabbit"));
+        assert_eq!(args["plugin"], json!("coderabbit"));
+        assert_eq!(args["args"], json!({"pr": "o/r#24"}));
+        assert_eq!(
+            args["repeat"],
+            json!(true),
+            "a watch repeats, as `pr_watch`'s does"
         );
     }
 }
