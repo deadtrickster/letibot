@@ -193,6 +193,26 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
         // grammar knows it, while a string search would rewrite it.
         let mut splices: Vec<(usize, usize, String, String)> = Vec::new();
         for u in &n.unresolved {
+            let written = n.source.get(u.span.start..u.span.end).unwrap_or("");
+            // **`$(pwd)` is `$PWD`**, which [`timeline`] already has: the directory the call
+            // runs in, moved by a literal `cd` earlier in the command. It is the one
+            // substitution whose value IS in the text — the idiom `cd "$(pwd)/x"` is what
+            // agents write and what §4i.4 named as the safe exception. Nothing else inside a
+            // `$(…)` is touched: the inner command is already read on its own terms and its
+            // output is still a runtime fact.
+            if u.construct == Construct::CommandSubstitutionValue
+                && is_pwd(written)
+                && let Some(value) = value_at(&timeline, "PWD", u.span.start)
+                && let Some(word) = as_one_word(&value)
+            {
+                splices.push((
+                    u.span.start,
+                    u.span.end,
+                    format!("`$(pwd)` is `{word}`"),
+                    word.to_string(),
+                ));
+                continue;
+            }
             let Construct::ParameterExpansion { name } = &u.construct else {
                 continue;
             };
@@ -200,10 +220,9 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             // `${!X}` and `${arr[0]}` are other expressions of it — see [`plain`], which is
             // the one place that decides, so a transform added to the grammar cannot
             // silently become a value here.
-            let text = n.source.get(u.span.start..u.span.end).unwrap_or("");
             // **What the text states comes first**: `X=/tmp; cat $X` is about `/tmp`, and no
             // rule about numbers may overrule a value somebody wrote down.
-            if plain(text, name)
+            if plain(written, name)
                 && let Some(value) = value_at(&timeline, name, u.span.start)
                 && let Some(word) = as_one_word(&value)
             {
@@ -217,7 +236,7 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             }
             // Then the shell's own numbers — see [`NUMERIC`] for the measurement and for
             // what the claim is (and is not).
-            if numeric_text(text) {
+            if numeric_text(written) {
                 splices.push((
                     u.span.start,
                     u.span.end,
@@ -276,6 +295,21 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
         }
     }
     (text, notes)
+}
+
+/// **Whether this substitution is `pwd` and nothing else** — `$(pwd)`, `` `pwd` ``, and the
+/// same with the spaces bash allows inside the parens.
+///
+/// Everything else is a value the text does not hold: `$(pwd -P)` resolves symlinks,
+/// `$(cd x && pwd)` is a directory, `$(pwd)/x` arrives as this substitution plus the literal
+/// `/x` and is handled by the ordinary splice because the substitution's own text is still
+/// `$(pwd)`. A `cd` inside it is not modelled — see [`timeline`].
+fn is_pwd(text: &str) -> bool {
+    let inner = text
+        .strip_prefix("$(")
+        .and_then(|t| t.strip_suffix(')'))
+        .or_else(|| text.strip_prefix('`').and_then(|t| t.strip_suffix('`')));
+    inner.is_some_and(|i| i.trim() == "pwd")
 }
 
 /// One value in force for one name, from one byte offset of the command on.

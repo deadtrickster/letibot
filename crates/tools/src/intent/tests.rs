@@ -1600,6 +1600,49 @@ fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
     assert!(!b("export F=-DFOO=1; cat $F").resolved);
 }
 
+/// **`$(pwd)` is `$PWD`, and nothing else inside a substitution is touched.**
+///
+/// §4i.4 named this the one substitution whose value is already in the text — `$PWD` is the
+/// directory the call runs in, which [`timeline`] carries and moves with a literal `cd`. The
+/// idiom is `cd "$(pwd)/…"`, which agents write and which used to cost a question.
+///
+/// What must NOT become readable is the next door along: `$(pwd -P)` resolves symlinks,
+/// `$(cd /x && pwd)` is a directory this side does not track, and `$(date)` is a runtime
+/// fact. The inner command of every substitution is still listed as its own stage — that is
+/// the split `crates/code/src/shell.rs` already makes and this does not undo.
+#[test]
+fn a_substitution_that_is_pwd_resolves_as_the_directory_the_call_runs_in() {
+    let x = b("cd /home/dead/Projects/letibot && cat $(pwd)/Cargo.toml");
+    assert!(x.resolved, "`$(pwd)` is still unread: {:?}", x.findings);
+    assert!(x.regions.contains(&Region::Workspace), "{:?}", x.regions);
+    // The card says where the directory came from, as it does for `$PWD`.
+    assert!(
+        x.findings
+            .iter()
+            .any(|f| f.contains("$(pwd)") && f.contains("/home/dead/Projects/letibot")),
+        "nothing said where the directory came from: {:?}",
+        x.findings
+    );
+    // The backquote spelling, and the spaces bash allows inside the parens.
+    assert!(b("cat `pwd`/Cargo.toml").resolved);
+    assert!(b("cat $( pwd )/Cargo.toml").resolved);
+    // `$PWD` and `$(pwd)` in one command place the same directory twice.
+    assert!(b("cat $(pwd)/a $PWD/b").resolved);
+
+    for cmd in [
+        "cat $(pwd -P)/Cargo.toml",     // resolves symlinks
+        "cat $(cd /etc && pwd)/passwd", // a directory this side does not track
+        "echo $(date)",                 // a runtime fact
+        "cat $(dirname $(pwd))/x",      // the inner command is still a value
+    ] {
+        assert!(
+            !b(cmd).resolved,
+            "{cmd} was resolved, and its value is not in the text: {:?}",
+            b(cmd).command
+        );
+    }
+}
+
 /// **The shell's own numbers resolve, because a number is not a place.**
 ///
 /// MEASURED 2026-10-26, the three corpora (161,099 bash decisions): after `$PWD` and the
