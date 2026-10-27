@@ -302,3 +302,28 @@ The operator's two firecode asks, restated against the harness:
 
 Unblocks: firecode as the execution substrate (allow-all inside the VM), and running
 opencode agents against the harness without teaching them a second mode vocabulary.
+
+## D14 — a session's environment is tracked, and a value the session set may make a command readable — **SETTLED 2026-10-27**
+
+The operator, 2026-10-27, on R95 (variables an earlier command assigned are unread in the next):
+*"regarding session and env vars - me must track them"*.
+
+So the adjudicator reads a command against the environment the session's shell actually holds
+at that moment, not only against assignments in the same command (G3). A `$p`, `$d` or
+`$CARGO_TARGET_DIR` that an earlier `bash` call exported resolves, and a shape or a session
+grant may then settle the command.
+
+How, as my reading of the decision (the design note is the package's first step and may refine
+it): the value is **observed, not inferred**. The persistent shell already reports its real cwd
+in a trailer after every call (`crates/tools/src/exec/shell.rs`, `ShellSession`); the trailer
+also reports the environment, so what the adjudicator resolves against is what the next command
+will really see, including what a sourced script or a `cd` hook set. A shell that cannot report
+(a one-shot `bash` with no session, a dead shell) resolves nothing beyond G3. The tracked
+environment is per session and per shell, lives as long as that shell, and is shown on the card
+when it decided the reading (*"`$p` = `/home/…/build`, set by an earlier command"*).
+
+**Not covered by this decision**: `PATH` (R96, still the operator's ruling). A tracked `PATH` is
+recorded like any variable but is NOT used to resolve which binary a stage runs until R96 is
+settled.
+
+Unblocks: R95.

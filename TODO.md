@@ -74,10 +74,32 @@ stopped being readable" at 0** on every host:
 **Not parser gaps, and not to be "fixed" here**: `$(…)` output (the inner command is read; its
 bytes are not in the text), `process_substitution_path` (`/dev/fd/N` exists only at runtime),
 `arithmetic_expansion` (reads variables). **Variables a previous command assigned** are R95
-(section 2); **`$PATH`** is the operator's ruling (section 3).
+(decided: D14); **`$PATH`** is the operator's ruling (section 3).
 
 **Done when**: items 1–3 are read, item 4 is classified, the replay table in §4i.2 is re-run and
 updated with the new numbers on all three hosts, and nothing that was readable became unread.
+
+---
+
+## R95 — A variable an earlier command assigned is unread in the next one — **OPEN, filed 2026-10-27; decided 2026-10-27 (D14): track the session's environment**
+
+About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
+session set in an EARLIER `bash` call, and G3 resolves only a variable assigned earlier in the
+SAME command, so these stay unread (`docs/boundary-and-adjudication.md` §4i.4).
+
+**The operator's decision (D14):** the session's environment is tracked, and a value the session
+set may make a command readable for adjudication. Observed, not inferred: the persistent shell's
+trailer (`ShellSession`, which already reports cwd) reports the environment after every call.
+`PATH` is recorded but not used for resolution until R96 is ruled.
+
+**Done when**: a design note in `docs/boundary-and-adjudication.md` (where it is observed, its
+lifetime across a daemon restart, a migrated session, a confined and a remote shell, and how the
+card shows it); the resolver reads the tracked environment; the corpus replay shows the
+cross-command bucket gone without any command becoming unread; the card names a variable the
+session set when it decided the reading.
+
+**Still open?** grep the corpus replay's unread list for variables with no assignment in the
+same command.
 
 ---
 
@@ -5712,30 +5734,6 @@ transcript-edge choke point, which is the other half.
 ---
 
 # 2. NEEDS A NOD — small question first, then unblocked
-
-## R95 — A variable an earlier command assigned is unread in the next one — **OPEN, filed 2026-10-27; a design note first**
-
-About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
-session set in an EARLIER `bash` call (`export X=…`, or `X=…` in a persistent shell). G3 resolves
-only a variable assigned earlier in the SAME command, so these stay unread
-(`docs/boundary-and-adjudication.md` §4i.4).
-
-Reading them needs a **session-scoped environment**: what the session's shell really holds at
-the moment a command is adjudicated. That is a design question, not a parser gap: where the
-environment is observed (the persistent shell's own `env` after each call vs. replaying the
-assignments the parser saw), what happens across a daemon restart, a migrated session, a
-confined vs. host shell, and whether a value the model set may settle a grant the operator
-gave.
-
-**The nod needed**: is a value the session itself assigned allowed to make a command readable
-for adjudication, and so let a shape or a session grant settle it? If yes, write the design
-note (where it is observed, its lifetime, and how it is shown on the card), then build. If no,
-close this with the reason.
-
-**Still open?** grep the corpus replay's unread list for variables with no assignment in the
-same command.
-
----
 
 ## N6 — a `harnessd` quit while a subagent is mid-turn dies of SIGSEGV at exit — **SETTLED 2026-10-10, see TODO-settled.md (N6) — 3b7db2b**
 
