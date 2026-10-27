@@ -1027,6 +1027,9 @@ mod tests {
         assert!(none.contains("names none"), "{none}");
         let bad = Ready::parse(&serde_json::json!({"log": "a(b"})).unwrap_err();
         assert!(bad.contains("not a regular expression"), "{bad}");
-        assert!(Ready::parse(&serde_json::json!({"port": 0})).is_err(), "port 0");
+        assert!(
+            Ready::parse(&serde_json::json!({"port": 0})).is_err(),
+            "port 0"
+        );
     }
 }
