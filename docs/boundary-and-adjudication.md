@@ -784,6 +784,167 @@ person who was present — but it is the reason to hold this as a direction and 
 Nothing about it is measurable until §4c's rows exist, which is the same blocker as
 everything else in this section.
 
+## 4i. What the parser reads, measured on every decision this box ever made
+
+> *"we have neglected the command parsing and adjudication for too long"* — and *"this
+> permission thing is more important actually because the oracle always had trouble
+> figuring out the intent"*. The operator, 2026-10-26.
+
+Layer A's reading is what the oracle is shown and what every shape and grant is keyed on,
+so a construct it cannot resolve is not a neutral fact: a session grant can never cover an
+unread action, a shape can never settle one, and the region set widens to everywhere. Until
+2026-10-26 that cost had never been counted against the only thing it applies to — **the
+decisions already taken**. This section is that count.
+
+### 4i.1 The instrument
+
+`crates/tools/src/corpus_replay.rs` (library) and `examples/gate_corpus.rs` (its command
+line) read a decision export and re-run today's `Baseline`, `shell::shape` and grant key
+over every `bash` command in it. Nothing in the tree points at where the exports live; the
+paths are arguments, because they hold the operator's own sessions. The sweep streams the
+file (the largest export is 184 MiB), never reads a script off disk, and prints counts —
+`LETIBOT_CORPUS_SHOW=n` adds request ids and readings, never command text.
+
+Two things about the export had to be got right before any number meant anything:
+
+* **`then` is three spellings, not one.** Since 2026-10-02 the baseline summary carries
+  *"the meaning was never resolved"*; before that date the verdict token was `not_run` and
+  the summary had no reason to repeat it; and `boundary:normaliser` is the verdict-by of
+  the one arm that means this. Read as the marker alone, **514 rows on lab2x1 looked like a
+  regression** — read, then, and unread now — and every one of them was a pre-marker row.
+* **The corpus does not record the workspace.** Intents do not depend on it; the region
+  comparison does, so the report prints the two apart and names the assumption it ran
+  under.
+
+### 4i.2 Before and after, per host
+
+161,099 `bash` decisions: lab2x1 134,428, mac 26,180, lubuntu1 489.
+
+| | lab2x1 | mac | lubuntu1 | total |
+|---|---|---|---|---|
+| unread at G3's tip | 14,285 | 3,210 | 60 | 17,555 |
+| unread after | **7,633** | **2,402** | **30** | **10,065** |
+| — as a share | 10.6% → 5.7% | 12.3% → 9.2% | 12.3% → 6.1% | 10.9% → 6.2% |
+| commands that became readable | 11,091 | 1,719 | 35 | 12,845 |
+| commands that stopped being readable | **0** | **0** | **0** | **0** |
+
+By construct, commands it appears in / commands it is the only reason for:
+
+| construct | lab2x1 before | lab2x1 after | mac before | mac after |
+|---|---|---|---|---|
+| `parameter_expansion` | 11,870 / 8,691 | 3,999 / 1,827 | 2,792 / 2,359 | 1,880 / 1,526 |
+| `command_substitution_value` | 4,793 / 1,910 | 4,998 / 2,667 | 738 / 334 | 758 / 422 |
+| `parse_error` | 541 / 188 | 577 / 294 | 64 / 26 | 64 / 26 |
+| `arithmetic_expansion` | 440 / 34 | 486 / 136 | 24 / 3 | 26 / 5 |
+| `process_substitution_path` | 254 / 151 | 254 / 191 | 17 / 11 | 17 / 14 |
+| `brace_expansion` | 36 / 31 | 36 / 32 | 38 / 22 | 42 / 29 |
+| `ansi_c_escapes` | 24 / 9 | 24 / 11 | 16 / 13 | 16 / 13 |
+
+**Two constructs grew, and neither is a reading getting worse.** `parse_error` gains 36 on
+lab2x1 because G3's resolver used to splice a *transform* of a variable away as if it were
+the value — `${X%…}`, `${#X}` — and in 36 commands that hid the fact that the text does
+not parse at all (see 4i.3). The substitutions and the arithmetic grow for the same reason:
+what was spliced away is now read, so the construct inside it is reported instead of being
+silently correct. A count that falls because a construct was thrown away is the number this
+section exists to avoid.
+
+### 4i.3 What was fixed, and why each is safe
+
+**The shell's own numbers resolve — a number is not a place.** `$?` was the largest single
+reason a command was unread: 6,019 commands, 4,827 of them for that reason alone, and one
+idiom — a build or a test, then `echo "exit=$?"` to say how it went. The value is not in the
+text and never will be, but its *reach* is: a status is `0`–`255`, `$#` is a count, `$$` and
+`$!` are pids, `$RANDOM` and `$LINENO` are small integers, and a number names no directory.
+The resolver writes the number `0` back (`intent/parameters.rs`, `NUMERIC`), and the note on
+the audit row says why. This is the ruling of 2026-10-02 (*"`$?` inside `echo` widens nothing
+`echo` can act on"*) applied where it belongs — the parser had been outranking the reading.
+What it does NOT cover: `$@`, `$*`, `$1`, `$0`, `$-` and every name nobody assigned. Those
+can be paths.
+
+**A `for` over a list the command spells is unrolled** (`crates/code/src/shell.rs`). The loop
+variable was the second-largest bucket — `$f` alone in 1,615 commands, 759 of them unread for
+that alone — and the value on each pass is a word written three lines above. The body is
+walked once per value with the variable bound, so the stages, regions, intents and shape are
+the ones that will run. Not unrolled: a glob list, an expansion list, a quoted value that
+splits into several words, and more than 32 values. Certainty stays *conditional*: a loop
+body is still a loop body.
+
+**A transform of a value is not the value** (`intent/parameters.rs`, `plain`). The grammar
+reports the same `variable_name` for `${X}`, `${#X}` (a length), `${X%…}` (a suffix stripped),
+`${X/a/b}` (a replacement), `${X:0:3}` (a slice) and `${!X}` (the value of the variable X
+*names*). G3's resolver keyed on the name, so all six were read as `$X` — a claim about a
+command nobody wrote. The check is now lexical, against the operator's own text.
+
+**And the two defects the unrolling exposed**, both in the resolver and both fail-closed by
+construction: one span is spliced once (a loop body is walked once per pass with the same
+offsets, so `$?` in a body was reported once per pass against one place in the text), and a
+substitution that would make a command *less* parseable than it was is abandoned whole — the
+command keeps its constructs and stays unread.
+
+### 4i.4 What is still unread, and why it stays that way
+
+* **`$PATH` — the largest thing left, and deliberately not done** (527 commands on lab2x1,
+  1,347 on the mac, 1,157 of those for that reason alone). The value is not in the text, and
+  unlike `$?` its reach is a *list of directories a later program is found in*: resolving
+  `export PATH=…:$PATH` would let a shape or a session grant settle a command whose later
+  stages may run a different binary than the one the table names. That is a rule about what
+  runs unasked, which is the operator's to change — see 4i.6.
+* **`$(…)`** (4,793 → 4,998 on lab2x1; 738 → 758 on the mac). The command inside is read and
+  listed; the bytes it will produce are not in the text. `$(pwd)` is the one exception that
+  could be done safely — it is exactly `$PWD`, which already resolves — and it is small
+  enough that it buys nothing today.
+* **Variables a *previous* command assigned** (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …,
+  ~500 commands). These need a session-scoped environment, which is a design decision rather
+  than a parser gap — see 4i.6.
+* **`parse_error`** (577 on lab2x1). The grammar's own limits: a here-document operator
+  followed by `&& for`, a `;` after a heredoc, missing nodes at line ends. Not fixable here.
+* **`process_substitution_path`** — the shell invents `/dev/fd/N` at runtime; the inner
+  command is already read and listed.
+* **`arithmetic_expansion`**, **`brace_expansion`**, **`ansi_c_escapes`**. Brace expansion
+  and ANSI-C quoting are decidable from the text and are the next two parser-side wins
+  (36 and 24 commands on lab2x1, 38 and 16 on the mac); arithmetic reads variables.
+
+### 4i.5 What this did for a person, and for the oracle
+
+| | lab2x1 before | lab2x1 after | mac before | mac after |
+|---|---|---|---|---|
+| human answers | 542 | 542 | 251 | 251 |
+| …a standing approval would now settle | 167 | **192** | 72 | **78** |
+| oracle decisions whose command was never read | 215 | — | 0 | — |
+| …readable now | 4 | **151** | — | — |
+| oracle rows whose intent set differs from the recorded brief | 128 | 136 | 0 | 0 |
+| …whose region set differs | 1,508 | 1,512 | 0 | 0 |
+
+**The 1,512 region diffs are drift, not a fault, and the number is not a claim about this
+change.** The `baseline` column is what the oracle was shown *when the decision was taken*,
+by whatever build was running then; the sweep compares it with today's reading, so the count
+carries every parser change since each row was written, plus the workspace assumption above.
+What this change moved it by is the delta: +4 region sets and +8 intent sets on lab2x1. The
+row that is about *this* work is the one above it — **215 decisions were taken on a command
+nobody could read, and 151 of them are readable now.**
+
+### 4i.6 Recommendations, which are the operator's to take
+
+1. **`$PATH` needs a rule before it needs a reading.** Resolving `export PATH=…:$PATH` is
+   honest, and it would be safe only together with the second half: extend G3's
+   *no durable rule over a segment that sets the shell's state*
+   (`permission::sets_state_for_later`) to **session grants and approved shapes**, so a
+   command that mutates `PATH` can never be settled by a grant taken over its neighbours.
+   Until both land, leaving it unread is the fail-closed choice.
+2. **A session-scoped variable environment.** ~500 commands read a variable a *previous*
+   command assigned. The gate could remember the `NAME=value` statements it has itself read
+   in a session, first assignment wins, cleared by `unset` — never carried across a session
+   boundary, never read from the environment. That turns `cd $d && …` into a readable
+   command; the cost is that a value can be changed by something the transcript did not see,
+   so it must be recorded on the card as a value the session's own gate read.
+3. **Brace expansion and ANSI-C quoting** are decidable from the text (36 + 24 commands on
+   lab2x1, 38 + 16 on the mac) and would be the next two parser changes.
+4. **The one place a decision moves is `reads_only`.** `echo "exit=$?"` now places its
+   argument as `Region::None` instead of `Region::Unbounded`, so a command whose only intent
+   is to print becomes a read and is admitted by the point (R21). That is the ruling of
+   2026-10-02 finally taking effect, and it is still a change to what runs unasked: the
+   count is in 4i.5, and the tier table and the oracle's prompt are untouched by this work.
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
