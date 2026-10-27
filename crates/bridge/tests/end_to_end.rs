@@ -558,6 +558,18 @@ fn state_is(v: &Value, want: &str) -> bool {
 /// fake, and none of them would be able to say that a session survives an ask.
 #[test]
 fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
+    // **This suite's daemon runs commands, and that is apparatus.** `Seat::Leticode` +
+    // `allow_bash` opens the session on `HostBackend::executable`, which needs a delegated cgroup
+    // v2 subtree (on macOS, its process groups); inside a boundary or on a box without one,
+    // `Sessions::open_first` refuses with *whole-host backend: … not a cgroup v2 host*. That is
+    // absent apparatus reported as a failed assertion — AGENTS.md's rule — so it is announced and
+    // skipped here, and the merge gate, which has the subtree, is where this runs.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let world = World::start();
     assert!(
         letibot_sessionlog::client::HeadClient::attach(

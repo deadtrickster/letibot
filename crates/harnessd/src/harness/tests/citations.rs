@@ -89,6 +89,19 @@ fn a_citation_is_read_once_and_kept_for_the_reply() {
 /// never answers, so nothing reaches GitHub; an arming that runs twice arms nothing new.
 #[test]
 fn an_opened_pull_request_gets_its_watches() {
+    // **The seat this test needs seats a process host.** `Seat::Leticode` + `allow_bash` opens on
+    // `HostBackend::executable`, which needs a delegated cgroup v2 subtree (on macOS, its process
+    // groups) — and inside a boundary or on a box without one, `Harness::open` refuses with
+    // *whole-host backend: … not a cgroup v2 host*, which is ABSENT APPARATUS reported as a failed
+    // assertion (AGENTS.md, "A test asserts what it can prove on the machine it is running on").
+    // The merge gate has the subtree; a session's own boundary does not, and says so here instead
+    // of going red over a fact that is nobody's diff.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let Some(gguf) = crate::vocab_gguf() else {
         return;
     };

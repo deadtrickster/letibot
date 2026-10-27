@@ -423,6 +423,16 @@ impl Drop for World {
 /// running beside each other would be measuring one another.
 #[test]
 fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
+    // **The daemon this test measures runs commands**, so a delegated cgroup v2 subtree (on macOS,
+    // its process groups) is the apparatus it needs: the session is seated `Leticode` + `bash`, and
+    // `Sessions::open_first` refuses on `HostBackend::executable` without one. Absent apparatus is
+    // not a failed assertion (AGENTS.md), so it is announced and skipped; the merge gate has it.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
     let world = World::start();
     assert!(
         letibot_sessionlog::client::HeadClient::attach(

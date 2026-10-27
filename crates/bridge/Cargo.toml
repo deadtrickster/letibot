@@ -49,3 +49,8 @@ letibot-tools = { workspace = true, features = ["testing"] }
 # protocol it speaks on a box, and `default-features = false` keeps llama.cpp (and thus
 # the GGUF) out of the build: a session whose turns go to a provider needs neither.
 letibot-harnessd = { workspace = true, default-features = false }
+# **`apparatus::present`**, the tree's one door for *the thing this test needs is not on this
+# machine*: the daemon these two suites build seats `Leticode` + `bash`, so it opens a process
+# host, and a host needs a delegated cgroup v2 subtree. Without this the suites went red inside a
+# boundary with a cgroup's absence reported as a failed assertion (AGENTS.md).
+letibot-tokencore.workspace = true
