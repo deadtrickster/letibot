@@ -31,6 +31,11 @@ members = [
     # wasm engine — a `Loader` is the seam — so it is testable with fakes and its tests never
     # compile a module.
     "crates/plugins",
+    # **The hook contracts, for both sides of the wire.** Compiled into the daemon, which builds
+    # every hook's input and reads its answer, and into a guest plugin, which does the opposite —
+    # so a renamed field breaks a compilation rather than a sentence, the way
+    # `crates/sessionlog/src/pane.rs` does for the pane.
+    "crates/plugin-sdk",
     "crates/harnessd",
     "crates/opencode",
     # Another head, and the one that is a program rather than a screen: the Claude Code
@@ -123,6 +128,7 @@ letibot-ui = { path = "crates/ui" }
 letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
+letibot-plugin = { path = "crates/plugin-sdk" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
 letibot-bridge = { path = "crates/bridge" }

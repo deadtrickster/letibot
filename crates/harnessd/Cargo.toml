@@ -40,6 +40,10 @@ letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 # **The plugin layers and the panes they answer** (W4 of `docs/plugins-slice1.md`): the stack,
 # the recorder, the shadow gate and the pane `View`, all in crates with no wasm engine in them.
 letibot-plugins.workspace = true
+# **The hook contracts, for the daemon's side of the wire** (`crates/plugin-sdk`): the four kinds'
+# typed inputs and answers, which the listener below builds and parses rather than spelling them
+# as JSON here. The same crate is what a guest plugin links, so a renamed field breaks both.
+letibot-plugin.workspace = true
 # The engine behind `letibot_plugins::Loader`: a plugin is a wasm module that answers text hooks,
 # and rano is the host that loads one. This is the only reason the daemon links a JIT, and it is
 # the price of running a plugin at all — see `crates/harnessd/src/plugins/rano.rs`.

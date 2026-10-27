@@ -1,0 +1,16 @@
+[package]
+name = "letibot-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The letibot plugin SDK: the typed contracts of every hook kind, in one place"
+
+[dependencies]
+# **Serde and nothing else.** This crate is compiled twice: into the daemon, which builds each
+# hook's input and reads its answer, and into a guest plugin, which does the opposite. A
+# dependency that only one of the two can link is a contract that cannot be the same contract —
+# and one that links a wasm host would refuse to build for `wasm32-unknown-unknown` at all.
+serde = { workspace = true }
+serde_json = { workspace = true }

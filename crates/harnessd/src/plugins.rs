@@ -235,6 +235,121 @@ impl PluginHost {
         &self.session
     }
 
+    /// **Ask one hook of this session's stack**, recording the input for the gate's replay.
+    ///
+    /// `None` when nothing in this session exports the hook at all — a session with no layers, or
+    /// one whose layers are all about panes — which is what makes a session that patches nothing
+    /// cost what it cost before there were plugins: no record, no call, no allocation beyond the
+    /// input nobody built.
+    ///
+    /// The failure path is the stack's own (`docs/plugins-plan.md` §1 principle 4): a layer that
+    /// traps, runs out of fuel or answers something that is not JSON is skipped, the layer below
+    /// answers, and the failure is said to the model — which is the one that can fix it.
+    pub fn ask(
+        &self,
+        hub: &Arc<Hub>,
+        hook: &str,
+        input: &Value,
+    ) -> Option<letibot_plugins::Resolved> {
+        let mut inner = self.lock();
+        let answering = inner.stack.layers().iter().any(|l| {
+            !l.disabled
+                && l.manifest.contract == letibot_plugins::CONTRACT
+                && l.manifest.hooks.iter().any(|h| h == hook)
+        });
+        if !answering {
+            return None;
+        }
+        inner.rec.record(hook, input);
+        let resolved = inner.stack.call(hook, input);
+        say_failures(hub, &mut inner, &resolved.failures);
+        Some(resolved)
+    }
+
+    /// **One notice through the `notice` hook** (`docs/plugins-plan.md` §4.3): the sentence to
+    /// record, or `None` when a layer dropped it.
+    ///
+    /// The kinds and which of them may be dropped are `letibot_plugin::notice`'s, not this
+    /// function's: a projection over them is a second answer to *what is the model owed*, and the
+    /// host is the only place that question has one. A layer that tries to drop a kind the model
+    /// is owed is refused and told why, rather than silently obeyed.
+    pub fn notice(&self, hub: &Arc<Hub>, kind: &str, text: &str, facts: Value) -> Option<String> {
+        let input = letibot_plugin::notice::Notice::new(kind, text, facts);
+        let input = match serde_json::to_value(&input) {
+            Ok(input) => input,
+            // A notice that cannot be serialised is a bug in the host, not a layer's, and a
+            // sentence the model is owed is never lost to it.
+            Err(_) => return Some(text.to_string()),
+        };
+        let Some(resolved) = self.ask(hub, &letibot_plugin::notice::hook(kind), &input) else {
+            // Nothing in this session answers this kind: the harness's own sentence, unchanged.
+            return Some(text.to_string());
+        };
+        let Some(answer) = resolved.answer else {
+            return Some(text.to_string());
+        };
+        let by = resolved.by.clone().unwrap_or_default();
+        let out: letibot_plugin::notice::NoticeOut = match serde_json::from_value(answer.clone()) {
+            Ok(out) => out,
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a notice, which is \
+                         `{{\"text\": \"…\"}}` or `{{\"drop\": true}}` and nothing else: \
+                         {why}. Its answer was {answer}, so the harness's own sentence stands"
+                    ),
+                );
+                return Some(text.to_string());
+            }
+        };
+        match out.said() {
+            letibot_plugin::notice::Said::Unchanged => Some(text.to_string()),
+            letibot_plugin::notice::Said::Text(said) => Some(said.to_string()),
+            letibot_plugin::notice::Said::Drop => {
+                if letibot_plugin::notice::droppable(kind) {
+                    return None;
+                }
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` asked for the `{kind}` notice to be dropped, and a `{kind}` \
+                         notice may be reworded but not dropped — it is a fact the model is owed \
+                         (docs/plugins-plan.md §4.3). The harness's own sentence stands"
+                    ),
+                );
+                Some(text.to_string())
+            }
+        }
+    }
+
+    /// **A layer's answer the host could not use**, said once — to the model, which is the one that
+    /// can fix the layer, and to the session's log, so a person watching sees why nothing changed.
+    ///
+    /// Not through the `notice` hook: a layer that fails must not be able to fail again about its
+    /// own failure.
+    fn complain(&self, hub: &Arc<Hub>, layer: &str, what: &str) {
+        let said = format!("a plugin layer's answer was refused: {what}");
+        {
+            let mut inner = self.lock();
+            if !inner.said.insert(said.clone()) {
+                return;
+            }
+            inner.notices.push(said.clone());
+        }
+        hub.publish(SessionEvent::Warning {
+            code: "plugin_layer".into(),
+            detail: if layer.is_empty() {
+                said
+            } else {
+                format!("{layer}: {said}")
+            },
+            compaction: None,
+        });
+    }
+
     /// The pane ids this session's layers export: `<manifest name>/<hook name>`.
     ///
     /// From the manifest's declared hooks rather than from the loaded module's exports, which are
@@ -2014,5 +2129,375 @@ mod tests {
         host.close("s-plugins", pane);
         host.close("s-plugins", "plan-dashboard/never");
         assert_eq!(views(&hub).len(), after);
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // The hook fixture: a layer that answers any hook from a table
+    //
+    // The pane fixture above answers one hook from one file, which is enough for a pane — its
+    // name never varies. A hook KIND is resolved by name, and every question these tests ask is
+    // about names: which layer answers `notice_monitor`, what the layer below says when the top
+    // one traps, what happens to a hook nobody exports. So the answers live in a table keyed by
+    // (layer directory, hook), and a layer can answer one kind and pass the next.
+    // ---------------------------------------------------------------------------------------
+
+    /// What one hook of one layer says — one answer per call, the last one repeating, so a layer
+    /// can ask below on its first call and answer on the second. `None` is a trap.
+    type Script = Vec<Option<Value>>;
+
+    #[derive(Clone, Default)]
+    struct Table(Arc<Mutex<BTreeMap<String, BTreeMap<String, Script>>>>);
+
+    /// The id a `&str` hook name gets in the table.
+    fn key(hook: &str) -> String {
+        hook.to_string()
+    }
+
+    impl Table {
+        fn new() -> Table {
+            Table::default()
+        }
+
+        /// Write one layer: its manifest, a module, and its answers.
+        fn layer(self: &Table, root: &Path, name: &str, hooks: &[(&str, Script)]) -> PathBuf {
+            let dir = root.join(".letibot/plugins").join(name);
+            std::fs::create_dir_all(&dir).expect("the layer dir");
+            let declared = hooks
+                .iter()
+                .map(|(h, _)| format!("\"{h}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            std::fs::write(
+                dir.join("plugin.toml"),
+                format!(
+                    "name = \"{name}\"\npurpose = \"one hook, answered from a table\"\n\
+                     hooks = [{declared}]\ncapabilities = []\ncontract = 1\n"
+                ),
+            )
+            .expect("a manifest");
+            std::fs::write(dir.join("plugin.wasm"), b"a module").expect("a module");
+            let mut table = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            let entry = table.entry(name.to_string()).or_default();
+            for (hook, script) in hooks {
+                entry.insert(key(hook), script.clone());
+            }
+            dir
+        }
+    }
+
+    struct TableModule {
+        hooks: Vec<String>,
+        answers: BTreeMap<String, Script>,
+        calls: Mutex<BTreeMap<String, usize>>,
+    }
+
+    impl Module for TableModule {
+        fn hooks(&self) -> Vec<String> {
+            self.hooks.clone()
+        }
+
+        fn call(&self, hook: &str, _input: &str) -> Result<Option<String>, String> {
+            let Some(script) = self.answers.get(hook) else {
+                return Ok(None);
+            };
+            let mut calls = self.calls.lock().unwrap_or_else(|e| e.into_inner());
+            let at = calls.entry(hook.to_string()).or_insert(0);
+            let answer = script.get(*at).or_else(|| script.last()).cloned();
+            *at += 1;
+            match answer {
+                None => Ok(None),
+                Some(None) => Err("trapped: error while executing at wasm backtrace".to_string()),
+                Some(Some(value)) => Ok(Some(value.to_string())),
+            }
+        }
+
+        fn fuel(&self) -> u64 {
+            11
+        }
+    }
+
+    struct TableLoader {
+        table: Table,
+    }
+
+    impl Loader for TableLoader {
+        fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+            let dir = wasm
+                .parent()
+                .ok_or_else(|| format!("{}: no directory", wasm.display()))?;
+            let name = dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let answers = self
+                .table
+                .0
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| format!("the table has no answers for `{name}`"))?;
+            Ok(Box::new(TableModule {
+                hooks: answers.keys().cloned().collect(),
+                answers,
+                calls: Mutex::new(BTreeMap::new()),
+            }))
+        }
+    }
+
+    /// A host over a table's layers, with no builder use in these tests (nothing is loaded
+    /// through the gate here).
+    fn table_host(root: &Path, table: &Table) -> PluginHost {
+        PluginHost::discover(
+            "s-plugins",
+            root,
+            None,
+            None,
+            Arc::new(TableLoader {
+                table: table.clone(),
+            }),
+            Arc::new(FileBuilder),
+        )
+    }
+
+    /// A one-answer script.
+    fn says(answer: Value) -> Script {
+        vec![Some(answer)]
+    }
+
+    /// **A layer rewords a notice, and the model reads its sentence.**
+    #[test]
+    fn a_layer_rewords_a_notice() {
+        let root = tempdir("notice-reword");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "coderabbit-wording",
+            &[(
+                "notice_monitor",
+                says(
+                    json!({"text": "[monitor] CodeRabbit reviewed o/r#24: 3 comments — read them"}),
+                ),
+            )],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let said = host.notice(&hub, "monitor", "[monitor] `pr-24` fired: …", json!({}));
+        assert_eq!(
+            said.as_deref(),
+            Some("[monitor] CodeRabbit reviewed o/r#24: 3 comments — read them")
+        );
+        // And the input it was handed is the host's own shape, with the kind on it — the same
+        // document `plugin_hooks` prints.
+        let seen = host.lock().rec.inputs("notice_monitor").to_vec();
+        assert_eq!(seen.len(), 1, "the input is recorded for the gate's replay");
+        assert_eq!(seen[0]["kind"], json!("monitor"));
+        assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
+    }
+
+    /// **A mask switches the hook off from that layer down**, and the harness's sentence is what
+    /// the model reads — which is the difference between a notice nobody patched and a notice a
+    /// layer silenced.
+    #[test]
+    fn a_masked_hook_leaves_the_harnesss_own_sentence() {
+        let root = tempdir("notice-mask");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-below",
+            &[("notice_monitor", says(json!({"text": "the layer below"})))],
+        );
+        table.layer(
+            &root,
+            "z-above",
+            &[("notice_monitor", says(json!({"mask": true})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert_eq!(
+            host.notice(&hub, "monitor", "the harness's own", json!({})),
+            Some("the harness's own".to_string()),
+            "a mask answers nothing and asks nothing below it"
+        );
+    }
+
+    /// **A layer asks below and the lower layer really is called** — the witness is the lower
+    /// layer's trap arriving in this call's failures while the top layer still answers.
+    #[test]
+    fn a_layer_asks_below_and_the_lower_layer_is_called() {
+        let root = tempdir("notice-below");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "z-above",
+            &[(
+                "notice_monitor",
+                vec![
+                    Some(json!({"below": {"v": 1, "kind": "monitor", "text": "lower"}})),
+                    Some(json!({"text": "the top layer, having seen below"})),
+                ],
+            )],
+        );
+        table.layer(&root, "a-below", &[("notice_monitor", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let resolved = host
+            .ask(
+                &hub,
+                "notice_monitor",
+                &json!({"v": 1, "kind": "monitor", "text": "x"}),
+            )
+            .expect("a layer answers");
+        assert_eq!(
+            resolved.answer,
+            Some(json!({"text": "the top layer, having seen below"}))
+        );
+        assert_eq!(resolved.by.as_deref(), Some("p2"), "the top layer answers");
+        assert!(
+            resolved.failures.iter().any(|f| f.why.contains("trapped")),
+            "the layer below was asked, and it trapped: {:?}",
+            resolved.failures
+        );
+    }
+
+    /// **A disabled layer is not asked at all**, and a hook nobody answers is not recorded: the
+    /// bisect has to be visible in the recorder too, or a replay would run against inputs from a
+    /// layer that was off.
+    #[test]
+    fn a_disabled_layer_is_not_asked() {
+        let root = tempdir("notice-disabled");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "fix",
+            &[("notice_monitor", says(json!({"text": "patched"})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let id = host.lock().stack.layers()[0].id.clone();
+        host.lock().stack.set_disabled(&id, true).expect("disable");
+        assert_eq!(
+            host.notice(&hub, "monitor", "the harness's own", json!({})),
+            Some("the harness's own".to_string())
+        );
+        assert!(
+            host.ask(&hub, "notice_monitor", &json!({})).is_none(),
+            "with the only layer off, nothing exports the hook"
+        );
+        assert_eq!(host.lock().rec.inputs("notice_monitor").len(), 0);
+    }
+
+    /// **A layer that traps falls to the one below, and the model is told which failed** — the
+    /// loud half of §1 principle 4.
+    #[test]
+    fn a_trapping_layer_falls_down_and_is_reported() {
+        let root = tempdir("notice-trap");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-working",
+            &[(
+                "notice_monitor",
+                says(json!({"text": "the layer below answered"})),
+            )],
+        );
+        table.layer(&root, "z-broken", &[("notice_monitor", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert_eq!(
+            host.notice(&hub, "monitor", "the harness's own", json!({})),
+            Some("the layer below answered".to_string())
+        );
+        let warned = hub.retained().iter().any(
+            |e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer"),
+        );
+        assert!(warned, "the failing layer is said on the session's log");
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("the layer below it answered")),
+            "and queued for the model, which is the one that can fix it"
+        );
+    }
+
+    /// **A session with no layers says the harness's sentence, and pays nothing for it** — the
+    /// promise that a session that patches nothing behaves as it did before there were plugins.
+    #[test]
+    fn a_session_with_no_layers_is_unchanged() {
+        let root = tempdir("notice-none");
+        let table = Table::new();
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert_eq!(
+            host.notice(&hub, "monitor", "the harness's own", json!({})),
+            Some("the harness's own".to_string())
+        );
+        assert!(
+            host.ask(&hub, "notice_monitor", &json!({})).is_none(),
+            "nothing was asked, so nothing was recorded"
+        );
+        assert!(host.lock().rec.inputs("notice_monitor").is_empty());
+        assert!(hub.retained().is_empty(), "and nothing was published");
+    }
+
+    /// **A firing may be dropped and a settlement may not** (§4.3): the kinds a project never
+    /// wants are the firing and the nudge, and a layer that tries to silence a fact the model is
+    /// owed is refused and told why.
+    #[test]
+    fn a_dropped_firing_is_silent_and_a_dropped_settlement_is_refused() {
+        let root = tempdir("notice-drop");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "quiet",
+            &[
+                ("notice_monitor", says(json!({"drop": true}))),
+                ("notice_job", says(json!({"drop": true}))),
+            ],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert_eq!(
+            host.notice(&hub, "monitor", "a firing", json!({})),
+            None,
+            "a project may switch a firing off"
+        );
+        assert_eq!(
+            host.notice(&hub, "job", "a settlement", json!({})),
+            Some("a settlement".to_string()),
+            "a settlement is a fact the model is owed"
+        );
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("may be reworded but not dropped")),
+            "and the layer is told why it did nothing"
+        );
+    }
+
+    /// **An answer that is not the contract is refused, not obeyed** — a layer that says
+    /// `{"text": 5}` must not silence a notice, and the model is told its layer is wrong.
+    #[test]
+    fn an_answer_that_is_not_a_notice_is_refused() {
+        let root = tempdir("notice-wrong-shape");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "wrong",
+            &[("notice_monitor", says(json!({"text": 5})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        assert_eq!(
+            host.notice(&hub, "monitor", "the harness's own", json!({})),
+            Some("the harness's own".to_string())
+        );
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("is not a notice")),
+            "the refusal names the shape"
+        );
     }
 }
