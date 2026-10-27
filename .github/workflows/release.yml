@@ -177,9 +177,11 @@ jobs:
               exit 1
             fi
           done
+      # wasm32 as well: `crates/builtins/build.rs` compiles the built-in plugin layers into the
+      # binary (R2), and a toolchain without the target refuses that build by name.
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.triple }}
+          targets: ${{ matrix.triple }}, wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.triple }}

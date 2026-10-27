@@ -171,6 +171,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # `crates/builtins/build.rs` compiles the built-in plugin layers to wasm (R2).
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
 
       # **Format, for the files this change touches, and this is narrower than
