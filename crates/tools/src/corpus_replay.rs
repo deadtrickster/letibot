@@ -64,7 +64,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use letibot_code::shell::{Construct, Context};
+use letibot_code::shell::{Construct, Context, Normalised, Unresolved};
 
 use crate::adjudicate::{ActionClass, NO_PROGRAM, Tier, shape_of};
 use crate::grant::{Coverage, Grant, Written};
@@ -311,6 +311,56 @@ fn unread(r: &Row) -> bool {
     }
 }
 
+/// **Why a command with a `parse_error` is unread**, in the four shapes a sweep can tell apart
+/// without running a shell.
+///
+/// This is §4i.4's census, as a function: the table there is this one run over every `bash`
+/// row on each host, so a reader can re-derive the numbers rather than take them.
+///
+/// The split that matters is the FIRST arm. `partial == false` means the grammar read the
+/// whole tree — there is no `ERROR` node and no `MISSING` one — and the command was called a
+/// parse error by the resolver's own fall-through for a node kind it does not name. That is
+/// this crate's bug and not the grammar's, and MEASURED 2026-10-27 it was 133 commands on
+/// lab2x1 and 25 on the mac, every one of them a `$` that ends a word (`x$$`, `run=^$`).
+///
+/// The other three arms are lexical, because a census that ran `bash -n` would be an
+/// instrument that spawns a shell over the operator's own commands:
+///
+/// * **`<>`** — this grammar's `file_redirect` has `<`, `>`, `>>`, `<&`, `>&`, `&>` and `&>>`
+///   and no read-write redirection, so `exec 3<>/dev/tcp/h/p` recovers as an `ERROR` on one
+///   of the two characters. The error node often IS that character, which is why the window
+///   is widened by one byte either side before looking for the pair.
+/// * **a here-document** — a `<<` earlier on the SAME line as the error. The grammar nests
+///   what follows the operator inside `heredoc_redirect`, and a second redirect there
+///   (`<<'EOF' 2>&1 | tail`) is what it cannot take.
+/// * **the rest**: a command bash itself would refuse (an unbalanced quote, Lisp in a
+///   single-quoted argument), a `%(…)` in a word, and a pair of prose backticks in an
+///   unquoted here-document body. Measured one by one on lab2x1 through `bash -n`, and §4i.4
+///   says which way each falls.
+pub fn parse_cause(n: &Normalised, u: &Unresolved) -> &'static str {
+    if !n.partial {
+        return "a token the resolver does not name";
+    }
+    let src = &n.source;
+    let window = src
+        .get(u.span.start.saturating_sub(1)..(u.span.end + 1).min(src.len()))
+        .unwrap_or("");
+    if window.contains("<>") {
+        return "a read-write redirect `<>`";
+    }
+    let line_start = src[..u.span.start.min(src.len())]
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+    if src
+        .get(line_start..u.span.start)
+        .unwrap_or("")
+        .contains("<<")
+    {
+        return "a here-document followed by an operator on its line";
+    }
+    "the text is not a command this grammar reads"
+}
+
 /// One session's approvals, replayed in the order they were given.
 #[derive(Default)]
 struct Session {
@@ -377,6 +427,9 @@ pub struct Report {
     /// Resolved then, unresolved now — a regression, and it must be zero.
     pub broken: usize,
     pub constructs: BTreeMap<&'static str, Constructs>,
+    /// The `parse_error` commands, by cause — [`parse_cause`]. One per command, so a command
+    /// with two errors counts once, under its first.
+    pub parse_causes: BTreeMap<&'static str, usize>,
     /// The same, one step finer (`parameter_expansion:$HOME`,
     /// `command_substitution_value:git`) — the table a fix is chosen from, because
     /// *"parameter expansion"* is not one thing to fix.
@@ -512,6 +565,17 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
                         now.shape.as_deref().unwrap_or("—"),
                     ));
                 }
+            }
+            // The parse errors, by cause — once per command, under its first, because a
+            // command is one decision however many errors the recovery put in it.
+            if now.constructs.contains(&Construct::ParseError.as_str())
+                && let Some(n) = &now.baseline.command
+                && let Some(u) = n
+                    .unresolved
+                    .iter()
+                    .find(|u| u.construct == Construct::ParseError)
+            {
+                *rep.parse_causes.entry(parse_cause(n, u)).or_default() += 1;
             }
         }
 
@@ -673,6 +737,9 @@ impl Report {
             e.appears += c.appears;
             e.alone += c.alone;
         }
+        for (name, n) in o.parse_causes {
+            *self.parse_causes.entry(name).or_default() += n;
+        }
         self.unresolved_now += o.unresolved_now;
         for (name, c) in o.details {
             let e = self.details.entry(name).or_default();
@@ -754,6 +821,17 @@ impl Report {
             v.sort_by_key(|(_, c)| std::cmp::Reverse(c.alone));
             for (name, c) in v.iter().take(16) {
                 out.push_str(&format!("  {:<38} {:>8} {:>8}\n", name, c.appears, c.alone));
+            }
+        }
+        if !self.parse_causes.is_empty() {
+            out.push_str(&format!(
+                "\n  {:<52} {:>8}\n",
+                "parse errors by cause", "appears"
+            ));
+            let mut v: Vec<_> = self.parse_causes.iter().collect();
+            v.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+            for (name, n) in v {
+                out.push_str(&format!("  {name:<52} {n:>8}\n"));
             }
         }
         out.push_str(&format!(
