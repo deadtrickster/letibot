@@ -694,6 +694,33 @@ why its work runs between the session's turns when the two share a server.
    or bot), with the operator watching where it gets stuck. What it trips on is the next work.
 8. `digest`, then `link` in the TUI (porting `ghlinks::url_of`), then `command`.
 9. `tool`, at reseat.
+10. **Built-ins compiled in, and the session list as the first one** (decided 2026-10-27). One
+    binary is shipped, never a binary and a directory of modules: a `build.rs` builds
+    `plugins/builtin/*` for `wasm32-unknown-unknown` into `OUT_DIR` (its own target directory,
+    `--offline`, with the outer `CARGO_TARGET_DIR` and `RUSTFLAGS` removed, the trap P2 hit), and
+    the modules and their `plugin.toml`s are `include_bytes!`/`include_str!` constants. The
+    `Loader` gains a bytes path (rano already has `Plugin::from_bytes`), and a **`builtin` scope**
+    at the bottom of the stack reads its layers from that table instead of from disk. The price
+    is the wasm target on every machine that builds letibot.
+    The first built-in is the **session list**. rano draws it through one data-driven tree-list
+    primitive (rano's `SessionPicker`, its subagents tree and the head's C3 `Tree` renderer were
+    three copies of one list, each with a hard-coded footer), and the plugin decides everything
+    else: the groups, the names, `WAITING ON YOU`, the actions, and so the hint line. C3 gains
+    what this needs: a pane input the host feeds (the daemon's session list), a `switch` action
+    the head performs, and fold state kept by the host per row id so a fold is instant. Then
+    overriding the list is one `sessions` layer in a project or a session, and a small one, since
+    it can call below and edit the built-in's tree. The session picker is the way out of a broken
+    session, so it must not depend on a plugin: past the built-in, the head draws a plain list
+    through the same rano primitive.
+11. **Script layers: a layer that is source text, with no toolchain.** A layer today is a Rust
+    crate compiled to wasm, so writing one needs cargo and the wasm target, which most boxes and
+    most operators do not have. A JavaScript engine compiled to wasm (QuickJS, as Javy embeds
+    it) becomes one more built-in, and a `.js` layer (`sessions.js` beside a project's
+    `plugin.toml`) is text that engine runs: still one binary, still a sandboxed layer under the
+    same capabilities, fuel, shadow gate and fail-down as a compiled one. `.ts` is the same plus
+    type stripping, which is a fast transform but code to embed or write, so it comes second.
+    This is also the shape §4.11's scripts and the butler's small fixes want, a fix written and
+    loaded in one call, so the script world should be designed with them rather than beside them.
 
 ## 8. Open questions
 
