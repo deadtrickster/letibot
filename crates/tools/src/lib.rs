@@ -92,6 +92,11 @@ pub mod attach;
 pub mod authorise;
 pub mod backend;
 pub mod builtins;
+/// **A sweep of every gate decision a store ever recorded, replayed through today's
+/// parser and gate.** A development instrument rather than a runtime dependency: it is
+/// what makes *"the parser reads more than it did"* a number. See the module note, and
+/// `examples/gate_corpus.rs` for the command-line face of it.
+pub mod corpus_replay;
 pub mod detect;
 pub mod edit;
 pub mod events;
