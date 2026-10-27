@@ -25,10 +25,22 @@
 //! | `$PWD` | the directory the call runs in, **after a literal `cd`** earlier in the command |
 //! | `$HOME` | the harness's own home, the same value every path in [`crate::intent`] is placed against |
 //! | `$X` where `X` is assigned earlier **as its own statement**, or by `export`/`declare`/`typeset`/`readonly` | the value the text gives it |
+//! | `$X` where nothing in this command sets it, and the **session's shell holds it** | the value the shell reported (D14/R95), said on the card with where it came from — see [`crate::intent::env`] |
 //! | `$?`, `$$`, `$!`, `$#`, `$RANDOM`, `$PIPESTATUS`, … — **the shell's own numbers** | the number `0`, because a number is not a place (see [`NUMERIC`]) |
 //! | `$(…)`, a backquote, `$((…))`, `<(…)`, `$'…'`, `{a,b}` | unresolved, as they were |
 //! | `$@`, `$*`, `$1`, `$0`, a name nobody assigned | unresolved, as they were |
 //! | `X=1 cmd $X` | unresolved: bash expands the argument list BEFORE the prefix assignment lands, and `X=1 echo $X` prints an empty line — so treating it as `1` would be a false claim about what runs |
+//! | `$X` that the session holds and that **looks like a credential** | held, said on the card masked, and **not written into the reading** — the post-substitution text becomes the approval key (§4j.4) |
+//!
+//! # The session's environment is the second source, and never the first
+//!
+//! What this command states about a name wins, **including `unset`**: a `$X` after an `unset
+//! X` in the same command does not fall through to a value the session holds, because the
+//! shell would not have one either. Where the command says nothing, the value comes from
+//! [`crate::intent::env::SessionEnv`] and the note says which of its two sources it was —
+//! the pairs every spawn is given (`HOME`, the pinned `PATH`, `CARGO_TARGET_DIR`) or what the
+//! session's shell reported after a line. `crate::intent::env`'s header is the measurement
+//! behind that split, and §4j is the design.
 //!
 //! # Why the text is rewritten rather than the words patched
 //!
@@ -52,6 +64,7 @@
 use letibot_code::shell::{self, Construct};
 
 use super::Surroundings;
+use super::env::{self, From};
 
 /// How many times the text is re-read.
 ///
@@ -173,14 +186,81 @@ fn numeric_text(text: &str) -> bool {
             .all(|c| c.is_ascii_digit() || c == '@' || c == '*')
 }
 
+/// **The command with every parameter it already fixes written out**, and what it cost.
+///
+/// Two facts travel together because a caller that used one without the other would be
+/// making the claim this module is careful about: the text is the reading, and the notes are
+/// what the card says about where a value came from.
+#[derive(Debug, Default)]
+pub(super) struct Fixed {
+    pub text: String,
+    pub notes: Vec<String>,
+    /// **Where the value that resolved `$PATH` came from**, when one did.
+    ///
+    /// It is carried for one decision and one only — `intent::apply_path`'s third outcome.
+    /// A `PATH` **this command's own text fixed** (`export PATH=/w/bin`) was already read
+    /// before this feature existed, so a stage under it must not be turned into a refusal:
+    /// that would make a working command unread. A `PATH` that needed the **session's**
+    /// environment to be written out is the new capability, and the command that rests on it
+    /// was unread until now, so leaving it unread costs nothing and is the fail-closed end.
+    pub path: Option<Source>,
+}
+
+/// **Where a value came from.**[`Source::Command`] is this text, which needs no
+/// justification; the other two are the session's environment (see [`crate::intent::env`]
+/// for which is true of what).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Source {
+    /// An assignment or an `export` in this command, before this point.
+    Command,
+    /// The pairs every command of this session is spawned with.
+    Harness,
+    /// The session's shell, in a trailer after a line.
+    Shell,
+}
+
+impl Source {
+    fn phrase(self) -> &'static str {
+        match self {
+            Source::Command => "",
+            Source::Harness => From::Harness.as_phrase(),
+            Source::Shell => From::Shell.as_phrase(),
+        }
+    }
+
+    /// **How the card says which `PATH` this was** — see `intent::apply_path`.
+    pub(super) fn path_phrase(self) -> &'static str {
+        match self {
+            Source::Command => "this command set",
+            Source::Harness => "every command of this session is given",
+            Source::Shell => "this session's shell reported",
+        }
+    }
+}
+
 /// **The command with every parameter it already fixes written out.**
 ///
 /// Returns the (possibly unchanged) text and a note per substitution, for the audit row:
 /// a card whose regions were placed against a directory the operator never typed should
 /// say where that directory came from.
-pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>) {
+pub(super) fn resolve(command: &str, env: &Surroundings) -> Fixed {
+    resolve_without(command, env, &[])
+}
+
+/// **The same, with one name deliberately left unresolved.**
+///
+/// One caller: [`crate::intent::Baseline::of_command_with`], which asks for the reading with
+/// `PATH` written out and — when it cannot name the file a bare stage would then run — asks
+/// again for the reading where `PATH` is *not* written out. That is how §4j.5's third
+/// outcome is spelled without an undo: the command ends up exactly as unread as it was
+/// before this feature existed, which is the property that makes the whole thing safe.
+pub(super) fn resolve_without(command: &str, env: &Surroundings, skip: &[&str]) -> Fixed {
     let mut text = command.to_string();
     let mut notes: Vec<String> = Vec::new();
+    // A value that is held and not written into the reading still has to be explained, or
+    // the card's silence would be indistinguishable from *the session does not hold it*.
+    let mut refused: Vec<String> = Vec::new();
+    let mut path: Option<Source> = None;
     for _ in 0..ROUNDS {
         let n = shell::normalise(&text);
         if n.is_resolved() {
@@ -191,7 +271,7 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
         // The spans are the grammar's own byte offsets, which is why this is exact and
         // a search for the text is not: `'$PWD'` in single quotes is a literal and the
         // grammar knows it, while a string search would rewrite it.
-        let mut splices: Vec<(usize, usize, String, String)> = Vec::new();
+        let mut splices: Vec<(usize, usize, String, String, Option<Source>)> = Vec::new();
         for u in &n.unresolved {
             let written = n.source.get(u.span.start..u.span.end).unwrap_or("");
             // **`$(pwd)` is `$PWD`**, which [`timeline`] already has: the directory the call
@@ -221,16 +301,41 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             // the one place that decides, so a transform added to the grammar cannot
             // silently become a value here.
             // **What the text states comes first**: `X=/tmp; cat $X` is about `/tmp`, and no
-            // rule about numbers may overrule a value somebody wrote down.
+            // rule about numbers may overrule a value somebody wrote down. The session's
+            // environment is consulted only where the command says nothing — see
+            // [`value_at`] for why `unset` does not fall through.
             if plain(written, name)
-                && let Some(value) = value_at(&timeline, name, u.span.start)
+                && !skip.contains(&name.as_str())
+                && let Some((value, from)) = value_at(&timeline, env, name, u.span.start)
                 && let Some(word) = as_one_word(&value)
             {
+                // **A credential is held and not written down.** The post-substitution
+                // text is what `shape_of` renders into the approval key that every row
+                // stores, and what the oracle is shown — so a token spliced here is a token
+                // in the store, which D12 forbids. It stays unresolved, exactly as it was
+                // before this feature, and the card says why.
+                if from != Source::Command && env.session.is_secret(name) {
+                    let note = format!(
+                        "`${name}` is `{}` — {}, and it looks like a credential, so it is not \
+                         written into this reading",
+                        env.session.masked(name).unwrap_or_default(),
+                        from.phrase()
+                    );
+                    if !refused.contains(&note) {
+                        refused.push(note);
+                    }
+                    continue;
+                }
+                let note = match from {
+                    Source::Command => format!("`${name}` is `{word}`"),
+                    other => format!("`${name}` is `{word}` — {}", other.phrase()),
+                };
                 splices.push((
                     u.span.start,
                     u.span.end,
-                    format!("`${name}` is `{word}`"),
+                    note,
                     word.to_string(),
+                    (name == "PATH").then_some(from),
                 ));
                 continue;
             }
@@ -247,6 +352,7 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
                          which number it turns out to be"
                     ),
                     NUMERIC_WORD.to_string(),
+                    None,
                 ));
             }
         }
@@ -263,8 +369,8 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
         // parse. Keeping the FIRST of an overlapping run is the safe choice: the dropped
         // one stays unresolved, the text is re-read next round, and nothing is claimed about
         // bytes two splices disagree over.
-        splices.sort_by_key(|(start, _, _, _)| *start);
-        let mut disjoint: Vec<(usize, usize, String, String)> = Vec::new();
+        splices.sort_by_key(|(start, _, _, _, _)| *start);
+        let mut disjoint: Vec<(usize, usize, String, String, Option<Source>)> = Vec::new();
         for s in splices {
             if disjoint.last().is_some_and(|k| s.0 < k.1) {
                 continue;
@@ -272,9 +378,12 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             disjoint.push(s);
         }
         let mut next = text.clone();
-        for (start, end, _, word) in disjoint.iter().rev() {
+        for (start, end, _, word, named) in disjoint.iter().rev() {
             if *end <= next.len() && start < end {
                 next.replace_range(*start..*end, word);
+            }
+            if let Some(from) = named {
+                path = Some(*from);
             }
         }
         // **A substitution may never make a command LESS parseable than it was.** A span is
@@ -288,13 +397,14 @@ pub(super) fn resolve(command: &str, env: &Surroundings) -> (String, Vec<String>
             break;
         }
         text = next;
-        for (_, _, note, _) in disjoint {
+        for (_, _, note, _, _) in disjoint {
             if !notes.contains(&note) {
                 notes.push(note);
             }
         }
     }
-    (text, notes)
+    notes.extend(refused);
+    Fixed { text, notes, path }
 }
 
 /// **Whether this substitution is `pwd` and nothing else** — `$(pwd)`, `` `pwd` ``, and the
@@ -404,12 +514,35 @@ fn timeline(n: &shell::Normalised, env: &Surroundings) -> Vec<Binding> {
     out
 }
 
-/// The value in force for `name` at byte offset `at`, or `None` when nothing fixed it.
-fn value_at(timeline: &[Binding], name: &str, at: usize) -> Option<String> {
-    timeline
-        .iter()
-        .rfind(|b| b.at <= at && b.name == name)
-        .and_then(|b| b.value.clone())
+/// The value in force for `name` at byte offset `at`, and where it came from.
+///
+/// Two sources, in one order, and the order carries a rule:
+///
+/// 1. **What this command says.** The last binding at or before `at`, *including a binding
+///    to nothing*: `unset X; cat $X` must not fall through to a value the session holds,
+///    because the shell would not have one either. That is the difference between
+///    [`Binding::value`]'s `None` and no binding at all, and it is why this cannot be a
+///    `find` over a map.
+/// 2. **What the session's environment holds** (D14/R95), with its source, so the card can
+///    say whether the reading rests on the pairs every spawn gets or on what a shell
+///    reported after a line.
+fn value_at(
+    timeline: &[Binding],
+    env: &Surroundings,
+    name: &str,
+    at: usize,
+) -> Option<(String, Source)> {
+    if let Some(b) = timeline.iter().rfind(|b| b.at <= at && b.name == name) {
+        return b.value.clone().map(|v| (v, Source::Command));
+    }
+    let held = env.session.get(name)?;
+    Some((
+        held.value.clone(),
+        match held.from {
+            env::From::Harness => Source::Harness,
+            env::From::Shell => Source::Shell,
+        },
+    ))
 }
 
 /// **The value as the one word the shell will deliver**, or `None` when it cannot be put

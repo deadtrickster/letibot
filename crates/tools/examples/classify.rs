@@ -34,6 +34,12 @@ fn main() {
             how: "this example assumes the seat a session with a shell gets".into(),
         },
         seen_hosts: Default::default(),
+        session: Default::default(),
+        // `None`, for the reason `scratch` is: a corpus is a record of decisions and
+        // not the tree they were taken in, so nothing here opens a file to find out
+        // which binary a bare name would have run.
+        programs: Default::default(),
+        shell_path: None,
     };
 
     // Where a relative script path is resolved from, and whether to read at all.

@@ -11,6 +11,9 @@ fn env() -> Surroundings {
                 .into(),
         },
         seen_hosts: BTreeSet::new(),
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     }
 }
 
@@ -1166,6 +1169,9 @@ fn a_bare_name_is_unresolved_unless_the_shell_was_declared_fixed() {
         workspace: Some("/home/dead/Projects/letibot".into()),
         shell: ShellTrust::Unknown,
         seen_hosts: BTreeSet::new(),
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     };
     match Baseline::of_command("ls -la", &unknown).verdict {
         BaselineVerdict::NotRun { why } => {
@@ -1724,7 +1730,8 @@ fn a_transformed_expansion_is_not_the_value_it_transforms() {
 /// eaten, and the rest of the line then failed to parse.
 #[test]
 fn one_span_is_spliced_once_however_many_passes_reported_it() {
-    let (text, notes) = super::parameters::resolve("for c in a b; do echo \"rc=$?\"; done", &env());
+    let fixed = super::parameters::resolve("for c in a b; do echo \"rc=$?\"; done", &env());
+    let (text, notes) = (fixed.text, fixed.notes);
     assert_eq!(text, "for c in a b; do echo \"rc=0\"; done");
     assert!(
         notes.iter().any(|n| n.contains("a number is not a place")),

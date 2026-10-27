@@ -137,6 +137,9 @@ fn env() -> Surroundings {
         workspace: Some("/w".into()),
         shell: ShellTrust::Pinned { how: "test".into() },
         seen_hosts: std::collections::BTreeSet::new(),
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     }
 }
 

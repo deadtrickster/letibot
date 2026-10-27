@@ -130,6 +130,9 @@ fn pinned() -> crate::intent::Surroundings {
             how: "test fixture".into(),
         },
         seen_hosts: BTreeSet::new(),
+        session: Default::default(),
+        programs: Default::default(),
+        shell_path: None,
     }
 }
 

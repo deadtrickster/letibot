@@ -2222,6 +2222,323 @@ impl ShellTrust {
     }
 }
 
+/// **What this gate can honestly see of the filesystem a command will run in** — D15's
+/// second half (R96).
+///
+/// Resolving `$PATH` is only half the promise: a stage whose program is the bare name `cargo`
+/// runs whatever the *current* `PATH` finds, so a shape or a grant named `cargo` is a claim
+/// about a file nobody named. D15's answer is to name the file. Whether that can be done is a
+/// fact about this process, not a preference, which is why it is a value here:
+///
+/// | | |
+/// |---|---|
+/// | [`ProgramLookup::Host`] | this daemon's own view of the filesystem — a session whose commands run here |
+/// | [`ProgramLookup::None`] | a remote placement, a VM, a corpus replay: the gate cannot see the disk the command will touch, and says so |
+///
+/// `None` is what keeps the whole feature monotone: where the file cannot be established, the
+/// `PATH` is not resolved at all and the command is exactly as unread as it was before any of
+/// this existed (§4j.5). A guess here would be worse than the problem it solves — `ls` on a
+/// box with no `cargo` would place a path that does not exist.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ProgramLookup {
+    /// Nothing here can answer.
+    #[default]
+    None,
+    /// Ask this process's own filesystem, with the shell's rule: each directory of `PATH` in
+    /// order, the first `dir/name` that is a regular file with any execute bit.
+    Host,
+}
+
+impl ProgramLookup {
+    /// **The file a bare name would run along `path`**, or `None`.
+    ///
+    /// The shell's rule, and only the shell's rule: an empty element of `PATH` (which means
+    /// *the current directory*) is **not** resolved, because which directory that is belongs to
+    /// the command and guessing it would be the one kind of wrong answer this module refuses.
+    /// A name containing a `/` is not looked up at all — it is a path, not a name.
+    pub fn path_file(self, name: &str, path: &str) -> Option<String> {
+        if self == ProgramLookup::None || name.is_empty() || name.contains('/') {
+            return None;
+        }
+        for dir in path.split(':') {
+            if dir.is_empty() {
+                continue;
+            }
+            let candidate = format!("{}/{name}", dir.trim_end_matches('/'));
+            let Ok(md) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if md.is_file() && md.permissions().mode() & 0o111 != 0 {
+                    return Some(candidate);
+                }
+            }
+            #[cfg(not(unix))]
+            if md.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+}
+
+/// **Programs the shell answers itself, so `PATH` never names them.**
+///
+/// A `PATH` that has been resolved is followed only for the names a shell would *look up*: a
+/// builtin or a keyword is not a file on any `PATH`, so asking the disk about `export` or `cd`
+/// must not be the reason a `PATH` is judged unknowable — that would switch the feature off
+/// for every `export PATH=…` command, which is the shape it exists for. The list is bash's
+/// builtins and reserved words, including the ones that also exist as binaries (`echo`,
+/// `printf`, `test`, `[`, `pwd`, `kill`, `true`, `false`): bash uses the builtin, and a grant
+/// named `echo` is a grant about *a shell's* `echo` either way.
+const SHELL_ANSWERS: &[&str] = &[
+    ".",
+    ":",
+    "[",
+    "alias",
+    "bg",
+    "bind",
+    "break",
+    "builtin",
+    "caller",
+    "cd",
+    "command",
+    "compgen",
+    "complete",
+    "continue",
+    "declare",
+    "dirs",
+    "disown",
+    "echo",
+    "enable",
+    "eval",
+    "exec",
+    "exit",
+    "export",
+    "false",
+    "fc",
+    "fg",
+    "getopts",
+    "hash",
+    "help",
+    "history",
+    "jobs",
+    "kill",
+    "let",
+    "local",
+    "logout",
+    "mapfile",
+    "popd",
+    "printf",
+    "pushd",
+    "pwd",
+    "read",
+    "readarray",
+    "readonly",
+    "return",
+    "set",
+    "shift",
+    "shopt",
+    "source",
+    "suspend",
+    "test",
+    "times",
+    "trap",
+    "true",
+    "type",
+    "typeset",
+    "ulimit",
+    "umask",
+    "unalias",
+    "unset",
+    "wait",
+];
+
+/// What `PATH` resolved to means for the stages after it — D15's second half.
+enum Programs {
+    /// Nothing to report: no stage after the `PATH` runs a name a shell would look up.
+    Unchanged,
+    /// The stages that now name a file, and the note each one puts on the card.
+    ///
+    /// The positions are what `Baseline::absorb_stage` needs: the parse's program word is
+    /// the file, but the APPROVAL KEY is built from the program's *name* (`program_name`
+    /// strips the directory, which is what makes a grant for `rm` cover `/bin/rm`) — so a
+    /// stage the `PATH` rule moved has to be named by its file or the grant would settle it.
+    Renamed {
+        notes: Vec<String>,
+        renamed: Vec<usize>,
+    },
+    /// A name that would be looked up and cannot be placed. The `PATH` is not resolved —
+    /// §4j.5's third outcome, and the words for the card.
+    Unknowable(String),
+}
+
+/// **Follow the `PATH` in force, renaming every file it moves** — D15's second half, and the
+/// answer to why G4 said "no" to `$PATH` altogether.
+///
+/// The `PATH` a stage runs under is read from the parse, in source order, and there are only
+/// two sources that can be known:
+///
+/// * **a literal assignment in this command** — `export PATH=…:$PATH` after `parameters`
+///   has written the session's value out is a literal, and this takes it from that stage's
+///   byte offset on;
+/// * **the session's own `PATH`**, and only when it differs from the pinned one
+///   ([`Surroundings::shell_path`]). The daemon seeds those from the same place
+///   (`harness::surroundings_for`), so in production this arm is the one that says *nothing
+///   changed* — it exists for a shell that reported a different `PATH` than the host pins.
+///
+/// A stage whose `PATH` is the pinned one is **not touched**: a grant for `cargo` is a grant
+/// about the `cargo` the box runs, and renaming it would break every shape the operator's
+/// corpus has already approved. Only a file that is a *different* one is named.
+///
+/// `spliced` is where the value that resolved `$PATH` came from, and it decides what happens
+/// when a file **cannot** be established — see [`Programs::Unknowable`]:
+///
+/// * `Some(Harness|Shell)` — the command rests on the session's environment to be read at
+///   all, and it was `not_run` before this existed. Leaving it unread costs nothing.
+/// * `Some(Command)` or `None` — the command's own text fixed its `PATH` (`export
+///   PATH=/w/bin` resolved before this feature too, and so did `cat $PATH`), so refusing here
+///   would make a **working** command unread. The stage keeps the bare name it always had, and
+///   the reading is exactly what it was.
+fn apply_path(
+    n: &mut Normalised,
+    env: &Surroundings,
+    spliced: Option<parameters::Source>,
+) -> Programs {
+    let may_refuse = matches!(
+        spliced,
+        Some(parameters::Source::Harness | parameters::Source::Shell)
+    );
+    let mut notes: Vec<String> = Vec::new();
+    let mut renamed: Vec<usize> = Vec::new();
+    // The `PATH` in force at the start of the command: the session's, when it is not the one
+    // the shell is pinned to. `None` is *the pinned PATH, so nothing to follow*.
+    let held = env.session.get("PATH").map(|e| (e.value.clone(), e.from));
+    let mut in_force: Option<(String, Option<parameters::Source>, usize)> = match held {
+        Some((value, from)) if Some(&value) != env.shell_path.as_ref() => Some((
+            value,
+            Some(match from {
+                env::From::Harness => parameters::Source::Harness,
+                env::From::Shell => parameters::Source::Shell,
+            }),
+            0,
+        )),
+        _ => None,
+    };
+    // **The stages in source order, with the `PATH` assignment taking effect where it is.**
+    // A standalone `PATH=…` statement and an `export PATH=…` are the same fact here, which is
+    // why both `n.assignments` and the stages that assign are folded into one timeline.
+    let mut events: Vec<(usize, String)> = n
+        .assignments
+        .iter()
+        .filter(|a| a.name == "PATH")
+        .filter_map(|a| a.value.literal().map(|v| (a.span.end, v.to_string())))
+        .collect();
+    for stage in &n.stages {
+        for a in &stage.assignments {
+            if a.name == "PATH"
+                && let Some(v) = a.value.literal()
+            {
+                events.push((stage.span.end, v.to_string()));
+            }
+        }
+    }
+    events.sort_by_key(|(at, _)| *at);
+    let mut next_event = 0usize;
+    for i in 0..n.stages.len() {
+        let start = n.stages[i].span.start;
+        while next_event < events.len() && events[next_event].0 <= start {
+            let (at, value) = events[next_event].clone();
+            in_force = if Some(&value) == env.shell_path.as_ref() {
+                None
+            } else {
+                Some((value, Some(parameters::Source::Command), at))
+            };
+            next_event += 1;
+        }
+        let Some((path, from, since)) = in_force.clone() else {
+            continue;
+        };
+        // The stage that MAKES the assignment is not looking anything up.
+        if start < since
+            || n.stages[i]
+                .program_name()
+                .is_some_and(crate::permission::sets_shell_state)
+        {
+            continue;
+        }
+        // **The stage's program and, when it wraps another, the one it wraps.** `sudo
+        // cargo` is a `cargo` call: `unwrap_wrapper` is the one place that says which
+        // argument is the program, and a rename that stopped at `sudo` would leave exactly
+        // the name D15 exists to place.
+        let inner = n.stages[i]
+            .program_name()
+            .and_then(|p| unwrap_wrapper(p, &n.stages[i].argv))
+            .map(|(_, at)| at);
+        for slot in [None, inner] {
+            let word = match slot {
+                None => n.stages[i].program.clone(),
+                Some(j) => match n.stages[i].argv.get(j) {
+                    Some(w) => w.clone(),
+                    None => continue,
+                },
+            };
+            let Some(name) = word.literal() else { continue };
+            // An absolute path is not looked up by the shell, and a builtin is answered by
+            // the shell — see [`SHELL_ANSWERS`].
+            if name.contains('/') || SHELL_ANSWERS.contains(&name) {
+                continue;
+            }
+            let Some(file) = env.programs.path_file(name, &path) else {
+                if !may_refuse {
+                    // The command's own text fixed this `PATH`, so it was readable before
+                    // this feature and stays readable: no rename, no refusal.
+                    continue;
+                }
+                return Programs::Unknowable(format!(
+                    "`$PATH` was resolved to `{}`, and the program `{name}` is not in it — so \
+                     which file `{name}` would run cannot be established here, and the `PATH` \
+                     is left unread rather than placed",
+                    shorten(&path)
+                ));
+            };
+            // The same binary the bare name already meant: nothing to say, and nothing for a
+            // shape or a grant to be surprised by.
+            let same = match env.shell_path.as_deref() {
+                Some(pinned) => env.programs.path_file(name, pinned).as_deref() == Some(&file),
+                None => false,
+            };
+            if same {
+                continue;
+            }
+            let note = format!(
+                "`{name}` is `{file}` — found along a `PATH` {}, so this is a different file \
+                 from the one `{name}` names on its own",
+                from.unwrap_or(parameters::Source::Command).path_phrase()
+            );
+            if !notes.contains(&note) {
+                notes.push(note);
+            }
+            match slot {
+                None => {
+                    n.stages[i].program = Word::Literal(file);
+                    if !renamed.contains(&i) {
+                        renamed.push(i);
+                    }
+                }
+                Some(j) => n.stages[i].argv[j] = Word::Literal(file),
+            }
+        }
+    }
+    if notes.is_empty() {
+        Programs::Unchanged
+    } else {
+        Programs::Renamed { notes, renamed }
+    }
+}
+
 /// What the harness knows about where it is standing. Supplied rather than read from
 /// the environment, so the local path is testable with the environment absent
 /// (`docs/tool-design-brief.md` §3b).
@@ -2243,6 +2560,22 @@ pub struct Surroundings {
     /// because "have we been here before" is a fact about the conversation and not
     /// about the filesystem.
     pub seen_hosts: BTreeSet<String>,
+    /// **The environment the session's shell holds** — D14/R95. Empty by default, which is
+    /// the honest answer for a one-shot `bash` and for every caller that has no shell: a
+    /// name nothing observed resolves nothing beyond G3.
+    ///
+    /// [`env`] is the module that says which of its two sources is true of what, and
+    /// `docs/boundary-and-adjudication.md` §4j is the measurement behind it.
+    pub session: env::SessionEnv,
+    /// **What this gate can honestly see of the filesystem the command will run in** — the
+    /// one fact D15's second half needs, and the reason it can be answered at all.
+    pub programs: ProgramLookup,
+    /// The `PATH` the pinned shell gives a command, when the caller knows it. Used for one
+    /// comparison only: a name resolved against a `PATH` this session set is renamed to the
+    /// file it will run **when that file is not the one the bare name already meant**. `None`
+    /// leaves the gate unable to say *"the same binary"*, which is the fail-closed side of
+    /// that comparison — it names the file rather than assuming nothing moved.
+    pub shell_path: Option<String>,
 }
 
 impl Surroundings {
@@ -2261,7 +2594,31 @@ impl Surroundings {
             scratch: None,
             shell: ShellTrust::Unknown,
             seen_hosts: BTreeSet::new(),
+            session: env::SessionEnv::default(),
+            programs: ProgramLookup::None,
+            shell_path: None,
         }
+    }
+
+    /// **Say what the session's shell holds** — [`env::SessionEnv`], and nothing is claimed
+    /// about it here: a caller that has not observed a shell passes the pairs it gives every
+    /// spawn, which is true by construction.
+    pub fn with_session(mut self, session: env::SessionEnv) -> Self {
+        self.session = session;
+        self
+    }
+
+    /// **Say what this gate can see of the filesystem** — see [`ProgramLookup`].
+    pub fn with_programs(mut self, programs: ProgramLookup) -> Self {
+        self.programs = programs;
+        self
+    }
+
+    /// **Say which `PATH` the pinned shell gives a command**, so a name found through a
+    /// different one can be reported as a different binary.
+    pub fn with_shell_path(mut self, path: impl Into<String>) -> Self {
+        self.shell_path = Some(path.into());
+        self
     }
 
     /// Record that this session has reached a host, so the next contact is not a
@@ -3137,9 +3494,38 @@ impl Baseline {
         // **The parameters this call fixes, written out before the grammar reads it.**
         // A `$PWD` or an `export X=…` earlier in the same command is not a mystery, and
         // calling it one cost the card every standing offer it has — see
-        // [`parameters`] for what is resolved and what deliberately is not.
-        let (source, substituted) = parameters::resolve(command, env);
-        let n = shell::normalise(&source);
+        // [`parameters`] for what is resolved and what deliberately is not. Since D14/R95
+        // the same reader also takes a name the SESSION's shell holds, which is where
+        // `$p` after an earlier line comes from; `parameters` is the one place that
+        // decides the order.
+        let mut fixed = parameters::resolve(command, env);
+        let mut n = shell::normalise(&fixed.text);
+        // **A `PATH` in force is followed for every stage under it** — D15's second half.
+        // Three outcomes, and the third is why this cannot be a guess: the file a bare name
+        // will run is named when this gate can see the disk, nothing changes when it is the
+        // same binary or when the command's own text fixed the `PATH` (that reading existed
+        // before this did), and when a `PATH` the SESSION supplied cannot be followed the
+        // `PATH` is **not resolved at all** — so the command is exactly as unread as it was
+        // before any of this existed. A reading that took a session's `PATH` and then left
+        // `cargo` bare would be the one claim D15 was written to forbid: a grant for `cargo`
+        // settling a stage that runs another file.
+        let mut renamed: Vec<usize> = Vec::new();
+        match apply_path(&mut n, env, fixed.path) {
+            Programs::Renamed {
+                notes,
+                renamed: stages,
+            } => {
+                fixed.notes.extend(notes);
+                renamed = stages;
+            }
+            Programs::Unchanged => {}
+            Programs::Unknowable(why) => {
+                fixed = parameters::resolve_without(command, env, &["PATH"]);
+                n = shell::normalise(&fixed.text);
+                fixed.notes.push(why);
+            }
+        }
+        let substituted = fixed.notes;
         let mut b = Baseline {
             write_targets: Vec::new(),
             command: None,
@@ -3299,8 +3685,17 @@ impl Baseline {
             .stages
             .iter()
             .any(|s| stage_intents(s).contains(&Intent::Network));
-        for stage in &n.stages {
-            b.absorb_stage(&n, stage, env, egresses, scripts);
+        for (position, stage) in n.stages.iter().enumerate() {
+            // **A stage the `PATH` rule moved is named by its FILE.** `program_name` strips
+            // the directory, which is what makes a grant for `rm` cover `/bin/rm` — and that
+            // is right for a path the operator wrote. It is wrong for a file this gate chose
+            // on the command's behalf: `/tmp/x/cargo` is not what a grant for `cargo` was
+            // about (D15/R96).
+            let identity = renamed
+                .contains(&position)
+                .then(|| stage.program.text().map(str::to_string))
+                .flatten();
+            b.absorb_stage(&n, stage, env, egresses, scripts, identity);
             // **AND A LITERAL `cd` MOVES THE DIRECTORY FOR EVERY STAGE AFTER IT.** The
             // operator's own shape: `cd ~/Projects/letibot/letibot && git checkout --
             // crates/ui/src/card.rs`. The `cd` itself is placed against the directory the
@@ -3795,6 +4190,7 @@ impl Baseline {
         env: &Surroundings,
         egresses: bool,
         scripts: &[ScriptSource],
+        identity: Option<String>,
     ) {
         let program = stage.program_name().unwrap_or("<unresolved>").to_string();
 
@@ -3829,6 +4225,7 @@ impl Baseline {
             &mut self.grant_program,
             &mut self.grant_program_weight,
             &program,
+            identity.as_deref().unwrap_or(&program),
             stage,
         );
 
@@ -5493,7 +5890,13 @@ fn stage_intents(s: &Stage) -> Vec<Intent> {
 /// A stage whose program nobody could read names nothing: `"<unresolved>"` is not a key a
 /// grant could match, and inventing one is the placeholder defect `NO_PROGRAM` exists to
 /// refuse.
-fn name_stage(slot: &mut Option<String>, weight: &mut Option<u8>, program: &str, stage: &Stage) {
+fn name_stage(
+    slot: &mut Option<String>,
+    weight: &mut Option<u8>,
+    program: &str,
+    identity: &str,
+    stage: &Stage,
+) {
     if stage.program_name().is_none() {
         return;
     }
@@ -5503,7 +5906,7 @@ fn name_stage(slot: &mut Option<String>, weight: &mut Option<u8>, program: &str,
         Some(have) if have >= w => {}
         _ => {
             *weight = Some(w);
-            *slot = Some(program.to_string());
+            *slot = Some(identity.to_string());
         }
     }
 }
@@ -5565,9 +5968,19 @@ fn consequence(i: Intent) -> u8 {
 #[cfg(test)]
 mod tests;
 
+/// D14/R95 and D15/R96 at the resolver: the session's environment, and the file a bare stage
+/// will run once `PATH` is resolved.
+#[cfg(test)]
+mod env_tests;
+
 /// The parameters this call already fixes, written out before the grammar reads them —
-/// `$PWD`, `$HOME`, and a variable an earlier stage of the same command assigned.
+/// `$PWD`, `$HOME`, a variable an earlier stage of the same command assigned, and a name the
+/// session's shell holds (D14/R95).
 mod parameters;
+
+/// **The environment a session's shell really holds** — D14's tracked environment, and the
+/// two sources that are true of what.
+pub mod env;
 
 #[cfg(test)]
 mod destructive_flags {
@@ -5580,6 +5993,9 @@ mod destructive_flags {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -5702,6 +6118,9 @@ mod flag_coverage_survey {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         let cases = [
             (
@@ -5779,6 +6198,9 @@ mod flag_rules {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
     fn saw_destroy(cmd: &str) -> bool {
@@ -6053,6 +6475,9 @@ mod flag_rules {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         let mut spurious: Vec<&str> = Vec::new();
         for line in key
@@ -6104,6 +6529,9 @@ mod secret_is_not_destruction {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         let look = |cmd: &str| {
             let b = Baseline::of_command(cmd, &sur);
@@ -6174,6 +6602,9 @@ mod recall {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         let (mut tp, mut fnn, mut fp, mut tn) = (0, 0, 0, 0);
         let mut missed: Vec<&str> = Vec::new();
@@ -6245,6 +6676,9 @@ mod model_findings_gap {
             workspace: Some("/home/op/project".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         };
         // (program, a flag the model reported, whether it is a default-unless row)
         let cases: &[(&str, &str, bool)] = &[
@@ -6310,6 +6744,9 @@ mod heredoc_bodies {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -6529,6 +6966,9 @@ mod loopback_and_literals {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -6617,6 +7057,9 @@ mod inline_scripts {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -6684,6 +7127,9 @@ mod hosts_by_other_names {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
     fn egress(x: &Baseline) -> bool {
@@ -6799,6 +7245,9 @@ mod known_and_seen_hosts {
             workspace: Some(ws.display().to_string()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
         .with_known_hosts();
         for h in ["github.com", "gitlab.example.org", "codeberg.org"] {
@@ -6843,6 +7292,9 @@ mod operands_that_are_not_places {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -6887,6 +7339,9 @@ mod scratch_tests {
             scratch: Some("/tmp/letibot-scratch-1234".into()),
             shell: ShellTrust::Pinned { how: "test".into() },
             seen_hosts: Default::default(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -7065,6 +7520,9 @@ mod a_script_that_writes_a_file {
                 how: "test fixture".into(),
             },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
@@ -7469,6 +7927,9 @@ mod a_script_named_as_a_path {
                 how: "test fixture".into(),
             },
             seen_hosts: BTreeSet::new(),
+            session: Default::default(),
+            programs: Default::default(),
+            shell_path: None,
         }
     }
 
