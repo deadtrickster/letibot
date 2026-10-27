@@ -1638,6 +1638,86 @@ impl PluginHost {
 }
 
 impl PluginHost {
+    /// **One call through the `on_tool_call` hook** (`docs/plugins-plan.md` §4.1) — before the
+    /// gate, so that what a layer rewrites is what the gate then adjudicates.
+    ///
+    /// `None` when nothing answers the hook, or when the answer is a pass or a mask. An answer that
+    /// is not the contract is refused and reported, and the call runs as the model proposed it —
+    /// the gate still decides, so a layer's typo cannot admit anything.
+    pub fn on_tool_call(
+        &self,
+        hub: &Arc<Hub>,
+        call: &letibot_plugin::Call,
+        standing: &letibot_tools::runtime::Standing,
+    ) -> Option<Answered<letibot_plugin::tool_call::ToolCallOut>> {
+        use letibot_plugin::tool_call::{Session, ToolCallIn, ToolCallOut};
+        let session = Session {
+            session: standing.session.clone(),
+            mode: standing.mode.clone(),
+            // The host's own workspace, not the gate's string: this is the directory a layer is
+            // written about, and it is the same one the looks and the panes resolve against.
+            workspace: self.workspace.display().to_string(),
+        };
+        let input = ToolCallIn::new(call.clone(), session);
+        let input = serde_json::to_value(&input).ok()?;
+        let resolved = self.ask(hub, letibot_plugin::tool_call::HOOK, &input)?;
+        let answer = resolved.answer?;
+        let by = resolved.by.clone().unwrap_or_default();
+        match serde_json::from_value::<ToolCallOut>(answer.clone()) {
+            Ok(out) => Some(Answered { out, by }),
+            Err(why) => {
+                self.complain(
+                    hub,
+                    &by,
+                    &format!(
+                        "the layer `{by}` answered something that is not a call's verdict — \
+                         `pass`, `arguments`, `refuse` and `answer` are the whole of it: {why}. \
+                         Its answer was {answer}, so the call runs as the model proposed it"
+                    ),
+                );
+                None
+            }
+        }
+    }
+}
+
+/// **The runtime's `on_tool_call`, backed by one session's plugin host.**
+///
+/// A slot rather than the host itself, for the reason [`desk::SessionPlugins`] is: the runtime is
+/// built when the HARNESS opens, and the host when the DAEMON opens the session
+/// (`Sessions::open_plugins`) — the one place a hub and a pane driver exist. A session the daemon
+/// does not serve (a subagent) leaves the slot empty, and its calls run exactly as they did.
+pub struct CallHooks {
+    slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
+    hub: Arc<Hub>,
+}
+
+impl CallHooks {
+    pub fn new(slot: Arc<Mutex<Option<Arc<PluginHost>>>>, hub: Arc<Hub>) -> CallHooks {
+        CallHooks { slot, hub }
+    }
+}
+
+impl letibot_tools::runtime::CallHook for CallHooks {
+    fn before(
+        &self,
+        call: &letibot_plugin::Call,
+        standing: &letibot_tools::runtime::Standing,
+    ) -> Option<letibot_tools::runtime::Patched> {
+        let host = self
+            .slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        let answered = host.on_tool_call(&self.hub, call, standing)?;
+        Some(letibot_tools::runtime::Patched {
+            out: answered.out,
+            by: answered.by,
+        })
+    }
+}
+
+impl PluginHost {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -2771,5 +2851,210 @@ mod tests {
             json!(true),
             "a watch repeats, as `pr_watch`'s does"
         );
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // `on_tool_call` (§4.1): the call, before the gate
+    // ---------------------------------------------------------------------------------------
+
+    fn standing() -> letibot_tools::runtime::Standing {
+        letibot_tools::runtime::Standing {
+            session: "s-plugins".into(),
+            mode: "allow-edits".into(),
+        }
+    }
+
+    /// **A layer rewrites a call's arguments**, and the answer says what it wants.
+    #[test]
+    fn a_layer_rewrites_a_call() {
+        let root = tempdir("call-rewrite");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "one-watch",
+            &[(
+                "on_tool_call",
+                says(json!({"arguments": {"name": "pr-24", "until": "checks"}})),
+            )],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("monitor", json!({"name": "pr-24-coderabbit"}));
+        let answered = host
+            .on_tool_call(&hub, &asked, &standing())
+            .expect("a layer answers");
+        assert!(matches!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Rewrite(_)
+        ));
+        assert_eq!(answered.by, "p1");
+        // The input carries the session's own facts — the mode is the gate's word for how much
+        // this session may do unasked, and a layer is allowed to be narrower than *always*.
+        let seen = host.lock().rec.inputs("on_tool_call").to_vec();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0]["call"]["name"], json!("monitor"));
+        assert_eq!(seen[0]["session"]["mode"], json!("allow-edits"));
+        assert_eq!(seen[0]["session"]["session"], json!("s-plugins"));
+        assert!(seen[0]["session"]["workspace"].is_string());
+        assert_eq!(seen[0]["v"], json!(letibot_plugin::V));
+    }
+
+    /// **A layer refuses a call, and a layer answers one** — the two ways of not running it.
+    #[test]
+    fn a_layer_can_refuse_or_answer_a_call() {
+        let root = tempdir("call-refuse");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "one-watch",
+            &[(
+                "on_tool_call",
+                says(json!({"refuse": "already watched as pr-24; use that"})),
+            )],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        let answered = host
+            .on_tool_call(&hub, &asked, &standing())
+            .expect("answers");
+        assert_eq!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Refuse("already watched as pr-24; use that")
+        );
+
+        let root = tempdir("call-answer");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "knows-it",
+            &[(
+                "on_tool_call",
+                says(json!({"answer": "pr-24 is watched for its checks"})),
+            )],
+        );
+        let host = table_host(&root, &table);
+        let answered = host
+            .on_tool_call(&hub, &asked, &standing())
+            .expect("answers");
+        assert_eq!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Answer("pr-24 is watched for its checks")
+        );
+    }
+
+    /// **A mask lets the call through untouched** — the hook switched off from that layer down,
+    /// which for this kind means the model's call is the one that runs.
+    #[test]
+    fn a_masked_call_hook_lets_the_call_through() {
+        let root = tempdir("call-mask");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-below",
+            &[("on_tool_call", says(json!({"refuse": "the layer below"})))],
+        );
+        table.layer(
+            &root,
+            "z-above",
+            &[("on_tool_call", says(json!({"mask": true})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
+    }
+
+    /// **A layer asks below before deciding** — the shape a fix uses when it wants to *narrow* what
+    /// a lower layer already said rather than replace it.
+    #[test]
+    fn a_call_layer_asks_below_and_answers_for_itself() {
+        let root = tempdir("call-below");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "z-above",
+            &[(
+                "on_tool_call",
+                vec![
+                    Some(json!({"below": {"v": 1, "call": {"name": "monitor", "arguments": {}}}})),
+                    Some(json!({"refuse": "no"})),
+                ],
+            )],
+        );
+        table.layer(&root, "a-below", &[("on_tool_call", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        let answered = host
+            .on_tool_call(&hub, &asked, &standing())
+            .expect("answers");
+        assert_eq!(answered.by, "p2", "the top layer answers");
+        assert_eq!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Refuse("no")
+        );
+    }
+
+    /// **A disabled layer is not asked**, and a hook nobody answers is not recorded.
+    #[test]
+    fn a_disabled_call_layer_is_not_asked() {
+        let root = tempdir("call-disabled");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "fix",
+            &[("on_tool_call", says(json!({"refuse": "patched"})))],
+        );
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let id = host.lock().stack.layers()[0].id.clone();
+        host.lock().stack.set_disabled(&id, true).expect("disable");
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
+        assert_eq!(host.lock().rec.inputs("on_tool_call").len(), 0);
+    }
+
+    /// **A trapping layer falls to the one below, and the model is told** — a call is never left
+    /// undecided because a layer broke.
+    #[test]
+    fn a_trapping_call_layer_falls_down_and_is_reported() {
+        let root = tempdir("call-trap");
+        let table = Table::new();
+        table.layer(
+            &root,
+            "a-working",
+            &[("on_tool_call", says(json!({"refuse": "from below"})))],
+        );
+        table.layer(&root, "z-broken", &[("on_tool_call", vec![None])]);
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("monitor", json!({}));
+        let answered = host
+            .on_tool_call(&hub, &asked, &standing())
+            .expect("answers");
+        assert_eq!(
+            answered.out.verdict(),
+            letibot_plugin::tool_call::Verdict::Refuse("from below")
+        );
+        assert!(
+            host.take_notices()
+                .iter()
+                .any(|n| n.contains("the layer below it answered")),
+            "and the failure is said to the model"
+        );
+    }
+
+    /// **A session with no layers shows nothing to a layer and records nothing.**
+    #[test]
+    fn a_session_with_no_layers_passes_every_call_through() {
+        let root = tempdir("call-none");
+        let table = Table::new();
+        let host = table_host(&root, &table);
+        let hub = Hub::new("s-plugins");
+        let asked = letibot_plugin::Call::new("bash", json!({"command": "ls"}));
+        assert!(host.on_tool_call(&hub, &asked, &standing()).is_none());
+        assert!(host.lock().rec.inputs("on_tool_call").is_empty());
+        assert!(hub.retained().is_empty());
     }
 }

@@ -3042,6 +3042,16 @@ impl AdjudicatedGate {
 }
 
 impl Gate for AdjudicatedGate {
+    /// **How this session stands**, for the `on_tool_call` hook: the mode's own word and the id
+    /// the session is known by. Read from here because the mode is this gate's field — it moves at
+    /// runtime (`/mode`) and a copy anywhere else would be a second answer to *how much may this
+    /// session do without asking*.
+    fn standing(&mut self) -> crate::runtime::Standing {
+        crate::runtime::Standing {
+            session: self.session_id.clone(),
+            mode: self.mode.name.to_string(),
+        }
+    }
     /// **The question the boundary could not ask.**
     ///
     /// A real adjudication, so it lands in the corpus beside every other decision

@@ -835,6 +835,18 @@ impl GateCall<'_> {
 pub trait Gate: Send + Sync {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision;
 
+    /// **How this session stands**, for a hook that must be told: the session's id and the mode's
+    /// own word. The default is an empty [`Standing`], which is every test's `NoBoundary` — a
+    /// session that has no id to give and no mode to name, and a plugin layer that reads either
+    /// gets the honest nothing rather than an invented value.
+    ///
+    /// It is asked of the GATE and not of a copy because the mode is the gate's own field and it
+    /// moves at runtime (`/mode`): a second copy anywhere else would be a second answer to *how
+    /// much may this session do without asking*.
+    fn standing(&mut self) -> Standing {
+        Standing::default()
+    }
+
     /// **May this session see `path`?** Asked when a call named something the
     /// boundary hid, so the operator gets the question instead of the model
     /// getting a dead end.
@@ -994,6 +1006,48 @@ impl Gate for NoBoundary {
             ),
         })
     }
+}
+
+/// **How a session stands**, as a hook is told it: the id a session is known by, and the mode's
+/// own word — `read-only`, `writes-allowed`, `allow-edits`, `allow-all`. Both are the gate's
+/// ([`Gate::standing`]), and an empty pair is a runtime whose gate has neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Standing {
+    pub session: String,
+    pub mode: String,
+}
+
+/// **A plugin layer's answer about one call**, and the layer that gave it — the by-line a rewrite
+/// or a refusal is reported with, because a call that was changed must say who changed it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Patched {
+    pub out: letibot_plugin::tool_call::ToolCallOut,
+    pub by: String,
+}
+
+/// **A hook that sees a tool call before the gate** — `on_tool_call`, `docs/plugins-plan.md` §4.1,
+/// in the crate that owns the path through the gate.
+///
+/// A trait here for the reason [`Gate`] is one: this crate holds no plugin stack, and a caller that
+/// has one supplies it. `None` — the default, and what a runtime with no plugins has — is a session
+/// nothing is patching, which behaves exactly as it did before there were plugins.
+///
+/// **It cannot admit anything.** The answer says *pass*, *rewrite*, *refuse* or *answer*; the
+/// rewritten call is then gated like any other, and there is no field by which a layer could say
+/// *allow*.
+pub trait CallHook: Send + Sync {
+    /// What the layer says about this call, or `None` for *nothing said* — run it as it is.
+    fn before(&self, call: &letibot_plugin::Call, standing: &Standing) -> Option<Patched>;
+}
+
+/// What [`ToolRuntime::plugin_patch`] resolved to.
+enum Patch {
+    /// Nothing said: run the call as the model proposed it.
+    None,
+    /// Run this instead.
+    Rewritten(Rewritten),
+    /// Do not run it: this is the result the model reads.
+    Done(ToolResult),
 }
 
 /// A role's tool set, and §8.4's ceiling.
@@ -1845,6 +1899,10 @@ pub struct ToolRuntime {
     /// **Whether this runtime belongs to a one-shot run**, which ends with the process that
     /// started it. See [`InvokeCtx::one_shot`] for the rule a tool applies and why.
     pub one_shot: bool,
+    /// **The plugin layer's look at a call, before the gate** (`docs/plugins-plan.md` §4.1).
+    /// `None` in a runtime with no plugin stack — every test's, and every session the daemon did
+    /// not open — and then the call path is exactly what it was before there were plugins.
+    pub call_hook: Option<std::sync::Arc<dyn CallHook>>,
 }
 
 /// **A call the model proposed and this layer reproposed as a different tool.**
@@ -1880,6 +1938,7 @@ impl ToolRuntime {
             operator_runs: None,
             repairs_told: Default::default(),
             one_shot: false,
+            call_hook: None,
         }
     }
 
@@ -1897,6 +1956,15 @@ impl ToolRuntime {
     /// Wire the question a long-running tool asks before it spends another minute.
     pub fn with_operator_waiting(mut self, f: OperatorWaiting) -> Self {
         self.operator_waiting = Some(f);
+        self
+    }
+
+    /// **Wire the plugin layer that sees a call before the gate** (`docs/plugins-plan.md` §4.1).
+    /// The daemon installs this when it opens a session it serves; a runtime nobody wired keeps
+    /// the call path it had, which is what makes *a session with no layers behaves as it did* a
+    /// property of this field being `None` rather than a promise.
+    pub fn with_call_hook(mut self, hook: std::sync::Arc<dyn CallHook>) -> Self {
+        self.call_hook = Some(hook);
         self
     }
 
@@ -1976,6 +2044,83 @@ impl ToolRuntime {
             schema,
             note,
         })
+    }
+
+    /// **What a plugin layer says about a call, before the gate** — `docs/plugins-plan.md` §4.1,
+    /// reduced to the three things this runtime can do with an answer.
+    ///
+    /// # Why a rewrite cannot widen anything
+    ///
+    /// The only field a layer can change is the ARGUMENTS; the tool's name is the model's. So a
+    /// rewritten call is a call the model could itself have made, judged by the same gate, by the
+    /// same tool's `access_for`, against the same boundary — there is no path by which a layer
+    /// reaches something the model could not. What it can do is make a call smaller, which is the
+    /// point (§4.1's example: the model armed nine monitors for three pull requests).
+    ///
+    /// The rewritten arguments are put through [`salvage`] again, because they are a tool call's
+    /// arguments whoever wrote them: a layer cannot put a shape past the schema's repair, and one
+    /// whose rewrite the tool would refuse is reported rather than run.
+    fn plugin_patch(&self, call: &ToolCall, args: &Value) -> Patch {
+        let Some(hook) = self.call_hook.as_ref() else {
+            return Patch::None;
+        };
+        // How the session stands, asked of the gate — the mode is its own field and it moves at
+        // runtime, so a copy anywhere else would be a second answer to the same question.
+        let standing = self
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .standing();
+        let asked = letibot_plugin::Call::new(call.name.clone(), args.clone());
+        let Some(Patched { out, by }) = hook.before(&asked, &standing) else {
+            return Patch::None;
+        };
+        let refused = |why: String| {
+            ToolResult::new(
+                call.id.clone(),
+                call.name.clone(),
+                ToolOutcome::NotRun {
+                    why: format!("the plugin layer `{by}` refused this call"),
+                },
+            )
+            .with_payload(why)
+        };
+        match out.verdict() {
+            letibot_plugin::tool_call::Verdict::Pass => Patch::None,
+            letibot_plugin::tool_call::Verdict::Refuse(why) => {
+                Patch::Done(refused(why.to_string()))
+            }
+            letibot_plugin::tool_call::Verdict::Answer(text) => Patch::Done(
+                ToolResult::new(call.id.clone(), call.name.clone(), ToolOutcome::Ok)
+                    .with_payload(text.to_string()),
+            ),
+            letibot_plugin::tool_call::Verdict::Rewrite(new_args) => {
+                let text = serde_json::to_string(new_args).unwrap_or_else(|_| "null".into());
+                let rewritten = ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: text.clone(),
+                };
+                let Some(schema) = self.registry.get(&call.name).map(|t| t.schema()) else {
+                    return Patch::None;
+                };
+                match salvage(&rewritten.arguments, &schema) {
+                    Ok(s) => Patch::Rewritten(Rewritten {
+                        call: rewritten,
+                        args: s.value,
+                        schema,
+                        note: format!(
+                            "the plugin layer `{by}` rewrote this call's arguments, and the \
+                             rewritten call is what ran: {text}"
+                        ),
+                    }),
+                    Err(e) => Patch::Done(refused(format!(
+                        "the rewrite is not something `{}` accepts: {}",
+                        schema.name, e.guidance
+                    ))),
+                }
+            }
+        }
     }
 
     /// The scripts a `bash` call's command will run, read for the adjudicator.
@@ -2158,6 +2303,36 @@ impl ToolRuntime {
         // recorded as one, drawn as one. See [`crate::heredoc`] for the one shape
         // recognised and for why every near form is deliberately left alone.
         //
+        // **A plugin layer sees the call before the gate** (`docs/plugins-plan.md` §4.1).
+        //
+        // Here, and not later: everything below has to be true of the call the layer left behind.
+        // A rewrite is re-read against the schema exactly as the model's own arguments were, the
+        // heredoc re-spelling below sees the rewritten command, and — the point of the whole hook
+        // — the gate adjudicates the arguments the tool would actually run with. A layer can make
+        // a call smaller and can never make it admissible: there is no field in its answer that
+        // says *allow*, and the class below is derived from the schema and this tool's own
+        // `access_for`, not from anything a layer said.
+        //
+        // **On the gated path only**, the same rule the re-spelling below follows: the ungated one
+        // is the operator's own run, adjudicated at the door, and a layer rewriting it would be
+        // policy over the person who typed it.
+        let patched = if gated {
+            match self.plugin_patch(call, &args) {
+                Patch::None => None,
+                Patch::Rewritten(r) => Some(r),
+                Patch::Done(result) => {
+                    sink.emit(finished_event(turn_id, &result));
+                    return result;
+                }
+            }
+        } else {
+            None
+        };
+        let (call, args, schema) = match &patched {
+            Some(r) => (&r.call, r.args.clone(), r.schema.clone()),
+            None => (call, args, schema),
+        };
+
         // **On the gated path only.** The ungated one is the operator's own run and
         // the head-run door: `! cat > f <<EOF` is a person's own act, already
         // adjudicated at the door, and rewriting what they typed would be this layer
@@ -2325,6 +2500,9 @@ impl ToolRuntime {
         // **One line, on the result, saying what the row is.** The model called
         // `bash` and the transcript says `write`; a difference it cannot account for
         // is one it reads as a harness bug and works around.
+        if let Some(r) = &patched {
+            invocation = invocation.with_note(r.note.clone());
+        }
         if let Some(r) = &rewritten {
             invocation = invocation.with_note(r.note.clone());
         } else if gated && schema.name == "bash" && self.registry.get("write").is_some() {
@@ -3469,5 +3647,249 @@ mod tests {
         assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
         assert_eq!(r.name, "bash");
         assert!(seen.calls().is_empty(), "the ungated path asked the gate");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // `on_tool_call` (§4.1): a plugin layer sees the call before the gate
+    // -------------------------------------------------------------------------------------
+
+    /// **A gate that records what it was asked about and admits**, so a test can read the
+    /// arguments the gate adjudicated rather than trusting that it saw the right ones.
+    struct RecordingGate {
+        seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    }
+
+    impl Gate for RecordingGate {
+        fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+            self.seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(call.args.clone());
+            GateDecision::Admit
+        }
+    }
+
+    /// **A tool that says whether it ran** — the difference between a call a layer refused and a
+    /// call whose result a layer replaced, which no outcome alone can tell apart.
+    struct RanProbe {
+        ran: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Tool for RanProbe {
+        fn schema(&self) -> ToolSchema {
+            ToolSchema::new(
+                "probe",
+                "Do a thing. Takes a path.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                }),
+                Access::Exec,
+            )
+        }
+        fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+            self.ran.store(true, std::sync::atomic::Ordering::SeqCst);
+            Invocation::ok(format!("probed {}", args["path"]))
+        }
+    }
+
+    /// **A plugin layer, answered from a fixed verdict**, and recording every call it was shown.
+    struct FixedHook {
+        answer: Option<letibot_plugin::tool_call::ToolCallOut>,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<letibot_plugin::Call>>>,
+    }
+
+    impl CallHook for FixedHook {
+        fn before(&self, call: &letibot_plugin::Call, _standing: &Standing) -> Option<Patched> {
+            self.seen
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(call.clone());
+            self.answer.clone().map(|out| Patched {
+                out,
+                by: "p1".to_string(),
+            })
+        }
+    }
+
+    /// A runtime over one `probe` tool, a recording gate, and a hook that answers `answer`.
+    fn hooked(
+        answer: Option<letibot_plugin::tool_call::ToolCallOut>,
+    ) -> (
+        ToolRuntime,
+        std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        std::sync::Arc<std::sync::Mutex<Vec<letibot_plugin::Call>>>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        crate::backend::tempdir::TempDir,
+    ) {
+        let d = crate::backend::tempdir::TempDir::new();
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut reg = Registry::new();
+        reg.register(Box::new(RanProbe { ran: ran.clone() }))
+            .unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rt = ToolRuntime::new(
+            reg,
+            Box::new(crate::backend::HostBackend::new(d.path()).unwrap()),
+        )
+        .with_gate(Box::new(RecordingGate { seen: seen.clone() }))
+        .with_call_hook(std::sync::Arc::new(FixedHook {
+            answer,
+            seen: calls.clone(),
+        }));
+        (rt, seen, calls, ran, d)
+    }
+
+    /// **The rewritten call is the call the gate adjudicates** — the whole of §4.1's safety: a
+    /// layer can change what a call asks for, and what it asks for then meets the same gate.
+    ///
+    /// This is the property that keeps *tighten only* true through a rewrite: the model asked for
+    /// one path, the layer asked for another, and the gate was asked about the OTHER one.
+    #[test]
+    fn a_rewritten_call_is_the_call_the_gate_adjudicates() {
+        let (rt, seen, _calls, ran, _d) =
+            hooked(Some(letibot_plugin::tool_call::ToolCallOut::rewrite(
+                serde_json::json!({"path": "/tmp/the-rewritten-one"}),
+            )));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke(
+            "t1",
+            &call("probe", r#"{"path":"/tmp/as-the-model-asked"}"#),
+            &mut sink,
+        );
+        assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+        let judged = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(judged.len(), 1, "the gate was asked once: {judged:?}");
+        assert_eq!(
+            judged[0]["path"],
+            serde_json::json!("/tmp/the-rewritten-one"),
+            "the gate judged the model's arguments, not the layer's"
+        );
+        assert!(
+            r.render().contains("the-rewritten-one"),
+            "and the tool ran with them: {}",
+            r.render()
+        );
+        assert!(
+            r.render().contains("rewrote this call's arguments"),
+            "the result says the call was rewritten, so the row is not a mystery: {}",
+            r.render()
+        );
+    }
+
+    /// **A layer can refuse a call, and then nothing runs.** The outcome says who refused and the
+    /// payload is the layer's own sentence, which is what the model acts on.
+    #[test]
+    fn a_refused_call_does_not_run() {
+        let (rt, seen, _calls, ran, _d) = hooked(Some(
+            letibot_plugin::tool_call::ToolCallOut::refuse("already watched as pr-24; use that"),
+        ));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("probe", r#"{"path":"/tmp/x"}"#), &mut sink);
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "it ran anyway"
+        );
+        assert!(
+            seen.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "a refused call never reached the gate"
+        );
+        assert!(
+            matches!(&r.outcome, ToolOutcome::NotRun { why } if why.contains("p1")),
+            "{:?}",
+            r.outcome
+        );
+        assert!(r.render().contains("already watched as pr-24"));
+    }
+
+    /// **A layer can answer a call without letting it run** — §4.1's `answer`, which is the model
+    /// asking something the layer already knows.
+    #[test]
+    fn a_layer_can_answer_a_call_without_running_it() {
+        let (rt, _seen, _calls, ran, _d) =
+            hooked(Some(letibot_plugin::tool_call::ToolCallOut::answer(
+                "pr-24 is already watched for its checks",
+            )));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("probe", r#"{"path":"/tmp/x"}"#), &mut sink);
+        assert!(
+            !ran.load(std::sync::atomic::Ordering::SeqCst),
+            "it ran anyway"
+        );
+        assert_eq!(r.outcome, ToolOutcome::Ok);
+        assert!(r.render().contains("already watched for its checks"));
+    }
+
+    /// **`pass`, and a layer that says nothing, both leave the call exactly as it was.**
+    #[test]
+    fn a_pass_runs_the_call_as_the_model_proposed_it() {
+        for answer in [Some(letibot_plugin::tool_call::ToolCallOut::pass()), None] {
+            let (rt, seen, _calls, ran, _d) = hooked(answer);
+            let mut sink = RecordingToolSink::default();
+            let r = rt.invoke(
+                "t1",
+                &call("probe", r#"{"path":"/tmp/as-asked"}"#),
+                &mut sink,
+            );
+            assert!(ran.load(std::sync::atomic::Ordering::SeqCst));
+            assert_eq!(r.outcome, ToolOutcome::Ok);
+            let judged = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert_eq!(judged[0]["path"], serde_json::json!("/tmp/as-asked"));
+            assert!(!r.render().contains("rewrote this call"));
+        }
+    }
+
+    /// **The operator's own run is not shown to the layer.** `invoke_operator` is the `!` line and
+    /// the head-run door — a person's own act, adjudicated at the door — and a layer rewriting it
+    /// would be policy over the person, which is the rule the heredoc re-spelling follows too.
+    #[test]
+    fn the_operators_own_call_is_not_shown_to_the_layer() {
+        let (rt, _seen, calls, ran, _d) = hooked(Some(
+            letibot_plugin::tool_call::ToolCallOut::refuse("not on my watch"),
+        ));
+        let mut sink = RecordingToolSink::default();
+        let _ = rt.invoke_operator("t1", &call("probe", r#"{"path":"/tmp/x"}"#), &mut sink);
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the operator's call was stopped"
+        );
+        assert!(
+            calls.lock().unwrap_or_else(|e| e.into_inner()).is_empty(),
+            "the ungated path showed the call to the layer"
+        );
+    }
+
+    /// **A rewrite the tool would refuse is reported, not run** — a layer's arguments go through
+    /// the same `salvage` the model's do, so a layer cannot put a shape past the schema.
+    #[test]
+    fn a_rewrite_the_tool_refuses_does_not_run() {
+        let (rt, seen, _calls, ran, _d) =
+            hooked(Some(letibot_plugin::tool_call::ToolCallOut::rewrite(
+                serde_json::json!({"nothing": "the schema wants"}),
+            )));
+        let mut sink = RecordingToolSink::default();
+        let r = rt.invoke("t1", &call("probe", r#"{"path":"/tmp/x"}"#), &mut sink);
+        // `salvage` repairs what it can; a `required` path it cannot invent is a refusal.
+        if ran.load(std::sync::atomic::Ordering::SeqCst) {
+            // A repair was possible: then the gate must have judged the REPAIRED arguments.
+            let judged = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            assert!(
+                !judged.is_empty(),
+                "a repaired rewrite ran without being adjudicated"
+            );
+        } else {
+            assert!(
+                matches!(r.outcome, ToolOutcome::NotRun { .. }),
+                "{:?}",
+                r.outcome
+            );
+            assert!(
+                r.render().contains("p1"),
+                "the layer is named: {}",
+                r.render()
+            );
+        }
     }
 }

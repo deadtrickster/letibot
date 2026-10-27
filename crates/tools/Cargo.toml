@@ -8,6 +8,11 @@ repository.workspace = true
 
 [dependencies]
 letibot-transcript.workspace = true
+# **The `on_tool_call` contract, in the crate that owns the path through the gate.** The hook
+# itself is a trait here ([`runtime::CallHook`]) and the plugin stack that answers it lives in the
+# daemon; what this crate needs is the shape of the input and the answer, so that a rewrite is a
+# typed thing rather than a JSON document the runtime guesses at.
+letibot-plugin.workspace = true
 # The todo list's storage shape (`TodoItem`/`TodoStatus`): the tool writes the
 # type the store holds, so the harness persists what the tool wrote without a
 # conversion on the way. tokencore is below this crate in the layering — it

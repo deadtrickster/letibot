@@ -5121,6 +5121,14 @@ impl Harness {
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_gate(gate)
+            // **And the plugin layer that sees a call before the gate** (`docs/plugins-plan.md`
+            // §4.1). Backed by the same slot the `plugin` tool asks through, because the runtime is
+            // built here and the host when the DAEMON opens the session; a session nobody fills the
+            // slot for — a subagent — runs its calls exactly as it always did.
+            .with_call_hook(std::sync::Arc::new(crate::plugins::CallHooks::new(
+                plugin_slot.clone(),
+                hub.clone(),
+            )))
             // **A one-shot's session tells its tools so**, which is what makes `bash` refuse
             // `background: true`: there is no later head and no daemon left watching when that
             // job's result arrives. See `InvokeCtx::one_shot`.

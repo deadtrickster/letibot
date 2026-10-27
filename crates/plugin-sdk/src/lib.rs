@@ -20,6 +20,7 @@
 //! |---|---|---|---|
 //! | [`notice`] | `notice_<the notice's kind>` | when the harness is about to tell the model something | the sentence, reworded — or dropped |
 //! | [`tool_result`] | `on_tool_result` | on a successful tool result, before the model reads it | a rewritten result, a suffix, monitors to arm |
+//! | [`tool_call`] | `on_tool_call` | on a proposed call, **before the gate** | run it, run it with these arguments, refuse it, or answer it |
 //!
 //! The other kinds of `docs/plugins-plan.md` §4 arrive one package at a time, each with the host
 //! wiring that gives it a place in a turn; a kind is not declared here before the host runs it,
@@ -28,12 +29,11 @@
 //! # Two spellings of a hook name, and why the difference is not an accident
 //!
 //! `pane_` and `condition_` are **per subject**: each pane is drawn, each condition is armed, and
-//! the name says which one. `notice_<kind>` (and, in the packages that follow, `on_tool_call`) is
-//! **one hook per kind**: every layer that wants to answer notices of one kind exports the same
-//! name, and they are resolved as a stack — the top answers, the ones below answer when it asks
-//! (`{"below": …}`), one of them may mask the hook, and a layer that traps falls through to the
-//! one beneath (`docs/plugins-plan.md` §1 principle 4, §2.1). `on_tool_result` is the same rule
-//! with one name for the whole kind: every call's result is the subject.
+//! the name says which one. `notice_<kind>`, `on_tool_result` and `on_tool_call` are **one hook per
+//! kind**: every layer that wants to answer notices of one kind, or to intercept a call, exports
+//! the same name, and they are resolved as a stack — the top answers, the ones below answer when
+//! it asks (`{"below": …}`), one of them may mask the hook, and a layer that traps falls through
+//! to the one beneath (`docs/plugins-plan.md` §1 principle 4, §2.1).
 //!
 //! # The layer protocol is the stack's, not this crate's
 //!
@@ -44,9 +44,10 @@
 //!
 //! # Tighten only
 //!
-//! Nothing here can widen a permission. The hook that could have — `on_tool_call` — runs *before*
-//! the gate, so the rewritten call is the call the gate adjudicates: the allow side of
-//! adjudication, sudo, VMs and the merge queue's landing stay Rust (§1 principle 3).
+//! Nothing here can widen a permission. `on_tool_call` is the one that could have, and it runs
+//! *before* the gate: the rewritten call is the call the gate adjudicates, the tool's name is not
+//! a field of the answer, and there is no marker by which a layer could say *allow*. The allow side
+//! of adjudication, sudo, VMs and the merge queue's landing stay Rust (§1 principle 3).
 
 /// The contract version every input carries, and the only one this crate describes.
 ///
@@ -55,6 +56,7 @@
 pub const V: u32 = 1;
 
 pub mod notice;
+pub mod tool_call;
 pub mod tool_result;
 
 /// **One tool call, as a hook sees it**: the name and the arguments the model proposed.
@@ -107,6 +109,7 @@ mod tests {
 
     #[test]
     fn every_kinds_hook_name_is_one_the_host_finds() {
+        assert!(admitted(tool_call::HOOK), "{}", tool_call::HOOK);
         assert!(admitted(tool_result::HOOK), "{}", tool_result::HOOK);
         for kind in notice::KINDS {
             let hook = notice::hook(kind);
