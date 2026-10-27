@@ -787,11 +787,7 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
     // put in `$FIRECODE_BIN`: a `set_var` here was read by every other test in this binary
     // that looked at firecode while this one ran (R67 item 17).
     let stub = std::env::temp_dir().join(format!("letibot-firecode-stub-{}", std::process::id()));
-    std::fs::write(&stub, "#!/bin/sh\n").unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    crate::testing::write_stub(&stub, "#!/bin/sh\n");
     let runner: Arc<dyn TaskRunner> = Arc::new(Echo::default());
     let d = crate::backend::tempdir::TempDir::new();
     let runtime = |firecode: &std::path::Path| {

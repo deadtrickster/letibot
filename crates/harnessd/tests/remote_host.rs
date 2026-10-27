@@ -61,10 +61,9 @@ impl Rig {
         // The fake ssh: flags ignored, the last argument is the remote command, and `HOME`
         // is the machine's — so `root = "~/letibot-remote"` is expanded *there*.
         let ssh = bin.join("ssh");
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(
+        letibot_tools::testing::write_stub(
             &ssh,
-            format!(
+            &format!(
                 "#!/bin/bash\n\
                  export PATH='{}':$PATH\n\
                  export HOME='{}'\n\
@@ -73,9 +72,7 @@ impl Rig {
                 bin.display(),
                 home.display()
             ),
-        )
-        .expect("the fake ssh");
-        std::fs::set_permissions(&ssh, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        );
 
         let repo = dir.join("the-repo");
         std::fs::create_dir_all(&repo).expect("repo");

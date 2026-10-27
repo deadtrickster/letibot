@@ -231,6 +231,7 @@ impl Drop for Rig {
 fn bwrap_shim(log: &Path, readback: &str) -> String {
     format!(
         "#!/bin/bash\n\
+         [ $# -eq 0 ] && exit 0\n\
          if [ \"$1\" = \"--version\" ]; then echo 'bubblewrap 0.11.1 (fake)'; exit 0; fi\n\
          printf 'ARGV %s\\n' \"$*\" >> '{log}'\n\
          args=(); cmd=(); envp=(); cleared=0; seen=0\n\
@@ -275,10 +276,13 @@ for n in user mnt pid net ipc uts cgroup; do \
 printf 'seal nested held\\n'\n\
 printf 'seal nnp 1\\n'";
 
+/// A fake program on the rig's own `PATH`.
+///
+/// Written through [`letibot_tools::testing::write_stub`], which does not return until the file
+/// can be exec'd: this rig writes four of them and then runs a session that forks — the
+/// `Text file busy` the note on that function describes is exactly this shape.
 fn write_executable(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, text).expect("writing a fake program");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    letibot_tools::testing::write_stub(path, text);
 }
 
 fn on_path(program: &str) -> bool {

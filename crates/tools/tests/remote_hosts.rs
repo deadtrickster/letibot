@@ -87,6 +87,7 @@ impl Rig {
             &ssh,
             &format!(
                 "#!/bin/bash\n\
+                 [ $# -eq 0 ] && exit 0\n\
                  {{ printf 'ARGV %s\\n' \"$*\"; env | sed 's/^/ENV /'; }} >> '{}'\n\
                  export PATH='{}':$PATH\n\
                  export HOME='{}'\n\
@@ -212,10 +213,10 @@ impl Drop for Rig {
     }
 }
 
+/// A fake program on the rig's own `PATH` — [`letibot_tools::testing::write_stub`] is what
+/// writes it, so a fork this suite's own session starts cannot leave the file unexecutable.
 fn write_executable(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, text).expect("writing a fake program");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    letibot_tools::testing::write_stub(path, text);
 }
 
 /// Is this program on the box's own `PATH`? Used to decide whether the fake remote needs a

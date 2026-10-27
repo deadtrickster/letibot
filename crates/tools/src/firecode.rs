@@ -1684,16 +1684,13 @@ mod tests {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::create_dir_all(root.join("runs")).unwrap();
         let bin = root.join("bin").join("firecode");
-        std::fs::write(
+        crate::testing::write_stub(
             &bin,
-            format!(
+            &format!(
                 "#!/bin/sh\nROOT='{}'\ncase \"$1\" in\n{arms}\nesac\n",
                 root.display()
             ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         bin
     }
 

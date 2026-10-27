@@ -112,11 +112,9 @@ fn an_opened_pull_request_gets_its_watches() {
     )));
     std::fs::create_dir_all(&dir.0).unwrap();
     let gh = dir.0.join("gh");
-    std::fs::write(&gh, "#!/bin/sh\nsleep 5\n").unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // `[ $# -eq 0 ] && exit 0`, because the real stub sleeps five seconds: `write_stub`'s probe
+    // runs it with no arguments, and a probe that slept would be the test's own clock.
+    letibot_tools::testing::write_stub(&gh, "#!/bin/sh\n[ $# -eq 0 ] && exit 0\nsleep 5\n");
     // SAFETY: read only by a GitHub condition's constructor, below, in this test.
     unsafe { std::env::set_var("LETIBOT_GH", &gh) };
     let mut cfg = Config::for_this_box(&dir.0);

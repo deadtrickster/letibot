@@ -151,10 +151,11 @@ fn socket_path(tag: &str) -> PathBuf {
 /// for a question nobody asked before `ask`'s descriptor check existed.
 fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     let path = dir.join("sudodouble");
-    std::fs::write(
+    letibot_tools::testing::write_stub(
         &path,
-        format!(
+        &format!(
             "#!/bin/sh\n\
+             [ $# -eq 0 ] && exit 0\n\
              # letibot test double for `sudo -A`: the helper is a child whose stdout is a\n\
              # pipe, and this process -- whose own fd 0 is the terminal the daemon holds --\n\
              # blocks reading it. That is the whole of what sudo is here.\n\
@@ -162,15 +163,8 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
              printf 'sudodouble: the helper said [%s]\\n' \"$pw\"\n",
             helper = helper.display()
         ),
-    )
-    .expect("write the double");
-    executable(&path);
+    );
     path
-}
-
-fn executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 /// **The run's own process, when this test binary is re-executed as it.**

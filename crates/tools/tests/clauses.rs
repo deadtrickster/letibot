@@ -637,16 +637,11 @@ fn a_write_is_atomic_and_leaves_no_temporary_behind() {
     // asserts the two observable consequences of temp-plus-rename: the mode
     // survives, and the directory is left clean.
     let mut h = writable_harness();
-    h.write_file("script.sh", "#!/bin/sh\necho one\n");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(
-            h.root().join("script.sh"),
-            std::fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-    }
+    // The mode is the setup here rather than the assertion, and `write_stub` is the one place
+    // that writes an executable: it does not return until a probe exec proves nobody holds the
+    // file. This tree's own session forks while it runs, so a plain write-then-chmod is the shape
+    // that fails under load (`letibot_tools::testing::write_stub` carries the measurement).
+    letibot_tools::testing::write_stub(&h.root().join("script.sh"), "#!/bin/sh\necho one\n");
     h.call("read", r#"{"path":"script.sh"}"#);
     let r = h.call(
         "edit",

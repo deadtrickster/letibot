@@ -80,6 +80,7 @@ impl Rig {
         // down because its job directory was called `fanout-gone`. Measured here first.
         let script = format!(
             "#!/bin/bash\n\
+             [ $# -eq 0 ] && exit 0\n\
              printf 'ARGV %s\\n' \"$*\" >> {log}\n\
              case \"$*\" in\n\
              \x20 *gone.invalid*)\n\
@@ -257,9 +258,7 @@ fn sh(s: &str) -> String {
 }
 
 fn write_executable(path: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, text).expect("writing a fake program");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    letibot_tools::testing::write_stub(path, text);
 }
 
 fn on_path(program: &str) -> bool {

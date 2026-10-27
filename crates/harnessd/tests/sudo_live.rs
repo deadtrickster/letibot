@@ -11,8 +11,6 @@
 //!
 //! `SUDO_LIVE=1 cargo test -p letibot-harnessd --test sudo_live`.
 
-use std::os::unix::fs::PermissionsExt;
-
 use letibot_harnessd::sudo;
 
 #[test]
@@ -27,12 +25,10 @@ fn the_shim_routes_sudo_to_askpass_and_a_wrong_password_is_refused_not_a_tty_err
         .join(format!("letibot-sudo-live-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let fake_askpass = dir.join("askpass.sh");
-    std::fs::write(
+    letibot_tools::testing::write_stub(
         &fake_askpass,
         "#!/bin/sh\nprintf 'definitely-not-the-password\\n'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&fake_askpass, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     // SAFETY: single-threaded at this point.
     unsafe { std::env::set_var("LETIBOT_ASKPASS", &fake_askpass) };
 

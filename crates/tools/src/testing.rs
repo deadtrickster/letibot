@@ -666,7 +666,19 @@ impl Retrieval for Scripted {
 /// did nothing — so the race shows up as a wrong result, not as a retry. Measured 2026-10-20 in a
 /// full workspace run, both tests passing alone. One successful exec proves no process holds a
 /// write descriptor any more, and none can get one after it, so the window is closed for good.
-/// The probe runs the stub with no arguments; a stub must do nothing harmful when given none.
+///
+/// # The probe runs the stub with no arguments
+///
+/// Which makes one demand of a stub, and it is worth spelling out because a stub that breaks it
+/// looks exactly like this function failing: **a no-argument run must be harmless and quick.**
+/// Two spellings satisfy it, and the first is the one to reach for:
+///
+/// - `[ $# -eq 0 ] && exit 0` as the script's first line — the convention `crates/bridge`'s
+///   fixture daemon (`#!/bin/sh\n[ $# -eq 0 ] && exit 0\nsleep 2\n`) follows. It is what a stub
+///   whose real start would block, log its own argv, spawn something or rewrite the file needs.
+/// - [`STUB_PROBE`] set in the environment, for the rarer stub whose REAL run takes no arguments
+///   either (an operator `!` line that runs a script bare): `$#` cannot tell those two apart,
+///   and this variable can. It is set on the probe and on nothing else.
 #[cfg(unix)]
 pub fn write_stub(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -674,6 +686,7 @@ pub fn write_stub(path: &std::path::Path, body: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("stub mode");
     for _ in 0..100 {
         match std::process::Command::new(path)
+            .env(STUB_PROBE, "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -686,4 +699,72 @@ pub fn write_stub(path: &std::path::Path, body: &str) {
         }
     }
     panic!("{} stayed busy for two seconds", path.display())
+}
+
+/// The variable [`write_stub`]'s probe sets, for a stub whose real run takes no arguments either
+/// and therefore cannot recognise the probe by `$#`. See that function.
+#[cfg(unix)]
+pub const STUB_PROBE: &str = "LETIBOT_STUB_PROBE";
+
+/// The race `write_stub` closes, forced to happen — so the fix is measured 1 of 1 rather than
+/// waiting for the one run in three hundred that fails under load.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::io::AsRawFd;
+    use std::time::{Duration, Instant};
+
+    const BODY: &str = "#!/bin/sh\n[ $# -eq 0 ] && exit 0\nexit 3\n";
+
+    /// **A stub a forked child still holds is waited for, not exec'd into `Text file busy`.**
+    ///
+    /// The real window is a child forked while the write descriptor was open, which is
+    /// microseconds and only under load. Here it is a second wide on purpose: `FD_CLOEXEC` is
+    /// cleared so the holder keeps the descriptor across its own exec — exactly what such a
+    /// child does by accident — and a plain exec of the file is refused before `write_stub` is
+    /// even called. `write_stub` must therefore take about as long as the holder lives.
+    #[test]
+    fn a_stub_a_forked_child_holds_is_waited_for() {
+        let dir = std::env::temp_dir().join(format!("letibot-write-stub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a directory for the stub");
+        let stub = dir.join("held");
+
+        let mut f = std::fs::File::create(&stub).expect("create");
+        f.write_all(BODY.as_bytes()).expect("write");
+        f.flush().expect("flush");
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        // SAFETY: `fcntl` with `F_SETFD` and a zero — no state this process reads is touched, and
+        // the descriptor is one this test owns.
+        unsafe { libc::fcntl(f.as_raw_fd(), libc::F_SETFD, 0) };
+        let mut holder = std::process::Command::new("sleep")
+            .arg("1")
+            .spawn()
+            .expect("a holder to fork");
+        drop(f);
+
+        let refused = std::process::Command::new(&stub)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect_err("the holder keeps the file busy");
+        assert_eq!(
+            refused.kind(),
+            std::io::ErrorKind::ExecutableFileBusy,
+            "the reproduction has to be the real one: {refused}"
+        );
+
+        let began = Instant::now();
+        write_stub(&stub, BODY);
+        let waited = began.elapsed();
+        assert!(
+            waited >= Duration::from_millis(500),
+            "write_stub returned in {waited:?}, before the holder could have let go of it"
+        );
+        assert_eq!(holder.wait().expect("the holder exits").code(), Some(0));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

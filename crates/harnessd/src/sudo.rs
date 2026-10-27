@@ -80,7 +80,6 @@ pub fn install() -> Result<Plumbing, String> {
 }
 
 fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
     let body = format!(
         "#!/bin/sh\n\
          # letibot: sudo asks the head for the password (SUDO_ASKPASS), never a tty.\n\
@@ -96,32 +95,60 @@ fn write_shim(path: &Path, real: &Path) -> Result<(), String> {
     }
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, &body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("{}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("{}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
+    wait_until_executable(path)
+}
+
+/// **Do not return until `path` can be exec'd**, because "written, chmod'd and renamed into
+/// place" is not the same thing.
+///
+/// `execve` answers `ETXTBSY` for a file **any process holds open for writing**, and the holder
+/// is not hypothetical: a thread forked while the write descriptor was open keeps it until its
+/// own `exec`, and this daemon forks constantly. It is a fact about the INODE, so the rename
+/// above does not help — `deny_write_access` is asked of the inode, not of the name. Only an
+/// exec that succeeds proves nobody holds a writer, and nobody can get one afterwards.
+///
+/// The probe is `sudo --version`, which is the one sudo invocation that answers without a
+/// password, a terminal or a question for the head; its output goes nowhere.
+/// `letibot_tools::testing::write_stub` is the same probe for a fixture's stub.
+fn wait_until_executable(path: &Path) -> Result<(), String> {
+    for _ in 0..100 {
+        match std::process::Command::new(path)
+            .arg("--version")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(20))
+            }
+            // Whatever it answered, the file was handed to the kernel: that is the proof.
+            _ => return Ok(()),
+        }
+    }
+    Err(format!("{} stayed busy for two seconds", path.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// **Run a script this test just wrote, through the ETXTBSY window.**
+    /// **A script this test just wrote, exec'd with no retry of its own.**
     ///
-    /// Writing an executable and then exec'ing it races every other test thread that forks: a
-    /// child forked while the write descriptor was open holds it until its own exec, and an exec
-    /// of the file in that window fails with `Text file busy`. Measured 2026-10-11 under
-    /// `cargo test -p letibot-tools -p letibot-harnessd -p letibot-tui`, passing alone. The
-    /// window closes as soon as that child execs, so a short retry is the whole fix.
+    /// `write_shim` does not return until the file can be exec'd (see `wait_until_executable`),
+    /// so a `Text file busy` here would be that guarantee broken rather than the test being
+    /// early — which is why this is not the retry loop it used to be.
     fn run(cmd: &Path, args: &[&str]) -> std::process::Output {
-        for _ in 0..50 {
-            match std::process::Command::new(cmd).args(args).output() {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(std::time::Duration::from_millis(20))
-                }
-                other => return other.unwrap(),
-            }
-        }
-        panic!("{} stayed busy for a second", cmd.display())
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .expect("the shim runs")
     }
 
     #[test]
@@ -129,9 +156,7 @@ mod tests {
         let d = std::env::temp_dir().join(format!("letibot-sudo-shim-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let fake = d.join("real-sudo");
-        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        letibot_tools::testing::write_stub(&fake, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n");
         let shim = d.join("sudo");
         write_shim(&shim, &fake).unwrap();
         let out = run(&shim, &["apt", "install", "x"]);

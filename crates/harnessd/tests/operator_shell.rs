@@ -454,15 +454,20 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
         .join(format!("letibot-bang-askpass-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let double = dir.join("askpass-double");
-    std::fs::write(
+    letibot_tools::testing::write_stub(
         &double,
-        format!(
+        &format!(
             r#"#!/usr/bin/python3
 # letibot test double for `sudo -A` + `letibot-askpass`: attach as an askpass
 # head, ask for the password for `command`, read the answer. Prints a MARKER
 # rather than the password, so the transcript can never hold the secret even
 # by accident of this test.
 import json, os, socket, sys
+if len(sys.argv) < 3:
+    # `letibot_tools::testing::write_stub`'s probe: this double needs a prompt and
+    # a command, and a no-argument run must prove nothing but that the file can
+    # be exec'd.
+    sys.exit(0)
 prompt, command = sys.argv[1], sys.argv[2]
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 s.connect(os.environ["LETIBOT_SOCKET"])
@@ -489,13 +494,7 @@ sys.exit(1)
             attach = attach,
             askpass = askpass,
         ),
-    )
-    .expect("write the double");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&double, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod the double");
-    }
+    );
 
     // The head, attached before the command runs, that will answer the ask.
     let (mut head, _hello, reader) =

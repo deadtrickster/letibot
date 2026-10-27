@@ -584,22 +584,23 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     // question one keystroke away — which is exactly the state the operator was in.
     let exe = std::env::current_exe().expect("this test binary's own path");
     let script = dir.join("streaming-run.sh");
-    std::fs::write(
+    letibot_tools::testing::write_stub(
         &script,
-        format!(
+        &format!(
             "#!/bin/sh\n\
              # letibot test double for `apt install mc` while it streams: a writer that never\n\
              # lets the run be quiet for a beat, over a process of this run that cannot be\n\
              # looked at and is waiting on the daemon's terminal.\n\
+             # The `!` line runs this with NO arguments, so `$#` cannot tell the probe from the\n\
+             # real thing: `letibot_tools::testing::write_stub` sets LETIBOT_STUB_PROBE in the\n\
+             # probe's environment instead, and this is where it is read.\n\
+             [ -n \"$LETIBOT_STUB_PROBE\" ] && exit 0\n\
              while true; do printf 'tick\\n'; sleep 0.1; done &\n\
              LETIBOT_SUDO_ASK_CHILD=1 {exe} --exact the_process_the_daemon_may_not_read \\\n\
                --nocapture\n",
             exe = exe.display()
         ),
-    )
-    .expect("write the run");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    );
     head.operator_shell(0, &format!("! {}", script.display()))
         .expect("the line is submitted");
 

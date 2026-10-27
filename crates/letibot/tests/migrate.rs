@@ -125,11 +125,13 @@ impl Fixture {
     /// the command is dispatched, so a `sleep 300` there is a host that has stopped answering and an
     /// `exit 255` is one whose connection went away.
     fn write_fake_ssh_with(&self, prelude: &str) {
-        std::fs::write(
-            &self.ssh,
-            format!(
-                "#!/bin/sh\n\
-                 printf '%s\\n' \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"\n\
+        // `[ $# -eq 0 ] && exit 0` first: `write_stub`'s probe runs this with no arguments, and
+        // the prelude is how a test makes a host misbehave — a `sleep 300` run by the probe would
+        // be this fixture hanging before any test began.
+        let body = format!(
+            "#!/bin/sh\n\
+             [ $# -eq 0 ] && exit 0\n\
+             printf '%s\\n' \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"\n\
                  case \" $* \" in *\" -N \"*) exit 0 ;; esac\n\
                  while [ $# -gt 0 ]; do\n\
                    case \"$1\" in\n\
@@ -148,10 +150,8 @@ impl Fixture {
                  PATH=\"$HOME/bin:$PATH\"\n\
                  export PATH\n\
                  exec sh -c \"$cmd\"\n"
-            ),
-        )
-        .unwrap();
-        set_exec(&self.ssh);
+        );
+        letibot_tools::testing::write_stub(&self.ssh, &body);
     }
 
     /// The tree a host is built from: a tiny checkout, because the real one is 226 MB of history
@@ -261,10 +261,14 @@ impl Fixture {
             )
             .unwrap();
             let cargo = home.join("bin/cargo");
-            std::fs::write(
+            // `[ $# -eq 0 ] && exit 0`: the probe runs this with no arguments, and a probe that
+            // logged a cargo line and rewrote the fake `letibot` would leave its own marks in a
+            // fixture that asserts on what the move did.
+            letibot_tools::testing::write_stub(
                 &cargo,
-                format!(
+                &format!(
                     "#!/bin/sh\n\
+                     [ $# -eq 0 ] && exit 0\n\
                      printf 'cargo %s\\n' \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"\n\
                      mkdir -p target/release\n\
                      printf '#!/bin/sh\\ncase \"$(basename \"$0\")\" in\\n  harnessd) printf \
@@ -273,9 +277,7 @@ impl Fixture {
                      chmod +x target/release/letibot\n",
                     env!("CARGO_BIN_EXE_letibot")
                 ),
-            )
-            .unwrap();
-            set_exec(&cargo);
+            );
         }
     }
 
@@ -378,13 +380,6 @@ fn key12(path: &Path) -> String {
             .map(|b| format!("{b:02x}"))
             .collect::<String>()
     )
-}
-
-fn set_exec(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).unwrap();
 }
 
 fn git(dir: &Path, args: &[&str]) {

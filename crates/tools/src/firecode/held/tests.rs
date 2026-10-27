@@ -116,30 +116,19 @@ fn a_runs_start_is_read_off_its_id() {
 /// **A stand-in firecracker**: a script NAMED `firecracker`, run with `--id RUN`, that ignores
 /// SIGTERM the way a jailed VM (pid 1 of its namespace) does. Returns the child and its pid.
 fn stubborn_firecracker(dir: &Path, run: &str) -> std::process::Child {
-    use std::os::unix::fs::PermissionsExt;
     let script = dir.join("firecracker");
-    std::fs::write(
+    // `[ $# -eq 0 ] && exit 0` is what lets the write be proved at all: this stub never exits
+    // on its own, so `write_stub`'s probe would wait for ever. Probed with no arguments, the
+    // file is proved unheld; spawned with `--id RUN`, it is the stand-in the test wants.
+    crate::testing::write_stub(
         &script,
-        "#!/bin/sh\ntrap '' TERM\nwhile :; do sleep 0.2; done\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // Retried through `Text file busy`, not probed: this stub never exits on its own, so the
-    // probe `crate::testing::write_stub` runs would never return. See that function for the race.
-    let mut tries = 0;
-    let child = loop {
-        match std::process::Command::new(&script)
-            .args(["--id", run])
-            .stdin(Stdio::null())
-            .spawn()
-        {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 100 => {
-                tries += 1;
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            other => break other.unwrap(),
-        }
-    };
+        "#!/bin/sh\n[ $# -eq 0 ] && exit 0\ntrap '' TERM\nwhile :; do sleep 0.2; done\n",
+    );
+    let child = std::process::Command::new(&script)
+        .args(["--id", run])
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("the stand-in firecracker starts");
     // Until the shell has exec'd, /proc shows the spawning process's cmdline.
     let began = Instant::now();
     while firecrackers(Path::new("/proc"))
