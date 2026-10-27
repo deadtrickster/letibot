@@ -1271,6 +1271,171 @@ saying so.
   `boundary_absent` sentence above. A replacement would be an Endpoint Security client or a
   firecode VM, and neither is this change.
 
+## 4j. The session's environment, as it is observed — R95 and R96 (D14, D15)
+
+> *"regarding session and env vars - me must track them"* and *"R96 - yes"*. The operator,
+> 2026-10-27.
+
+§4i.4 left ~500 commands unread for a variable a *previous* command assigned and 527 (lab2x1)
+/ 1,347 (the mac) for `$PATH`, and said both needed a rule rather than a reader. D14 and D15
+are the rules. This section is the reading of them that got built, and it starts with a
+measurement that changes what "track them" can honestly mean.
+
+### 4j.1 The measurement that comes first: there is no persistent shell on the `bash` path
+
+D14's reading — *"the persistent shell already reports its real cwd in a trailer after every
+call; the trailer also reports the environment, so what the adjudicator resolves against is
+what the next command will really see"* — describes a component that exists and is not wired.
+
+**MEASURED 2026-10-27, this tree.** `ShellSession` (`crates/tools/src/exec/shell.rs`) is the
+only thing in the tree with a trailer, and **no production code constructs one**:
+`grep -rn "ShellSession::open" crates/` answers its own tests and nothing else. The model's
+`bash` tool opens no shell at all: every call is a fresh process (`exec/host.rs::spawn`) —
+`/bin/sh -c <command>`, `env_clear()`ed, then given the pinned `PATH`, the daemon's
+`standing_env` (`HOME`, `LETIBOT_SOCKET`, `LETIBOT_SESSION`, `SUDO_ASKPASS`,
+`Config::build_env`) and the request's own pairs.
+
+Three consequences, and the third is a gap this package names rather than closes.
+
+1. **A variable an earlier `bash` call exported is not in the next call's environment.** It
+   expands to nothing today, whatever the transcript looks like, and `cd $p` after
+   `export p=…` has been running with an empty `$p`.
+2. **What the next `bash` call will really see is exactly the pairs the harness sets**, which
+   the daemon knows before it spawns. A tracked environment *seeded from those pairs* is true
+   by construction: resolving `$CARGO_TARGET_DIR` or `$PATH` against it is a claim about the
+   real spawn rather than a guess.
+3. **Nothing observes a call's own final environment, and nothing carries it forward.** Doing
+   either means the shell becomes stateful — a name that changes what a later program does
+   while appearing in no command text — which is the class of change
+   `permission::sets_state_for_later` exists to refuse a durable rule over. That is a decision
+   of its own and it is **not** in this package. §4j.2 says what the tracked environment is
+   true for, and §4j.6 says what it would take.
+
+### 4j.2 Where it is observed: the trailer, and the exact mechanism
+
+The session's shell — `ShellSession`, the one a `!` line runs at — already ends every line
+with an OSC trailer carrying `$?` and `$PWD`. It now carries a third field:
+
+```text
+ESC ] 1337 ; letibot ; <nonce> ; <status> ; <cwd> ; NAME=value;NAME=value; … BEL
+```
+
+* **Produced** by the trailer's own function, which is defined once at session start
+  (`shell::trailer_definition`): a `for` over `compgen -e` (the exported names) reading each
+  value with bash's indirect expansion `${!n}`, and a `case` glob
+  (`''|*[!A-Za-z0-9_./:@%,-]*`) that **drops every value that is not already one plain word**.
+  So the shell sends only what `parameters::as_one_word` could ever write back.
+* **Why that filter is the design.** The alternatives all need a de-quoter, and a wrong
+  de-quote is a wrong value — which this module's rule forbids more strongly than it forbids
+  an unresolved word (*"a substitution is a claim, and a wrong one is worse than the
+  unresolved construct it replaced"*):
+  - `env -0` does not exist on macOS (BSD `env`), and the operator's daemon runs on the Mac;
+  - `export -p` / `declare -x -p` print with the shell's own quoting (`X="a \" b"`,
+    `$'a\tb'`), one dialect per shell;
+  - `env | base64` is two forks, and a value containing a newline still parses ambiguously.
+
+  Dropping the rest in the shell costs nothing the resolver could use, and it makes the
+  trailer unambiguous for free: no pair contains the field separator, so `take_turn` splits
+  `status` at the first `;` and the environment at the last one, and a `cwd` containing a `;`
+  still parses.
+* **Bounded in the shell**, because the byte count is what a `$(…)` in a value can make
+  unbounded: at most `ENV_PAIRS` (64) pairs and `ENV_BYTES` (4 KiB), counted as it goes. The
+  daemon then refuses a report over either cap **whole** — a truncated environment is a wrong
+  one, and half an environment silently resolved is the failure this whole section is about.
+* **Cost, measured** (200 iterations, lab2x1, `bash --norc`, `date +%s%N` brackets): the bare
+  trailer **24 µs/call**, the report **384 µs/call**, one bare `$( )` fork on the same box
+  **276 µs**, `fork+exec /bin/true` **843 µs**. So the report costs ≈0.36 ms per line — the
+  price of one subshell, 40% of a `true`, and nothing beside any command that does work. The
+  fork-free spelling (`declare -x -p`) exists and is rejected above.
+* **Secrets.** A plain word can still be a credential (`sk-…`, `ghp_…`), so the value is kept
+  — it is the shell's real environment — and it is **masked wherever it is printed** and
+  **not spliced into the reading** (§4j.4 has both).
+
+### 4j.3 Lifetime: per session and per shell, and never a file
+
+| | |
+|---|---|
+| **per session, per shell** | one report replaces the last: what the shell says is the whole truth, so an `unset` needs no rule of its own. |
+| **a dead shell** | the last report stands as the last thing it said and the tracker is marked dead — nothing new resolves, and a name it held is not extended to any later shell. |
+| **a daemon restart** | nothing is persisted. A restart has no shell and no observation; the tracker is re-seeded from the harness's pairs, which are the same pairs. |
+| **a migrated session** | the environment does not travel in the store at all. The moved session's new shell reports again, and a value a shell held on the old box is not carried as a value. |
+| **a confined local shell** | the same mechanism: the confine wrapper `exec`s the shell, so the values are the boundary's (`/tmp` inside it is the session's — `a-confined-session-cannot-nest-bwrap`), and the gate places a path from it as it places any path from a command. |
+| **a remote shell** | the same trailer runs on the far side, so the values are that box's. The *program* half of D15 needs that box's filesystem and says so (§4j.5). |
+| **a one-shot `bash`, no session** | nothing beyond G3 and the seed. A `bash` call has no shell to report, and a tracker with no report is the seed only. |
+
+### 4j.4 What the card shows, and what it refuses to show
+
+The resolver already returns a note per substitution and those notes are what the card and the
+audit row carry, so a reading the tracked environment decided says where it came from:
+
+```text
+`$p` is `/home/dead/Projects/letibot` — from the environment this session's shell reported
+`$CARGO_TARGET_DIR` is `/w/target` — from the pairs every command of this session is spawned with
+`$GITHUB_TOKEN` is `ghp_…4c` (masked: it looks like a credential) — not written into the reading
+```
+
+The masking rule is a name match, not a guess at entropy: a name containing
+`KEY`/`TOKEN`/`SECRET`/`PASSWORD`/`PASSWD`/`CREDENTIAL`/`AUTH`/`PRIVATE`/`SESSION_TOKEN`, or a
+value matching a well-known prefix (`ghp_`, `sk-`, `AKIA`, `-----BEGIN`), is a credential.
+Masked is first four and last two characters, or `…` alone for a value too short to hide
+anything in — the point is that a person can see *which* value decided the reading without the
+value being in the card, the log, or the corpus.
+
+**And a credential is not spliced into the reading.** Every other value is written back into
+the command text (`parameters::resolve`); a credential is left unresolved, exactly as it is
+today, and the command stays as unread as it was. The reason is where the spliced text goes:
+`shape_of` renders the post-substitution stages into the approval key that is stored on every
+row and matched forever after, `Baseline.command.source` is kept, and the oracle is shown the
+reading. A value in any of those is a value in the store — the disclosure D12 forbids. So the
+fail-closed direction is also the only direction that does not launder a secret into a key.
+
+### 4j.5 D15: which file a bare stage will run
+
+Resolving `$PATH` is the half D15 asks for; the other half is why G4 said "no". A stage whose
+program is `cargo` runs whatever the current `PATH` finds, so a shape or a grant named
+`cargo` is a claim about a file nobody named. D15 answers it by **naming the file**:
+
+* **When**: a `PATH` was resolved, from this command or from the tracked environment, and a
+  stage after it has a bare program name.
+* **How**: the gate resolves that name along the resolved `PATH` — each directory in order,
+  the first `dir/name` that is a regular file with an execute bit, which is the shell's rule —
+  through `Surroundings::programs`.
+  * **Answered host-side, not by `command -v` in the trailer.** The trailer runs *after* a
+    line, and the names in the next line are not known when it runs; asking the shell at
+    adjudication time would be a pty write and read per stage on the hot path, against a shell
+    that may be dead, mid-command, or on another machine — and for a confined or remote
+    session its answer would be about a different filesystem than the one the gate resolves
+    against anyway. So `Surroundings::programs` states what the gate can honestly see:
+    `Host` for a session whose commands run in this daemon's own view, `None` otherwise (a
+    remote placement, a VM, a corpus replay).
+* **Three outcomes, and the third is the safety property**:
+  1. the file differs from the one the pinned `PATH` finds → the stage's program **becomes
+     that file**, so the shape, `grant_program` and the card all name it
+     (`/tmp/x/cargo build`). A grant given for `cargo` cannot cover it: `Grant::covers`
+     compares the program string the reading produced.
+  2. the file is the same → nothing changes: no churn in shapes, no re-asking.
+  3. the file cannot be established → **the `PATH` is not resolved at all.** It stays
+     unresolved exactly as it is today, the command is as unread as it is today, and the card
+     says which name it could not place. This is what makes *"nothing that was readable became
+     unread"* true by construction rather than by luck: a command that needed a `PATH`
+     resolved was already unread, so leaving it unread cannot regress anything, and a session
+     whose commands run where the gate cannot see loses nothing it had.
+
+### 4j.6 What this does not do, and what it would take
+
+* **It does not make the shell stateful.** Nothing here is applied to a spawn. Adding the
+  tracked environment to `standing_env` after each call is the change that would make R95 work
+  for the model's own `bash` calls — and that is a change in what runs unasked: `export
+  PATH=/tmp/x:$PATH` in one call would then pick the binary for the next one, `LD_PRELOAD`
+  would be a name carried into every later command, and the operator would be asked once for
+  the first and never for the rest. It needs its own decision, and it needs a deny-list of
+  names that change what a program does without appearing in any text. **Not done, on purpose,
+  and named here so the next reader does not believe it is.**
+* **It does not read an environment off disk.** No `~/.bashrc`, no `environ` of a dying
+  process, no store column: observed means the shell said so.
+* **It does not touch the parser** (brace expansion, ANSI-C quoting, `$(pwd)`, parse errors —
+  R94) nor the gate's admit rules (R97).
+
 ## 5. Open
 
 Layers 2 and 3's seam were **built** on 2026-09-10 — `crates/code/src/shell.rs`,
