@@ -98,8 +98,10 @@ pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
 mod citations;
+mod leases;
 mod procs;
 mod told;
+pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use told::Told;
 
@@ -426,7 +428,14 @@ pub struct ShapelessAdmit {
 /// process runs, what makes a reused pid not it, which group a teardown signals, when it must be
 /// gone, or how it was last looked at — and it has no row at all for a process a restarted daemon
 /// ADOPTED rather than started. Those are one record's questions, and that record is this table.
-pub const SCHEMA_VERSION: i64 = 34;
+///
+/// **35** since **a block of a shared host's ports is a row** — `host_lease`, described at
+/// [`leases`]. Agents on the operator's hosts collided over ports (`address already in use` ×18 in
+/// one session) because each picked its own, and a lock in one process is a lock for half the
+/// callers: two daemons on this box share this file. So the block is a record, taken inside
+/// `BEGIN IMMEDIATE` — that transaction is the per-host lock — and a lease outlives a restart
+/// because the row does.
+pub const SCHEMA_VERSION: i64 = 35;
 
 /// **What this row's columns mean.** Stamped on every corpus row.
 ///
@@ -707,6 +716,10 @@ CREATE INDEX IF NOT EXISTS adjudication_by_session
 -- The rows a fine-tune is for: the operator ruled, and ruled against the gate.
 CREATE INDEX IF NOT EXISTS adjudication_disagreements
     ON adjudication (operator_kind) WHERE operator_kind IS NOT NULL;
+
+-- v35's `host_lease` table is `leases::LEASES_SQL`, run beside this text on a fresh store and by
+-- the v35 arm on a migrated one — the shape every table added since v24 takes, so the DDL lives
+-- in one place and a comment here cannot drift from it.
 
 CREATE UNIQUE INDEX IF NOT EXISTS transcript_item_by_item_id
     ON transcript_item (transcript_id, item_id);
@@ -1933,6 +1946,7 @@ impl Store {
         self.conn.execute_batch(citations::CITATIONS_SQL)?;
         self.conn.execute_batch(writers::WRITERS_SQL)?;
         self.conn.execute_batch(procs::PROCS_SQL)?;
+        self.conn.execute_batch(leases::LEASES_SQL)?;
         self.conn.execute("DELETE FROM schema_version", [])?;
         self.conn.execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2732,6 +2746,15 @@ impl Store {
             // has no record of, because a pid it was never told and cannot identify is a pid it
             // has no business signalling.
             self.conn.execute_batch(procs::PROCS_SQL)?;
+        }
+        if from < 35 {
+            // v35: **a block of a shared host's ports, held by one session** — [`leases`] carries
+            // the whole of it. One new table, `IF NOT EXISTS`, and nothing existing is read or
+            // rewritten: a store from before it has no lease, which is the honest state of a store
+            // whose sessions picked their ports and wrote nothing down. Those ports are still
+            // taken on the host by whatever is listening on them, and the first lease on this
+            // build finds that out the way it always does — by asking `ss -ltn` there.
+            self.conn.execute_batch(leases::LEASES_SQL)?;
         }
         Ok(())
     }

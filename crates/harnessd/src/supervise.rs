@@ -156,6 +156,9 @@ pub struct Tick {
     /// supervisor whose every write fails is doing nothing, and a tick that reported it as quiet
     /// would be the silence this tree keeps paying for.
     pub errors: Vec<String>,
+    /// **Leases this tick gave back because their owner was gone** (RH9), one line each — the block,
+    /// what was removed from it, and any refusal the operator's never-touch list made.
+    pub released: Vec<String>,
 }
 
 /// **One host's group of open records**, as a tick hands them to a probe.
@@ -181,6 +184,15 @@ pub struct Supervisor {
     probe: Arc<dyn Probe>,
     /// The clock, injected so a deadline is tested by moving the clock rather than by waiting.
     now_ms: Box<dyn Fn() -> i64 + Send + Sync>,
+    /// **The daemon's answer to *is this session still served*** (RH9), or `None` for a supervisor
+    /// a test drives by hand — which reaps nothing, because a lease released on a guess is worse
+    /// than a lease held a minute too long.
+    owner: Option<Arc<dyn Owner>>,
+    /// **`hosts.toml`, when it is not the operator's** — a test's door, and the seam that lets a
+    /// never-touch test run without editing the machine's own file.
+    hosts: Option<std::path::PathBuf>,
+    /// **How long each session named by a held lease has been unseen**, for the reaper's grace.
+    lease_seen: std::sync::Mutex<BTreeMap<String, i64>>,
 }
 
 impl Supervisor {
@@ -189,6 +201,9 @@ impl Supervisor {
             store,
             probe,
             now_ms: Box::new(now_ms),
+            owner: None,
+            hosts: None,
+            lease_seen: std::sync::Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -202,6 +217,59 @@ impl Supervisor {
             store,
             probe,
             now_ms,
+            owner: None,
+            hosts: None,
+            lease_seen: std::sync::Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// **Who serves a session** — what the lease reaper asks (RH9). Without it no lease is ever
+    /// reaped, which is the honest state of a supervisor that cannot tell a closed session from one
+    /// about to be opened.
+    pub fn with_owner(mut self, owner: Arc<dyn Owner>) -> Supervisor {
+        self.owner = Some(owner);
+        self
+    }
+
+    /// Read this `hosts.toml` instead of the operator's — a test's door, and the one the
+    /// never-touch tests open so they never depend on the machine's own file.
+    pub fn with_hosts(mut self, file: impl Into<std::path::PathBuf>) -> Supervisor {
+        self.hosts = Some(file.into());
+        self
+    }
+
+    /// **May letibot signal this process at all?** — the never-touch list (RH9), asked *before*
+    /// anything is signalled and never after.
+    ///
+    /// A named host is the only case a list can be read for: `never_touch` is a key of a
+    /// `[host.NAME]` table, and a record with no host is a process on the box this daemon runs on,
+    /// where no declaration exists. That is said rather than papered over: a daemon placed ON
+    /// lab2x1 (RH4) would have local records and no list to check them against, and the fix is a
+    /// list for this box — a later decision, and not one this slice can invent.
+    fn may_touch(&self, rec: &ProcessRecord) -> Result<(), String> {
+        let Some(host) = &rec.host else {
+            return Ok(());
+        };
+        let hosts = match &self.hosts {
+            Some(file) => letibot_tools::remote::Hosts::load_from(file),
+            None => letibot_tools::remote::Hosts::load(),
+        };
+        let Some(declared) = hosts.get(host) else {
+            // A record naming a host this file no longer declares: nothing is known about it, and
+            // a rule that refused every such record would strand them for ever.
+            return Ok(());
+        };
+        // **The command line, because that is what the far side answers *which process is this*
+        // with** — the same field the record's identity is built from.
+        match declared.never_touch_hit(&rec.command) {
+            Some(pattern) => Err(format!(
+                "`{}` on `{host}` matches never_touch `{pattern}`, so letibot will not signal, stop \
+                 or remove it — it is the machine owner's own work. The record is left as it was \
+                 and this tick tries nothing further; if the pattern is too broad it is one word in \
+                 `hosts.toml`.",
+                rec.handle
+            )),
+            None => Ok(()),
         }
     }
 
@@ -258,7 +326,12 @@ impl Supervisor {
                         if let Some(deadline) = rec.deadline_ms
                             && at >= deadline
                         {
-                            match self.probe.kill(host.as_deref(), &rec, expired_by()) {
+                            // **The owner's own workloads are not ours to end** (RH9), and this is
+                            // the one door every deadline kill goes through.
+                            let killed = self.may_touch(&rec).and_then(|()| {
+                                self.probe.kill(host.as_deref(), &rec, expired_by())
+                            });
+                            match killed {
                                 Ok(()) => {
                                     report.expired.push(rec.handle.clone());
                                     report.ended.push((rec.handle.clone(), ProcState::Stopped));
@@ -317,7 +390,64 @@ impl Supervisor {
                 }
             }
         }
+        // **A block whose owner is gone goes back** (RH9), and the store's own lock is dropped
+        // first: the release opens its own connection and tears down on a host, and holding the
+        // tick's lock across an ssh round trip would stall every other writer on the box.
+        self.reap_leases(&mut report);
         report
+    }
+
+    /// **The leases whose owner nobody serves, after the grace.** See `crate::leases::reap` for the
+    /// rule and `leases::GRACE_MS` for why a restart is not an owner being gone.
+    ///
+    /// The decision is taken under the locks and the releasing is not: a release opens its own
+    /// connection and may run an ssh round trip to tear a prefix down, and holding the tick's store
+    /// lock across that would stall every other writer on the box.
+    fn reap_leases(&self, report: &mut Tick) {
+        let Some(owner) = &self.owner else {
+            return;
+        };
+        let at = (self.now_ms)();
+        // An in-memory store has no second connection, so nothing could release through one. The
+        // honest answer is to say so rather than to pretend the reaper ran.
+        let Some(path) = self
+            .store
+            .lock()
+            .expect("the supervisor's store")
+            .path()
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        let mut seen = match self.lease_seen.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        let due = {
+            let store = self.store.lock().expect("the supervisor's store");
+            let held = match store.held_leases() {
+                Ok(v) => v,
+                Err(e) => {
+                    report
+                        .errors
+                        .push(format!("the leases could not be read: {e}"));
+                    return;
+                }
+            };
+            crate::leases::due(&held, &|s| owner.alive(s), &mut seen, at)
+        };
+        for session in &due {
+            seen.remove(session);
+        }
+        drop(seen);
+        // **Now the locks are down.** A release opens its own connection and may run an ssh round
+        // trip to tear a prefix down; holding the tick's store lock across that would stall every
+        // other writer on the box.
+        for session in due {
+            for line in crate::leases::release_session(&path, &session, "its owner was gone") {
+                report.released.push(line);
+            }
+        }
     }
 
     /// Write one answer down, and say so rather than dropping it: a record nobody updated is a
@@ -359,9 +489,20 @@ impl Supervisor {
             .collect();
         let at = (self.now_ms)();
         for rec in &open {
-            let written = match self.probe.kill(rec.host.as_deref(), rec, by) {
+            // **A teardown is not exempt from the operator's list** (RH9): it is the path that
+            // ends the most, so it is the one a never-touch check has to guard hardest.
+            let killed = self
+                .may_touch(rec)
+                .and_then(|()| self.probe.kill(rec.host.as_deref(), rec, by));
+            let written = match killed {
                 Ok(()) => Check::new(ProcState::Stopped, at, 0, "teardown"),
-                Err(_) => Check::new(ProcState::Lost, at, 0, "teardown"),
+                Err(why) => {
+                    // **Said, and not folded into `lost`.** A teardown that refused is a different
+                    // fact from a host that did not answer, and the sentence is the one thing the
+                    // operator can act on — it names the pattern and the file.
+                    eprintln!("  {} · {} was NOT ended: {why}", rec.session, rec.handle);
+                    Check::new(ProcState::Lost, at, 0, "refused")
+                }
             };
             let _ = self
                 .store
@@ -700,6 +841,31 @@ fn marker_of(identity: &str) -> String {
 
 static SUPERVISOR: std::sync::OnceLock<Arc<Supervisor>> = std::sync::OnceLock::new();
 
+/// **Is anyone still working in this session?** — the one question the lease reaper asks, and the
+/// one answer only the daemon has.
+///
+/// A seam rather than a `Registry` field because the supervisor must not learn what a session is:
+/// what it needs is one bit per name, and a test's answer is a closure. The daemon's own is
+/// [`RegistryOwner`], which asks the registry.
+pub trait Owner: Send + Sync {
+    /// **`true` when this daemon serves the session** — its harness is open, or a court holds it.
+    /// `false` is not yet *gone*: see `leases::GRACE_MS` for why the reaper waits.
+    fn alive(&self, session: &str) -> bool;
+}
+
+/// **The daemon's answer**, over the registry: a session is alive while this process holds it.
+///
+/// `Registry::holds` is the right door and the only one — a session on a court's own thread is in
+/// the same registry as one in `Sessions::open`, which is RH7's lesson that *the store is the
+/// truth* does not extend to *which process is serving it right now*.
+pub struct RegistryOwner(pub Arc<letibot_sessionlog::Registry>);
+
+impl Owner for RegistryOwner {
+    fn alive(&self, session: &str) -> bool {
+        self.0.holds(session)
+    }
+}
+
 /// **End every process a session owns, on every host** — what a session's close and the daemon's
 /// own stop do, in one place, and `0` when this process has no supervisor (a one-shot run with no
 /// store, a test).
@@ -838,10 +1004,14 @@ pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessi
                 eprintln!("  supervisor: the store did not open; no process is supervised");
                 return;
             };
-            let sup = Arc::new(Supervisor::new(
-                Arc::new(std::sync::Mutex::new(store)),
-                Arc::new(HostProbe::new()),
-            ));
+            let sup = Arc::new(
+                Supervisor::with_clock(
+                    Arc::new(std::sync::Mutex::new(store)),
+                    Arc::new(HostProbe::new()),
+                    Box::new(now_ms),
+                )
+                .with_owner(Arc::new(RegistryOwner(Arc::clone(&registry)))),
+            );
             let _ = SUPERVISOR.set(Arc::clone(&sup));
             loop {
                 let tick = sup.tick();
@@ -852,9 +1022,10 @@ pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessi
                     || !tick.expired.is_empty()
                     || !tick.lost.is_empty()
                     || !tick.errors.is_empty()
+                    || !tick.released.is_empty()
                 {
                     eprintln!(
-                        "  supervisor: {} host(s), {} running, ended {:?}, expired {:?}, lost {:?}{}",
+                        "  supervisor: {} host(s), {} running, ended {:?}, expired {:?}, lost {:?}{}{}",
                         tick.hosts,
                         tick.running,
                         tick.ended,
@@ -864,6 +1035,11 @@ pub fn spawn(store_path: Option<std::path::PathBuf>, registry: Arc<letibot_sessi
                             String::new()
                         } else {
                             format!(", errors {:?}", tick.errors)
+                        },
+                        if tick.released.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", released {:?}", tick.released)
                         }
                     );
                 }

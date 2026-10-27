@@ -132,6 +132,9 @@ impl Rig {
             // make the same assertion mean two things on two boxes. `the_mise_wrapper_*` below
             // are the tests that do have one.
             mise: Some(Mise::Off),
+            // No reservation and no never-touch list: a fixture's host has no owner's workloads
+            // running on it, and a `flags` list would be a fact about a machine this is not.
+            ..Host::default()
         };
         Rig {
             dir,
@@ -804,6 +807,7 @@ fn host_named(name: &str) -> Host {
         root: "~/letibot-remote".into(),
         // See `Rig::new`: a fixture's host has no mise unless the test is about mise.
         mise: Some(Mise::Off),
+        ..Host::default()
     }
 }
 

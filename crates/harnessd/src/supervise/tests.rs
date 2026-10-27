@@ -833,3 +833,85 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **The operator's own workloads are not ours to end** (RH9). A `teardown_session` — the door a
+/// session's close and the daemon's stop both use — reaches `kill` for one record and not the
+/// other, and the refusal names the pattern.
+#[test]
+fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
+    let dir = std::env::temp_dir().join(format!("letibot-never-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("scratch");
+    let file = dir.join("hosts.toml");
+    std::fs::write(
+        &file,
+        "[host.lab2x1]\nhostname = \"lab2x1\"\nuser = \"dead\"\n\
+         never_touch = [\"etcd\", \"pgfuzz\"]\n",
+    )
+    .expect("hosts.toml");
+
+    let theirs = {
+        let mut r = rec("s-a", "j-etcd", Some("lab2x1"), 4242);
+        r.command = "/usr/local/bin/etcd-fuzz --rounds 1000".into();
+        r
+    };
+    let ours = {
+        let mut r = rec("s-a", "j-build", Some("lab2x1"), 4243);
+        r.command = "cargo test --offline".into();
+        r
+    };
+    let store = store_with(&[theirs.clone(), ours.clone()]);
+    let fake = Fake::new(vec![Say::Alive, Say::Alive]);
+    let sup = Supervisor::new(Arc::clone(&store), Arc::clone(&fake) as Arc<dyn Probe>)
+        .with_hosts(file.clone());
+
+    // **The refusal, in words** — the sentence the operator reads, naming the pattern.
+    let refused = sup
+        .may_touch(&theirs)
+        .expect_err("the operator's etcd fuzz is on the never-touch list");
+    assert!(refused.contains("etcd"), "{refused}");
+    assert!(refused.contains("lab2x1"), "{refused}");
+    assert!(refused.contains("will not signal"), "{refused}");
+    assert!(refused.contains("j-etcd"), "{refused}");
+    // And the session's own command is not refused.
+    sup.may_touch(&ours).expect("our own build may be ended");
+
+    // **A teardown ends one and not the other.** The probe was told about exactly one process.
+    let torn = sup.teardown_session("s-a", "the session closing");
+    assert_eq!(torn.len(), 2, "both records were open");
+    let killed = fake.kills();
+    assert_eq!(
+        killed.len(),
+        1,
+        "only one kill reached the host: {killed:?}"
+    );
+    assert_eq!(killed[0].1, 4243, "the build's pid, not the fuzz's");
+
+    let held = store.lock().unwrap();
+    let left = held.process("s-a", "j-etcd").unwrap().expect("a row");
+    assert_eq!(
+        left.state,
+        ProcState::Lost,
+        "the record stays open: nothing was ended, so nothing may say `stopped`"
+    );
+    assert_eq!(
+        left.check_how.as_deref(),
+        Some("refused"),
+        "the record says which of the two endings it was"
+    );
+    let ended = held.process("s-a", "j-build").unwrap().expect("a row");
+    assert_eq!(ended.state, ProcState::Stopped);
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A record on this box has no list to check** — `never_touch` is a `[host.NAME]` key, and this
+/// box is not in the file. Said here so the hole is a fact with a test rather than a surprise.
+#[test]
+fn a_local_record_has_no_never_touch_list_and_that_is_said() {
+    let mut r = rec("s-a", "j1", None, 4242);
+    r.command = "/usr/local/bin/etcd-fuzz".into();
+    let sup = Supervisor::new(store_with(&[r.clone()]), Fake::new(vec![]));
+    sup.may_touch(&r)
+        .expect("a record with no host has no declaration to read");
+}

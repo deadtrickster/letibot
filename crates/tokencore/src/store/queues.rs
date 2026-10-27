@@ -791,7 +791,7 @@ impl Store {
     /// See `store/busy.rs` for the night this was for: `! merge_queue_store_error — the queues
     /// could not read or write their store while serving the queues: sqlite: database is
     /// locked`.
-    fn immediate(&self) -> Result<rusqlite::Transaction<'_>> {
+    pub(crate) fn immediate(&self) -> Result<rusqlite::Transaction<'_>> {
         Ok(super::busy::retry_sql(|| {
             rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
         })?)

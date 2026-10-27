@@ -30,6 +30,7 @@ use serde_json::Value;
 
 use crate::exec::ProcessHost;
 use crate::fleet::{self, Cell, Fate, Fleet, Leg, ProcessBook, Running};
+use crate::lease::Blocks;
 use crate::remote::Paths;
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
@@ -46,6 +47,10 @@ pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(600);
 /// tool whose answer nobody is waiting for.
 pub const MAX_DEADLINE: Duration = Duration::from_secs(3600);
 
+/// **The most ports one branch may ask its block for.** A branch's services listen on a handful;
+/// a number past this is a typo that would empty the host's upper range for everybody else.
+pub const MAX_LEASE_PORTS: u16 = 256;
+
 /// `fanout` — one command per host, in parallel, one row per host.
 pub struct Fanout {
     /// A test's doors, in [`crate::builtins::hosts::HostsTool`]'s shape: the file to read, this
@@ -55,6 +60,8 @@ pub struct Fanout {
     ssh: Option<PathBuf>,
     bound: Option<Duration>,
     book: Arc<dyn ProcessBook>,
+    /// **The session's leases** (RH9) — what a `lease` argument takes its blocks from.
+    blocks: Option<Arc<Blocks>>,
 }
 
 impl Default for Fanout {
@@ -65,6 +72,7 @@ impl Default for Fanout {
             ssh: None,
             bound: None,
             book: Arc::new(fleet::NoBook),
+            blocks: None,
         }
     }
 }
@@ -101,6 +109,12 @@ impl Fanout {
     /// a run with no store.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Fanout {
         self.book = book;
+        self
+    }
+
+    /// **The session's leases** (RH9) — what `lease: true` takes a block from, one per branch.
+    pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Fanout {
+        self.blocks = Some(blocks);
         self
     }
 
@@ -149,7 +163,8 @@ impl Tool for Fanout {
                     },
                     "command": {"type": "string", "description": "The command both lists run; required when `hosts` is a list, ignored for hosts that name their own."},
                     "deadline_s": {"type": "integer", "description": "Seconds each branch may run before it is killed and its row says stopped. Default 600, at most 3600. Seconds rather than milliseconds because a fanout's deadline is minutes."},
-                    "cwd": {"type": "string", "description": "Where the commands run, on each host: absolute, or relative to the work directory this call made there (`<host root>/fanout-<call>`)."}
+                    "cwd": {"type": "string", "description": "Where the commands run, on each host: absolute, or relative to the work directory this call made there (`<host root>/fanout-<call>`)."},
+                    "lease": {"description": "Give each branch a block of ports from this session's lease ON ITS OWN HOST, outside that host's ephemeral range: `true` is one port, a number is that many. The block travels to the command as `LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS` and `…_PREFIX` — name the containers and compose projects you start under that prefix, and the teardown removes exactly those. Every block is released when the call ends.", "type": ["boolean", "integer"]}
                 },
                 "required": ["hosts"]
             }),
@@ -181,8 +196,42 @@ impl Fanout {
             Ok(p) => p,
             Err(why) => return Invocation::failed(why.reason, why.body),
         };
+        // **A block per branch, when the call asked for one** (RH9). A fanout's branches usually
+        // land on DIFFERENT machines and often several on one, so the block is taken per leg and
+        // per host — and every block goes back when the call answers, whether it worked or not.
+        let ports = match lease_ports(args) {
+            Ok(p) => p,
+            Err(why) => return Invocation::failed(why.reason, why.body),
+        };
+        let mut plan = plan;
+        let mut held: Vec<letibot_tokencore::store::Lease> = Vec::new();
+        if let Some(ports) = ports {
+            let Some(blocks) = &self.blocks else {
+                return Invocation::failed(
+                    "`lease` and this run has no session store",
+                    "A block of ports is a row in the session store, and this run has none behind \
+                     it — so there is nothing to hold one in and nothing for a teardown to release.",
+                );
+            };
+            for leg in &mut plan {
+                match blocks.take(&leg.host, ports) {
+                    Ok(lease) => {
+                        leg.env = lease.env();
+                        held.push(lease);
+                    }
+                    Err(why) => {
+                        // A branch that could not get a block is a ROW, not a failure of the call:
+                        // the other machines can still do their work. Its `never ran` carries why.
+                        leg.env = vec![(
+                            "LETIBOT_LEASE_REFUSED".to_string(),
+                            crate::fleet::one_line(&why, 160),
+                        )];
+                    }
+                }
+            }
+        }
         let fleet = self.fleet(work.to_string()).with_local(local);
-        self.run(&fleet, plan)
+        self.run(&fleet, plan, self.blocks.as_deref(), &held)
     }
 }
 
@@ -325,6 +374,7 @@ impl Fanout {
                 command,
                 cwd: cwd.clone(),
                 deadline: Some(until),
+                env: Vec::new(),
             });
         }
         if plan.is_empty() {
@@ -338,7 +388,13 @@ impl Fanout {
     }
 
     /// **Run the plan**, and answer one row per planned cell.
-    fn run(&self, fleet: &Fleet, plan: Vec<Leg>) -> Invocation {
+    fn run(
+        &self,
+        fleet: &Fleet,
+        plan: Vec<Leg>,
+        blocks: Option<&Blocks>,
+        held: &[letibot_tokencore::store::Lease],
+    ) -> Invocation {
         let started = Instant::now();
         let mut done: Vec<Cell> = Vec::new();
         let mut running: Vec<Running> = Vec::new();
@@ -409,12 +465,27 @@ impl Fanout {
             done.push(fleet.cell(run, None, fate));
         }
         let rows = fleet::cells(&plan, &done);
-        Invocation::ok(table(fleet, &plan, &rows, started.elapsed()))
+        // **Every block the call took goes back**, after the branches have settled: a branch's
+        // containers are the reason the block existed, and a release that came first would leave
+        // them up under a block the next session is about to be given.
+        let mut released = Vec::new();
+        if let Some(blocks) = blocks {
+            for lease in held {
+                released.extend(blocks.release(lease, "the fanout ended"));
+            }
+        }
+        Invocation::ok(table(fleet, &plan, &rows, started.elapsed(), &released))
     }
 }
 
 /// The answer: a header with the count that matters, then one line per planned cell.
-fn table(fleet: &Fleet, plan: &[Leg], rows: &[Cell], took: Duration) -> String {
+fn table(
+    fleet: &Fleet,
+    plan: &[Leg],
+    rows: &[Cell],
+    took: Duration,
+    released: &[String],
+) -> String {
     let failed = rows.iter().filter(|c| !c.fate.ok()).count();
     let never = rows
         .iter()
@@ -432,24 +503,58 @@ fn table(fleet: &Fleet, plan: &[Leg], rows: &[Cell], took: Duration) -> String {
     }
     if failed == 0 {
         s.push_str("every cell exited 0\n");
-        return s;
-    }
-    s.push_str(&format!("{failed} of {} cells did not exit 0", rows.len()));
-    if never > 0 {
-        let declared = fleet.declared();
-        if !declared.is_empty() {
-            s.push_str(&format!(
-                " ({never} never ran; this file declares {})",
-                declared.join(", ")
-            ));
-        } else {
-            s.push_str(&format!(
-                " ({never} never ran; no hosts are declared at all)"
-            ));
+    } else {
+        s.push_str(&format!("{failed} of {} cells did not exit 0", rows.len()));
+        if never > 0 {
+            let declared = fleet.declared();
+            if !declared.is_empty() {
+                s.push_str(&format!(
+                    " ({never} never ran; this file declares {})",
+                    declared.join(", ")
+                ));
+            } else {
+                s.push_str(&format!(
+                    " ({never} never ran; no hosts are declared at all)"
+                ));
+            }
         }
+        s.push('\n');
     }
-    s.push('\n');
+    // **What went back, and what could not be touched** — a block held for ever is a block the
+    // next session on that machine cannot have, so the answer says what it released.
+    for line in released {
+        s.push_str(&format!("  lease: {line}\n"));
+    }
     s
+}
+
+/// **How many ports each branch asked for** — `None` when the call did not ask for a block.
+///
+/// `lease: true` is one port (the common case: one server per branch), and a number is that many,
+/// capped so a typo cannot ask for the whole upper half of the host's range.
+fn lease_ports(args: &Value) -> Result<Option<u16>, Refusal> {
+    match args.get("lease") {
+        None | Some(Value::Null) | Some(Value::Bool(false)) => Ok(None),
+        Some(Value::Bool(true)) => Ok(Some(1)),
+        Some(v) => match v.as_u64() {
+            Some(0) => Err(refuse(
+                "`lease` is 0",
+                "A block of zero ports is no block at all. Leave `lease` out, give it `true` for \
+                 one port, or name how many each branch needs.",
+            )),
+            Some(n) if n > MAX_LEASE_PORTS as u64 => Err(refuse(
+                format!("`lease` is {n}, past the {MAX_LEASE_PORTS}-port ceiling"),
+                "A block is for the ports one branch's services listen on. If the work needs more \
+                 than that, it is more than one branch.",
+            )),
+            Some(n) => Ok(Some(n as u16)),
+            None => Err(refuse(
+                format!("`lease` is `{v}`, which is not a number of ports"),
+                "`lease: true` takes one port from this session's block on each host, and a whole \
+                 number takes that many.",
+            )),
+        },
+    }
 }
 
 /// A call id as a directory name: letters, digits, `-` and `_`, everything else `-`.

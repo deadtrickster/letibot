@@ -72,6 +72,13 @@ pub struct Leg {
     /// When this leg must be gone. Decided by the caller **before** the start, so the record and
     /// the loop cannot disagree about it.
     pub deadline: Option<Instant>,
+    /// **Environment the leg's command reads** — the block it was given, if it was given one.
+    ///
+    /// A lease's own facts (`LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS`,
+    /// `…_PREFIX`) travel this way rather than through the command text, because a command that
+    /// had to spell its ports would be a command the caller had to write after the lease was taken
+    /// — and a `fanout`'s branches are all planned before any of it exists.
+    pub env: Vec<(String, String)>,
 }
 
 /// **What became of a leg.**
@@ -461,7 +468,7 @@ impl Fleet {
             scope: ScopeKind::Session,
             scope_name: None,
             background: true,
-            env: Vec::new(),
+            env: leg.env.clone(),
             tty: false,
             memory: None,
         };
@@ -632,6 +639,12 @@ impl Fleet {
             ));
         }
         match check {
+            Ready::Lease => Err(
+                "its readiness check is a port from the session's lease and no block was \
+                 assigned to it — that is this build's mistake, not the call's, and waiting would \
+                 be waiting on port 0"
+                    .to_string(),
+            ),
             Ready::Port(port) => {
                 if run.leg.host == LOCAL {
                     return Ok(crate::exec::host::port_is_listening(*port));
@@ -665,6 +678,7 @@ impl Fleet {
                     command: command.clone(),
                     cwd: run.leg.cwd.clone(),
                     deadline: Some(Instant::now() + Duration::from_secs(10)),
+                    env: Vec::new(),
                 };
                 let probe = self.start(&leg)?;
                 let fate = match self.wait(&probe, Duration::from_secs(10)) {
@@ -705,9 +719,19 @@ fn read_output(fleet: &Fleet, run: &Running, bytes: u64) -> String {
 
 /// **How a role says it is ready.** Three spellings, because three are what a service fixture
 /// actually has: a port that accepts, a line in its own log, and a client program that exits 0.
+///
+/// **[`Ready::Lease`] is the fourth, and it is not a fourth kind of check** — it is *a port, from
+/// the session's lease rather than the caller's head*. The operator's own report of what agents do
+/// to a shared host is a list of collisions that all began with somebody typing a port number, so
+/// the safe spelling has to be shorter than the unsafe one: `ready: {"port": "lease"}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ready {
     Port(u16),
+    /// **A port from this session's lease on the role's host**, assigned before any process
+    /// starts. [`crate::builtins::scenario`] replaces it with a [`Ready::Port`] once the block is
+    /// taken; a `Ready::Lease` reaching a check is a plan that was never assigned, and it refuses
+    /// rather than waiting on port 0.
+    Lease,
     Log(String),
     Check(String),
 }
@@ -717,6 +741,7 @@ impl Ready {
     pub fn describe(&self) -> String {
         match self {
             Ready::Port(p) => format!("port {p}"),
+            Ready::Lease => "port from the session's lease (not assigned)".to_string(),
             Ready::Log(p) => format!("log /{p}/"),
             Ready::Check(c) => format!("check `{}`", one_line(c, 60)),
         }
@@ -731,7 +756,7 @@ impl Ready {
     /// wait. One a second is what a readiness probe costs elsewhere, and it is what this books.
     pub fn pace(&self) -> Duration {
         match self {
-            Ready::Port(_) => Duration::from_millis(150),
+            Ready::Port(_) | Ready::Lease => Duration::from_millis(150),
             Ready::Log(_) => Duration::from_millis(300),
             Ready::Check(_) => Duration::from_secs(1),
         }
@@ -743,7 +768,10 @@ impl Ready {
             Ready::Port(p) => Some(*p),
             // **A log line that mentions a port is not a port this build knows.** A `log` check is
             // a pattern, and reading a number out of a role's own output would be guessing.
-            _ => None,
+            // And a `Lease` that has not been assigned a port yet has none to answer with — the
+            // assignment happens before anything starts, so this arm is only reached by a plan
+            // that was never assigned.
+            Ready::Lease | Ready::Log(_) | Ready::Check(_) => None,
         }
     }
 
@@ -756,11 +784,21 @@ impl Ready {
         };
         let mut found = Vec::new();
         if let Some(p) = obj.get("port") {
-            let port = p
-                .as_u64()
-                .filter(|p| *p > 0 && *p < 65536)
-                .ok_or_else(|| format!("`port` must be between 1 and 65535, not `{p}`"))?;
-            found.push(Ready::Port(port as u16));
+            // **`"lease"` is a port from the block, and the word is the only non-number this
+            // key takes.** A number is still the caller's own business (`ready: {"port": 5432}`)
+            // and is refused when the ephemeral range would have made it a collision the kernel
+            // owns — that check is the lease's, one layer up.
+            if p.as_str().map(str::trim) == Some("lease") {
+                found.push(Ready::Lease);
+            } else {
+                let port = p.as_u64().filter(|p| *p > 0 && *p < 65536).ok_or_else(|| {
+                    format!(
+                        "`port` must be between 1 and 65535, or the word `lease` for a port \
+                             out of this session's block — not `{p}`"
+                    )
+                })?;
+                found.push(Ready::Port(port as u16));
+            }
         }
         if let Some(l) = obj.get("log") {
             let pattern = l

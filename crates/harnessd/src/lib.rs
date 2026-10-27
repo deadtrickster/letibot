@@ -109,6 +109,7 @@ pub mod harness;
 pub mod httphead;
 pub mod instruments;
 pub mod jobwatch;
+pub mod leases;
 pub mod leticode_config;
 pub mod m1;
 pub mod memwatch;

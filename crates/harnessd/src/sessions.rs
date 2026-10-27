@@ -2807,6 +2807,15 @@ impl<'a> Sessions<'a> {
         for id in self.open.keys() {
             crate::supervise::teardown_session(id, "the daemon stopping");
         }
+        // **Every block of ports this daemon's sessions held goes back** (RH9) — before the
+        // backends close, because a session's placement is what a remote teardown's ssh runs over.
+        if let Some(path) = &self.base.store {
+            for id in self.open.keys() {
+                for line in crate::leases::release_session(path, id, "the daemon stopping") {
+                    eprintln!("  {id} · lease: {line}");
+                }
+            }
+        }
         self.open
             .values()
             .filter_map(|h| h.close_backend())
@@ -3608,6 +3617,14 @@ impl<'a> Sessions<'a> {
         let ended = crate::supervise::teardown_session(session_id, "the session closing");
         if ended > 0 {
             eprintln!("  {session_id} · closed; {ended} supervised process(es) ended with it");
+        }
+        // **And the blocks of ports it held go back** (RH9), with what it made under its prefixes
+        // removed and nothing else. After the processes, because a role's containers are what its
+        // processes started.
+        if let Some(path) = &self.base.store {
+            for line in crate::leases::release_session(path, session_id, "the session closing") {
+                eprintln!("  {session_id} · lease: {line}");
+            }
         }
         // **A session on its own thread is closed THERE**: the harness, its backend and its
         // children are on that thread, and closing them from here would be the second writer this

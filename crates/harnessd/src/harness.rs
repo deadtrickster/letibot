@@ -4299,14 +4299,31 @@ impl Harness {
             )),
             None => std::sync::Arc::new(letibot_tools::fleet::NoBook),
         };
+        // **Resource leases** (RH9): the block of a shared host's ports this session may use, and
+        // the prefix its containers are named under. Behind the same store as the process book, and
+        // for the same reason — a tool is below the daemon and has no store path, so the daemon
+        // hands it one. A session with no store gets the tool and no lease, and `ready: {"port":
+        // "lease"}` is refused with a sentence rather than started against port 0.
+        let leases = cfg
+            .store
+            .as_ref()
+            .map(|path| std::sync::Arc::new(crate::leases::blocks(path, &cfg.session_id)));
         registry
-            .register(Box::new(
-                letibot_tools::builtins::fanout::Fanout::new().with_book(process_book.clone()),
-            ))
+            .register(Box::new({
+                let mut tool =
+                    letibot_tools::builtins::fanout::Fanout::new().with_book(process_book.clone());
+                if let Some(leases) = &leases {
+                    tool = tool.with_leases(std::sync::Arc::clone(leases));
+                }
+                tool
+            }))
             .and_then(|_| {
-                registry.register(Box::new(
-                    letibot_tools::builtins::scenario::Scenario::new().with_book(process_book),
-                ))
+                let mut tool =
+                    letibot_tools::builtins::scenario::Scenario::new().with_book(process_book);
+                if let Some(leases) = &leases {
+                    tool = tool.with_leases(std::sync::Arc::clone(leases));
+                }
+                registry.register(Box::new(tool))
             })
             .map_err(|e| HarnessError::Setup(format!("registering the fleet tools: {e}")))?;
         let mut registry = letibot_tools::external_tools(registry, &external).map_err(|e| {

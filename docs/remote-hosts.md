@@ -288,7 +288,7 @@ would remove:
 | RH6 | **done**: the RPC practices 5–8 (circuit breaker, far-side cancellation, call records, back-pressure) after HT's 1–4; auth refusals made definite; `migrate`'s steps bounded; toolchains through `mise`; the `notes` tool's body exempt from the never-write list |
 | RH7 | harnessd's process supervisor: store records for every started process, the supervising loop, ownership teardown, restart recovery; `bash background` on it |
 | RH8 | `fanout` (growing into the matrix runner: capacity placement, interleaved reps, every-cell check, resume) and `scenario` (service fixtures) on the supervisor |
-| RH9 | resource leases on shared hosts (ports outside the ephemeral range, subnets, compose projects under a host lock), exact teardown, and hosts.toml's `reserve`/`flags`/`never_touch` |
+| RH9 | **done, but for a subnet lease**: resource leases on shared hosts (a block of ports outside the ephemeral range, taken under the store's own lock), exact teardown of what a lease created, and `hosts.toml`'s `reserve`/`flags`/`never_touch` (§ *As built (RH9)*) |
 | RH4 | later: the whole daemon on the remote, the head attaching over an ssh-forwarded socket — a session that keeps thinking with the laptop's lid closed. The operator: *"move load from laptops — I start doing something, it starts eating resources and just stays on the hot laptop"*. RH1 moves the load (builds, tests, benchmarks) but not the model loop. |
 | RH5 | **done**: one ssh policy for both callers (RH1's `SshBackend` and RH4's `--migrate`), the operator's own ssh material never read, `hosts.toml` read strictly with a per-host `path` list, and `~/.ssh` a hard refusal for every tool |
 | HT | **done**: the `hosts` tool — which machines are declared, and which is least loaded, read at the call rather than frozen in a prompt; the remote checkout's own job directory kept out of `git status`; and, for every ssh operation that is not a command, a wall clock that kills the local ssh rather than waiting |
@@ -853,3 +853,177 @@ deadline_s?}`.
 * **`mise exec -C` must point at a directory that exists**, so a host's work directory
   (`<root>/fanout-<call>`) is made with a plain step *before* the connection is told to use it as its
   `-C`. RH6 measured the refusal; this is the order that avoids it.
+
+## As built (RH9): leases, exact teardown, and a host's never-touch list
+
+Written 2026-10-26. **What this slice is:** a block of a shared host's ports that one session holds
+and nobody else can be given, the prefix its containers are named under, a teardown that removes
+exactly those, and the operator's own workloads made untouchable. It is the answer to the list a
+Stroppy session wrote down after colliding with itself — *ephemeral-port collisions, loopback
+exhaustion, "address already in use" ×18, "too many open files" ×34, a container left 19 h* — and
+to its second half, that the hosts it collided on also run the owner's own work.
+
+```text
+crates/tokencore/src/store/leases.rs       `host_lease` (schema 35), the row, and `pick`
+crates/tools/src/lease.rs                  the engine: the census, the block, the teardown
+crates/harnessd/src/leases.rs              the daemon's half: StoreLeases, release_session, the reaper
+```
+
+### `hosts.toml` gains three keys, and it is still strict
+
+```toml
+[host.lab2x1]
+hostname   = "lab2x1"
+user       = "dead"
+reserve    = 4                       # cores held back for the owner
+flags      = ["heavy", "tmpfs"]      # what the machine is for
+never_touch = ["etcd", "pgfuzz"]     # names letibot must never signal, stop or remove
+```
+
+* **`reserve` is a whole number of cores and anything else is refused**, not defaulted. A
+  `reserve = "two"` read as zero would be a scheduler that believes a busy machine is empty, which
+  is the collision this package exists to remove. `flags` and `never_touch` are lists of quoted
+  strings on one line, the `path` grammar — refused by name, and refused when half a list parses.
+* **`hosts {probe}` shows all three** and the live capacity they are for: `cores − load − reserve`
+  and the memory available. The subtraction is reported, never enforced, because a scheduler this
+  build does not have would be the wrong place to start. A host that did not answer its load is
+  `unknown` and not `0.0` — a machine that is full and one nobody asked are different facts — and
+  an oversubscribed box reports a **negative**, because the reason is the useful half.
+* **`never_touch` is a case-insensitive SUBSTRING**, and that is the safe direction rather than the
+  lazy one. The operator declared the workload (`pgfuzz`, `etcd`, `flowy-dogfood-pg`) and not its
+  spelling; a rule that missed `etcd-fuzz-0` because the line said `etcd` would be the one failure
+  this list exists to prevent, and it would be silent — the thing is stopped and nobody is told. A
+  rule that is too broad refuses a teardown the session could have had, and **says which pattern
+  refused it**, which is one word in the file.
+
+### A lease is a row, and the lock is the store's
+
+* **Schema 35, `host_lease`**, declared `(35, Arm::Additive)` in `READER_ARMS` — a new table, so an
+  older binary keeps serving a store a newer one has migrated. `id | host | session_id | prefix |
+  port_first | port_last | ephemeral | taken_ms | released_ms | released_by`. **A released lease is
+  not deleted**: *this session held 61000–61015 on lab2x1 for four minutes* is what a person reads
+  when asking why a port was busy, and it is the only record a restart can tell *held by a session
+  that is gone* from *never held* by.
+* **`BEGIN IMMEDIATE` is the per-host lock, and it is the only one that spans processes.** Two
+  daemons on this box share one `sessions.db` (`store/floor.rs` measured ~11 of them), so a mutex in
+  a tool would serialise half the callers. The census is taken *before* the transaction, because a
+  probe over ssh inside the write lock would hold every other session's lease for up to a round trip.
+* **The block starts above the host's own ephemeral range**, read there: `/proc/sys/net/ipv4/
+  ip_local_port_range`, or the `sysctl` pair on a Mac. A port inside that range is one the kernel
+  hands to somebody else's outgoing connection whenever it feels like it, which is precisely the
+  collision. A host that will not say its range is a REFUSAL and not a guess.
+* **A port somebody is already listening on is skipped, whole.** One read-only round trip runs
+  `ss -ltnH` (or `netstat -ltn` on a BSD) and the ports are parsed on this side, so the far side's
+  locale is not this side's problem. A run of ports that touches a busy one is stepped over rather
+  than trimmed: a block is contiguous, because a service that takes four wants `first + 3` to be its
+  own.
+* **The prefix carries the lease's number** — `letibot-<host>-<session>-<id>` — so two blocks on one
+  host from one session cannot share one. The id is the store's, so it is assigned before the name is
+  final and the row is written once.
+* **What a lease is not, said plainly:** a kernel cannot be asked to keep a port free. The block
+  guarantees that no other session of letibot's took it and that nothing was listening there when it
+  was taken. A program on that machine that binds one without asking is not stopped by anything here.
+
+### The tools take from it, and never pick
+
+* **`scenario`: `ready: {"port": "lease"}`** — a port from the session's block on the role's own
+  host, assigned **before anything is started**, one allocation per host and not one per role. Every
+  `${role.port}` in the call then resolves to a number the block owns, so the client is pointed at it
+  by the same substitution that has always pointed it at an explicit port. An explicit
+  `ready: {"port": 5432}` still works and is the caller's own business.
+* **`fanout`: `lease: true | N`** — a block per branch, on that branch's own host, one port or N.
+  The block travels to the command as `LETIBOT_LEASE_PORT_FIRST`, `…_PORT_LAST`, `…_PORTS` and
+  `…_PREFIX`, because a fanout's branches are all planned before any block exists and a command that
+  had to spell its ports would have to be written after. A branch that could not get a block is a
+  ROW saying so (`LETIBOT_LEASE_REFUSED`), not a failure of the call: the other machines still work.
+* **The substitution check moved out of `plan` and into `answer`**, and that is load-bearing: the
+  facts a command resolves against now include a port that does not exist until the lease is taken.
+  It still happens before a single process starts, which is the promise that matters — a refusal,
+  not a teardown.
+
+### Exact teardown: the prefix says what is mine, and the list wins
+
+`Blocks::release` is one act, called from four places — a scenario's end, a fanout's end, a
+session's close, and the reaper — so there is one answer to *what does ending this do*.
+
+1. **What is there** — one `docker ps -a --format '{{.Names}}'` and one `docker compose ls`. A host
+   with no `docker` is a sentence (`no docker`), not a failure: a machine that runs no containers is
+   an ordinary machine.
+2. **What is mine** — container names that **start with** the lease's prefix, and the compose project
+   that **is** the prefix. `starts_with` and not `contains`, because two sessions' prefixes share a
+   head (`letibot-fake1-s-ab-1` and `letibot-fake1-s-ab-9`), and a `contains` here would remove a
+   stranger's work.
+3. **What is not** — every name about to be removed is checked against the host's `never_touch` list
+   first, and a name that matches **is left alone and the refusal names the pattern**. The prefix says
+   *what is mine*; the operator's list says *what is not*; the list wins.
+4. **What is gone** — `docker rm -f` for the containers, `docker compose -p <prefix> down` for the
+   project, every argument single-quoted (a name is arbitrary text).
+5. **And only then the row goes back.** A release that happened first would leave a lease nobody
+   holds whose containers are still up, and the next session's block could be the one that collides
+   with them.
+
+**The supervisor asks the same question before every signal it sends.** `Supervisor::may_touch` is
+the door the deadline kill and `teardown_session` both go through: a record whose command matches a
+pattern on its host's list is not signalled, its record stays **`lost`** — nothing was ended, so
+nothing may say `stopped` — its `check_how` is `refused`, and the sentence naming the pattern goes
+to the log. **One hole, said plainly:** `never_touch` is a `[host.NAME]` key, so a record with no host
+(a process on the box this daemon runs on) has no list to check against. A daemon placed *on* lab2x1
+— RH4, later — would have local records and no declaration, and the fix is a list for this box.
+
+### Two moments a lease goes back, and the one that is not one
+
+* **A session closes** — `Sessions::close` and `close_backends`, after the processes are ended,
+  because a role's containers are what its processes started.
+* **The owner is found gone** — the supervisor's tick, which is the half a hard-killed daemon leaves
+  behind: the row says the block is held by a session nobody serves.
+* **A restart is not an owner being gone**, and the difference is `leases::GRACE_MS` (60 s). A daemon
+  that has just come up holds no session for the first second of its life, so a reaper that asked *is
+  this session in the registry* would release every block on the box at each restart — the opposite
+  of what a lease is for. A session must be **seen** gone for the grace, and the first tick that finds
+  it gone only stamps it.
+* **The reaper's decision and its act are separate** (`leases::due` and `leases::reap`): the grace is
+  arithmetic a test can move a clock through, and the act is an ssh round trip. The store's and the
+  clock's locks are **down before the act**, because a release opens its own connection and may tear a
+  prefix down on a host.
+* **`RegistryOwner` is the daemon's answer to *is anyone still working in this session*** —
+  `Registry::holds`, which sees a session on a court's own thread and one in `Sessions::open` alike.
+
+### Tests, and what they cost
+
+`crates/tools/tests/leases.rs` is RH8's fake-ssh rig plus **a fake `docker`** in the rig's own `bin`,
+first on the far side's `PATH` — the teardown's whole job is *what did it remove*, and the answer has
+to come from the program that would have removed it. **No test contacts another machine and none can
+reach a real docker.**
+
+* two sessions on one host get disjoint blocks, both above the box's own `/proc` range;
+* a port a test is **really listening on** is skipped, with the range stated so the block is
+  deterministic;
+* a release frees the block (the next caller gets the same ports) and removes only its own prefix —
+  another session's container and the operator's own are untouched, and so is a *longer* prefix that
+  merely starts with ours;
+* a container matching `never_touch` survives, and the refusal names the pattern and the host;
+* a host with nothing of ours left is a sentence, and the block still goes back;
+* **a new engine over the same store still sees the block held** — a restart, as a second connection;
+* **a scenario's `${role.port}` is a number out of the block**, and the block goes back with it.
+
+`crates/harnessd/src/supervise/tests.rs` adds the other half: a `teardown_session` reaches `kill` for
+the session's own build and not for the record whose command matches `etcd`, the record stays `lost`
+with `check_how = refused`, and `may_touch`'s sentence names the pattern, the host and the handle.
+`crates/harnessd/src/leases.rs` tests the grace with a clock it moves and a release it records — no
+ssh, no store, no docker. `crates/tokencore/src/store/leases.rs` tests `pick` as arithmetic and the
+allocation as two sessions on one store. `crates/tools/src/remote.rs` tests the three keys, their
+refusals, the substring, and `cores − load − reserve`.
+
+### What this slice does not do, said plainly
+
+* **No subnet lease.** The contract's item 6 also names one; a docker network's address pool is not
+  something this build reads or reserves, and inventing a `subnet` column nothing checks would be the
+  shape of a guarantee without the substance.
+* **Interleaved arms, capacity placement and resume from a plan file** are still RH8's *matrix half*
+  and not this slice's. `hosts {probe}` now reports the spare cores they would place by; nothing
+  places by them yet.
+* **No teardown for anything but docker.** A session that starts its services by other means has its
+  processes ended by the supervisor and its names are its own business.
+* **A lease is not swept for size.** A session that takes a second block on a host it already holds
+  one on gets a second block; nothing merges them.
+

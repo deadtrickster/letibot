@@ -73,7 +73,7 @@ use crate::rpc;
 /// Read from **the operator's own file and never a project's** — the contract's
 /// words, and the reason is a permission one: a repository must not be able to name
 /// a machine to run on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Host {
     /// The name used everywhere else — `--host lab2x1`, `where: "host:lab2x1"`.
     pub name: String,
@@ -101,6 +101,35 @@ pub struct Host {
     /// **How the host's toolchains are found** — `None` is *probe and cache*, which is what
     /// every host without a `mise` line gets. See [`Mise`].
     pub mise: Option<Mise>,
+    /// **Cores this machine's owner keeps for themselves** — `reserve` in `hosts.toml`.
+    ///
+    /// The Stroppy session's fleet runner placed work by *cores − load − reserve*, and the third
+    /// term is the one a number this build invented would get wrong: lab2x1 has 32 cores and the
+    /// operator's own etcd fuzz running on some of them. `reserve` is the operator's statement of
+    /// how many are already spoken for, `load` is the machine's answer about right now, and
+    /// [`Host::spare_cores`] is the subtraction — reported, never enforced, because a scheduler
+    /// this build does not have would be the wrong place to start.
+    pub reserve: u32,
+    /// **What this machine is** — `flags` in `hosts.toml`, free-form words such as `heavy` (a box
+    /// for long builds) or `tmpfs` (a box with a memory filesystem, where a database's data
+    /// directory is free to write and gone on a reboot).
+    ///
+    /// Free-form on purpose and the *set* is not closed: they are facts for a person and for a
+    /// model choosing where to place work, and a closed vocabulary would refuse the flag somebody
+    /// needs next week. What is closed is the spelling — a list of strings, refused otherwise — so
+    /// a typo is a parse error rather than a host that silently has no flags.
+    pub flags: Vec<String>,
+    /// **What letibot must never signal, stop or remove on this machine** — `never_touch` in
+    /// `hosts.toml`.
+    ///
+    /// The operator's own workloads live on these hosts beside every agent's: *pgfuzz on lubuntu1,
+    /// flowy-dogfood-pg on lubuntu3, the etcd fuzz on lab2x1* (`docs/remote-hosts.md` § *What an
+    /// agent hand-rolled without builtins*, item 6). A teardown that removed *everything not mine*
+    /// would take them with it, and nothing on the far side knows whose it is — so the list is the
+    /// operator's declaration, it is checked before any signal, stop or remove
+    /// ([`Host::never_touch_hit`]), and a refusal names the pattern. See that method for why the
+    /// match is a substring.
+    pub never_touch: Vec<String>,
 }
 
 /// **Toolchains through `mise`**, which is how the operator's machines are set up: *"regarding
@@ -128,6 +157,45 @@ impl Host {
             Some(u) => format!("{u}@{}", self.hostname),
             None => self.hostname.clone(),
         }
+    }
+
+    /// **The pattern on this host's never-touch list that matches `what`**, if one does.
+    ///
+    /// The match is **a case-insensitive substring**, and that is the safe direction rather than the
+    /// lazy one. A name on the far side is a process's command line, a compose project or a
+    /// container — `etcd-fuzz`, `/usr/local/bin/pgfuzz -t 3600`, `flowy-dogfood-pg-1` — and the
+    /// operator declared the workload, not its spelling. A rule that missed `etcd-fuzz-0` because
+    /// it was written `etcd` would be the one failure this list exists to prevent, and it would be
+    /// silent: the thing is stopped, and nobody is told. A rule that is too broad refuses a
+    /// teardown the session could have had, and **says which pattern refused it** — a failure a
+    /// person can act on with one word of `hosts.toml`.
+    pub fn never_touch_hit(&self, what: &str) -> Option<&str> {
+        let lower = what.to_lowercase();
+        self.never_touch
+            .iter()
+            .find(|p| !p.is_empty() && lower.contains(&p.to_lowercase()))
+            .map(String::as_str)
+    }
+
+    /// **What is left of this machine for anyone else** — `cores − load − reserve`, with the load
+    /// read from the machine's own `/proc/loadavg` line (three numbers, and the first is the one a
+    /// placement decision is about).
+    ///
+    /// `None` when the host did not answer either number, which is a different fact from `0.0`:
+    /// a machine that is full and one nobody asked are not the same, and reporting the second as
+    /// the first is how a placement goes somewhere it cannot work. Negative is reported as it is:
+    /// an oversubscribed box is a fact, and clamping it to zero would hide the reason.
+    pub fn spare_cores(&self, cores: u64, load: &str) -> Option<f64> {
+        if cores == 0 {
+            return None;
+        }
+        let load1: f64 = load.split_whitespace().next()?.parse().ok()?;
+        Some(cores as f64 - load1 - self.reserve as f64)
+    }
+
+    /// Is this flag declared? Case-insensitive, because a flag is a word a person types.
+    pub fn has_flag(&self, flag: &str) -> bool {
+        self.flags.iter().any(|f| f.eq_ignore_ascii_case(flag))
     }
 }
 
@@ -182,16 +250,19 @@ impl Hosts {
         }
     }
 
-    /// **The file's grammar, and its refusals** — `[host.NAME]` tables of five keys, read the
+    /// **The file's grammar, and its refusals** — `[host.NAME]` tables of nine keys, read the
     /// way `crates/letibot`'s migration already reads this file and **stricter than it used to
     /// be here**, because one of the keys names a file ssh reads.
     ///
     /// * An **unknown key is refused by name** rather than ignored: a typo in this file places a
-    ///   session on a machine nobody named, or points ssh at a key nobody meant.
+    ///   session on a machine nobody named, points ssh at a key nobody meant, or leaves a
+    ///   `never_touch` workload unprotected.
     /// * A key stated **twice** is refused, for the same reason.
-    /// * `path` is a list of strings on one line: `path = ["~/.cargo/bin", "/opt/bin"]`. One
-    ///   line rather than TOML's multi-line array because this reader is a line reader and a
-    ///   quietly-ignored continuation would be the strictness of this file in name only.
+    /// * `path`, `flags` and `never_touch` are lists of strings on one line:
+    ///   `path = ["~/.cargo/bin", "/opt/bin"]`. One line rather than TOML's multi-line array
+    ///   because this reader is a line reader and a quietly-ignored continuation would be the
+    ///   strictness of this file in name only.
+    /// * `reserve` is a whole number of cores, and anything else is refused.
     /// * A `#` starts a comment everywhere, including inside a quoted value — the one place this
     ///   reader is not TOML, and it is said rather than discovered.
     ///
@@ -265,6 +336,40 @@ impl Hosts {
                 })?,
                 None => Vec::new(),
             };
+            // **Two more lists, one grammar.** `flags` and `never_touch` are the same shape as
+            // `path` and are refused the same way, because the reason is the same one: a
+            // quietly half-read list is a rule that is kept in name only. That matters differently
+            // for the two — a `flags` a reader dropped is a host that looks like it has none, and a
+            // `never_touch` dropped is a teardown that stops the operator's own workload.
+            let list = |key: &str| match kv.get(key) {
+                Some(raw) => path_list(raw).ok_or_else(|| {
+                    format!(
+                        "`host.{name}.{key}` must be one line of quoted strings — \
+                         `{key} = [\"a\", \"b\"]` — and `{raw}` is not that."
+                    )
+                }),
+                None => Ok(Vec::new()),
+            };
+            let flags = list("flags")?;
+            let never_touch = list("never_touch")?;
+            // **`reserve` is a count of cores**, so a number and nothing else. Refused rather than
+            // defaulted: a `reserve = "two"` read as zero would be a scheduler that believes a
+            // busy machine is empty, which is the collision the whole package is against.
+            let reserve = match kv.get("reserve") {
+                None => 0,
+                Some(raw) => {
+                    let raw = raw.trim().trim_matches('"');
+                    match raw.parse::<u32>() {
+                        Ok(n) => n,
+                        Err(_) => {
+                            return Err(format!(
+                                "`host.{name}.reserve` is a whole number of cores — \
+                                 `reserve = 4` — and `{raw}` is not. Leave the line out for 0."
+                            ));
+                        }
+                    }
+                }
+            };
             // **`mise` is two shapes in one key**: `false` turns the wrapper off, and a string is
             // the program to run. A `true` is refused rather than read as "find it yourself",
             // because that is what leaving the line out already means — and two spellings of one
@@ -295,6 +400,9 @@ impl Hosts {
                     path,
                     root: get("root").unwrap_or("~/letibot-remote").to_string(),
                     mise,
+                    reserve,
+                    flags,
+                    never_touch,
                     name,
                 },
             );
@@ -335,17 +443,29 @@ impl Hosts {
              `[host.{name}]` with `hostname` (what ssh connects to), `user`, `key` (the \
              dedicated identity file, default `~/.config/letibot/keys/{name}`), `path` \
              (directories to put in front of the remote `PATH`), `root` (where remote \
-             worktrees live, default `~/letibot-remote`) and `mise` (the toolchain wrapper, \
-             default: found once and cached).",
+             worktrees live, default `~/letibot-remote`), `mise` (the toolchain wrapper, \
+             default: found once and cached), `reserve` (cores held back for the owner), \
+             `flags` (words such as `heavy` or `tmpfs`) and `never_touch` (process, compose \
+             and container names letibot must never signal, stop or remove there).",
             hosts_file().display()
         )
     }
 }
 
 /// The keys a `[host.NAME]` table may carry. Anything else is refused by name: this file decides
-/// which machine a session runs on and which file ssh reads, and a typo in it is not a detail to
-/// be ignored.
-const HOST_KEYS: &[&str] = &["hostname", "user", "key", "path", "root", "mise"];
+/// which machine a session runs on, which file ssh reads, and what a teardown may never touch, and
+/// a typo in it is not a detail to be ignored.
+const HOST_KEYS: &[&str] = &[
+    "hostname",
+    "user",
+    "key",
+    "path",
+    "root",
+    "mise",
+    "reserve",
+    "flags",
+    "never_touch",
+];
 
 /// `["a", "b"]` → the strings, with the quotes and spaces off, and an empty list for `[]`.
 ///
@@ -4594,6 +4714,7 @@ user     = "root"
             root: "~/letibot-remote".into(),
             // A fixture's host is not the operator's machine: no probe, nothing to find.
             mise: Some(Mise::Off),
+            ..Host::default()
         }
     }
 
@@ -4618,6 +4739,48 @@ user     = "root"
         );
         assert!(a.path.is_empty());
         assert_eq!(a.root, "~/letibot-remote");
+        // **The three keys a shared host needs default to *nothing held back*** — which is the
+        // safe direction: a host nobody declared anything for behaves exactly as it did before
+        // this package, and only a file that says otherwise changes a teardown's reach.
+        assert_eq!(a.reserve, 0);
+        assert!(a.flags.is_empty());
+        assert!(a.never_touch.is_empty());
+    }
+
+    /// **`reserve`, `flags` and `never_touch`** (RH9) — what the operator says about sharing a
+    /// machine, read strictly like every other key: a number, two lists, and nothing guessed.
+    #[test]
+    fn hosts_toml_reads_the_three_sharing_keys() {
+        let h = Hosts::parse(
+            "[host.lab2x1]\nhostname = \"lab2x1\"\nreserve = 4\n\
+             flags = [\"heavy\", \"tmpfs\"]\nnever_touch = [\"pgfuzz\", \"etcd\"]\n",
+        )
+        .expect("it parses");
+        let a = h.get("lab2x1").expect("lab2x1");
+        assert_eq!(a.reserve, 4);
+        assert_eq!(a.flags, vec!["heavy", "tmpfs"]);
+        assert_eq!(a.never_touch, vec!["pgfuzz", "etcd"]);
+        assert!(a.has_flag("TMPFS"), "a flag is a word a person types");
+        // **A substring, case-insensitively** — the operator declared the workload and not its
+        // spelling, and matching less than they meant is the failure this list exists to prevent.
+        assert_eq!(a.never_touch_hit("pgfuzz -t 3600"), Some("pgfuzz"));
+        assert_eq!(a.never_touch_hit("/usr/bin/ETCD-fuzz"), Some("etcd"));
+        assert_eq!(a.never_touch_hit("cargo test --offline"), None);
+        // **`cores − load − reserve`**, and a negative is reported rather than clamped.
+        assert_eq!(a.spare_cores(32, "4.00 2.00 1.00"), Some(24.0));
+        assert_eq!(a.spare_cores(8, "12.00 3.00 1.00"), Some(-8.0));
+        assert_eq!(a.spare_cores(0, "1.00"), None);
+        assert_eq!(a.spare_cores(8, ""), None);
+
+        // A `reserve` that is not a number is refused by name rather than read as zero: a
+        // scheduler that believes a busy machine is empty is the collision this is against.
+        let why = Hosts::parse("[host.a]\nreserve = \"two\"\n").expect_err("not a number");
+        assert!(why.contains("whole number of cores"), "{why}");
+        let why = Hosts::parse("[host.a]\nflags = \"heavy\"\n").expect_err("not a list");
+        assert!(why.contains("one line of quoted strings"), "{why}");
+        assert!(why.contains("flags"), "{why}");
+        let why = Hosts::parse("[host.a]\nnever_touch = pgfuzz\n").expect_err("not a list either");
+        assert!(why.contains("never_touch"), "{why}");
     }
 
     /// **A link into the ssh directory is the ssh directory**, after every symlink and for a

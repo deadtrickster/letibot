@@ -39,6 +39,7 @@ use serde_json::Value;
 
 use crate::exec::ProcessHost;
 use crate::fleet::{self, Cell, Fate, Fleet, LOCAL, Leg, ProcessBook, Ready, Running};
+use crate::lease::Blocks;
 use crate::remote::Paths;
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
@@ -91,6 +92,10 @@ pub struct Scenario {
     ssh: Option<PathBuf>,
     bound: Option<Duration>,
     book: Arc<dyn ProcessBook>,
+    /// **The session's leases** (RH9), when it has any. `None` is a run with no store behind it:
+    /// an explicit `ready: {"port": N}` still works, and `ready: {"port": "lease"}` is refused
+    /// with a sentence rather than started against port 0.
+    blocks: Option<Arc<Blocks>>,
 }
 
 impl Default for Scenario {
@@ -101,6 +106,7 @@ impl Default for Scenario {
             ssh: None,
             bound: None,
             book: Arc::new(fleet::NoBook),
+            blocks: None,
         }
     }
 }
@@ -134,6 +140,13 @@ impl Scenario {
     /// **Where the started processes are written down** — the daemon binds this to its session.
     pub fn with_book(mut self, book: Arc<dyn ProcessBook>) -> Scenario {
         self.book = book;
+        self
+    }
+
+    /// **The session's leases** (RH9) — what a role's `ready: {"port": "lease"}` takes its port
+    /// from, and what the roles' containers are named under so the teardown can find them.
+    pub fn with_leases(mut self, blocks: Arc<Blocks>) -> Scenario {
+        self.blocks = Some(blocks);
         self
     }
 
@@ -243,12 +256,52 @@ impl Scenario {
         local: Option<Arc<dyn ProcessHost>>,
         work: &str,
     ) -> Invocation {
-        let plan = match plan(args) {
+        let mut plan = match plan(args) {
             Ok(p) => p,
             Err((reason, body)) => return Invocation::failed(reason, body),
         };
+        // **The lease, before anything is substituted or started** (RH9). A role that asked for
+        // `ready: {"port": "lease"}` gets its port here, one block per host, so every `${role.port}`
+        // in the call resolves to a number that is this session's own — and a host that has no
+        // block left is a refusal that names it rather than a service on a port somebody else holds.
+        let mut held: Vec<letibot_tokencore::store::Lease> = Vec::new();
+        if let Some(blocks) = &self.blocks {
+            // `assign` puts back whatever it had already taken when it cannot take the rest, so a
+            // plan that never ran holds nothing.
+            match assign(blocks, &mut plan) {
+                Ok(taken) => held = taken,
+                Err((reason, body)) => return Invocation::failed(reason, body),
+            }
+        } else if plan
+            .roles
+            .iter()
+            .chain(plan.run.iter())
+            .any(|r| matches!(r.ready, Some(Ready::Lease)))
+        {
+            return Invocation::failed(
+                "`ready: {\"port\": \"lease\"}` and this run has no session store",
+                "A port from a lease is a row in the session store, and this run has none behind \
+                 it — so there is nothing to hold a block in and nothing for a teardown to release. \
+                 Give the port yourself: `ready: {\"port\": 5432}`.",
+            );
+        }
+        // **A `${…}` that names a role this call does not have, or a fact that role does not have,
+        // is refused NOW** — a substitution that failed at start time would be a service starting
+        // with a literal `$` in its command. It happens after the lease because a lease port is a
+        // fact `${role.port}` resolves to.
+        let facts = facts_of(&plan);
+        for role in plan.roles.iter().chain(plan.run.iter()) {
+            if let Err(e) = substitute(&role.command, &facts) {
+                return Invocation::failed(format!("`{}`: {e}", role.name), String::new());
+            }
+            if let Some(cwd) = &role.cwd
+                && let Err(e) = substitute(cwd, &facts)
+            {
+                return Invocation::failed(format!("`{}`: {e}", role.name), String::new());
+            }
+        }
         let fleet = self.fleet(work.to_string()).with_local(local);
-        run(&fleet, &plan)
+        run(&fleet, &plan, self.blocks.as_deref(), &held, &facts)
     }
 }
 
@@ -555,11 +608,25 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
         ));
     }
 
-    // **A `${…}` that names a role this call does not have, or a fact that role does not have, is
-    // refused now** — a substitution that failed at start time would be a service starting with a
-    // literal `$` in its command.
+    // **The `${…}` check is not here, and it cannot be.** A role's port may come from the
+    // session's lease (RH9), and the lease is taken after the plan is read — so the facts a
+    // command is resolved against do not exist yet. [`Scenario::answer`] does that check, before a
+    // single process is started, which is the promise that matters: a refusal, not a teardown.
+    Ok(Planned {
+        roles: order,
+        run,
+        until,
+    })
+}
+
+/// **The facts a plan resolves against**: role name → (host, port).
+///
+/// One function, because two readers need the same map — the substitution that fills a command in
+/// and the lease assignment that rewrites a `Ready::Lease` into a port — and two spellings of it
+/// is how a `${role.port}` ends up resolving to one number in one place and another next door.
+fn facts_of(plan: &Planned) -> BTreeMap<String, (String, Option<u16>)> {
     let mut facts: BTreeMap<String, (String, Option<u16>)> = BTreeMap::new();
-    for role in order.iter().chain(run.iter()) {
+    for role in plan.roles.iter().chain(plan.run.iter()) {
         facts.insert(
             role.name.clone(),
             (
@@ -568,20 +635,80 @@ fn plan(args: &Value) -> Result<Planned, (String, String)> {
             ),
         );
     }
-    for role in order.iter().chain(run.iter()) {
-        substitute(&role.command, &facts)
-            .map_err(|e| (format!("`{}`: {e}", role.name), String::new()))?;
-        if let Some(cwd) = &role.cwd {
-            substitute(cwd, &facts)
-                .map_err(|e| (format!("`{}`: {e}", role.name), String::new()))?;
+    facts
+}
+
+/// **Take a port for every role that asked the lease for one**, one block per host (RH9).
+///
+/// One round of allocation per host and not one per role: a block of four is one row and one lock,
+/// and four blocks of one would be four chances for another session to slip between them. The
+/// ports are handed out in the caller's own role order, so the same call twice asks for the same
+/// shape.
+///
+/// Every role it rewrites is a `Ready::Lease` → `Ready::Port`, which is also what makes
+/// `${role.port}` resolvable — see [`facts_of`], read after this.
+fn assign(
+    blocks: &Blocks,
+    plan: &mut Planned,
+) -> Result<Vec<letibot_tokencore::store::Lease>, (String, String)> {
+    // How many a host needs, in the order the roles were declared.
+    let mut wants: Vec<(String, u16)> = Vec::new();
+    for role in plan.roles.iter().chain(plan.run.iter()) {
+        if matches!(role.ready, Some(Ready::Lease)) {
+            match wants.iter_mut().find(|(h, _)| *h == role.host) {
+                Some((_, n)) => *n += 1,
+                None => wants.push((role.host.clone(), 1)),
+            }
         }
     }
-
-    Ok(Planned {
-        roles: order,
-        run,
-        until,
-    })
+    let mut held = Vec::new();
+    let mut ports: BTreeMap<String, Vec<u16>> = BTreeMap::new();
+    for (host, count) in wants {
+        let lease = match blocks.take(&host, count) {
+            Ok(l) => l,
+            Err(why) => {
+                // Everything already taken goes back: a block held for a plan that never ran is
+                // the leak this package is against.
+                for taken in &held {
+                    let _ = blocks.release(taken, "the scenario could not take its ports");
+                }
+                return Err((
+                    format!("`{host}` could not give a block of {count} port(s)"),
+                    format!(
+                        "{why}\n\nNothing was started. A role that asks for \
+                         `ready: {{\"port\": \"lease\"}}` takes its port from this session's \
+                         block on its own host — that is how two sessions on one machine stop \
+                         colliding."
+                    ),
+                ));
+            }
+        };
+        let taken: Vec<u16> = (lease.port_first..=lease.port_last)
+            .take(count as usize)
+            .collect();
+        ports.insert(host, taken);
+        held.push(lease);
+    }
+    for role in plan.roles.iter_mut().chain(plan.run.iter_mut()) {
+        if matches!(role.ready, Some(Ready::Lease)) {
+            let Some(next) = ports.get_mut(&role.host).and_then(|v| {
+                if v.is_empty() {
+                    None
+                } else {
+                    Some(v.remove(0))
+                }
+            }) else {
+                return Err((
+                    format!("`{}` asked for a leased port and none was left", role.name),
+                    "This build's own arithmetic, not the call's: the block was smaller than the \
+                     roles asking for one."
+                        .to_string(),
+                ));
+            };
+            role.ready = Some(Ready::Port(next));
+        }
+    }
+    Ok(held)
 }
 
 /// `Some(seconds)` from a JSON number, `None` when it is absent — or the sentence saying why the
@@ -655,9 +782,15 @@ fn substitute(
     Ok(out)
 }
 
-/// **Run the plan.** One exit: every path tears down what it started, and every planned cell has a
-/// row.
-fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
+/// **Run the plan.** One exit: every path tears down what it started, every planned cell has a
+/// row, and a block of ports taken for this call goes back with it.
+fn run(
+    fleet: &Fleet,
+    plan: &Planned,
+    blocks: Option<&Blocks>,
+    held: &[letibot_tokencore::store::Lease],
+    facts: &BTreeMap<String, (String, Option<u16>)>,
+) -> Invocation {
     let started_at = Instant::now();
     let mut done: Vec<Cell> = Vec::new();
     let mut started: Vec<(Running, Option<Duration>)> = Vec::new();
@@ -666,18 +799,8 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
 
     // The plan as legs, so the answer is the plan's shape whatever happens next. A role's deadline
     // and the whole scenario's are the same instant at most: whichever is sooner.
-    let mut facts: BTreeMap<String, (String, Option<u16>)> = BTreeMap::new();
-    for role in plan.roles.iter().chain(plan.run.iter()) {
-        facts.insert(
-            role.name.clone(),
-            (
-                role.host.clone(),
-                role.ready.as_ref().and_then(|r| r.port()),
-            ),
-        );
-    }
     for role in &plan.roles {
-        plan_legs.push(Leg {
+        let leg = Leg {
             label: role.name.clone(),
             host: role.host.clone(),
             command: role.command.clone(),
@@ -686,7 +809,9 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
                 Some(d) => (Instant::now() + d).min(plan.until),
                 None => plan.until,
             }),
-        });
+            env: Vec::new(),
+        };
+        plan_legs.push(leg);
     }
     if let Some(run) = &plan.run {
         plan_legs.push(Leg {
@@ -698,11 +823,12 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
                 Some(d) => (Instant::now() + d).min(plan.until),
                 None => plan.until,
             }),
+            env: Vec::new(),
         });
     }
 
     for role in &plan.roles {
-        let command = match substitute(&role.command, &facts) {
+        let command = match substitute(&role.command, facts) {
             Ok(c) => c,
             Err(why) => {
                 failed = Some(format!("`{}`: {why}", role.name));
@@ -713,11 +839,16 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
             label: role.name.clone(),
             host: role.host.clone(),
             command,
-            cwd: role.cwd.as_ref().and_then(|c| substitute(c, &facts).ok()),
+            cwd: role.cwd.as_ref().and_then(|c| substitute(c, facts).ok()),
             deadline: Some(match role.deadline {
                 Some(d) => (Instant::now() + d).min(plan.until),
                 None => plan.until,
             }),
+            // **The block's own facts, in the environment** (RH9). A role that asked the lease for
+            // its port has them substituted into its command as well; the environment is how a
+            // service's *children* — a `docker compose` it starts, a shell it forks — see the same
+            // prefix, which is what a teardown looks for.
+            env: env_for(held, &role.host),
         };
         let run = match fleet.start(&leg) {
             Ok(r) => r,
@@ -776,7 +907,7 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
         && let Some(run_role) = &plan.run
     {
         let command =
-            substitute(&run_role.command, &facts).unwrap_or_else(|_| run_role.command.clone());
+            substitute(&run_role.command, facts).unwrap_or_else(|_| run_role.command.clone());
         let leg = Leg {
             label: run_role.name.clone(),
             host: run_role.host.clone(),
@@ -784,11 +915,12 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
             cwd: run_role
                 .cwd
                 .as_ref()
-                .and_then(|c| substitute(c, &facts).ok()),
+                .and_then(|c| substitute(c, facts).ok()),
             deadline: Some(match run_role.deadline {
                 Some(d) => (Instant::now() + d).min(plan.until),
                 None => plan.until,
             }),
+            env: env_for(held, &run_role.host),
         };
         match fleet.start(&leg) {
             Ok(running) => {
@@ -855,16 +987,48 @@ fn run(fleet: &Fleet, plan: &Planned) -> Invocation {
         }
     }
 
+    // **The blocks go back, and exactly what they created comes down first** (RH9). After the
+    // roles, because a role's own processes are what made the containers: ending a process tells
+    // nothing on the far side that its `docker run` should stop.
+    let mut released: Vec<String> = Vec::new();
+    if let Some(blocks) = blocks {
+        for lease in held {
+            released.extend(blocks.release(lease, &by));
+        }
+    }
+
     let rows = fleet::cells(&plan_legs, &done);
-    let table = answer(fleet, &rows, started_at.elapsed(), failed.as_deref());
+    let table = answer(
+        fleet,
+        &rows,
+        started_at.elapsed(),
+        failed.as_deref(),
+        &released,
+    );
     match failed {
         Some(why) => Invocation::failed(format!("the scenario did not finish: {why}"), table),
         None => Invocation::ok(table),
     }
 }
 
+/// **The block's facts, as the environment of a leg on `host`** — empty when this call took no
+/// block there.
+fn env_for(held: &[letibot_tokencore::store::Lease], host: &str) -> Vec<(String, String)> {
+    let place = if host == LOCAL { None } else { Some(host) };
+    held.iter()
+        .find(|l| l.host.as_deref() == place)
+        .map(|l| l.env())
+        .unwrap_or_default()
+}
+
 /// The answer: the count, one row per planned cell, and the one line about the whole.
-fn answer(fleet: &Fleet, rows: &[Cell], took: Duration, failed: Option<&str>) -> String {
+fn answer(
+    fleet: &Fleet,
+    rows: &[Cell],
+    took: Duration,
+    failed: Option<&str>,
+    released: &[String],
+) -> String {
     let never = rows
         .iter()
         .filter(|c| matches!(c.fate, Fate::Never { .. }))
@@ -892,6 +1056,11 @@ fn answer(fleet: &Fleet, rows: &[Cell], took: Duration, failed: Option<&str>) ->
                 ))
             }
         }
+    }
+    // **What went back, and what could not be touched** — a refusal here is the operator's list
+    // doing its job, and a release nobody mentions is a block held for ever.
+    for line in released {
+        s.push_str(&format!("  lease: {line}\n"));
     }
     s
 }

@@ -148,6 +148,7 @@ impl Rig {
             path: Vec::new(),
             root: "~/letibot-remote".into(),
             mise: Some(letibot_tools::remote::Mise::Off),
+            ..Host::default()
         };
         Rig {
             dir,

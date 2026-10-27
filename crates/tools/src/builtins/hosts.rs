@@ -129,14 +129,14 @@ impl Tool for HostsTool {
         ToolSchema::new(
             TOOL,
             "The machines this box may place work on — the operator's `hosts.toml`, read now, so \
-             a host added a minute ago is here. With no arguments: one line per host (name, \
-             user@hostname, root) and whether its key and its host key are in place — no connection. \
-             With `probe: true`: one bounded connection per host, in parallel, and the live facts \
-             — cores, load average, memory, free disk, `git`, and the mise version with the tool \
-             versions it pins — or the refusal or timeout sentence, plus the last few ssh calls \
-             made to it. `names` narrows either answer. Read-only: nothing is written anywhere. \
-             This is how `where: \"host:NAME\"` is chosen; the list is never in the prompt, \
-             because the file changes and the prompt is a cache.",
+             a host added a minute ago is here. No arguments: one line per host (name, \
+             user@hostname, root), whether its key and host key are in place — no connection — and \
+             what the operator said about sharing it: `reserve` (cores held back for the owner), \
+             `flags` (`heavy`, `tmpfs`) and `never_touch` (names letibot must never signal, stop or \
+             remove there). `probe: true`: one bounded connection per host, in parallel, and the \
+             live facts — cores, load, the SPARE cores (`cores − load − reserve`), memory, disk, \
+             `git`, the mise version and its pins — or the refusal. `names` narrows either answer. \
+             Read-only: nothing is written anywhere. This is how `where: \"host:NAME\"` is chosen.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -283,6 +283,31 @@ fn listing(file: &std::path::Path, hosts: &[Host], paths: &Paths) -> String {
                     paths.config().display(),
                     host.hostname,
                     paths.known_hosts().display()
+                )
+            },
+        ));
+        // **What the operator said about this machine's sharing** (RH9) — the three keys that are
+        // not about reaching it. Reported with no connection, because they are facts of the FILE
+        // and a session deciding where to put work should not pay four ssh calls to read them.
+        out.push_str(&format!(
+            "  reserve:  {}\n  flags:    {}\n  never:    {}\n",
+            if host.reserve == 0 {
+                "none held back for the owner".to_string()
+            } else {
+                format!("{} core(s) held back for the owner", host.reserve)
+            },
+            if host.flags.is_empty() {
+                "none".to_string()
+            } else {
+                host.flags.join(", ")
+            },
+            if host.never_touch.is_empty() {
+                "nothing — every process, container and compose project on it is fair game"
+                    .to_string()
+            } else {
+                format!(
+                    "letibot will never signal, stop or remove: {}",
+                    host.never_touch.join(", ")
                 )
             },
         ));
@@ -441,7 +466,7 @@ fn format_facts(host: &Host, f: &Facts) -> String {
     }
     format!(
         "\n`{}` ({})  REACHABLE{}\n  cores:    {}\n  load:     {}\n  memory:   {} available of {}\n  \
-         disk:     {}\n  tools:    {}\n{}{}",
+         disk:     {}\n  tools:    {}\n{}{}{}",
         host.name,
         host.destination(),
         if f.uname.is_empty() {
@@ -463,10 +488,40 @@ fn format_facts(host: &Host, f: &Facts) -> String {
         gib(f.mem_total_kb),
         free,
         tools,
+        spare_line(host, f),
         extra,
         // **Rule 7, where a person reads it**: what this host's calls have been doing lately.
         f.calls,
     )
+}
+
+/// **What is left of the machine for anyone else** (RH9) — `cores − load − reserve`, which is the
+/// arithmetic the Stroppy session's fleet runner placed work by, and the one number a model
+/// choosing where to put a build actually needs.
+///
+/// Three answers rather than one, because they are three different facts: a number (the host said
+/// its cores and its load), a number with the reservation named (so a person can see why a 32-core
+/// box reports 24), and a refusal to compute (a host that did not answer its load is not a host with
+/// no load).
+fn spare_line(host: &Host, f: &Facts) -> String {
+    let Some(n) = host.spare_cores(f.cores, &f.load) else {
+        return "  spare:    unknown — the host did not say its cores or its load\n".to_string();
+    };
+    let held = if host.reserve == 0 {
+        String::new()
+    } else {
+        format!(", {} held back for the owner", host.reserve)
+    };
+    format!(
+        "  spare:    {n:.1} core(s) — cores {} − load {} − reserve{held}\n",
+        f.cores,
+        one_load(&f.load)
+    )
+}
+
+/// The first of the three load numbers, as the host printed it — the one a placement is about.
+fn one_load(load: &str) -> String {
+    load.split_whitespace().next().unwrap_or(load).to_string()
 }
 
 #[cfg(test)]
@@ -484,6 +539,7 @@ mod tests {
             // A fixture's host is a fake on this box: no mise wrapper, so no probe and no
             // dependence on what this machine happens to have on its `PATH`.
             mise: Some(crate::remote::Mise::Off),
+            ..Host::default()
         }
     }
 

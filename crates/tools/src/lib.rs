@@ -111,6 +111,7 @@ pub mod grant;
 pub mod head_run;
 pub mod heredoc;
 pub mod intent;
+pub mod lease;
 pub mod media;
 pub mod mode;
 pub mod notes_keeper;
