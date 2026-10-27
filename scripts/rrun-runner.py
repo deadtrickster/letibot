@@ -8,6 +8,7 @@ import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -34,6 +35,22 @@ def save():
         json.dump(status, f)
     os.replace(tmp, status_path)
 
+
+# A stopped run says so. `systemctl --user stop rrun-NAME` sends SIGTERM, and without this the
+# status kept saying "running" forever, so the Runs tab showed gates nobody was running
+# (MEASURED 2026-10-27: five such rows, two of them stopped by hand that morning).
+def stopped(signum, _frame):
+    status["state"] = "stopped"
+    status["ended"] = int(time.time())
+    for st in status.get("steps", []):
+        if st.get("state") in ("running", "waiting"):
+            st["state"] = "stopped"
+    save()
+    sys.exit(128 + signum)
+
+
+signal.signal(signal.SIGTERM, stopped)
+signal.signal(signal.SIGINT, stopped)
 
 FAILURE = re.compile(
     r"(panicked at [^\n]{0,160}|^error: \d+ targets? failed:?$|^    `-p [^`]+`|^error(\[E\d+\])?: [^\n]{0,160})",
