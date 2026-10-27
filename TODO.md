@@ -41,6 +41,46 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R94 — What the parser still cannot read, and the parts of it a parser can fix — **OPEN, filed 2026-10-27**
+
+After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
+still have a construct the resolver cannot read, so no shape and no session grant can settle them
+and the oracle is asked about text it does not understand. The census, per construct and per host,
+is `docs/boundary-and-adjudication.md` §4i.2 and §4i.4; the instrument is
+`crates/tools/src/corpus_replay.rs` with `examples/gate_corpus.rs`, and the corpus is
+`scratch/corpus` on the Mac and `~/letibot-corpus/{mac,lab2x1,lubuntu1}.json` on lab2x1.
+
+**Still open?** Run the corpus gate (`cargo run --offline -p letibot-tools --example gate_corpus
+-- --home <home> --workspace <dir> <corpus.json>`, per host, as the example's doc says) and read
+the per-construct table; an item below is open while its construct still
+appears as a sole reason.
+
+What a parser change can fix, smallest first. Each must keep the replay's **"commands that
+stopped being readable" at 0** on every host:
+
+1. **Brace expansion** (`brace_expansion`: 36 commands on lab2x1, 38 on the mac). `{a,b}` and
+   `{1..3}` are decidable from the text. Expand literal lists and ranges into the words the
+   shell will produce; leave a brace containing an expansion unread. Bound it (as the `for`
+   unrolling is bounded at 32 values).
+2. **ANSI-C quoting** (`ansi_c_escapes`: 24 on lab2x1, 16 on the mac). `$'…'` is a literal
+   with escapes; decode it (`\n`, `\t`, `\xHH`, `\NNN`, `\u`, `\'`) into the word it is.
+3. **`$(pwd)`** — exactly `$PWD`, which already resolves (§4i.4 calls it the one safe
+   substitution). Small, but it is the idiom `cd "$(pwd)/…"` that agents write.
+4. **`parse_error`** (577 on lab2x1, 64 on the mac): collect the distinct shapes (a heredoc
+   operator followed by `&& for`, a `;` after a heredoc, missing nodes at a line end), and for
+   each say whether it is the grammar's limit (report upstream to tree-sitter-bash, do not
+   work around) or our splitter's. Fix only ours.
+
+**Not parser gaps, and not to be "fixed" here**: `$(…)` output (the inner command is read; its
+bytes are not in the text), `process_substitution_path` (`/dev/fd/N` exists only at runtime),
+`arithmetic_expansion` (reads variables). **Variables a previous command assigned** are R95
+(section 2); **`$PATH`** is the operator's ruling (section 3).
+
+**Done when**: items 1–3 are read, item 4 is classified, the replay table in §4i.2 is re-run and
+updated with the new numbers on all three hosts, and nothing that was readable became unread.
+
+---
+
 ## The review of 2026-10-12 — five read-only reviews of main at `50b3e55`, filed as R89–R93
 
 The operator's ask: *"start review subagents - we need to find edge cases, ux inconsistencies,
@@ -5673,6 +5713,30 @@ transcript-edge choke point, which is the other half.
 
 # 2. NEEDS A NOD — small question first, then unblocked
 
+## R95 — A variable an earlier command assigned is unread in the next one — **OPEN, filed 2026-10-27; a design note first**
+
+About 500 recorded commands (`$p`, `$d`, `$pr`, `$CARGO_TARGET_DIR`, …) use a variable the
+session set in an EARLIER `bash` call (`export X=…`, or `X=…` in a persistent shell). G3 resolves
+only a variable assigned earlier in the SAME command, so these stay unread
+(`docs/boundary-and-adjudication.md` §4i.4).
+
+Reading them needs a **session-scoped environment**: what the session's shell really holds at
+the moment a command is adjudicated. That is a design question, not a parser gap: where the
+environment is observed (the persistent shell's own `env` after each call vs. replaying the
+assignments the parser saw), what happens across a daemon restart, a migrated session, a
+confined vs. host shell, and whether a value the model set may settle a grant the operator
+gave.
+
+**The nod needed**: is a value the session itself assigned allowed to make a command readable
+for adjudication, and so let a shape or a session grant settle it? If yes, write the design
+note (where it is observed, its lifetime, and how it is shown on the card), then build. If no,
+close this with the reason.
+
+**Still open?** grep the corpus replay's unread list for variables with no assignment in the
+same command.
+
+---
+
 ## N6 — a `harnessd` quit while a subagent is mid-turn dies of SIGSEGV at exit — **SETTLED 2026-10-10, see TODO-settled.md (N6) — 3b7db2b**
 
 ---
@@ -5863,6 +5927,15 @@ choice, not a task pickup.
 
 # 3. BLOCKED ON THE OPERATOR — do not start
 
+- **R96 — `$PATH` in an adjudicated command** (filed 2026-10-27): the largest unread construct
+  left after G4 — 527 commands on lab2x1 and 1,347 on the mac, 1,157 of them for that reason
+  alone (`docs/boundary-and-adjudication.md` §4i.4, §4i.6). Deliberately not resolved: its
+  value is the list of directories a LATER program is found in, so resolving
+  `export PATH=…:$PATH` would let a shape or a session grant settle a command whose later
+  stages run a different binary than the one the table names. **The ruling needed**: may a
+  `PATH` the command (or the session) sets ever be resolved for adjudication, and if so under
+  what condition (for example only when every added directory is inside the checkout or a
+  declared toolchain dir)? G4's recommendation is no.
 - **T5, T25** — 17 open decisions. Several gate everything else.
 - **T22 and T17** — both wait on **D11**. "Until it is decided, M1 remains formally
   unexited."
