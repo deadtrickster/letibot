@@ -521,7 +521,9 @@ fn end_fn(mark: &str) -> String {
 pub const ENV_PAIRS: usize = 64;
 
 /// **How many bytes of value one trailer may carry**, for the reason [`ENV_PAIRS`] gives.
-pub const ENV_BYTES: usize = 4096;
+/// Four of the longest value `intent::env::ENV_VALUE` carries, so a long `PATH` fits and
+/// still leaves room for the rest.
+pub const ENV_BYTES: usize = 16384;
 
 /// **The line written once, at session start, that defines the trailer's functions.**
 ///

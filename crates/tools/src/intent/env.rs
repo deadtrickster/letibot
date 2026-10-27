@@ -39,7 +39,12 @@ use std::collections::BTreeMap;
 use crate::exec::shell::{ENV_BYTES, ENV_PAIRS};
 
 /// The longest single value this will carry, so one name cannot use the whole budget.
-pub const ENV_VALUE: usize = 1024;
+///
+/// **4096, not 1024**: a Mac's `PATH` is routinely over a kilobyte (1138 bytes on the
+/// operator's, MEASURED 2026-10-27), and a `PATH` dropped for its length is D15 never
+/// resolving on that machine — six `env_tests` went red on the first Mac gate for it.
+/// A quarter of [`ENV_BYTES`], so it still cannot be the whole report.
+pub const ENV_VALUE: usize = 4096;
 
 /// **Where one name's value came from** — carried per name, because the card has to say it.
 ///
