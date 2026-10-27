@@ -3019,7 +3019,12 @@ daily, raw rows older than `keep_days` (90) rolled up into `daily` (n, sums, max
 `NULL`) and deleted — except every `operator.feedback` row and every row of a turn a mark points
 at. `metrics.db` lives beside the store (`~/.local/share/letibot/metrics.db`; `$LETIBOT_METRICS_DB`
 overrides; 0600). `providers.toml` `[metrics]`: `enabled` (on by default), `keep_days`, `snippets`
-(default `context.claim` — decision 5). A daemon with no `--store` records nothing.
+(default `context.claim` — decision 5), and — `metrics-cap`, 2026-10-27, `docs/metrics.md` §2.9 —
+`rate_per_sec` (20 identical events per key per second, the rest coalesced into one row carrying
+`attrs.suppressed`, plus one `metrics.suppressed` report per key per minute and one log line) and
+`max_mb` (2048: over it the oldest days are rolled up and deleted down to 80 % in bounded passes).
+The caps exist because of a measured 89 GB `metrics.db` — 270M rows at 1,400 a second from one old
+build's `interrupt` loop. A daemon with no `--store` records nothing.
 
 *A turn, for metrics,* is a prompt — every round of one door — keyed by its FIRST round's engine
 id. The hub tap derives the same key from `TurnStarted.began_ms`, so a mark and its turn join on

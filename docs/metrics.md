@@ -245,6 +245,7 @@ every kind's headline numbers.
 | `operator.action` | `prompt`/`interrupt`/`approve`/`deny`/`new`/`clear` (when a clear-context verb exists — there is none today; the head's `/new` is nearest)/`compact`/`model`/`mode`/`take-back`/`todos`/`attach`/`detach`/`bang` | — | — | prompt chars / — / — | head kind (tui/leticl/http), identity, mid_turn (bool) |
 | `operator.feedback` | polarity: `good`/`bad`/`note` | — | — | — | see §2.5 |
 | `metrics.dropped` | — | — | — | events dropped since last | the writer's own health |
+| `metrics.suppressed` (§2.9) | the suppressed kind | — | — | events held back in the interval / events seen in it (the rate) / — | `key` (`session\|kind\|name\|outcome`), `budget` |
 
 ### 2.4 Volume, size and retention — from today's activity
 
@@ -269,6 +270,10 @@ At ~200 bytes per row with indexes, **~10–12 MB/day**. Retention: raw events *
 a feedback event points at is kept forever** — they are the labelled data. A prune runs once a
 day on the writer thread (`DELETE … WHERE ts_ms < ? AND turn_id NOT IN (SELECT turn_id FROM
 event WHERE kind='operator.feedback')`, then `PRAGMA incremental_vacuum`).
+
+**Age is not a bound on the file, and §2.9 says why**: 90 days of a loop is 90 days of disk. The
+writer therefore also holds a rate cap per repeating event and a size cap on the file, and the
+size cap beats the age rule when they disagree.
 
 ### 2.5 Operator feedback — marking a moment live
 
@@ -389,6 +394,107 @@ The c12d044 lesson: anything on the worker thread's path is paid by every prompt
 - Today's `context-claims.jsonl` already stores the sentence verbatim; phase 1 moves it into a
   `context.claim` event and the sentence becomes a snippet under that opt-in (on by default for
   that kind only while R71's floor is being tuned — open decision 5).
+
+### 2.9 The two caps — a rate and a size (2026-10-27)
+
+**What happened.** An old build's session spun for 20 hours handing `interrupt` back to its own
+queue (B7's bug: a court gave a command back to itself, fixed on main since), and every pass of
+that loop emitted a `worker.cmd` row. Measured by the orchestrator, read-only, on the operator's
+`~/.local/share/letibot/metrics.db`: **1,400 rows per second**, `kind='worker.cmd' AND
+name='interrupt'` **270,214,514 rows** of ~270M in the table, and a file of **89 GB**. Several
+daemons running the same old build contributed. The operator, verbatim: *"add cap on metrics db"*.
+
+The design above counts against this on its own: §2.4's retention is 90 days **by age**, so a loop
+that writes a thousand rows a second is 90 days of it — which is not a retention policy, it is a
+disk. So the writer holds two limits, and both live in `crates/metrics/src/store.rs` on the
+`metrics-writer` thread.
+
+**Why the writer and not the emitter.** Coalescing means *holding events back until the interval
+closes*, which a fire-and-forget `try_send` cannot do, and the emitter's whole contract (§2.7) is
+that it never blocks and never touches SQL — a per-key table with a window and a map behind a lock
+is exactly the cost it exists not to pay. The writer sees every event one daemon writes, is already
+off the hot path, and can hold a window's worth of counters.
+
+**The rate cap.** Key: `(session_id, kind, name, outcome)` — *identical events*. Budget:
+**`[metrics] rate_per_sec`, default 20 rows per key per second.** Under it nothing changes: the
+rows are byte-identical to what this writer wrote before the cap existed (asserted, column by
+column, in `a_mix_below_the_budget_is_written_row_for_row_as_it_was_before_the_cap`). Over it, the
+rest of that second becomes **one row of the same kind** with `attrs.suppressed` = the count it held
+back and `attrs.window_ms`, `ts_ms` the start of the interval, and **`n1..n3` left NULL** — a count
+of events is not one observation of the kind, and `SUM(n1)` over `worker.cmd` must not average it.
+So the row count is bounded and the *count of events* is still the truth:
+`SUM(attrs->>'suppressed')` next to `COUNT(*)`.
+
+**20/s** is chosen from what the emit sites can honestly produce — the operator's file is on the
+Mac and not visible from the box this was built on, so this is the code's own ceiling per key. The
+fastest honest key in the tree is `worker.pass`, which has a 250 ms floor of its own
+(`instruments::worker_pass`) and so cannot exceed **4/s**; then `round` and `tool.call` at ~0.2/s (a
+turn's 18 rounds over two minutes), `worker.cmd` at a command a second at most (each one takes a
+round), `wake`/`delivery`/`nag` below that, and `mem.sample` at 1/300 s. Twenty is five times the
+worst honest key and 70 times below the measured loop, which turns 270M rows into ~1.7M a day *and
+stops the growth being a function of the defect at all*.
+
+**The report, because a loop is a defect.** A key being suppressed writes **one
+`metrics.suppressed` row per key per minute** (`name` = the suppressed kind, `n1` = events held
+back in the interval that triggered it, `n2` = events seen in it — the rate, per second,
+`attrs.key` = `session|kind|name|outcome`, `attrs.budget`) **and one line to the daemon's log**:
+
+```
+metrics: suppressing s-1a2b|worker.cmd|interrupt|ignored — 1400 in one second over a budget of 20/s, 1380 held back; identical events at this rate are a defect, not activity
+```
+
+It notifies no session and wakes nothing: the metrics crate has no door to one, and a metrics
+problem must not become a turn. The key map is bounded (`MAX_KEYS` 4,096, stale windows dropped as
+they age), so a second with thousands of distinct keys cannot grow it either.
+
+**The size cap.** `[metrics] max_mb`, **default 2048** (2 GiB), checked every 10 s and at start.
+Not on the prune's day: the measured storm wrote ~1 GB an hour, so a day's check would be ~24 GB
+behind it. Reading the size is two pragmas off the header; a pass under the cap does that and
+returns. 2 GiB is a little over twice a full 90-day window at the design's ~10–12 MB/day, so it
+never fires on a healthy file and fires long before a disk is gone.
+
+Over the cap the writer, in **bounded steps**:
+
+1. rolls the oldest whole day up into `daily` (the same rollup as the age prune, one statement);
+2. deletes it — `id > ?1 AND id <= ?2 AND ts_ms < ?3`, in 50,000-row id ranges, at most
+   250,000 rows and 1,024 vacuumed pages a pass, so a 270M-row file shrinks over several passes
+   instead of stalling the daemon for an hour;
+3. repeats until the LIVE size (`page_count − freelist_count`) is under 80 % of the cap;
+4. `PRAGMA incremental_vacuum(1024)` and `PRAGMA wal_checkpoint(PASSIVE)`.
+
+**The cap beats the age rule, deliberately.** The rows it deletes may be minutes old. A file eating
+the disk is not one to keep a retention promise to, and `daily` — permanent — keeps the counts.
+What is never deleted is unchanged from decision 2: every `operator.feedback` row and every row of
+a turn a mark points at.
+
+Three things learned building it, each of which made the code different:
+
+- **What `daily` holds is exactly what `event` no longer has.** The rollup now covers only the rows
+  the delete takes, and ADDS to a group instead of `INSERT OR IGNORE`-ing it — a day deleted in
+  chunks contributes the same `(day, kind, name, model, outcome)` more than once, and the old
+  `OR IGNORE` would have dropped the later chunks' counts. A row kept forever is no longer counted
+  in `daily` *and* still in `event`.
+- **The ceiling is the oldest DELETABLE row, not the oldest row.** A cap whose oldest row is a mark
+  can never pass it: measured as a file stuck at 3.7 MB against a 1 MiB cap on every pass.
+- **`PRAGMA incremental_vacuum` yields one row per page it frees**, so a statement stepped once —
+  which is what `execute_batch` and `execute` do — gives back exactly one page. The rows must be
+  drained. This is also why the day prune's `execute_batch("PRAGMA incremental_vacuum;")` had never
+  shrunk anything since it was written.
+
+**A file created by an older build.** `auto_vacuum` can only be switched on before the first table,
+so a `metrics.db` whose tables predate this line cannot give a page back, however much is deleted.
+The writer says so once, at start, and names the one-time fix:
+
+```sh
+sqlite3 ~/.local/share/letibot/metrics.db 'PRAGMA auto_vacuum=INCREMENTAL; VACUUM;'
+```
+
+Until that runs, the size cap still bounds what the file GROWS (the rows go, and `daily` keeps
+them) — it just cannot return the space. `Writer::shrinks()` is how a test stands in that state.
+
+**No schema change.** A summary row of its own kind and a `metrics.suppressed` row need no column
+the table did not have, so `SCHEMA` stays 1 — which matters: eleven daemons of mixed builds open
+this file.
 
 ---
 

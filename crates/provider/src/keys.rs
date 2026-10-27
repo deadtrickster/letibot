@@ -134,15 +134,20 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
     }
 }
 
-/// **`[metrics]`** — the event table's switch, its retention and the kinds that keep a snippet
-/// (TODO.md R81, `docs/metrics.md` §2.7). Raw strings, like `[memory]`'s: what they mean is
-/// `letibot_metrics::store::Settings::from_raw`'s to decide, and a missing key is its default
-/// (on, 90 days, the context claim's sentence kept).
+/// **`[metrics]`** — the event table's switch, its retention, the kinds that keep a snippet, and
+/// the two caps on the file (TODO.md R81, `docs/metrics.md` §2.7 and §2.9). Raw strings, like
+/// `[memory]`'s: what they mean is `letibot_metrics::store::Settings::from_raw`'s to decide, and a
+/// missing key is its default (on, 90 days, the context claim's sentence kept, 20 identical events
+/// per second per key, 2048 MiB).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct MetricsSection {
     pub enabled: Option<String>,
     pub keep_days: Option<String>,
     pub snippets: Option<String>,
+    /// The most identical events one key may write per second (`0` = no cap).
+    pub rate_per_sec: Option<String>,
+    /// The file's ceiling in MiB (`0` = no ceiling).
+    pub max_mb: Option<String>,
 }
 
 /// Read `[metrics]`. Missing file, missing section, unparseable file: all the defaults — a
@@ -159,6 +164,8 @@ pub fn metrics(file: Option<&Path>) -> MetricsSection {
         enabled: sec.get("enabled").cloned(),
         keep_days: sec.get("keep_days").cloned(),
         snippets: sec.get("snippets").cloned(),
+        rate_per_sec: sec.get("rate_per_sec").cloned(),
+        max_mb: sec.get("max_mb").cloned(),
     }
 }
 
@@ -1056,17 +1063,20 @@ mod tests {
     }
 
     /// `[metrics]` is read as raw strings beside the provider sections, and a file without it
-    /// is the defaults — never a refusal.
+    /// is the defaults — never a refusal. The two caps are read the same way.
     #[test]
     fn the_metrics_section_is_read_raw_and_absent_is_default() {
         let f = tmp_providers(
             "metrics_section",
-            "[glm]\nkey = \"k\"\n\n[metrics]\nenabled = false\nkeep_days = 30\n",
+            "[glm]\nkey = \"k\"\n\n[metrics]\nenabled = false\nkeep_days = 30\n\
+             rate_per_sec = 5\nmax_mb = 512\n",
         );
         let m = metrics(Some(&f));
         assert_eq!(m.enabled.as_deref(), Some("false"));
         assert_eq!(m.keep_days.as_deref(), Some("30"));
         assert_eq!(m.snippets, None);
+        assert_eq!(m.rate_per_sec.as_deref(), Some("5"));
+        assert_eq!(m.max_mb.as_deref(), Some("512"));
         let none = tmp_providers("metrics_absent", "[glm]\nkey = \"k\"\n");
         assert_eq!(metrics(Some(&none)), MetricsSection::default());
     }

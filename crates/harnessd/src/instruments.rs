@@ -322,6 +322,8 @@ pub fn start_writer(cfg: &crate::config::Config) {
         raw.enabled.as_deref(),
         raw.keep_days.as_deref(),
         raw.snippets.as_deref(),
+        raw.rate_per_sec.as_deref(),
+        raw.max_mb.as_deref(),
     );
     if !settings.enabled {
         eprintln!("  metrics: off ([metrics] enabled = false)");

@@ -89,6 +89,13 @@ pub mod kind {
     pub const FEEDBACK: &str = "operator.feedback";
     /// The writer's own health: events dropped on a full channel since the last report.
     pub const DROPPED: &str = "metrics.dropped";
+    /// **A key the writer is holding back** (`docs/metrics.md` §2.9) — one repeating event over its
+    /// per-second budget, which on 2026-10-27 meant a defect and not activity.
+    ///
+    /// `name` = the suppressed kind; `session_id`/`outcome` the key's; n1 = events held back in
+    /// that second, n2 = events seen in it (the rate, per second); `attrs.key` is
+    /// `session|kind|name|outcome` and `attrs.budget` the budget that was exceeded.
+    pub const SUPPRESSED: &str = "metrics.suppressed";
 }
 
 /// The wall clock, in milliseconds — the unit of `ts_ms`.
