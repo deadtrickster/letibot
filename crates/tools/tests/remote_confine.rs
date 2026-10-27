@@ -763,6 +763,75 @@ fn the_gate_is_told_about_the_boundary_and_not_shown_a_fixed_sentence() {
     assert!(!said.contains("INSIDE a measured boundary"), "{said}");
 }
 
+/// **What a confined session is not asked about, and what it still is** — the inside/outside
+/// boundary, through the gate a placed session actually uses.
+///
+/// This is the honest form of the sentence *"a remote command that ran confined is adjudicated as
+/// confined"*, and the reason it is written as a pair: **there is one gate and it has no
+/// confinement input at all.** A local confined session and a placed one reach the same rules, so
+/// *parity with a local confined command* is a property of the code being shared rather than of a
+/// second lowering — and what RH3 had to fix was the **fact** (a hardcoded `backend_confined`,
+/// and a card that recited *"the host filesystem is not sandboxed"* over a session that had a
+/// boundary).
+///
+/// So what is measured here is the line the confinement makes meaningful:
+///
+/// * a shell command that only **looks**, and only at paths layer A cannot place as outside, is
+///   `Access::Read` — clause 4 — and is admitted at `writes-allowed` with nobody asked;
+/// * the same shell reading a path the classifier CAN name as outside keeps exec access, and exec
+///   asks at every point (the operator's rule of 2026-09-11). That is what stops a `cat` of a
+///   credential from riding clause 4.
+#[test]
+fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
+    use letibot_tools::adjudicate::AdjudicatedGate;
+    use letibot_tools::intent::Surroundings;
+    use letibot_tools::mode::Mode;
+    use letibot_tools::schema::Access;
+    use letibot_tools::{Gate, GateCall, GateDecision};
+
+    let mut rig = Rig::new("clause4", FAKE_READBACK, true);
+    let b = rig.place(Egress::Denied);
+    let workspace = b.worktree_path().to_string();
+    let surroundings = Surroundings::from_env(workspace.clone()).with_pinned_shell(
+        "the exec backend spawns /bin/sh -c, non-interactive, with the environment cleared",
+    );
+    let mut gate = AdjudicatedGate::closed()
+        .with_mode(Mode::WRITES_ALLOWED)
+        .with_surroundings(surroundings)
+        .with_boundary(b.boundary(), None);
+
+    let decide = |gate: &mut AdjudicatedGate, command: &str| {
+        let args = serde_json::json!({ "command": command });
+        let call = GateCall {
+            name: "bash",
+            access: Access::Exec,
+            args: &args,
+            turn_id: "t-1",
+            call_id: "c-1",
+            workspace: &workspace,
+            target_exists: None,
+            scripts: &[],
+        };
+        gate.admit(&call)
+    };
+
+    // Inside the view, and only looking: clause 4, nobody asked.
+    assert!(
+        matches!(decide(&mut gate, "cat README"), GateDecision::Admit),
+        "a read inside the workspace is admitted without asking at writes-allowed"
+    );
+    // Outside the view, and layer A can name it: still exec, so it still asks — and this gate has
+    // nobody behind it, which is what makes the difference visible rather than a card.
+    assert!(
+        !matches!(decide(&mut gate, "cat ~/.bashrc"), GateDecision::Admit),
+        "a read of a path the classifier can name as outside keeps exec access and asks"
+    );
+    assert!(
+        !matches!(decide(&mut gate, "cat /etc/shadow"), GateDecision::Admit),
+        "and so does a system path"
+    );
+}
+
 /// **The placement is where the mode's answer comes from**, and a host that confines nothing must
 /// not read as one — the fact `harnessd` takes as `backend_confined`.
 #[test]
