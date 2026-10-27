@@ -735,10 +735,14 @@ impl Fake {
         let program = bin.join("ssh");
         let log = dir.join("ssh.log");
         let body = body.replace("@DIR@", &dir.display().to_string());
+        // `[ $# -eq 0 ] && exit 0` before the log and before `body`: `write_stub` proves the file
+        // by running it with no arguments, and a body here is a host's behaviour — a `sleep 300`
+        // prelude would be this fixture hanging, and the log would gain a line no test made.
         write_executable(
             &program,
             &format!(
                 "#!/bin/bash\n\
+                 [ $# -eq 0 ] && exit 0\n\
                  {{ printf 'ARGV %s\\n' \"$*\"; }} >> '{log}'\n\
                  export PATH='{bin}':$PATH\n\
                  export HOME='{home}'\n\
@@ -1711,6 +1715,7 @@ fn a_placement_through_a_mise_that_insists_its_directory_exists() {
         &format!(
             "#!/bin/bash\n\
              # exec -C <dir> -- <cmd...>\n\
+             [ $# -eq 0 ] && exit 0\n\
              if [ \"$1\" != exec ] || [ \"$2\" != -C ]; then echo 'mise: unexpected argv' >&2; exit 2; fi\n\
              d=\"$3\"\n\
              printf '%s\\n' \"$d\" >> '{seen}'\n\
@@ -2003,6 +2008,7 @@ fn the_default_probe_finds_mise_and_every_command_runs_through_it() {
         &mise,
         &format!(
             "#!/bin/bash\n\
+             [ $# -eq 0 ] && exit 0\n\
              printf 'MISE %s\\n' \"$*\" >> '{}'\n\
              shift 4\n\
              exec \"$@\"\n",
@@ -2091,6 +2097,7 @@ fn mise_false_is_no_wrapper_and_mise_at_a_path_is_that_path() {
         &mise,
         &format!(
             "#!/bin/bash\n\
+             [ $# -eq 0 ] && exit 0\n\
              printf 'MISE %s\\n' \"$*\" >> '{}'\n\
              shift 4\n\
              exec \"$@\"\n",
