@@ -137,6 +137,20 @@ impl Host {
         self.problem.lock().ok().and_then(|mut p| p.take())
     }
 
+    /// **A host with exactly this stack** — what a test needs to stand in a broken one, and the
+    /// shape `docs/plugins-plan.md` §7 step 10's last paragraph is about: past the built-in, the
+    /// head draws its own list.
+    #[cfg(test)]
+    pub(crate) fn with_stack(stack: Stack, workspace: PathBuf) -> Host {
+        Host {
+            stack,
+            cache: Mutex::new(Cached::default()),
+            state: Mutex::new(None),
+            problem: Mutex::new(None),
+            workspace,
+        }
+    }
+
     fn build(session: &str, workspace: &Path) -> Host {
         let mut stack = Stack::discover(
             session_plugins_dir(session).as_deref(),
@@ -295,8 +309,9 @@ impl App {
     }
 
     /// The folder a session's layers are found under — the one it is wired to, or this process's
-    /// own directory when the daemon has not said yet.
-    fn workspace_path(&self) -> PathBuf {
+    /// own directory when the daemon has not said yet. Public in the crate because a test stands
+    /// a host in for this one, and has to build it for the folder the head will ask about.
+    pub(crate) fn workspace_path(&self) -> PathBuf {
         match self.sessions.first().map(|s| s.wiring.workspace.clone()) {
             Some(w) if !w.is_empty() => PathBuf::from(w),
             _ => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -619,7 +634,7 @@ fn listed(view: &pv::View, app: &App) -> Vec<Listed> {
 /// the two binaries that run a layer — the daemon, and now the head, for the one pane that must not
 /// depend on the daemon — each bring their own rather than making a third crate that pulls a JIT
 /// into everything that links it.
-struct RanoLoader;
+pub(crate) struct RanoLoader;
 
 impl Loader for RanoLoader {
     fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
