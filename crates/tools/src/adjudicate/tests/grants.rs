@@ -23,9 +23,9 @@ use super::*;
 fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placeholder() {
     // The bug, as an assertion: the sentinel must not appear in any label.
     for (program, offered) in [
-        (NO_PROGRAM, exec_options(None, NO_PROGRAM)),
-        ("cargo", exec_options(None, "cargo")),
-        ("cargo", exec_options(Some("cargo test"), "cargo")),
+        (NO_PROGRAM, exec_options(&offered(None, NO_PROGRAM))),
+        ("cargo", exec_options(&offered(None, "cargo"))),
+        ("cargo", exec_options(&offered(Some("cargo test"), "cargo"))),
     ] {
         for o in &offered {
             assert!(
@@ -43,7 +43,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
 
     // And the two cases still say different things, which is the point of naming the
     // program when there is one.
-    let named = exec_options(None, "cargo");
+    let named = exec_options(&offered(None, "cargo"));
     let session = named
         .iter()
         .find(|o| o.id == "allow_session")
@@ -51,7 +51,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
     assert!(session.label.contains("cargo"), "{:?}", session.label);
     assert!(session.label.contains("this class"), "{:?}", session.label);
 
-    let class_only = exec_options(None, NO_PROGRAM);
+    let class_only = exec_options(&offered(None, NO_PROGRAM));
     let session = class_only
         .iter()
         .find(|o| o.id == "allow_session")
@@ -64,7 +64,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
     // **The ladder is otherwise unchanged**: same ids, same order, and the durable
     // rung still appears when — and only when — the matcher would honour it. A fix to
     // one label must not quietly reshape the ladder.
-    let with_durable = exec_options(Some("cargo test"), "cargo");
+    let with_durable = exec_options(&offered(Some("cargo test"), "cargo"));
     let ids: Vec<&str> = with_durable.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -77,7 +77,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
         ],
         "the ladder's shape moved"
     );
-    let without_durable = exec_options(None, "cargo");
+    let without_durable = exec_options(&offered(None, "cargo"));
     let no_durable: Vec<&str> = without_durable.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(
         no_durable,

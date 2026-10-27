@@ -1422,6 +1422,21 @@ pub enum SessionEvent {
         /// session, allow for the project, deny. Empty for a question, which does not
         /// have a ladder — it has choices.
         options: Vec<DecisionOption>,
+        /// **Why a rung a person would look for is not on the ladder**, in one line, or
+        /// empty when the ladder is complete.
+        ///
+        /// The gate refuses to show a button whose effect it would then decline to
+        /// honour, and the order the two facts have to arrive in is: the rung is gone,
+        /// and here is why. A rung that vanished in silence is a person wondering
+        /// whether they misremembered — MEASURED 2026-10-26, fifteen of one session's
+        /// twenty-two asks offered *"Allow … for the rest of the session"* over a
+        /// command nobody could read, and no card said the grant would never be
+        /// honoured.
+        ///
+        /// `#[serde(default)]` so a log recorded before this replays: an old row has no
+        /// note, and empty draws no clause — which is also what a complete ladder says.
+        #[serde(default)]
+        options_note: String,
         /// **The model's own options**, for a question (T25/D10). Plain text in the
         /// person's vocabulary, not a policy vocabulary.
         ///

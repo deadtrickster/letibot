@@ -184,6 +184,9 @@ impl App {
                 write_targets: Vec::new(),
                 detail: String::new(),
                 options: Vec::new(),
+                // A todo row's question has no adjudication ladder, so no rung was left
+                // off it and there is nothing to explain.
+                options_note: String::new(),
                 choices: ask.options.clone(),
                 because: String::new(),
                 advice: None,

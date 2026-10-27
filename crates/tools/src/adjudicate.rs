@@ -617,20 +617,38 @@ fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     })
 }
 
-pub fn permission_options(derived: Option<&str>) -> Vec<DecisionOption> {
-    let mut out = vec![
-        DecisionOption {
-            id: "allow_once".into(),
-            label: "Allow this one".into(),
-            kind: OptionKind::AllowOnce,
-        },
-        DecisionOption {
-            id: "allow_session".into(),
-            label: "Allow this class for the rest of the session".into(),
-            kind: OptionKind::AllowSession,
-        },
-    ];
-    out.extend(durable_rung(derived));
+/// **The session rung, when a grant taken now could cover a later call** — and when it
+/// could not, nothing, with the reason on [`Offer::note`].
+///
+/// *"An operator is never shown a button whose effect the gate would then decline to
+/// honour"*, and `allow_session` was the button: `Grant::covers` refuses an unresolved
+/// action BEFORE it looks at coverage, so agreeing to *"Allow `cargo` for the rest of the
+/// session"* over a command nobody could read was recorded as a grant that could never
+/// cover anything. MEASURED 2026-10-26: 15 of one session's 22 asks offered exactly that,
+/// and the operator took it and was asked again.
+///
+/// The condition is not restated here. It is [`Offer::session`], which the gate answers
+/// by asking `Grant::covers` about the very grant an answer would record — so the ladder
+/// and the recording site cannot disagree about what is offerable.
+fn session_rung(offer: &Offer, label: String) -> Option<DecisionOption> {
+    offer.session.then(|| DecisionOption {
+        id: "allow_session".into(),
+        label,
+        kind: OptionKind::AllowSession,
+    })
+}
+
+pub fn permission_options(offer: &Offer) -> Vec<DecisionOption> {
+    let mut out = vec![DecisionOption {
+        id: "allow_once".into(),
+        label: "Allow this one".into(),
+        kind: OptionKind::AllowOnce,
+    }];
+    out.extend(session_rung(
+        offer,
+        "Allow this class for the rest of the session".into(),
+    ));
+    out.extend(durable_rung(offer.derived.as_deref()));
     out.push(DecisionOption {
         id: "deny".into(),
         label: "Deny".into(),
@@ -644,6 +662,37 @@ pub fn permission_options(derived: Option<&str>) -> Vec<DecisionOption> {
     out
 }
 
+/// **What a ladder may offer for one call, and why anything is missing from it.**
+///
+/// Three answers, computed once in `AdjudicatedGate::request_from` from the same facts
+/// the recording site reads — so the option list and what an answer actually does cannot
+/// drift apart:
+///
+/// * `derived` — the rule an *Always allow* answer would write, or `None` when the
+///   matcher would ask again whatever was written (`derived_pattern`).
+/// * `session` — whether a grant taken NOW could cover a later call. Answered by asking
+///   [`crate::grant::Grant::covers`] about the very grant an answer would record, which is
+///   the only authority on the question; see `session_rung` for the measurement.
+/// * `note` — **one line on the card when a rung is absent**, because an option that
+///   silently disappears is a person wondering whether they misremembered. The operator's
+///   framing of the whole gate is that they are deciding, and a decision they cannot
+///   explain is one they make by fatigue.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Offer {
+    pub derived: Option<String>,
+    pub program: String,
+    pub session: bool,
+    pub note: Option<String>,
+}
+
+impl Offer {
+    /// The line to draw, or nothing — one spelling of *is there anything to say*. A card
+    /// that asked this and got `Some("")` would push a blank row under its ladder.
+    pub fn note_line(&self) -> Option<&str> {
+        self.note.as_deref().filter(|n| !n.trim().is_empty())
+    }
+}
+
 /// The ladder for an exec-class call.
 ///
 /// The operator's rule of 2026-09-11 was that a shell asks every time, and the
@@ -655,7 +704,9 @@ pub fn permission_options(derived: Option<&str>) -> Vec<DecisionOption> {
 /// allow_session — so allow_session should always be offered too."* It is, and
 /// the grant it records is scoped the way the rule is: the program and the
 /// class, never exec at large.
-pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption> {
+///
+/// See [`Offer`] for what may be left off, and why the card says so.
+pub fn exec_options(offer: &Offer) -> Vec<DecisionOption> {
     // **A call with no command has no program to name, so the label names the class.**
     //
     // `grant_program` answers [`NO_PROGRAM`] for a path-shaped call — `job_kill`,
@@ -668,24 +719,21 @@ pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption>
     // The alternative is not a guess at a name — that is what the sentinel exists to
     // avoid. It is the wording the other ladder already uses, because it is exactly
     // true: there is no program, so what the grant covers is the class.
-    let session_label = if program == NO_PROGRAM {
+    let session_label = if offer.program == NO_PROGRAM {
         "Allow this class for the rest of the session".to_string()
     } else {
-        format!("Allow `{program}` (this class) for the rest of the session")
+        format!(
+            "Allow `{}` (this class) for the rest of the session",
+            offer.program
+        )
     };
-    let mut out = vec![
-        DecisionOption {
-            id: "allow_once".into(),
-            label: "Allow this one".into(),
-            kind: OptionKind::AllowOnce,
-        },
-        DecisionOption {
-            id: "allow_session".into(),
-            label: session_label,
-            kind: OptionKind::AllowSession,
-        },
-    ];
-    out.extend(durable_rung(derived));
+    let mut out = vec![DecisionOption {
+        id: "allow_once".into(),
+        label: "Allow this one".into(),
+        kind: OptionKind::AllowOnce,
+    }];
+    out.extend(session_rung(offer, session_label));
+    out.extend(durable_rung(offer.derived.as_deref()));
     out.push(DecisionOption {
         id: "deny".into(),
         label: "Deny".into(),
@@ -712,20 +760,17 @@ pub fn exec_options(derived: Option<&str>, program: &str) -> Vec<DecisionOption>
 /// should always be offered too."* The weaker option is back, and the gate
 /// honours it: an explicit answer is the operator overriding the point's
 /// default, which is what answering an ask has always meant.
-pub fn once_only_options(mode_name: &'static str, derived: Option<&str>) -> Vec<DecisionOption> {
-    let mut out = vec![
-        DecisionOption {
-            id: "allow_once".into(),
-            label: "Allow this one".into(),
-            kind: OptionKind::AllowOnce,
-        },
-        DecisionOption {
-            id: "allow_session".into(),
-            label: "Allow this class for the rest of the session".into(),
-            kind: OptionKind::AllowSession,
-        },
-    ];
-    out.extend(durable_rung(derived));
+pub fn once_only_options(mode_name: &'static str, offer: &Offer) -> Vec<DecisionOption> {
+    let mut out = vec![DecisionOption {
+        id: "allow_once".into(),
+        label: "Allow this one".into(),
+        kind: OptionKind::AllowOnce,
+    }];
+    out.extend(session_rung(
+        offer,
+        "Allow this class for the rest of the session".into(),
+    ));
+    out.extend(durable_rung(offer.derived.as_deref()));
     out.push(DecisionOption {
         id: "deny".into(),
         label: "Deny".into(),
@@ -867,6 +912,20 @@ pub struct AdjudicationRequest {
     /// **The command's shape**: the parse with its literals replaced by holes.
     /// `None` for a call that is not a command. See [`shape_of`].
     pub shape: Option<String>,
+    /// **Why a rung that a person would expect is not on this ladder, in one line** —
+    /// `None` when the ladder is complete.
+    ///
+    /// The rule this serves is the one the whole option list is built on: *"an operator is
+    /// never shown a button whose effect the gate would then decline to honour."* Dropping
+    /// the button is only half of it. A rung that disappears with no explanation is a
+    /// person left wondering whether they misremembered what they were offered, and the
+    /// `allow_session` rung was disappearing for reasons the card had no way to say
+    /// (MEASURED 2026-10-26: an unresolved command cannot be covered by any grant, so the
+    /// rung is not offered at all).
+    ///
+    /// Written by the gate and drawn by the head, verbatim: a head that composed it would
+    /// be re-deriving which of the four refusals applied.
+    pub options_note: Option<String>,
     /// **What the model already said about this**, when a model was asked first.
     ///
     /// Filled only by [`SupervisedAdjudicator`], and `None` everywhere else — at
@@ -1704,23 +1763,26 @@ fn turn_seq(turn_id: &str) -> Option<u64> {
 /// it.
 pub const NO_PROGRAM: &str = "<tool>";
 
-/// **What a grant is keyed on**: the program the shell will actually run.
+/// **What a grant is keyed on**: the program doing the work, as the shell will run it.
 ///
-/// For a shell command it is the *last* stage's program name, which is a choice worth
-/// naming: a pipeline's stages can differ, and the tier is already the strictest of
-/// them (`Tier::strictest`), so the grant is keyed on the stage a person would name
-/// when they say what the command was. A pipeline whose stages differ from a granted
-/// one still falls out, because the **intent set** is the union across stages and the
-/// grant covers only what it was shown.
+/// This READS [`crate::intent::Baseline::grant_program`], which layer A chooses in the
+/// pass that reads every stage of the command — see that field, and `name_stage` beside
+/// it in `intent.rs`. It used to take the *last* stage here, and on the operator's screen
+/// that made `cd … && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline` offer
+/// *"Allow `export` (this class) for the rest of the session"* and
+/// `cd x && grep … | head` offer `head`: two programs that do no work at all, offered to
+/// a person who was looking at a cargo build. A grant is only weighable by somebody who
+/// can tell what it names.
+///
+/// The choice lives one layer down because the intents of a stage are the program table
+/// that layer owns, and a second reader of them here would be a second answer to *what
+/// does this stage do*.
 ///
 /// [`NO_PROGRAM`] where there is no command to read one out of.
 fn grant_program(baseline: &crate::intent::Baseline) -> String {
     baseline
-        .command
-        .as_ref()
-        .and_then(|n| n.stages.last())
-        .and_then(|s| s.program_name())
-        .map(str::to_string)
+        .grant_program
+        .clone()
         .unwrap_or_else(|| NO_PROGRAM.to_string())
 }
 
@@ -2316,6 +2378,75 @@ impl AdjudicatedGate {
         }
     }
 
+    /// **What the ladder may offer for this call** — one computation for the rungs and
+    /// for the note that explains an absent one.
+    ///
+    /// Both halves of the answer come from mechanisms that already exist rather than from
+    /// a restatement of their rules: `derived` is [`derived_pattern`], and `session` is
+    /// [`AdjudicatedGate::session_grant`] asking [`crate::grant::Grant::covers`] about the
+    /// grant an answer would record.
+    fn offer_for(
+        &self,
+        call: &GateCall<'_>,
+        baseline: &crate::intent::Baseline,
+        class: ActionClass,
+    ) -> Offer {
+        let program = grant_program(baseline);
+        let derived = derived_pattern(call, baseline, &self.permission);
+        // `Err` is *a grant taken now would cover nothing*, and its own vocabulary says
+        // which of the three refusals it was — the same four the matcher answers when it
+        // declines to honour an old grant, in the short register a card has room for.
+        let refused = Self::session_grant(baseline, class, &program, String::new()).err();
+        let note = refused.as_ref().map(|why| {
+            format!(
+                "not offered for the session: {}{}",
+                why.short(),
+                unresolved_names(baseline)
+            )
+        });
+        Offer {
+            derived,
+            program,
+            session: refused.is_none(),
+            note,
+        }
+    }
+
+    /// **The grant an `allow_session` answer over this call would record, or why one
+    /// taken now could cover nothing.**
+    ///
+    /// The one answer both the card and the recording site read. `Err` carries the
+    /// [`crate::grant::NotCovered`] that [`crate::grant::Grant::covers`] itself answers, so
+    /// the card is not offering a rung on a rule of its own: it is asking the matcher
+    /// whether the grant would ever be honoured. `why` is the row's reason and is empty
+    /// when the caller only wants the verdict.
+    fn session_grant(
+        baseline: &crate::intent::Baseline,
+        class: ActionClass,
+        program: &str,
+        why: String,
+    ) -> Result<crate::grant::Grant, crate::grant::NotCovered> {
+        let grant = crate::grant::Grant {
+            written: crate::grant::Written::Enumerated {
+                patterns: vec![format!("{program} ({class})")],
+            },
+            coverage: vec![crate::grant::Coverage {
+                program: program.to_string(),
+                class,
+                intents: baseline.intents.clone(),
+            }],
+            why,
+        };
+        grant.covers(
+            &baseline.tier,
+            baseline.resolved,
+            program,
+            class,
+            &baseline.intents,
+        )?;
+        Ok(grant)
+    }
+
     /// **Layer A's deterministic reading of this call**, before any adjudicator.
     ///
     /// A `command` argument is normalised through the grammar; anything else is read
@@ -2487,6 +2618,10 @@ impl AdjudicatedGate {
         // §4h — not at startup and not in a batch job nobody consults.
         let direction = crate::authorise::TaskDirection::of_parts(call.name, baseline, class.scope);
         let prior = Self::prior_answers(&self.log, &direction.key(), turn_seq(call.turn_id));
+        // **What the ladder may offer, computed once for both halves of the card.** The
+        // rungs and the note that explains a missing one are the same fact, and computing
+        // it twice is two chances for a card to say a rung was left off while offering it.
+        let offer = self.offer_for(call, baseline, class);
         AdjudicationRequest {
             id: self.next_id(),
             session_id: self.session_id.clone(),
@@ -2540,21 +2675,23 @@ impl AdjudicatedGate {
             // records is scoped to the program and the class, the way the
             // durable rule is scoped to the program and its verb.
             options: {
-                // Derived once. It is the answer to "what would *Always allow*
-                // write", and both the label and the decision to offer it at all
-                // come from that one answer.
-                let derived = derived_pattern(call, baseline, &self.permission);
-                let derived = derived.as_deref();
+                // **One computation, and every rung reads it.** `derived` is what *Always
+                // allow* would write; `session` is whether a grant taken now could cover
+                // a later call, asked of `Grant::covers` itself; `note` says why whichever
+                // one is missing is missing.
                 if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                     always_ask_options()
                 } else if call.access == Access::Exec {
-                    exec_options(derived, &grant_program(baseline))
+                    exec_options(&offer)
                 } else if self.mode.grants == crate::mode::GrantScope::Session {
-                    permission_options(derived)
+                    permission_options(&offer)
                 } else {
-                    once_only_options(self.mode.name, derived)
+                    once_only_options(self.mode.name, &offer)
                 }
             },
+            // **The line a card draws when a rung is absent** — `None` when nothing was
+            // left off, so a complete ladder says nothing rather than saying "nothing".
+            options_note: offer.note_line().map(str::to_string),
             // §11.5: `Deny` for a permission, and `AgentDecides` only for a
             // question. Nothing here is a question yet.
             on_timeout: OnTimeout::Deny,
@@ -2960,6 +3097,10 @@ impl Gate for AdjudicatedGate {
             ],
             kind: RequestKind::Permission,
             options: view_grant_options(),
+            // A view grant is offered as it always was: it is a fact about the session's
+            // filesystem view rather than about a command's class, and nothing here is
+            // left off the ladder.
+            options_note: None,
             on_timeout: OnTimeout::Deny,
             tier: Tier::MayApprove,
             resolved: true,
@@ -3043,6 +3184,7 @@ impl Gate for AdjudicatedGate {
             ],
             kind: RequestKind::Permission,
             options: memory_grant_options(),
+            options_note: None,
             on_timeout: OnTimeout::Deny,
             tier: Tier::AlwaysAsk {
                 rule: "memory_above_ceiling",
@@ -3723,20 +3865,25 @@ impl Gate for AdjudicatedGate {
                             // call was shown to carry — the same scoping the durable
                             // rule gets, and the reason `git -c core.pager=… log`
                             // still falls out of a grant taken over `git status`.
-                            self.grants.push(crate::grant::Grant {
-                                written: crate::grant::Written::Enumerated {
-                                    patterns: vec![format!("{program} ({})", req.class)],
-                                },
-                                coverage: vec![crate::grant::Coverage {
-                                    program: program.clone(),
-                                    class: req.class,
-                                    intents: baseline.intents.clone(),
-                                }],
-                                why: format!(
-                                    "granted for this session by an answer to {}: {}",
-                                    req.id, decision.basis
-                                ),
-                            });
+                            //
+                            // **And a grant that could never cover anything is not
+                            // recorded.** This is the question the card asked before
+                            // offering the rung — `session_grant`, which is
+                            // `Grant::covers` applied to the grant itself — so an
+                            // `allow_session` arriving from a head older than the
+                            // offer, a replayed answer or a test cannot leave a dead
+                            // grant on the books. Measured 2026-10-26: an unanswered
+                            // grant over an unresolved command was exactly what the
+                            // operator took, and then kept being asked.
+                            let why = format!(
+                                "granted for this session by an answer to {}: {}",
+                                req.id, decision.basis
+                            );
+                            if let Ok(grant) =
+                                Self::session_grant(&baseline, req.class, &program, why)
+                            {
+                                self.grants.push(grant);
+                            }
                         }
                         // The loop closed, so the error signal is gone.
                         self.breaker.admitted(&direction);
@@ -4043,12 +4190,18 @@ fn permission_pattern(args: &Value) -> String {
 /// again whatever we write*, and the caller drops the option rather than
 /// offering it. See [`crate::permission::a_durable_rule_can_apply`].
 ///
-/// For an exec call the pattern is built from the **same stage
-/// [`grant_program`] reads** — the last one — rather than from the first
-/// whitespace token of the raw string. Those two disagreed on every compound
-/// command, and the durable half had the naive answer: measured on the
-/// operator's screen, `cd … && python3 - <<'PY'` offered `python3` for the
-/// session and `cd*` for ever.
+/// For an exec call the pattern is built from a stage of the parse rather than from the
+/// first whitespace token of the raw string. Those two disagreed on every compound
+/// command, and the durable half had the naive answer: measured on the operator's screen,
+/// `cd … && python3 - <<'PY'` offered `python3` for the session and `cd*` for ever.
+///
+/// **And there is no fallback to the raw string any more.** The last stage is read when
+/// the parse has one, and when it does not the answer is `None`: `always_pattern_for_command`
+/// takes the first whitespace token, which for a command whose meaning nobody could read is
+/// the token most likely to be `cd` or `export` — MEASURED 2026-10-26, the offer over the
+/// unresolved measured shape was *Always allow `export*`*, and
+/// `crate::permission::SHELL_STATE` records what that rule would admit. A rule nobody can
+/// read is worse than no button, because it is written to the operator's file.
 ///
 /// **And it is the rule the command is actually missing.** With rules on file, every segment is
 /// tested against them and the one still asked is what gets written (see
@@ -4069,13 +4222,25 @@ fn derived_pattern(
     if !crate::permission::a_durable_rule_can_apply(cmd) {
         return None;
     }
+    // **A stage that sets state for a later one makes no durable rule honest.** It will
+    // keep asking whatever is written, and the only rule that would silence it admits
+    // every environment variable a later stage's program trusts. `the_rule_that_admits`
+    // refuses it too — this is the same fact for the branch below, which has no rules to
+    // consult and would otherwise offer the last stage's prefix.
+    if let Some(n) = &baseline.command
+        && n.stages.iter().any(|s| {
+            s.program_name()
+                .is_some_and(crate::permission::sets_state_for_later)
+        })
+    {
+        return None;
+    }
     if !rules.is_empty() {
         return crate::permission::the_rule_that_admits(cmd, &[rules]);
     }
-    // The parse when there is one, the raw string when there is not: a command
-    // layer A could not resolve still gets an offer, and it gets the same one it
-    // always did rather than nothing.
-    let staged = baseline
+    // The parse when there is one, and nothing when there is not: a command layer A could
+    // not read gets no offer rather than the raw string's first token.
+    baseline
         .command
         .as_ref()
         .and_then(|n| n.stages.last())
@@ -4084,8 +4249,7 @@ fn derived_pattern(
                 let first = stage.argv.first().and_then(|w| w.literal());
                 crate::permission::always_pattern_for_stage(program, first)
             })
-        });
-    Some(staged.unwrap_or_else(|| crate::permission::always_pattern_for_command(cmd)))
+        })
 }
 
 /// A baseline's command as a shape, when it has one.
@@ -4094,6 +4258,46 @@ fn derived_pattern(
 /// looked up by cannot be derived differently.
 pub fn shape_of(b: &crate::intent::Baseline) -> Option<String> {
     b.command.as_ref().map(letibot_code::shell::shape)
+}
+
+/// **The words nobody could read, for the one line a card has room for.**
+///
+/// ` — `$PWD/target`, `$(id -u)`` after *"the command's meaning is not resolved"*, because
+/// a person who is told the reason can act on it and a person who is told only the verdict
+/// cannot: the words are what they would have to rewrite. The word as written, not the
+/// construct's name, for the same reason — `parameter_expansion` is the classifier's
+/// vocabulary, and the fix is in their command.
+///
+/// Nothing when the parse is missing every word (`resolved` false with no parse at all is
+/// the shape a parse error takes), which leaves the sentence alone rather than trailing a
+/// dangling dash.
+fn unresolved_names(b: &crate::intent::Baseline) -> String {
+    const SHOWN: usize = 3;
+    let Some(n) = &b.command else {
+        return String::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for u in &n.unresolved {
+        let word: String = u.text.trim().chars().take(24).collect();
+        if word.is_empty() || names.contains(&word) {
+            continue;
+        }
+        names.push(word);
+    }
+    if names.is_empty() {
+        return String::new();
+    }
+    let more = names.len().saturating_sub(SHOWN);
+    names.truncate(SHOWN);
+    let list = names
+        .iter()
+        .map(|n| format!("`{n}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match more {
+        0 => format!(" — {list}"),
+        n => format!(" — {list} and {n} more"),
+    }
 }
 
 /// **The arguments that are content and not a path**, so the never-write list is not asked

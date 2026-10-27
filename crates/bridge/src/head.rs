@@ -109,6 +109,11 @@ pub struct Ask {
     pub target: String,
     pub access: String,
     pub options: Vec<AskOption>,
+    /// **Why a rung is not on the ladder**, in one line from the gate, or empty when the
+    /// ladder is complete. A machine head reads it for the same reason a person does: an
+    /// option list that is silently shorter is one it cannot explain to whoever it is
+    /// reporting to.
+    pub options_note: String,
     pub choices: Vec<String>,
     pub deadline: Option<u64>,
 }
@@ -132,6 +137,7 @@ impl Ask {
                     kind: option_kind(o.kind),
                 })
                 .collect(),
+            options_note: d.options_note.clone(),
             choices: d.choices.clone(),
             deadline: d.deadline,
         }
@@ -152,6 +158,7 @@ impl Ask {
                 "label": o.label,
                 "kind": o.kind,
             })).collect::<Vec<_>>(),
+            "options_note": self.options_note,
             "choices": self.choices,
             "deadline": self.deadline,
         })
@@ -903,6 +910,7 @@ impl State {
                 summary,
                 target,
                 options,
+                options_note,
                 choices,
                 deadline,
                 ..
@@ -943,6 +951,7 @@ impl State {
                             kind: option_kind(o.kind),
                         })
                         .collect(),
+                    options_note: options_note.clone(),
                     choices,
                     deadline,
                 });

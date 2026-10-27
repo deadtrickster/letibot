@@ -110,6 +110,22 @@ fn bash<'a>(args: &'a Value) -> GateCall<'a> {
     }
 }
 
+/// **The ladder's inputs for a call nothing was left off**: a durable rule when one is
+/// named, and a session grant that would be honoured.
+///
+/// The ladder functions take an [`Offer`] rather than loose arguments because the rungs
+/// and the note explaining a missing one are one fact — see [`Offer`]. A test that wants
+/// a missing rung asks the gate for it (`AdjudicatedGate::request_for`) instead of
+/// assembling an `Offer` by hand, so the only way to see the two disagree is a real call.
+fn offered(derived: Option<&str>, program: &str) -> Offer {
+    Offer {
+        derived: derived.map(str::to_string),
+        program: program.to_string(),
+        session: true,
+        note: None,
+    }
+}
+
 // -------------------------------------------------------------------------
 // R11 — the audit rows, read back at decision time
 // -------------------------------------------------------------------------
@@ -125,6 +141,7 @@ fn bash_at<'a>(args: &'a Value, turn_id: &'a str) -> GateCall<'a> {
 }
 
 mod breaker;
+mod card;
 mod gate;
 mod grants;
 mod history;

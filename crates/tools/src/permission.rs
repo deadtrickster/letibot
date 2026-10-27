@@ -360,7 +360,7 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
 /// reasons a gate has to know one of them is there.
 ///
 /// `cd`, `pushd` and `popd` **move** the shell: nothing they do reaches a file or an
-/// argument, and every later command is judged on its own — [`moves_only`], which is why
+/// argument, and every later command is judged on its own — `moves_only`, which is why
 /// a segment that only moves needs no rule and a durable rule written for it saves
 /// nothing.
 ///

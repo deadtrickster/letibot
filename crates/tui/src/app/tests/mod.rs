@@ -81,6 +81,7 @@ fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecisio
                 kind: *k,
             })
             .collect(),
+        options_note: String::new(),
         choices: vec![],
         because: String::new(),
         advice: None,
@@ -816,6 +817,7 @@ fn tall_card(tall: bool) -> App {
             target: d.target.clone(),
             detail: d.detail.clone(),
             options: d.options.clone(),
+            options_note: d.options_note.clone(),
             choices: Vec::new(),
             because: String::new(),
             advice: None,

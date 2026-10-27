@@ -505,6 +505,8 @@ fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
         target: String::new(),
         detail: String::new(),
         options: Vec::new(),
+        // A question has no adjudication ladder, so there is no rung to have left off.
+        options_note: String::new(),
         // **The model's default is on the card**, so the person who comes back to it knows
         // what happens at the deadline: that choice is taken, not nothing.
         choices: q
@@ -1051,6 +1053,10 @@ fn pose(
             })
             .unwrap_or_default(),
         options: req.options.iter().map(wire_option).collect(),
+        // **What the ladder left off, and why**, verbatim from the gate: the rung and the
+        // sentence explaining its absence are one fact, and a head that composed the
+        // sentence would be re-deriving which refusal applied.
+        options_note: req.options_note.clone().unwrap_or_default(),
         // A permission has no plain-text choices. `ask_user_question` fills these,
         // and it goes through the same seam.
         choices: Vec::new(),

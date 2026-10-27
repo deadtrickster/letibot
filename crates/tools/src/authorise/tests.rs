@@ -122,7 +122,7 @@ fn an_operator_can_declare_what_their_guard_answers_about() {
 }
 use super::*;
 use crate::adjudicate::{
-    ActionClass, AdjudicatedGate, NoAdjudicator, OnTimeout, RequestKind, permission_options,
+    ActionClass, AdjudicatedGate, NoAdjudicator, Offer, OnTimeout, RequestKind, permission_options,
 };
 use crate::intent::{Intent, ShellTrust, Surroundings};
 use crate::runtime::Gate;
@@ -157,7 +157,14 @@ fn request(command: &str, trail: AuthorisationTrail) -> AdjudicationRequest {
         arguments_digest: "d".into(),
         boundary_facts: vec![],
         kind: RequestKind::Permission,
-        options: permission_options(Some("src/main.rs")),
+        options: permission_options(&Offer {
+            derived: Some("src/main.rs".into()),
+            program: "bash".into(),
+            session: true,
+            note: None,
+        }),
+        // A complete ladder: nothing was left off it, so the card has nothing to explain.
+        options_note: None,
         on_timeout: OnTimeout::Deny,
         // **Carried, not derived.** It used to read the verdict — `NotRun` meant
         // unresolved — and that stopped being true when an unresolvable construct

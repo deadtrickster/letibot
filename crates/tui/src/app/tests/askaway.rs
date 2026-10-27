@@ -57,6 +57,7 @@ fn model_question(a: &mut App, req_id: &str, deadline: Option<u64>) {
             target: String::new(),
             detail: String::new(),
             options: Vec::new(),
+            options_note: String::new(),
             choices: vec!["main".into(), "release".into()],
             because: String::new(),
             advice: None,

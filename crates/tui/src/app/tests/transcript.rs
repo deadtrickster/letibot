@@ -1096,6 +1096,7 @@ fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
             target: String::new(),
             detail: String::new(),
             options: Vec::new(),
+            options_note: String::new(),
             choices: Vec::new(),
             because: String::new(),
             advice: None,

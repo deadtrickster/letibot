@@ -127,6 +127,15 @@ pub struct OpenDecision {
     pub detail: String,
     /// The allow/deny ladder, for a permission. Empty for a question.
     pub options: Vec<DecisionOption>,
+    /// **Why a rung a person would look for is not on the ladder**, in one line from the
+    /// gate. Empty when nothing was left off — see
+    /// [`crate::event::SessionEvent::DecisionRequested`].
+    ///
+    /// Held on the view rather than composed by a head for `detail`'s reason one field up:
+    /// which of the four refusals applied is the matcher's answer, and a head that
+    /// re-derived it would be guessing at a decision it did not make.
+    #[serde(default)]
+    pub options_note: String,
     /// The model's own plain-text choices, for a question (T25/D10). Empty for a
     /// permission. See [`crate::event::SessionEvent::DecisionRequested`] for why the
     /// two do not share a field.
@@ -604,6 +613,7 @@ impl SessionView {
                 target,
                 detail,
                 options,
+                options_note,
                 choices,
                 because,
                 advice,
@@ -624,6 +634,7 @@ impl SessionView {
                     target: target.clone(),
                     detail: detail.clone(),
                     options: options.clone(),
+                    options_note: options_note.clone(),
                     choices: choices.clone(),
                     because: because.clone(),
                     advice: advice.clone(),

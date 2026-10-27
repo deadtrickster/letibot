@@ -491,6 +491,7 @@ mod tests {
             target: String::new(),
             detail: String::new(),
             options: vec![],
+            options_note: String::new(),
             choices: vec![],
             because: String::new(),
             advice: None,

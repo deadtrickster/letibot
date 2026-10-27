@@ -205,6 +205,29 @@ impl NotCovered {
             }
         }
     }
+
+    /// **The same four, in the one line a card has room for.**
+    ///
+    /// [`NotCovered::why`] is a refusal a model reads and it argues; this is drawn under
+    /// the ladder of a card, next to the rung it explains, and a person skimming a card
+    /// reads one line or none. The reason it belongs HERE rather than in a sentence the
+    /// gate composes: a card that says *"not offered for the session"* must name the same
+    /// one of the four the matcher would answer, and two derivations of that is two
+    /// answers the first time a fifth refusal is added.
+    ///
+    /// Every one of them is a *because*, so a caller prefixes the noun it is explaining
+    /// (`not offered for the session: …`) rather than this repeating it.
+    pub fn short(&self) -> &'static str {
+        match self {
+            NotCovered::ClassNotGranted => "this grant's class does not cover the call",
+            NotCovered::Unresolved => "the command's meaning is not resolved",
+            NotCovered::AlwaysAsk => {
+                "this is on the always-ask list, and a standing permission \
+                 never reaches one"
+            }
+            NotCovered::Blocked => "nothing a session grants reaches a blocked action",
+        }
+    }
 }
 
 impl Grant {

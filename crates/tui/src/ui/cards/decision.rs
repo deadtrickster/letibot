@@ -101,6 +101,21 @@ impl App {
                 w,
             )));
         }
+        // **Why a rung a person would look for is not on the ladder.** The gate leaves a
+        // rung off rather than showing a button whose effect it would decline to honour
+        // (R18's rule), and the operator's report is the other half of it: a rung that
+        // vanished in silence reads as *maybe I misremembered*. One line, under the ladder
+        // it belongs to, in the attention register — it is a fact about what the person
+        // CAN answer, not a footnote.
+        //
+        // In the `choices` half for the reason the question hints above are: the rungs are
+        // the answer, and R20 says the answer half is never trimmed away.
+        if let Some(note) = Some(d.options_note.as_str()).filter(|n| !n.trim().is_empty()) {
+            choices.push(rano::agent::pane::faint(rano::agent::text::trim_to(
+                &format!("  {note}"),
+                w,
+            )));
+        }
         // **What waits behind this card** (R90.9): only the front card is drawn, so a model's
         // question with a deadline behind a todo card could time out unseen.
         let behind = self.open.iter().skip(1).count();

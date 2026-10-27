@@ -2138,6 +2138,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
             target: d.target.clone(),
             detail: d.detail.clone(),
             options: d.options.clone(),
+            options_note: d.options_note.clone(),
             choices: Vec::new(),
             because: String::new(),
             advice: None,

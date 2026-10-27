@@ -359,6 +359,48 @@ fn deny_and_tell_carries_the_operators_words() {
     );
 }
 
+/// **Why a rung is missing is ON the card, under the ladder it belongs to.**
+///
+/// The gate leaves a rung off rather than showing a button whose effect it would then
+/// decline to honour, and the operator's side of that rule is that a rung which vanishes
+/// in silence reads as *maybe I misremembered what I was offered*. MEASURED 2026-10-26:
+/// fifteen of one session's twenty-two asks had no session rung and nothing said why.
+#[test]
+fn the_card_draws_the_reason_a_rung_is_missing() {
+    use letibot_sessionlog::event::OptionKind;
+    let a = app();
+
+    // Nothing left off: nothing said. A complete ladder is not a card apologising.
+    let complete = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+    assert!(
+        !a.decision_lines(&complete, 120)
+            .iter()
+            .any(|l| l.contains("not offered for the session")),
+        "a complete ladder explained an absence it does not have"
+    );
+
+    let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+    d.options_note =
+        "not offered for the session: the command's meaning is not resolved — `$PWD/target`".into();
+    let lines = a.decision_lines(&d, 120);
+    let note = lines
+        .iter()
+        .find(|l| l.contains("not offered for the session"))
+        .expect("the card said nothing about the rung it dropped");
+    assert!(
+        note.contains("`$PWD/target`"),
+        "the note does not name the word a person would rewrite: {note}"
+    );
+    // Under the ladder, not buried in the evidence above it: it is a fact about what can
+    // be answered, and the answer half is the one that is never trimmed away.
+    let note_at = lines
+        .iter()
+        .position(|l| l.contains("not offered for the session"))
+        .unwrap();
+    let ladder_at = lines.iter().position(|l| l.contains("allow_once")).unwrap();
+    assert!(note_at > ladder_at, "{}", lines.join("\n"));
+}
+
 /// The hint only appears when the option it describes is on offer.
 #[test]
 fn the_glob_hint_is_absent_when_no_rule_can_be_written() {
@@ -736,6 +778,7 @@ fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
             target: String::new(),
             detail: String::new(),
             options: Vec::new(),
+            options_note: String::new(),
             choices: Vec::new(),
             because: String::new(),
             advice: Some(letibot_sessionlog::event::ModelAdvice {
