@@ -1,0 +1,5 @@
+name = "sessions"
+purpose = "the daemon's sessions: how they are grouped, what each row says, and the keys that act on it"
+hooks = ["pane_sessions"]
+capabilities = []
+contract = 1

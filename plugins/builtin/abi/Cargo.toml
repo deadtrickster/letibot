@@ -1,0 +1,14 @@
+[package]
+name = "letibot-guest-abi"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "rano ABI v1, as a guest writes it: the input, the answer arena and the result block"
+
+# **Not a member of letibot's workspace, deliberately.** This is a guest's crate: it is compiled
+# by `crates/builtins`' build script for `wasm32-unknown-unknown`, into a module that is
+# `include_bytes!`d into the daemon. The workspace must not build, test or gate it — `plugins` is
+# in the root manifest's `exclude` for exactly this reason.
+[workspace]
+
+[dependencies]

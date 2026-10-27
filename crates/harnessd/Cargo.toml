@@ -40,6 +40,10 @@ letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 # **The plugin layers and the panes they answer** (W4 of `docs/plugins-slice1.md`): the stack,
 # the recorder, the shadow gate and the pane `View`, all in crates with no wasm engine in them.
 letibot-plugins.workspace = true
+# **The layers this binary carries** (`crates/builtins`): their modules are `include_bytes!`d into
+# the daemon, so the `builtin` scope of every stack is the table this crate holds — and a head or
+# a test reads the same table rather than a second copy of it.
+letibot-builtins.workspace = true
 # **The hook contracts, for the daemon's side of the wire** (`crates/plugin-sdk`): the four kinds'
 # typed inputs and answers, which the listener below builds and parses rather than spelling them
 # as JSON here. The same crate is what a guest plugin links, so a renamed field breaks both.

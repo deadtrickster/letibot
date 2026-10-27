@@ -36,6 +36,11 @@ members = [
     # so a renamed field breaks a compilation rather than a sentence, the way
     # `crates/sessionlog/src/pane.rs` does for the pane.
     "crates/plugin-sdk",
+    # **The plugin layers the binary carries** (`docs/plugins-plan.md` §7 step 10): its build
+    # script compiles `plugins/builtin/*` for `wasm32-unknown-unknown` into `OUT_DIR`, and the
+    # crate is the table a stack reads its `builtin` scope from. Next to the stack because it is
+    # the stack's bottom layer, one level further in.
+    "crates/builtins",
     "crates/harnessd",
     "crates/opencode",
     # Another head, and the one that is a program rather than a screen: the Claude Code
@@ -129,6 +134,7 @@ letibot-tools = { path = "crates/tools" }
 letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
 letibot-plugin = { path = "crates/plugin-sdk" }
+letibot-builtins = { path = "crates/builtins" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
 letibot-bridge = { path = "crates/bridge" }

@@ -55,6 +55,16 @@ pub struct Layer {
     /// The SHA-256 of `plugin.wasm` — or empty when there is no module to hash.
     pub sha256: String,
     pub disabled: bool,
+    /// **Whether this layer is the operator's own** — DECISIONS.md D17: trust is *who wrote the
+    /// layer*, and a layer the operator wrote (or a built-in this binary carries, which they did
+    /// not write but did choose to ship) runs freely, while a layer a MODEL wrote goes through
+    /// `Gate::admit_unasked` and must be pinned by hash before it is trusted.
+    ///
+    /// **Nothing reads this yet.** It is here so that the package that builds D17 has the fact to
+    /// fill rather than a shape to invent: a built-in is `true` by definition (it is part of the
+    /// binary the operator runs), and every layer discovered from disk is `false` until that
+    /// package asks the store which of them the operator pinned.
+    pub trusted: bool,
 }
 
 /// One layer's refusal to answer, and why. Rendered for the model and for the stack pane, so the
@@ -308,6 +318,7 @@ impl Stack {
     /// whose id is already taken, is refused and recorded rather than registered: ids are how
     /// `set_disabled`, `by` and the transcript name a layer, so two of them cannot be one.
     pub fn register_builtin(&mut self, mut layer: Layer, module: Box<dyn Module>) {
+        layer.trusted = true;
         if layer.id.is_empty() {
             layer.id = format!("{}-{}", Scope::BuiltIn.prefix(), layer.manifest.name);
         }
@@ -343,6 +354,60 @@ impl Stack {
                 seen: Fingerprint::absent(),
             },
         );
+    }
+
+    /// **Register a built-in the binary carries as BYTES** — `crates/builtins`' table, read into
+    /// the bottom of the stack (`docs/plugins-plan.md` §7 step 10).
+    ///
+    /// The manifest is parsed from its `plugin.toml` text and the module comes from memory, so a
+    /// built-in goes through exactly the doors a layer on disk does: the same manifest rules, the
+    /// same export admission, the same `Loader`, the same row in the stack view. The one
+    /// difference is that the bytes never touch the filesystem, which is the whole point — a
+    /// shipped layer is not a directory that can be missing, half-installed or the wrong version.
+    ///
+    /// A failure is answered AND recorded in [`Stack::failures`]: the caller puts it in front of a
+    /// person, and the stack view shows the built-in broken rather than absent — *this is
+    /// installed and exploding* is the state that needs saying, the same rule discovery follows.
+    pub fn register_builtin_bytes(
+        &mut self,
+        name: &str,
+        manifest: &str,
+        wasm: &[u8],
+    ) -> Result<(), String> {
+        let parsed = Manifest::parse(manifest).map_err(|why| format!("plugin.toml: {why}"))?;
+        let module = self
+            .loader
+            .load_bytes(name, wasm, &parsed.capabilities)
+            .map_err(|why| {
+                let why = format!("the module could not be loaded: {why}");
+                self.failures.push(Failure {
+                    layer: format!("{}-{name}", Scope::BuiltIn.prefix()),
+                    scope: Scope::BuiltIn,
+                    hook: None,
+                    why: why.clone(),
+                });
+                why
+            })?;
+        let layer = Layer {
+            // Filled in here rather than by `register_builtin`, so the failure this call may
+            // record can be found by the id the caller will see in the stack view.
+            id: format!("{}-{}", Scope::BuiltIn.prefix(), parsed.name),
+            scope: Scope::BuiltIn,
+            dir: PathBuf::new(),
+            manifest: parsed,
+            sha256: crate::sha256_hex(wasm),
+            disabled: false,
+            trusted: true,
+        };
+        let id = layer.id.clone();
+        let before = self.failures.len();
+        self.register_builtin(layer, module);
+        // `register_builtin` records its own refusals; answer the one that belongs to THIS call
+        // so a caller is not told *ok* about a layer that is not on the stack.
+        match self.failures[before..].iter().find(|f| f.layer == id) {
+            Some(f) => Err(f.why.clone()),
+            None => Ok(()),
+        }
     }
 
     /// Turn a layer off (or on) without deleting it — `plugin disable s2`, the bisect for
@@ -520,6 +585,9 @@ impl Stack {
                     manifest,
                     sha256: seen.sha256,
                     disabled: false,
+                    // A layer from disk is the operator's only once something says so; D17's
+                    // package fills this from what the store has pinned.
+                    trusted: false,
                 };
                 let at = self.insertion_point(c.scope);
                 self.layers.insert(at, layer);
@@ -620,6 +688,9 @@ impl Stack {
                 sha256: seen.sha256.clone(),
                 manifest,
                 disabled: false,
+                // See `Layer::trusted`: a disk layer is the operator's only once D17's package
+                // has asked the store which layers they pinned.
+                trusted: false,
             });
             self.wired.insert(
                 id,
@@ -808,7 +879,7 @@ fn layer_dirs(dir: &Path) -> Vec<PathBuf> {
 mod tests {
     use super::*;
     use crate::Capability;
-    use crate::testing::{Act, Fake, TempDir, layer, write_wasm};
+    use crate::testing::{Act, Fake, TempDir, layer, script, write_wasm};
     use serde_json::json;
 
     fn stack(scopes: &TempDir) -> Stack {
@@ -887,6 +958,7 @@ mod tests {
                     manifest,
                     sha256: String::new(),
                     disabled: false,
+                    trusted: false,
                 },
                 Box::new(Fake::one(
                     "pane_dashboard",
@@ -903,6 +975,98 @@ mod tests {
             answer_of(&s.call("pane_dashboard", &json!({}))),
             json!({"from": "second"})
         );
+    }
+
+    /// **A built-in the binary carries as BYTES** — `crates/builtins`' table, at the bottom of the
+    /// stack (`docs/plugins-plan.md` §7 step 10).
+    ///
+    /// The layer has no directory, a manifest that had to parse, a module that had to be admitted,
+    /// and an id built from its name — and the scope above it still wins, because a built-in is a
+    /// default and not an exception.
+    #[test]
+    fn a_builtin_from_bytes_sits_at_the_bottom_and_obeys_the_scopes_above_it() {
+        let t = TempDir::new("builtin-bytes");
+        layer(
+            &t.path().join("session"),
+            "a",
+            &["pane_sessions"],
+            Act::answer(json!({"from": "session"})),
+        );
+        let mut s = stack(&t);
+        let manifest = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
+                        capabilities = [\"read\"]\ncontract = 1\n";
+        s.register_builtin_bytes(
+            "sessions",
+            manifest,
+            &script(&[("pane_sessions", Act::answer(json!({"from": "builtin"})))]),
+        )
+        .expect("a built-in registers");
+        assert_eq!(
+            s.layers().iter().map(|l| l.id.as_str()).collect::<Vec<_>>(),
+            vec!["s1", "b-sessions"],
+        );
+        // It is the bottom layer: no directory, and the operator's by definition (D17).
+        let builtin = s.layer("b-sessions").expect("the built-in");
+        assert!(builtin.dir.as_os_str().is_empty());
+        assert_eq!(builtin.scope, Scope::BuiltIn);
+        assert!(builtin.trusted);
+        assert_eq!(
+            builtin.sha256.len(),
+            64,
+            "the bytes are hashed like any layer's"
+        );
+        // With the session layer above it, the session answers.
+        assert_eq!(
+            answer_of(&s.call("pane_sessions", &json!({}))),
+            json!({"from": "session"})
+        );
+        s.set_disabled("s1", true).unwrap();
+        let r = s.call("pane_sessions", &json!({}));
+        assert_eq!(r.by.as_deref(), Some("b-sessions"));
+        assert_eq!(answer_of(&r), json!({"from": "builtin"}));
+    }
+
+    /// **A loader with no memory path refuses a built-in, and the stack says so** — a fake engine
+    /// must not be able to pretend it loaded something it never saw.
+    #[test]
+    fn a_loader_that_cannot_load_bytes_answers_a_sentence_and_records_it() {
+        struct FilesOnly;
+        impl Loader for FilesOnly {
+            fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+                Err(format!("no engine here: {}", wasm.display()))
+            }
+        }
+        let mut s = Stack::discover(None, None, None, Arc::new(FilesOnly));
+        let manifest = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
+                        capabilities = []\ncontract = 1\n";
+        let why = s
+            .register_builtin_bytes("sessions", manifest, b"not a module")
+            .expect_err("a loader without `load_bytes` cannot register a built-in");
+        assert!(why.contains("load_bytes"), "{why}");
+        assert!(s.layers().is_empty());
+        let failure = s.failures().first().expect("the refusal is recorded");
+        assert_eq!(failure.layer, "b-sessions", "the built-in is named");
+        assert_eq!(failure.scope, Scope::BuiltIn);
+    }
+
+    /// **A built-in whose manifest does not admit its module is refused by NAME, not left on the
+    /// stack half-registered** — the same rule discovery follows, and the one the stack view draws
+    /// as *installed and exploding* rather than as absent.
+    #[test]
+    fn a_builtin_whose_exports_its_manifest_does_not_declare_is_refused() {
+        let t = TempDir::new("builtin-admit");
+        let mut s = stack(&t);
+        let manifest = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_other\"]\n\
+                        capabilities = []\ncontract = 1\n";
+        let why = s
+            .register_builtin_bytes(
+                "sessions",
+                manifest,
+                &script(&[("pane_sessions", Act::answer(json!({})))]),
+            )
+            .expect_err("the manifest and the exports disagree");
+        assert!(why.contains("pane_sessions"), "{why}");
+        assert!(s.layers().is_empty(), "nothing half-registered");
     }
 
     #[test]

@@ -1,0 +1,13 @@
+[package]
+name = "letibot-builtins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "the plugin layers compiled into the binary: their modules, their manifests, and the table a stack reads them from"
+
+[dependencies]
+# The layer stack, for the `Stack::register_builtin_bytes` door this crate is the caller of. It is
+# deliberately the ONLY dependency: this crate's job is to carry bytes, not to know what a hook is.
+letibot-plugins = { path = "../plugins" }

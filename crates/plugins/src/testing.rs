@@ -250,6 +250,25 @@ impl Loader for FakeLoader {
         let bytes = std::fs::read(wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
         Ok(Box::new(parse_script(&bytes)?))
     }
+
+    /// The bytes path, over the same scripts — a built-in is a script with no file behind it.
+    ///
+    /// The name stands in for a path in the record, so a test can assert that the capabilities a
+    /// built-in's manifest declares were handed to the engine like any other layer's.
+    fn load_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<Box<dyn Module>, String> {
+        if let Ok(mut loaded) = self.loaded.lock() {
+            loaded.push((PathBuf::from(format!("<{name}>")), caps.to_vec()));
+        }
+        if let Some(why) = &self.failing {
+            return Err(why.clone());
+        }
+        Ok(Box::new(parse_script(bytes)?))
+    }
 }
 
 /// A `Builder` that writes a prepared script instead of running cargo, so no test here builds

@@ -1,0 +1,30 @@
+[package]
+name = "letibot-builtin-sessions"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the session list, as a built-in plugin: the groups, the names, the counts and the keys"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a GUEST: it is built by
+# `crates/builtins`' build script for `wasm32-unknown-unknown`, and the module it produces is
+# `include_bytes!`d into the binary. The root manifest excludes `plugins` so the workspace never
+# tries to build it for the host, where a `cdylib` for a wasm ABI has nothing to say.
+[workspace]
+
+[lib]
+# The plugin the host loads. There is no `rlib`: nothing links this crate natively — its logic is
+# tested in the host crates, through the real engine, on the built module.
+crate-type = ["cdylib"]
+
+[dependencies]
+# rano ABI v1 — the input region, the answer arena and the result block. A path, because the
+# guest and the host that embeds it are one tree.
+letibot-guest-abi = { path = "../abi" }
+serde_json = "1"
+
+[profile.release]
+# A guest module is embedded in the daemon's binary, so its size is the binary's size.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

@@ -1,0 +1,11 @@
+# A layer that asks for the layer BELOW it and edits what it finds — the fixture behind
+# `builtin_layers.rs`'s "a call below reaches the built-in".
+#
+# It is not an example of anything a person would write (that is `plugins/examples/`); it is the
+# smallest module that can answer the two things the stack's `below` protocol needs, so the test
+# needs no wasm toolchain to build it. `plugin.wasm` beside this file is committed.
+name = "below"
+purpose = "asks the layer below and says what it found there — a fixture for the below protocol"
+hooks = ["pane_sessions"]
+capabilities = []
+contract = 1

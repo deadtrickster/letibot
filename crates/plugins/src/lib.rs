@@ -90,6 +90,29 @@ pub trait Module: Send + Sync {
 /// starts: a plugin's imports can only reach what the file it was reviewed with declared.
 pub trait Loader: Send + Sync {
     fn load(&self, wasm: &Path, caps: &[Capability]) -> Result<Box<dyn Module>, String>;
+
+    /// **Load a module the host already holds in memory** — a built-in, `include_bytes!`d into the
+    /// binary (`docs/plugins-plan.md` §7 step 10, `crates/builtins`).
+    ///
+    /// The same file the same engine compiles, and the same capabilities, so a built-in is a layer
+    /// like any other once it is loaded; only the journey is shorter. `name` is the layer's name,
+    /// for the sentence a refusal carries — a module from memory has no path to point at.
+    ///
+    /// The default is a refusal rather than an error type of its own, because most loaders are
+    /// test fakes with no memory to read from, and a fake that filled this in would be a fake
+    /// pretending to be a wasm engine.
+    fn load_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<Box<dyn Module>, String> {
+        let _ = (bytes, caps);
+        Err(format!(
+            "the loader in use cannot load `{name}` from memory — a built-in needs an engine with \
+             `load_bytes`, which is the daemon's rano loader"
+        ))
+    }
 }
 
 /// The contract version this host speaks. A layer declaring another is refused by name at the

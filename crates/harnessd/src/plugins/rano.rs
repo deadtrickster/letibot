@@ -49,6 +49,28 @@ impl Loader for RanoLoader {
         let _ = caps;
         Ok(Box::new(RanoModule { plugin }))
     }
+
+    /// **The same engine, on bytes the binary carries** — a built-in layer (`crates/builtins`).
+    ///
+    /// `rano::plugin::Plugin::from_bytes_hooks` is the door rano already had for its own
+    /// fixtures; a built-in is the same shape of caller. The name stands in for a path, because a
+    /// module that came from memory has none to name in a refusal.
+    fn load_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<Box<dyn Module>, String> {
+        let plugin = rano::plugin::Plugin::from_bytes_hooks(
+            bytes,
+            std::path::PathBuf::from(format!("<built-in {name}>")),
+            rano::plugin::Capabilities::default(),
+            HOOK_PREFIXES,
+        )
+        .map_err(|why| format!("built-in `{name}`: {why}"))?;
+        let _ = caps;
+        Ok(Box::new(RanoModule { plugin }))
+    }
 }
 
 struct RanoModule {
