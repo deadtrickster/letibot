@@ -29,7 +29,8 @@ const GROUP: &str = "one-shots";
 
 /// The name it is drawn under here, and the line that says why.
 const RENAMED: &str = "leftovers (0)";
-const LEGEND: &str = "what a `--prompt` run left behind — this project keeps no such rows on its list";
+const LEGEND: &str =
+    "what a `--prompt` run left behind — this project keeps no such rows on its list";
 
 /// **One call**: the first time, ask below with the same request; the second time, edit.
 fn answer(bytes: &[u8]) -> Option<String> {
@@ -155,7 +156,10 @@ mod tests {
         assert_eq!(group["cells"][0]["text"], "leftovers (0)");
         assert_eq!(group["under"][0], LEGEND);
         // The other rows are the built-in's own, byte for byte.
-        assert_eq!(rows[1], builtin_view()["panels"][0]["summary"][0]["tree"]["rows"][1]);
+        assert_eq!(
+            rows[1],
+            builtin_view()["panels"][0]["summary"][0]["tree"]["rows"][1]
+        );
     }
 
     /// **A list with no such group is left alone** — the edit is an edit, not a requirement.
