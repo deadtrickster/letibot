@@ -652,6 +652,10 @@ answered. `letibot_tools::Gate::admit_unasked` is therefore the entry, and it is
 
 * **admitted** by a `permission` rule, a standing grant, the point the session sits at, or a
   measured boundary (D16) → the look runs, as it always did;
+* **the gate is busy with somebody else's call** → nothing runs and nothing is owed: the look is
+  *deferred* and the watch asks again on the poller's next tick. The gate's mutex is held across the
+  model's own decision, card and all, so a look that waited on it would park the session's monitor
+  thread behind that card;
 * **a call that would have been put to a person** → it does not run; the layer is handed a look
   result saying *would need your approval* and the card's own reason, and the session is told
   **once** per (layer, program, reason) — not once per firing;

@@ -65,6 +65,19 @@ pub enum Look {
     Done(LookResult),
     /// A program is running. Poll it; the poller must not wait for it.
     Running(Box<dyn LookChild>),
+    /// **Nothing happened, and nothing is owed** — ask again on the next tick.
+    ///
+    /// The third answer exists because the host is not always free to look: an `exec` look goes
+    /// through the session's gate (`docs/plugins-plan.md` §1 principle 2), and that gate may be
+    /// holding a card up for the model's own call at this moment. It is held on purpose and for
+    /// minutes (`ToolRuntime::run`), so a look that waited for it would park the session's one
+    /// monitor thread — and every watch on it — behind somebody's decision.
+    ///
+    /// So a busy gate is *not now*, not *no*: the watch keeps this look and asks again when the
+    /// poller next comes round. It is deliberately not a [`LookResult`] — a refusal a plugin can
+    /// read would be a fact about the world (*your program may not run*), and this is a fact about
+    /// the moment.
+    Deferred,
 }
 
 /// A look that is a live process, as the poller sees it.
@@ -236,6 +249,12 @@ impl PluginCondition {
         match self.stack.look(&self.hook, &spec) {
             Look::Done(result) => self.lock().ready = Some(result),
             Look::Running(child) => self.lock().child = Some(child),
+            // **Nothing ran and nothing is owed**: `spec` stays where it is, so the next
+            // `start_look` — the next tick, since nothing is ready and nothing is running — asks
+            // the same question again. Deliberately no state is written here: a `ready` would hand
+            // the plugin a result that is not one, and a `child` would claim a process that does
+            // not exist.
+            Look::Deferred => {}
         }
     }
 
@@ -443,6 +462,90 @@ mod tests {
         fn look(&self, _hook: &str, _ask: &LookAsk) -> Look {
             Look::Done(LookResult::ok(""))
         }
+    }
+
+    /// **A stack whose look is deferred the first `n` times, then runs** — the shape a watch sees
+    /// while the session's gate is busy holding a card up for somebody else.
+    struct BusyFirst {
+        remaining: Mutex<usize>,
+        looks: Mutex<usize>,
+        asked: Mutex<Vec<Value>>,
+    }
+
+    impl PluginStack for BusyFirst {
+        fn ask(&self, _hook: &str, input: &Value) -> Option<Value> {
+            self.asked
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(input.clone());
+            Some(json!({"look": {"exec": ["true"]}, "every_s": 5}))
+        }
+
+        fn look(&self, _hook: &str, _ask: &LookAsk) -> Look {
+            *self.looks.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            let mut left = self.remaining.lock().unwrap_or_else(|e| e.into_inner());
+            if *left > 0 {
+                *left -= 1;
+                return Look::Deferred;
+            }
+            Look::Done(LookResult::ok("now it ran"))
+        }
+    }
+
+    /// **A deferred look is not a result and not a refusal**: nothing is handed to the plugin, and
+    /// the same look is asked again on the next tick — which is how a watch whose gate is busy with
+    /// somebody's card waits instead of blocking the poller or reading as a refusal.
+    #[test]
+    fn a_deferred_look_is_asked_again_on_the_next_tick() {
+        let stack = Arc::new(BusyFirst {
+            remaining: Mutex::new(2),
+            looks: Mutex::new(0),
+            asked: Mutex::new(Vec::new()),
+        });
+        let condition = within("a deferred look", {
+            let stack = stack.clone();
+            move || PluginCondition::arm(stack, "shell", json!({})).expect("armed")
+        });
+        // Arming started the first look and it was deferred: nothing is ready, nothing is running,
+        // and — the half that matters — no result was handed over to be read as one.
+        assert_eq!(condition.met(), None, "a deferral is not a result");
+        assert_eq!(*stack.looks.lock().unwrap(), 1, "the look was asked once");
+        assert!(
+            stack
+                .asked
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|i| i["look"].is_null()),
+            "a deferred look was handed to the plugin as though it had run"
+        );
+
+        // **And the spec was KEPT**: the next firing asks the same look again rather than losing
+        // it. `met` finds nothing ready and nothing running, and the interval's tick asks.
+        let waiting = within("a second tick", {
+            let stack = stack.clone();
+            move || PluginCondition::arm(stack, "shell", json!({})).expect("armed")
+        });
+        assert_eq!(waiting.met(), None);
+        assert_eq!(*stack.looks.lock().unwrap(), 2, "asked again, not lost");
+
+        // When the gate is free the same watch gets its result, and the plugin reads it.
+        let free = within("a free gate", {
+            let stack = stack.clone();
+            move || PluginCondition::arm(stack, "shell", json!({})).expect("armed")
+        });
+        let _ = free.met();
+        let asked = stack
+            .asked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        assert!(
+            asked
+                .iter()
+                .any(|i| i["look"]["stdout"] == json!("now it ran")),
+            "the look that finally ran was not handed to the plugin: {asked:?}"
+        );
     }
 
     /// **Arming asks once, and the answer's interval and ttl are the watch's.** The call at arming

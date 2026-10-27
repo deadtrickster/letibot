@@ -33,6 +33,10 @@
 //!
 //! * **admitted** (a `permission` rule, a standing grant, a point that admits the class, a D16
 //!   measured boundary) → the look runs, exactly as it did before there was a gate here;
+//! * **the gate is busy** → nothing runs and nothing is owed: the look is *deferred*, the watch
+//!   keeps it and asks again on the poller's next tick. The gate's mutex is held across the model's
+//!   own decision and for as long as a person takes to answer, so waiting on it here would park the
+//!   session's one monitor thread — and every watch on it — behind somebody's card;
 //! * **would have been put to somebody** → it does not run, the layer is handed a look result that
 //!   says *would need your approval* and why, and the session is told **once** per (layer,
 //!   program, reason) — a watch polling every ninety seconds is not ninety seconds of the same
@@ -62,23 +66,33 @@ use serde_json::Value;
 
 use crate::plugins::{PluginHost, look};
 
-/// **The gate, as a look asks it**: one question, and it may not raise a card.
+/// **The gate, as a look asks it**: one question, it may not raise a card, and it may not wait.
 ///
 /// A trait rather than the runtime itself so the daemon can hand over its own gate and a test can
 /// answer without building one — the same seam [`PluginStack`] is, one layer down. The single
 /// implementation that matters is [`ToolRuntime`]'s, because *the* gate is the session's.
 pub trait Unasked: Send + Sync {
-    /// What the gate would do with this call if nobody could be asked. See
-    /// [`letibot_tools::Gate::admit_unasked`].
-    fn admit_unasked(&self, call: &GateCall<'_>) -> GateDecision;
+    /// What the gate would do with this call if nobody could be asked — or **`None` when the gate is
+    /// busy**, which is not an answer at all. See [`letibot_tools::Gate::admit_unasked`].
+    fn admit_unasked(&self, call: &GateCall<'_>) -> Option<GateDecision>;
 }
 
 impl Unasked for ToolRuntime {
-    fn admit_unasked(&self, call: &GateCall<'_>) -> GateDecision {
-        self.gate
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .admit_unasked(call)
+    /// **`try_lock`, and the difference is the whole point.** `ToolRuntime::run` holds this mutex
+    /// across the model's own decision on purpose, card and all — for as long as a person takes to
+    /// answer — so a look that *waited* for it would park the session's monitor thread behind that
+    /// card, and every other watch with it. A gate that is busy is *not now*: `None`, the look is
+    /// deferred, and the poller asks again next tick.
+    ///
+    /// A poisoned lock is the same as it ever was — `into_inner`, because a panic on another thread
+    /// is not a reason to stop looking.
+    fn admit_unasked(&self, call: &GateCall<'_>) -> Option<GateDecision> {
+        let mut gate = match self.gate.try_lock() {
+            Ok(gate) => gate,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+        };
+        Some(gate.admit_unasked(call))
     }
 }
 
@@ -173,8 +187,8 @@ impl PluginStack for StackOver {
                          run — a capability is declared in plugin.toml and enforced here"
                     )));
                 }
-                if let Some(refused) = self.adjudicate(hook, program, argv, &workspace) {
-                    return Look::Done(refused);
+                if let Some(verdict) = self.adjudicate(hook, program, argv, &workspace) {
+                    return verdict;
                 }
                 match ChildLook::spawn(argv, &workspace) {
                     Ok(child) => Look::Running(Box::new(child)),
@@ -193,20 +207,26 @@ impl StackOver {
     /// written for the model's `gh pr view` covers the plugin's identical look, and one written
     /// against a *different* command does not. `turn_id` and `call_id` are empty because no turn
     /// and no call own a watch's look; the audit row says so rather than borrowing an id.
+    ///
+    /// `None` is *run it*. Anything else is what the caller returns: a refusal to hand the layer, or
+    /// [`Look::Deferred`] — the gate was busy, so nothing was decided, nothing is run, and nothing is
+    /// said to anybody.
     fn adjudicate(
         &self,
         hook: &str,
         program: &str,
         argv: &[String],
         workspace: &std::path::Path,
-    ) -> Option<letibot_plugin::condition::LookResult> {
+    ) -> Option<Look> {
         let Some(gate) = self.gate.as_deref() else {
             let why = format!(
                 "`{program}` was not run: this session has no gate, so nothing could judge whether \
                  a program a plugin declared may run"
             );
             self.say(hook, &why);
-            return Some(letibot_plugin::condition::LookResult::refused(why));
+            return Some(Look::Done(letibot_plugin::condition::LookResult::refused(
+                why,
+            )));
         };
         let args = serde_json::json!({ "command": command_of_argv(argv) });
         // The scripts a look would run are not read: a `read`/`exec` look is a program the layer
@@ -224,12 +244,22 @@ impl StackOver {
             target_exists: None,
             scripts: &scripts,
         };
-        let GateDecision::Refuse { outcome, tell } = gate.admit_unasked(&call) else {
+        let Some(decision) = gate.admit_unasked(&call) else {
+            // **The gate is busy with somebody else's call.** Its mutex is held across the model's
+            // own decision (card and all), so this is *not now* rather than *no*: nothing runs,
+            // nothing is said to the layer as a result, and — deliberately — no notice is
+            // published, because a card that a person is looking at is not news about the plugin.
+            // The watch keeps its look and the poller asks again next tick.
+            return Some(Look::Deferred);
+        };
+        let GateDecision::Refuse { outcome, tell } = decision else {
             return None;
         };
         let why = format!("`{program}`: {}", said(&outcome, &tell));
         self.say(hook, &why);
-        Some(letibot_plugin::condition::LookResult::refused(why))
+        Some(Look::Done(letibot_plugin::condition::LookResult::refused(
+            why,
+        )))
     }
 
     /// **Said once per (layer, program, reason)** — the layer is told through its look result, and

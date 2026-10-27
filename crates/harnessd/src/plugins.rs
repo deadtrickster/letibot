@@ -3617,14 +3617,14 @@ mod tests {
     }
 
     impl conditions::Unasked for ProbeGate {
-        fn admit_unasked(&self, call: &letibot_tools::GateCall<'_>) -> GateDecision {
+        fn admit_unasked(&self, call: &letibot_tools::GateCall<'_>) -> Option<GateDecision> {
             self.seen.lock().unwrap_or_else(|e| e.into_inner()).push(
                 call.args["command"]
                     .as_str()
                     .unwrap_or_default()
                     .to_string(),
             );
-            (self.answer)()
+            Some((self.answer)())
         }
     }
 
@@ -3885,6 +3885,104 @@ mod tests {
                 .as_str()
                 .is_some_and(|s| s.contains("no gate")),
             "{handed}"
+        );
+    }
+
+    /// A gate that admits everything — the fixture the deferred look needs, since what this test is
+    /// about is the MUTEX and not the decision.
+    struct Admits;
+
+    impl letibot_tools::Gate for Admits {
+        fn admit(&mut self, _call: &letibot_tools::GateCall<'_>) -> GateDecision {
+            GateDecision::Admit
+        }
+    }
+
+    /// **A look is DEFERRED while the session's gate is busy with somebody else's card** — not
+    /// blocked, and not refused.
+    ///
+    /// `ToolRuntime::run` holds the gate's mutex across the model's own decision, card and all, on
+    /// purpose — for minutes. A look that waited on it would park the session's one monitor thread,
+    /// and every other watch on it, behind that card; so the look takes the lock with `try_lock`,
+    /// and a busy gate is *not now*: nothing runs, the layer is told nothing that reads as a
+    /// refusal, no notice goes to the session, and the watch asks again next tick.
+    #[test]
+    fn an_exec_look_is_deferred_while_the_gate_is_busy() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-busy");
+        // A program whose running leaves a file behind, so "did not run" is a fact.
+        let marker = root.join("ran");
+        let script = format!("touch {}", marker.display());
+        let table = shell_layer(&root, "sh", json!(["sh", "-c", script]));
+        let host = Arc::new(table_host(&root, &table));
+        let hub = Hub::new("s-plugins");
+
+        // **The REAL runtime and the REAL `Unasked` impl**, because the deferral IS `try_lock` on
+        // this mutex: a fixture gate would prove nothing about it.
+        let backend = tempdir("look-busy-backend");
+        let runtime = Arc::new(
+            letibot_tools::ToolRuntime::new(
+                letibot_tools::Registry::new(),
+                Box::new(letibot_tools::HostBackend::new(&backend).expect("a backend")),
+            )
+            .with_gate(Box::new(Admits)),
+        );
+        let gate: Arc<dyn conditions::Unasked> = runtime.clone();
+        let conditions = conditions::HostConditions::new(
+            Arc::new(Mutex::new(Some(host.clone()))),
+            hub.clone(),
+            Some(gate),
+        );
+
+        // **Hold the lock exactly as the model's own decision does**, and fire the look from
+        // another thread: it must come back promptly, with nothing run and nothing said.
+        let held = runtime.gate.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let conditions = conditions.clone();
+            std::thread::spawn(move || {
+                let armed = conditions.arm("shell", json!({})).expect("armed");
+                let _ = tx.send(armed.condition.met());
+            });
+        }
+        let said = rx.recv_timeout(Duration::from_secs(5)).expect(
+            "a look waited on a gate another thread is holding — that is the session's monitor \
+             thread parked behind somebody's card",
+        );
+        assert_eq!(said, None, "a deferred look is not a firing");
+        assert!(
+            !marker.exists(),
+            "a look ran while the gate was busy deciding somebody else's call"
+        );
+        assert!(
+            warned(&hub, "plugin_look").is_empty(),
+            "a busy gate is not news for the plugin: {:?}",
+            warned(&hub, "plugin_look")
+        );
+        assert!(
+            host.lock()
+                .rec
+                .inputs("condition_shell")
+                .iter()
+                .all(|i| i["look"].is_null()),
+            "a deferred look was handed to the layer as a result"
+        );
+
+        // **And with the gate free the same look runs**, which is what makes the assertions above
+        // about the LOCK rather than about a look that never works. A fresh host, because the
+        // fixture's script is spent one answer per arming: the deferred arming took the one that
+        // declared the look.
+        drop(held);
+        let table = shell_layer(&root, "sh", json!(["sh", "-c", script]));
+        let host = Arc::new(table_host(&root, &table));
+        let gate: Arc<dyn conditions::Unasked> = runtime.clone();
+        let conditions =
+            conditions::HostConditions::new(Arc::new(Mutex::new(Some(host))), hub, Some(gate));
+        let armed = conditions.arm("shell", json!({})).expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        assert!(
+            marker.exists(),
+            "the look did not run once the gate was free"
         );
     }
 }
