@@ -344,3 +344,28 @@ that file when it is not the one the bare name finds today (*"`cargo` is
 then cannot settle a stage that runs another.
 
 Unblocks: R96, built together with R95 because both read the tracked environment.
+
+## D16 — inside a measured boundary, a command is not asked about; the boundary is the defense — **SETTLED 2026-10-27**
+
+The operator, 2026-10-27, on the RH3 question (*should a confined command writing only inside the
+checkout be admitted at writes-allowed?*): *"the thing is - agent can write any code in the test
+file and then do the test. the only real defense is cgroups and namespaces. the rest is theater."*
+
+So a per-command ruling inside a confinement that letibot has MEASURED (the namespaces entered,
+the seals held, the cgroup that bounds and reaps it; `confine.rs`'s probe and RH3's remote
+probe) protects nothing the boundary does not already protect: whatever a command could do, a
+test the agent just wrote can do too, and the test is a write the mode already admits. At
+`writes-allowed`, a command that runs inside such a boundary is admitted without a card.
+
+What is still decided, as my reading: what CROSSES the boundary. Network egress (the boundary's
+egress decision, `Egress::Denied` by default; a command that needs the network still asks); a
+grant that widens the view (a path outside the checkout made writable or visible); a command
+that would run OUTSIDE a boundary (an unconfined host, a probe that did not answer, a platform
+with no confinement: there the per-command ruling is still the only defense, and still asked);
+and the tiers that are about the operator's world, not the box (`gh`, pushing, anything with
+credentials). The card's job becomes these, which is a much shorter list.
+
+The adjudication work (G3, G4, D14, D15) keeps its value where it still decides: unconfined
+sessions, the macOS host shell, and the egress and credential decisions above.
+
+Unblocks: R97, and remote packages at `writes-allowed` that build and test without asking.
