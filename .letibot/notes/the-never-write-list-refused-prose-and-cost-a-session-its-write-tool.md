@@ -53,3 +53,18 @@ A `write` coming back `denied (boundary:host)` with basis "… is on the never-w
 is not about the file's path — it is about a segment ANYWHERE in an argument, including the body.
 The answer is `never_hit`'s key filter, not a different path and not a different spelling; and if
 the breaker has already opened, only the operator can lift it.
+
+## And `bash`'s own text is still scanned, which catches documentation (MEASURED 2026-10-26, RH3)
+
+RH5 narrowed the list to *path arguments* — a `write`'s body, a replacement's text, a search
+pattern — but `bash`'s `command` argument is still scanned, and a **heredoc is part of it**. So
+`cat >> docs/remote-hosts.md <<'DOC' … DOC` whose prose contains the operator's ssh path was
+refused by `boundary:host` before anything ran, twice, and the doc section had to be written with
+the `edit` tool. Two consequences worth keeping:
+
+* **Write prose with `edit`/`write`, never a heredoc** — it is faster anyway, and the file tools'
+  body arguments are the ones RH5 exempted.
+* A `bash` command that *reads* a path in that directory to demonstrate something (my first smoke
+  test had `cat <that path>` in a pipeline to prove the boundary hides it) is `Tier::Blocked`:
+  *"no context, no classifier verdict and no operator instruction promotes it"*. Prove it by
+  asserting the **argv** does not mention the path, which is what `remote_confine.rs` does.
