@@ -35,11 +35,16 @@ use letibot_plugins::MANIFEST;
 /// so the bound is about a title that fits rather than about a filesystem.
 const MAX_NAME: usize = 48;
 
-/// **The one hook kind this host runs today**, as `scaffold` names it: the kind without its
-/// underscore. The plan's other four patch points are the next package
-/// (`docs/plugins-plan.md` §7 step 2), and a scaffold that wrote a `condition_` module nobody
-/// calls would be a directory that never answers.
-pub const HOOK_KINDS: &[&str] = &["pane"];
+/// **The hook kinds this host runs**, as `scaffold` names them: the word without the name after
+/// its prefix. `pane` is drawn by a head; the other four are the patch points of
+/// `docs/plugins-plan.md` §4.1–4.4, each wired where the host does that thing.
+pub const HOOK_KINDS: &[&str] = &[
+    "pane",
+    "notice",
+    "on_tool_call",
+    "on_tool_result",
+    "condition",
+];
 
 /// Where the slice-1 Rust SDK lives on a box that has a rano checkout beside its projects — the
 /// path `plugins/examples/plan-dashboard/Cargo.toml` uses, and the one a template has to write
@@ -124,6 +129,31 @@ pub fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// **Where the hook contracts are**: `crates/plugin-sdk` in the tree this daemon was compiled
+/// from — which is the only tree that is certain to have one, and the right answer for a session
+/// patching the harness it is running inside.
+///
+/// `LETIBOT_PLUGIN_SDK` overrides it, for the box where the daemon is an installed binary and a
+/// guest is built somewhere else.
+pub fn types_sdk() -> Sdk {
+    let from_env = std::env::var("LETIBOT_PLUGIN_SDK")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let built = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|crates| crates.join("plugin-sdk"));
+    let path = match (from_env, built) {
+        (Some(path), _) => PathBuf::from(path),
+        (None, Some(path)) => path,
+        (None, None) => PathBuf::from("crates/plugin-sdk"),
+    };
+    let found = path.join("Cargo.toml").is_file();
+    Sdk {
+        path: path.display().to_string(),
+        found,
+    }
+}
+
 /// A name made to fit [`check_name`], for the refusal that quotes it back.
 fn slug(name: &str) -> String {
     let mut out = String::new();
@@ -149,13 +179,27 @@ pub fn ident(name: &str) -> String {
     name.replace('-', "_")
 }
 
-/// The hook this plugin answers: `pane_<ident>`.
+/// **[`hook_name`] for a kind and a plugin's name** — spelled the way the host asks for it.
 pub fn hook_name(kind: &str, name: &str) -> String {
-    format!("{kind}_{}", ident(name))
+    match kind {
+        // **One hook for the kind.** Every layer that wants to intercept a call exports the same
+        // name, and they stack; a name per plugin would be a hook nothing ever asks for.
+        "on_tool_call" | "on_tool_result" => kind.to_string(),
+        // **A notice hook is named after the notice's KIND**, not after the plugin (§4.3), and the
+        // template starts with the plan's own example: a monitor firing's wording. Another kind is
+        // a rename of the export and of `plugin.toml`'s `hooks`.
+        "notice" => format!("notice_{}", letibot_plugin::notice::MONITOR),
+        // **Per subject**, like a pane: the name says which one.
+        _ => format!("{kind}_{}", ident(name)),
+    }
 }
 
 /// The pane id this plugin's hook is drawn under (C4): `<manifest name>/<hook without its kind>`.
-pub fn pane_id(name: &str) -> String {
+/// Empty for the kinds a head does not draw.
+pub fn pane_id(kind: &str, name: &str) -> String {
+    if kind != "pane" {
+        return String::new();
+    }
     format!("{name}/{}", ident(name))
 }
 
@@ -166,7 +210,16 @@ pub struct Scaffolded {
     pub files: Vec<String>,
     pub sdk: Sdk,
     pub manifest: String,
+    /// The export the template answers — what `plugin.toml` declares and the host asks for.
+    pub hook: String,
+    /// The kind it was scaffolded for, so the sentence can say what the layer is FOR.
+    pub kind: String,
+    /// The pane id, for a `pane`; empty for the kinds no head draws.
     pub pane: String,
+    /// Where the typed contracts are on this box (`crates/plugin-sdk` in the tree this daemon was
+    /// built from), and whether they were found. The four patch points' templates link it, so a
+    /// guest and the host parse ONE set of types.
+    pub types: Sdk,
 }
 
 /// **Write the template into `plugins_dir/<name>`** — refusing to touch a directory that already
@@ -180,8 +233,7 @@ pub fn write(
     check_name(name)?;
     if !HOOK_KINDS.contains(&kind) {
         return Err(format!(
-            "`{kind}` is not a hook kind this host runs ({}): the other patch points of \
-             `docs/plugins-plan.md` §7 step 2 are the next package",
+            "`{kind}` is not a hook kind this host runs ({})",
             HOOK_KINDS.join(", ")
         ));
     }
@@ -202,10 +254,11 @@ pub fn write(
         ));
     }
     let sdk = sdk();
+    let types = types_sdk();
     let hook = hook_name(kind, name);
     std::fs::create_dir_all(dir.join("src")).map_err(|e| format!("{}: {e}", dir.display()))?;
     let files = [
-        ("Cargo.toml", cargo_toml(name, kind, &sdk.path)),
+        ("Cargo.toml", cargo_toml(name, kind, &sdk.path, &types.path)),
         (MANIFEST, manifest(name, purpose, &hook)),
         ("src/lib.rs", lib_rs(name, purpose, &hook, kind)),
     ];
@@ -220,7 +273,10 @@ pub fn write(
         dir,
         files: written,
         sdk,
-        pane: pane_id(name),
+        hook,
+        kind: kind.to_string(),
+        pane: pane_id(kind, name),
+        types,
     })
 }
 
@@ -240,7 +296,20 @@ fn manifest(name: &str, purpose: &str, hook: &str) -> String {
     )
 }
 
-fn cargo_toml(name: &str, kind: &str, sdk: &str) -> String {
+fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
+    // **The four patch points link the tree's own contract crate.** A guest that parses its input
+    // into the host's types cannot drift from the host: a renamed field is a compile error in the
+    // plugin, in the session, at the moment the build runs — which is the whole point of the SDK.
+    let typed = if kind == "pane" {
+        String::new()
+    } else {
+        format!(
+            "# **The hook's contract, from the tree this daemon was built from.** The host and the\n\
+             # guest parse ONE set of types: a renamed field breaks the build here rather than\n\
+             # leaving a module that answers a document the host refuses.\n\
+             letibot-plugin = {{ path = \"{types}\" }}\n"
+        )
+    };
     format!(
         "[package]\n\
          name = \"{name}\"\n\
@@ -251,13 +320,15 @@ fn cargo_toml(name: &str, kind: &str, sdk: &str) -> String {
          \n\
          [lib]\n\
          # `cdylib` is the plugin the host loads; `rlib` is what the native test below links, so\n\
-         # the view can be asserted without a wasm host.\n\
+         # the answer can be asserted without a wasm host.\n\
          crate-type = [\"cdylib\", \"rlib\"]\n\
          \n\
          [dependencies]\n\
          # The Rust SDK over rano's ABI: the memory, the allocator and the result block are its\n\
          # job, not this file's. A path, because slice 1's SDK lives in a rano checkout.\n\
          rano-plugin = {{ path = \"{sdk}\" }}\n\
+         {typed}\
+\
          serde_json = \"1\"\n\
          \n\
          [profile.release]\n\
@@ -275,7 +346,242 @@ fn cargo_toml(name: &str, kind: &str, sdk: &str) -> String {
 
 /// The guest's source. Kept as a `format!` rather than as a file under `templates/` so that the
 /// name, the purpose and the hook cannot drift out of the three files that must agree about them.
+///
+/// **`pane` has its own template** (slice 1's, unchanged: a pure `view`, no typed dependency);
+/// **the four patch points share one shape** — the tree's contract crate, one pure function, and a
+/// native test of it — because that is what makes a hook testable without a wasm host.
 fn lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
+    if kind == "pane" {
+        return pane_lib_rs(name, purpose, hook, kind);
+    }
+    let (in_ty, out_ty, body, test, why) = match kind {
+        "on_tool_call" => (
+            "ToolCallIn",
+            "ToolCallOut",
+            "/// **What this layer says about one call.** §4.1's example: the model armed a third\n\
+             /// watch for a pull request something already watches, and the fix is to refuse it\n\
+             /// and name the watch to use.\n\
+             pub fn answer(input: &ToolCallIn) -> ToolCallOut {\n\
+             \x20   let args = &input.call.arguments;\n\
+             \x20   if input.call.name == \"monitor\" \x26\x26 args.get(\"github\").is_some() {\n\
+             \x20       return ToolCallOut::refuse(\n\
+             \x20           \"a watch on that pull request may already exist — check `job_list` \\\n\
+             \x20            before arming another\",\n\
+             \x20       );\n\
+             \x20   }\n\
+             \x20   // **`pass` is the default and the right answer for everything else**: a layer\n\
+             \x20   // that answered for every call would be a layer that decided the session's work.\n\
+             \x20   ToolCallOut::pass()\n\
+             }",
+            "    #[test]\n\
+             \x20   fn a_github_monitor_is_refused_and_everything_else_runs() {\n\
+             \x20       let mut input = ToolCallIn::synthetic();\n\
+             \x20       assert!(matches!(\n\
+             \x20           answer(&input).verdict(),\n\
+             \x20           letibot_plugin::tool_call::Verdict::Refuse(_)\n\
+             \x20       ));\n\
+             \x20       input.call = letibot_plugin::Call::new(\"read\", serde_json::json!({\"path\": \"x\"}));\n\
+             \x20       assert!(matches!(\n\
+             \x20           answer(&input).verdict(),\n\
+             \x20           letibot_plugin::tool_call::Verdict::Pass\n\
+             \x20       ));\n\
+             \x20   }",
+            "**It runs before the gate and can never admit anything.** A rewrite is what the gate then\n\
+             adjudicates, the tool's name is not something this answer can change, and there is no\n\
+             \x20field by which a layer says *allow*.",
+        ),
+        "on_tool_result" => (
+            "ToolResultIn",
+            "ToolResultOut",
+            "/// **What this layer says about one result.** §4.2's example: a call printed a pull\n\
+             /// request URL, and the model is told what is watching it now.\n\
+             pub fn answer(input: &ToolResultIn) -> ToolResultOut {\n\
+             \x20   let opened = input.payload.contains(\"https://github.com/\")\n\
+             \x20       \x26\x26 input.payload.contains(\"/pull/\");\n\
+             \x20   if !opened {\n\
+             \x20       return ToolResultOut::default();\n\
+             \x20   }\n\
+             \x20   ToolResultOut::appended(\"\\n[harness] that pull request was opened here\")\n\
+             }",
+            "    #[test]\n\
+             \x20   fn an_opened_pull_request_is_noticed_and_anything_else_is_untouched() {\n\
+             \x20       let mut input = ToolResultIn::synthetic();\n\
+             \x20       assert!(matches!(\n\
+             \x20           answer(&input).said(),\n\
+             \x20           letibot_plugin::tool_result::Said::Appended(_)\n\
+             \x20       ));\n\
+             \x20       input.payload = \"nothing here\".into();\n\
+             \x20       assert_eq!(\n\
+             \x20           answer(&input).said(),\n\
+             \x20           letibot_plugin::tool_result::Said::Unchanged\n\
+             \x20       );\n\
+             \x20   }",
+            "**Successful results only.** A call that failed is the failure's own words, and the model\n\
+             has to read them exactly.",
+        ),
+        "notice" => (
+            "Notice",
+            "NoticeOut",
+            "/// **What this layer says instead.** §4.3's example: a monitor firing's wording. The\n\
+             /// facts are what the sentence was built from, so a layer can say something the\n\
+             /// harness did not.\n\
+             pub fn answer(input: &Notice) -> NoticeOut {\n\
+             \x20   let name = input.facts[\"name\"].as_str().unwrap_or(\"the watch\");\n\
+             \x20   NoticeOut::reworded(format!(\"[monitor] `{name}` fired — {}\", input.text))\n\
+             }",
+            "    #[test]\n\
+             \x20   fn a_firing_is_reworded_and_a_settlement_is_left_alone() {\n\
+             \x20       let input = Notice::synthetic();\n\
+             \x20       assert!(matches!(\n\
+             \x20           answer(&input).said(),\n\
+             \x20           letibot_plugin::notice::Said::Text(_)\n\
+             \x20       ));\n\
+             \x20       // A kind this layer does not answer is not even asked: the host resolves\n\
+             \x20       // `notice_<kind>`, and this export answers one kind.\n\
+             \x20       assert!(letibot_plugin::notice::known(&input.kind));\n\
+             \x20   }",
+            "**A notice the operator must see cannot be dropped**, only reworded: `drop` is honoured for\n\
+             a firing and a nudge, and refused (with the reason said to the model) for everything\n\
+             else.",
+        ),
+        _ => (
+            "ConditionIn",
+            "ConditionOut",
+            "/// **What this watch looks at, and what counts as a firing.** §4.4: the plugin never does\n\
+             /// I/O — it DECLARES a look and the host runs it, handing the result back in the next\n\
+             /// call's `look`.\n\
+             pub fn answer(input: &ConditionIn) -> ConditionOut {\n\
+             \x20   let path = input.args[\"path\"]\n\
+             \x20       .as_str()\n\
+             \x20       .unwrap_or(\".letibot/status.json\");\n\
+             \x20   match &input.look {\n\
+             \x20       // **The first call is the arming call**: nothing has been looked at, so this\n\
+             \x20       // asks for the file. It needs `capabilities = [\"read\"]` in plugin.toml.\n\
+             \x20       None => ConditionOut {\n\
+             \x20           look: Some(letibot_plugin::condition::LookAsk::Read(path.to_string())),\n\
+             \x20           every_s: Some(30),\n\
+             \x20           ..ConditionOut::default()\n\
+             \x20       },\n\
+             \x20       // What came back: fire when it says something changed, and remember it.\n\
+             \x20       Some(look) if look.exit == 0 => {\n\
+             \x20           let seen = look.stdout.len();\n\
+             \x20           let before = input.state.as_ref().and_then(|s| s.as_u64());\n\
+             \x20           ConditionOut {\n\
+             \x20               fired: (before != Some(seen as u64))\n\
+             \x20                   .then(|| format!(\"the status file changed ({} bytes)\", seen)),\n\
+             \x20               state: Some(serde_json::json!(seen)),\n\
+             \x20               ..ConditionOut::default()\n\
+             \x20           }\n\
+             \x20       }\n\
+             \x20       // A refused or failed look is a RESULT to draw, not an error to raise.\n\
+             \x20       Some(look) => ConditionOut::fired(format!(\n\
+             \x20           \"the look did not answer: {} (exit {})\",\n\
+             \x20           look.stderr.trim(),\n\
+             \x20           look.exit\n\
+             \x20       )),\n\
+             \x20   }\n\
+             }",
+            "    #[test]\n\
+             \x20   fn arming_asks_for_the_file_and_a_change_fires_once() {\n\
+             \x20       let input = ConditionIn::synthetic();\n\
+             \x20       let armed = answer(&input);\n\
+             \x20       assert!(armed.look.is_some(), \"the arming call asks for the file\");\n\
+             \x20       assert!(armed.fired.is_none());\n\
+             \x20       let looked = ConditionIn::looked(\n\
+             \x20           input.args.clone(),\n\
+             \x20           armed.state.clone(),\n\
+             \x20           letibot_plugin::condition::LookResult::ok(\"a longer body\"),\n\
+             \x20       );\n\
+             \x20       assert!(answer(&looked).fired.is_some());\n\
+             \x20   }",
+            "**The look is the host's act.** A hook is pure so the shadow gate can replay it; a\n\
+             \x20declared `exec` runs under the layer's `exec:<program>` capability, and a `read` under\n\
+             \x20`read`, inside the session's workspace.",
+        ),
+    };
+    let module = match kind {
+        "condition" => "condition",
+        "notice" => "notice",
+        "on_tool_call" => "tool_call",
+        _ => "tool_result",
+    };
+    let contract = if kind == "condition" {
+        format!(
+            "docs/plugins-plan.md §4.4, and the host's own version of it is the `plugin_hooks` tool.\n\
+             //!\n\
+             //! # The loop this file is the start of\n\
+             //!\n\
+             //! ```text\n\
+             //! plugin scaffold {name}   (done)\n\
+             //!   → edit `answer` below\n\
+             //!   → plugin build {name}\n\
+             //!   → plugin test  {name}\n\
+             //!   → plugin load  {name}      (the shadow gate, then hot — no restart)\n\
+             //!   → `monitor {{{{}}}}` with `{{\"plugin\": \"{name}\"}}` arms it\n\
+             //! ```"
+        )
+    } else {
+        format!(
+            "docs/plugins-plan.md §4, and the host's own version of it is the `plugin_hooks` tool.\n\
+             //!\n\
+             //! # The loop this file is the start of\n\
+             //!\n\
+             //! ```text\n\
+             //! plugin scaffold {name}   (done)\n\
+             //!   → edit `answer` below\n\
+             //!   → plugin build {name}\n\
+             //!   → plugin test  {name}\n\
+             //!   → plugin load  {name}      (the shadow gate, then hot — no restart)\n\
+             //! ```"
+        )
+    };
+    format!(
+        r#"//! **{name}** — {purpose}
+//!
+//! One pure function, [`answer`]: the host's input in, this layer's answer out. The contract is
+//! {contract}
+//!
+//! # What a hook may not do
+//!
+//! * **No I/O.** A hook never opens a file or runs a program: a condition DECLARES a look
+//!   (`{{"read": "path"}}` or `{{"exec": ["gh", …]}}`) and the host runs it.
+//! * **No clock.** `std::time::SystemTime::now()` answers a panic on `wasm32-unknown-unknown`,
+//!   and a panic in a guest is a trap — the host falls to the layer below and says so.
+//!
+//! {why}
+
+use letibot_plugin::{module}::{{{in_ty}, {out_ty}}};
+
+{body}
+
+// **`rano_abi` and `rano_alloc`**: the two exports every rano plugin has.
+rano_plugin::abi!();
+
+/// **The hook the host calls**: `{hook}` — the export name is the name, and `plugin.toml`'s
+/// `hooks = ["{hook}"]` must be exactly what this crate exports.
+///
+/// `None` is the ABI's *leave it alone*: this layer answers for every input it can read, and hands
+/// back nothing only for text that is not JSON at all (a host defect, not a plugin state).
+#[unsafe(no_mangle)]
+pub extern "C" fn {hook}(ptr: u32, len: u32) -> u32 {{
+    rano_plugin::hook(ptr, len, |text| {{
+        let input: {in_ty} = serde_json::from_str(text).ok()?;
+        serde_json::to_string(&answer(&input)).ok()
+    }})
+}}
+
+#[cfg(test)]
+mod tests {{
+    use super::*;
+
+{test}
+}}
+"#
+    )
+}
+
+/// **`pane`'s template** — slice 1's, unchanged: a pure `view` over the C3 document.
+fn pane_lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
     format!(
         r#"//! **{name}** — {purpose}
 //!
@@ -560,12 +866,35 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// **Every kind scaffolds, and a kind this host does not run is refused with the ones it does**
+    /// — the four patch points share the typed template, the pane keeps slice 1's.
     #[test]
-    fn a_hook_kind_this_host_does_not_run_is_refused_with_the_one_it_does() {
+    fn every_kind_scaffolds_and_a_stranger_is_refused_with_the_ones_there_are() {
         let root = temp("kind");
-        let e = write(&root, "x", "p", "condition").expect_err("no such kind yet");
-        assert!(e.contains("`condition` is not a hook kind"), "{e}");
-        assert!(e.contains("pane"), "{e}");
+        for kind in HOOK_KINDS {
+            let name = format!("k-{}", kind.replace('_', "-"));
+            let done = write(&root, &name, "p", kind).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert_eq!(done.kind, *kind);
+            let body = std::fs::read_to_string(done.dir.join("src/lib.rs")).expect("a source");
+            assert!(
+                body.contains(&format!("pub extern \"C\" fn {}(", done.hook)),
+                "the {kind} template does not export `{}`: {body}",
+                done.hook
+            );
+            // The four patch points link the tree's contract crate; the pane keeps rano's SDK and
+            // its own JSON, which is slice 1's template unchanged.
+            let cargo = std::fs::read_to_string(done.dir.join("Cargo.toml")).expect("a manifest");
+            assert_eq!(
+                cargo.contains("letibot-plugin"),
+                *kind != "pane",
+                "{kind}'s Cargo.toml links the contract crate or does not, and it should be {}: \
+                 {cargo}",
+                *kind != "pane"
+            );
+        }
+        let e = write(&root, "x", "p", "digest").expect_err("no such kind yet");
+        assert!(e.contains("`digest` is not a hook kind"), "{e}");
+        assert!(e.contains("on_tool_call"), "{e}");
         std::fs::remove_dir_all(&root).ok();
     }
 }

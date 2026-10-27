@@ -505,10 +505,12 @@ similarity check keeps pointing at it.
 ## 5. What the model gets
 
 **Built, for `pane`** (as of P2, 2026-10-26 — see "As built" below): `scaffold`, `build`, `load`,
-`stack`, `disable`, `enable`, `test`, `plugin_hooks` and the skill. The list is the plan's, and the
-entries marked *not yet* are the ones no package has shipped: `squash` and `promote` (§7 step 5),
-and `test`'s replay of the whole session's recorded inputs (§7 step 2's recorded-input store is
-per-hook already; the replay verb is not).
+`stack`, `disable`, `enable`, `test`, `plugin_hooks` and the skill. **Built, for the four patch
+points** (as of 2b, the same day — see "As built (2b)"): the same loop, over the kinds `notice`,
+`on_tool_call`, `on_tool_result` and `condition`, with the hooks wired where the host does each
+thing. The list is the plan's, and the entries marked *not yet* are the ones no package has
+shipped: `squash` and `promote` (§7 step 5), and `test`'s replay of the whole session's recorded
+inputs (§7 step 2's recorded-input store is per-hook already; the replay verb is not).
 
 - **`plugin` tool** with actions:
   - `scaffold` — a new session plugin from a template for a hook kind (a crate depending on the
@@ -528,18 +530,21 @@ per-hook already; the replay verb is not).
   - `promote` — move a layer into `.letibot/plugins/` on the session's branch. *Not yet*; today it
     is a copy and a commit.
 - **`plugin_hooks`** — the contracts of §4 with a worked example each, read from the host itself so
-  it cannot drift from what the host accepts. Today it documents `pane` (C3), because that is the
-  one hook kind this host runs.
+  it cannot drift from what the host accepts. It documents `pane` (C3) and, since 2b, the four
+  patch points, each from `crates/plugin-sdk`'s own types.
 - **A skill** walking through the main loop end to end: the operator reports a harness problem, the
   model finds the hook it lives at, writes a layer, tests it against the input that misbehaved,
-  and loads it. `skills/plugin-pane/SKILL.md`, compiled into the binary so a box needs no setup.
+  and loads it. `skills/plugin-pane/SKILL.md` (a pane) and `skills/plugin-hooks/SKILL.md` (one of
+  the four patch points), both compiled into the binary so a box needs no setup.
 - **Recorded inputs**: the host keeps the last inputs of each hook per session, so a layer is
   written and tested against the very call or firing that went wrong.
 
-The SDK is `letibot-plugin`, in this repository: rano's `rano-plugin` ABI plus serde types for
-each hook's input and output, so a plugin is `#[hook] fn condition(i: ConditionIn) -> ConditionOut`.
-*Today the template depends on rano's `rano-plugin` by path and does its own `serde_json`, which is
-what the example dashboard (C5) does; `letibot-plugin` is the same idea with the types.*
+The SDK is `letibot-plugin`, in this repository (`crates/plugin-sdk`): rano's `rano-plugin` ABI
+plus serde types for each hook's input and answer, so a plugin is
+`fn answer(i: ConditionIn) -> ConditionOut`. It is compiled into the daemon *and* into the guest,
+from one crate, so a renamed field breaks a compilation on both sides rather than leaving a module
+that answers a document the host refuses. Its dependency list is serde and nothing else, which is
+what lets a `wasm32-unknown-unknown` guest link it.
 
 ### As built (P2), 2026-10-26: the pane
 
@@ -582,6 +587,56 @@ is its own crate and its own target directory, and the variable is now removed f
 reload re-rendered an open pane WITHOUT its look, which put a look-asking dashboard back on its
 loading frame with `every_s: 0` — stuck until reopened; `PluginHost::refresh_panes` asks an open pane
 again with its look and announces only the panes nobody has opened.
+
+### As built (2b), 2026-10-26: the four patch points
+
+§7 step 2's remainder, minus the GitHub family (§7 step 3) and the butler (§7 step 4): the four
+hooks of §4.1–4.4, each wired where the host actually does that thing, each with a typed contract
+in `crates/plugin-sdk`, and all of it reachable from the `plugin` tool a session already has.
+
+**Where each one plugs in** — the site is the design, so here it is exactly:
+
+| kind | export | the site | what a layer may say |
+|---|---|---|---|
+| `notice` | `notice_<kind>` | `Harness::append_notice` (every sentence the harness injects) and each source `Harness::wake` joins | the sentence, reworded; dropped, for a firing or a nudge only |
+| `on_tool_result` | `on_tool_result` | `Harness`'s round loop, at the site `pr_watch` grew in — on `ok` and `backgrounded` only | a replaced result, a suffix, monitors to arm |
+| `on_tool_call` | `on_tool_call` | `ToolRuntime::run`, after the arguments are read and **before the gate** — on the gated path only | run it, run it with these arguments, refuse it, answer it |
+| `condition` | `condition_<name>` | a `PluginCondition: Condition` armed by `monitor {"plugin": …}`, polled by the session's one monitor thread | what to look at next, how often, how long it may live, and whether it fired |
+
+**The gate stays authoritative, and it is not a promise — it is where the code is.** `on_tool_call`
+runs before the `GateCall` is built, so a rewritten call is the call the gate adjudicates; the
+rewritten arguments go through the same `salvage` the model's did; the tool's NAME is not a field
+of the answer, so a rewrite cannot turn one tool into another; and the answer has no marker by
+which a layer could say *allow* — `ToolCallOut` is `pass`, `arguments`, `refuse`, `answer` and
+nothing else. A test asserts both halves: that the type has no such field, and that the gate was
+asked about the rewritten path rather than the model's. What a layer CAN do is make a call
+smaller, which is §4.1's whole point (the third watch on a pull request something already watches).
+
+**What a session can do now, from the model's side:**
+
+| call | what it answers |
+|---|---|
+| `plugin {"action":"scaffold","hook":"on_tool_call"}` | a template for that kind, linking `crates/plugin-sdk` by path so the guest parses the host's own types |
+| `plugin {"action":"test","name"}` | the hook the layer answers, called with a synthetic input **of that kind**, and whether the host would accept the answer |
+| `plugin {"action":"load","name"}` | the shadow gate, then every hook the layer exports asked on the shadow with its recorded inputs plus one of its kind |
+| `plugin_hooks [{"hook":"condition"}]` | that kind's input, answer, rules and a worked example built from the SDK's types |
+| `monitor {"name":"coderabbit","plugin":"coderabbit","args":{…}}` | a watch armed by a layer: its look, its interval, its cap and its firing are the layer's |
+
+**Two decisions worth knowing.** A notice hook is resolved **per notice kind** (`notice_monitor`,
+`notice_job`, …) rather than per plugin, so a fix to one firing's wording does not make a layer the
+answerer for the queue's verdicts; and a notice the model is owed — a settlement, a due row, a
+reseat, a queue verdict, the workspace's state, a salvage — may be reworded and **not dropped**,
+while a firing and a nudge may be dropped. A layer's own failure notice never passes through the
+hook: a layer that traps must not be able to trap again about its own trap.
+
+**What is deliberately left open.** An `exec` look runs under the answering layer's
+`exec:<program>` capability and does **not** go through the adjudicator — §1 principle 2 wants it
+to, and a look that raised a card would be the session's one monitor thread waiting for a person.
+The capability is the consent for now (a project layer's is reviewed with the merge; a session
+layer's is the operator's), and that sentence is written in
+`crates/harnessd/src/plugins/conditions.rs` where the gap is rather than only here. `github` in a
+condition's answer takes part in the one-watch-per-pull-request rule, but the GitHub family itself
+is still built in (§7 step 3).
 
 ## 6. The harness butler
 
@@ -671,8 +726,10 @@ why its work runs between the session's turns when the two share a server.
    `letibot-plugin` SDK, and the `plugin` tool (`scaffold`, `build`, `load`, `stack`, `disable`,
    `test`) plus `plugin_hooks` and the skill. From here the operator can fix things in a session.
    **Split, 2026-10-26:** the `plugin` tool, `plugin_hooks` and the skill landed first for `pane`
-   (P2, §5's "As built") — the loop works today, against the one hook kind the host runs — and the
-   four patch points, the four kinds and the SDK's typed contracts are the rest of this step.
+   (P2, §5's "As built") — the loop works today, against the one hook kind the host ran then — and
+   **the four patch points, the four kinds and the SDK's typed contracts landed the same day as
+   2b** (§5's "As built (2b)"): each hook wired where the host does that thing, `crates/plugin-sdk`
+   as the one place its types live, and the tool, `plugin_hooks` and a second skill covering them.
 3. **The GitHub family as built-in plugins**: `github-pr` (checks, review, comment, closed,
    merged, conflict) and `coderabbit` as conditions, `pr-create` as `on_tool_result`. Delete
    `GithubCondition`'s decision half and `pr_watch`'s; keep the host's `gh` look runner and the

@@ -94,12 +94,30 @@ impl PluginDesk for SessionPlugins {
             dir,
             files,
             sdk,
+            types,
             manifest,
+            hook,
+            kind,
             pane,
         } = scaffold::write(dir, name, purpose, hook).map_err(Refusal::only)?;
+        // **What the layer is for, in the words of the kind it answers** — a pane is drawn, the
+        // four patch points are not, and a sentence that said "its pane will be drawn as """ was
+        // how this read before there was more than one kind.
+        let drawn = if kind == "pane" {
+            format!("its pane will be drawn as `{pane}`")
+        } else {
+            format!(
+                "it answers `{hook}`, which this host asks on every {} ",
+                match kind.as_str() {
+                    "notice" => "notice of that kind",
+                    "on_tool_call" => "tool call, before the gate",
+                    "on_tool_result" => "successful tool result",
+                    _ => "poll of a monitor it was armed for",
+                }
+            )
+        };
         let mut said = format!(
-            "scaffolded `{name}` at {}\n\n  {}\n\nits plugin.toml is {manifest} — its pane will be \
-             drawn as `{pane}`.",
+            "scaffolded `{name}` at {}\n\n  {}\n\nits plugin.toml is {manifest} — {drawn}.",
             dir.display(),
             files.join("\n  ")
         );
@@ -112,9 +130,18 @@ impl PluginDesk for SessionPlugins {
                 sdk.path
             ));
         }
+        if !types.found {
+            said.push_str(&format!(
+                "\n\n**The hook contracts were not found at {}**, which is what this crate's \
+                 Cargo.toml points at (the tree this daemon was built from); set \
+                 `LETIBOT_PLUGIN_SDK` to that checkout's `crates/plugin-sdk` and scaffold again.",
+                types.path
+            ));
+        }
         said.push_str(&format!(
-            "\n\nnext: edit `src/lib.rs`'s `view` (the contract is the `plugin_hooks` tool), then \
-             `plugin build {name}`, `plugin test {name}`, `plugin load {name}`."
+            "\n\nnext: edit `src/lib.rs`'s `{}` (the contract is the `plugin_hooks` tool), then \
+             `plugin build {name}`, `plugin test {name}`, `plugin load {name}`.",
+            if kind == "pane" { "view" } else { "answer" }
         ));
         Ok(said)
     }

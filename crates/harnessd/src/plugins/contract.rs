@@ -32,20 +32,181 @@ use letibot_sessionlog::pane::{
 use serde_json::{Value, json};
 
 /// The hook kinds this host runs, as `scaffold`'s `hook` names them.
-pub const KINDS: &[&str] = &["pane"];
+pub const KINDS: &[&str] = &[
+    "pane",
+    "notice",
+    "on_tool_call",
+    "on_tool_result",
+    "condition",
+];
 
-/// **The documentation for one hook kind** — or for all of them, which today is the same page.
+/// **The documentation for one hook kind** — or for every kind, each on its own page.
 pub fn hooks_doc(kind: Option<&str>) -> Result<String, String> {
     match kind.map(str::trim).filter(|k| !k.is_empty()) {
-        None => Ok(pane_doc()),
+        None => Ok(KINDS
+            .iter()
+            .map(|k| patch_doc(k).unwrap_or_else(pane_doc))
+            .collect::<Vec<_>>()
+            .join("\n\n---\n\n")),
         Some("pane") => Ok(pane_doc()),
-        Some(other) => Err(format!(
-            "`{other}` is not a hook kind this host runs ({}). The four patch points of \
-             `docs/plugins-plan.md` §7 step 2 are the next package; `pane` is what a plugin can \
-             answer today.",
-            KINDS.join(", ")
-        )),
+        Some(other) => patch_doc(other).ok_or_else(|| {
+            format!(
+                "`{other}` is not a hook kind this host runs ({}). Each of them has a page here: \
+                 `plugin_hooks` with no `hook` prints all of them.",
+                KINDS.join(", ")
+            )
+        }),
     }
+}
+
+/// **One patch point's page**, or `None` for a kind that is not one of the four.
+///
+/// Built the same way the pane's is: the input is the SDK's own synthetic example SERIALISED, the
+/// answer is an SDK VALUE serialised, and the field lists are read back out of those two documents.
+/// A renamed field moves the page; a field the page claims and the type does not have cannot exist.
+fn patch_doc(kind: &str) -> Option<String> {
+    let (in_value, out_value, contract, rules): (Value, Value, &str, String) = match kind {
+        "notice" => {
+            let model = letibot_plugin::notice::Notice::synthetic();
+            let out = letibot_plugin::notice::NoticeOut::reworded(format!(
+                "[monitor] {} — read it",
+                model.text
+            ));
+            let rules = format!(
+                "* **Only a firing and a nudge may be dropped.** `drop` is honoured for `monitor` \
+                 and `nudge`, and refused (with the reason said to the model) for `job`, `todo`, \
+                 `reseat`, `merge_queue`, `workspace`, `salvage` and `plugin`: those are facts the \
+                 model is owed, and a layer may reword them.\n\
+                 * **The export is named after the notice's KIND** — `notice_monitor`, \
+                 `notice_job`, … — so a fix to one firing's wording is not the answerer for the \
+                 queue's verdicts. The kinds are: {}.",
+                letibot_plugin::notice::KINDS.join(", ")
+            );
+            (
+                json!(model),
+                json!(out),
+                "`docs/plugins-plan.md` §4.3 — what the harness says to the model",
+                rules,
+            )
+        }
+        "on_tool_call" => {
+            let model = letibot_plugin::tool_call::ToolCallIn::synthetic();
+            let out = letibot_plugin::tool_call::ToolCallOut::refuse(
+                "already watched as pr-24; use that",
+            );
+            (
+                json!(model),
+                json!(out),
+                "`docs/plugins-plan.md` §4.1 — the call, before the gate",
+                "* **It runs before the gate and can never admit anything.** The rewritten call is \
+                 what the gate then adjudicates, the tool's name is not a field of the answer, and \
+                 there is no marker by which a layer could say *allow*.\n\
+                 * **Absent fields are absent.** `{}` or `{\"pass\": true}` lets the call run as \
+                 the model proposed it; an answer naming two of the four is read in the order \
+                 refuse, answer, arguments, pass.\n\
+                 * **`arguments` replaces the call's arguments entirely** — it is not a merge. A \
+                 rewritten call goes through the same argument repair the model's own did."
+                    .to_string(),
+            )
+        }
+        "on_tool_result" => {
+            let model = letibot_plugin::tool_result::ToolResultIn::synthetic();
+            let out = letibot_plugin::tool_result::ToolResultOut {
+                append: Some("\n[harness] watching it for its checks".into()),
+                arm: vec![letibot_plugin::tool_result::Arm::new(
+                    "github-pr",
+                    json!({"pr": "o/r#24"}),
+                )],
+                ..Default::default()
+            };
+            (
+                json!(model),
+                json!(out),
+                "`docs/plugins-plan.md` §4.2 — what happens after a call",
+                "* **Successful results only** (`ok`, `backgrounded`). A call that failed is the \
+                 failure's own words, and the model reads them exactly.\n\
+                 * **`payload` replaces, `append` adds.** Both may appear: what it was, and what \
+                 the layer noticed about it.\n\
+                 * **`arm` goes through the operator's door** — the same `monitor` call the model \
+                 would type — so the coalescing, the already-watched refusal and the TTL caps are \
+                 the tool's rules, not a second set here."
+                    .to_string(),
+            )
+        }
+        "condition" => {
+            let model = letibot_plugin::condition::ConditionIn::synthetic();
+            let out = letibot_plugin::condition::ConditionOut {
+                look: Some(letibot_plugin::condition::LookAsk::Exec(vec![
+                    "gh".into(),
+                    "pr".into(),
+                    "view".into(),
+                    "24".into(),
+                    "--json".into(),
+                    "state,reviews".into(),
+                ])),
+                every_s: Some(90),
+                max_ttl_s: Some(604_800),
+                fired: Some("CodeRabbit reviewed: 3 comments".into()),
+                state: Some(json!({"seen": 3})),
+                github: Some(letibot_plugin::condition::Github {
+                    pr: "o/r#24".into(),
+                    watches: vec!["coderabbit".into()],
+                }),
+            };
+            let rules = format!(
+                "* **The plugin never runs anything.** `look` in an answer is a DECLARATION: the \
+                 host runs it (a `read` under the layer's `read`, an `exec` argv under \
+                 `exec:<program>`, never a shell) and calls the hook again with the result.\n\
+                 * **`look` means two things by direction**: what came back on the way in \
+                 (`{{\"exit\", \"stdout\", \"stderr\"}}`), what to run next on the way out \
+                 (`{{\"exec\": […]}}` or `{{\"read\": \"path\"}}`).\n\
+                 * **`fired` is the news**, and `state` is handed back next time — a plugin is \
+                 stateless between calls and the host keeps what it returns. `every_s` is at least \
+                 {}; `max_ttl_s` caps the watch, inside the tree's week.",
+                letibot_plugin::condition::EVERY_MIN_S
+            );
+            (
+                json!(model),
+                json!(out),
+                "`docs/plugins-plan.md` §4.4 — what a monitor watches",
+                rules,
+            )
+        }
+        _ => return None,
+    };
+    let input = serde_json::to_string_pretty(&in_value).unwrap_or_default();
+    let example = serde_json::to_string_pretty(&out_value).unwrap_or_default();
+    Some(format!(
+        r#"# The `{kind}` hook — {contract}
+
+One pure function, JSON in and JSON out, resolved through the layer stack: the topmost layer that
+answers wins, a layer below is asked only when the one above says `{{"below": …}}`, any layer may
+say `{{"mask": true}}` to switch the hook off from there down, and a layer that traps falls to the
+one below and is reported. A layer is a wasm export whose NAME is the hook, and `plugin.toml`'s
+`hooks` must be exactly what the module exports.
+
+## The input
+
+```json
+{input}
+```
+
+## The answer — a worked example
+
+```json
+{example}
+```
+
+{rules}
+
+## What to do when it goes wrong
+
+`plugin test <name>` calls the hook with a synthetic input of this kind (or one you pass) and shows
+the answer, the layer that answered, the fuel it burned and any trap. `plugin load <name>` runs it
+through the shadow gate — replaying the inputs this session has already asked — so a layer that
+traps, or answers something the host refuses, never reaches a running session.
+"#
+    ))
 }
 
 /// **The worked example**, built from the host's types. Every field a model is told about appears
@@ -352,17 +513,59 @@ mod tests {
         assert!(doc.contains(&format!("at least {MIN_EVERY_S}")));
     }
 
-    /// `pane` is the one kind, and asking for another refuses with the ones there are rather than
-    /// answering with the wrong contract.
+    /// **Every kind has a page, every page carries its own types' fields, and a name that is not a
+    /// kind is refused with the ones there are.** The four patch points' pages are built the same
+    /// way the pane's is, so a renamed field in `crates/plugin-sdk` moves the document.
     #[test]
-    fn only_pane_is_documented_and_another_kind_says_which_there_is() {
-        let doc = hooks_doc(Some("pane")).expect("the pane contract");
-        assert!(doc.contains("pane_<name>"), "{doc}");
-        let both = hooks_doc(None).expect("every kind");
-        assert_eq!(doc, both, "pane is the whole set");
-        let why = hooks_doc(Some("condition")).expect_err("no condition hooks yet");
-        assert!(why.contains("`condition` is not a hook kind"), "{why}");
-        assert!(why.contains("pane"), "{why}");
+    fn every_kind_is_documented_and_a_stranger_is_refused() {
+        let pane = hooks_doc(Some("pane")).expect("the pane contract");
+        assert!(pane.contains("pane_<name>"), "{pane}");
+        let all = hooks_doc(None).expect("every kind");
+        assert!(
+            all.contains(&pane),
+            "the whole document contains the pane's page"
+        );
+        for kind in KINDS {
+            let doc = hooks_doc(Some(kind)).unwrap_or_else(|why| panic!("{kind}: {why}"));
+            assert!(doc.contains(kind), "the {kind} page never names itself");
+            assert!(
+                doc.contains("The input") && doc.contains("worked example"),
+                "the {kind} page has no worked example"
+            );
+            assert!(
+                all.contains(&doc),
+                "{kind} is missing from the whole document"
+            );
+        }
+        // The fields a reader is promised come from the example, which comes from the SDK.
+        let call = hooks_doc(Some("on_tool_call")).expect("the call page");
+        for field in ["pass", "arguments", "refuse", "answer"] {
+            assert!(call.contains(field), "the call page never names `{field}`");
+        }
+        let result = hooks_doc(Some("on_tool_result")).expect("the result page");
+        for field in ["payload", "append", "arm"] {
+            assert!(
+                result.contains(field),
+                "the result page never names `{field}`"
+            );
+        }
+        let condition = hooks_doc(Some("condition")).expect("the condition page");
+        for field in ["look", "every_s", "max_ttl_s", "fired", "state", "github"] {
+            assert!(
+                condition.contains(field),
+                "the condition page never names `{field}`"
+            );
+        }
+        let notice = hooks_doc(Some("notice")).expect("the notice page");
+        for field in ["kind", "text", "facts", "drop"] {
+            assert!(
+                notice.contains(field),
+                "the notice page never names `{field}`"
+            );
+        }
+        let why = hooks_doc(Some("digest")).expect_err("not a kind this host runs");
+        assert!(why.contains("`digest` is not a hook kind"), "{why}");
+        assert!(why.contains("condition"), "{why}");
     }
 
     /// The block kinds the document lists are the variants the host draws: a sixth would be a

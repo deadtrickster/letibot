@@ -207,8 +207,8 @@ impl Tool for PluginTool {
                     },
                     "hook": {
                         "type": "string",
-                        "enum": ["pane"],
-                        "description": "scaffold: the hook kind to answer. `pane` is the only kind this host runs today."
+                        "enum": ["pane", "notice", "on_tool_call", "on_tool_result", "condition"],
+                        "description": "scaffold: the hook kind to answer. `pane` is drawn by a head; the other four are the patch points of docs/plugins-plan.md §4.1–4.4, each wired where the host does that thing. `plugin_hooks` has the contract for each."
                     },
                     "input": {
                         "type": "object",
@@ -345,16 +345,20 @@ impl Tool for PluginHooksTool {
         ToolSchema::new(
             HOOKS_TOOL,
             "The hook contracts this host accepts, read from the host's own types so they cannot \
-             drift: for the pane hook, the input a pane is handed (state, look, event, size), the \
-             output it must answer (title, badge, panels, findings, legend, look, every_s, state), \
-             the keys the host owns and the rules the host refuses a view for — with a worked \
-             example of both. Read this before writing a view with `plugin`.",
+             drift — with a worked example of each. `pane`: the input a pane is handed (state, look, \
+             event, size), the view it must answer, the keys the host owns and the rules a view is \
+             refused for. `notice`, `on_tool_call`, `on_tool_result` and `condition` (the four \
+             patch points of docs/plugins-plan.md §4.1–4.4): what each is handed, what it may \
+             answer, and the rule that keeps it honest — a notice may be reworded but not dropped \
+             where the model is owed it, a call hook may narrow and never admit, a result hook sees \
+             only successes, and a condition declares its looks instead of running them. Read this \
+             before writing a layer with `plugin`.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
                     "hook": {
                         "type": "string",
-                        "description": "Only this hook kind, e.g. `pane`. Omit for every kind this host runs."
+                        "description": "Only this hook kind: `pane`, `notice`, `on_tool_call`, `on_tool_result` or `condition`. Omit for every kind this host runs."
                     }
                 }
             }),

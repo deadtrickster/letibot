@@ -142,10 +142,19 @@ impl SkillRegistry {
     /// always there is worse than one that is always there — a model that finds `skill list`
     /// empty concludes the loop is not available in this build.
     pub fn built_in() -> Vec<Skill> {
-        [(
-            "plugin-pane",
-            include_str!("../../../../skills/plugin-pane/SKILL.md"),
-        )]
+        [
+            (
+                "plugin-pane",
+                include_str!("../../../../skills/plugin-pane/SKILL.md"),
+            ),
+            // **The four patch points** (`docs/plugins-plan.md` §4.1–4.4): which kind a harness
+            // problem lives at, and the same loop. Separate from the pane's because the question a
+            // model has first is *which hook*, and a page answering both would bury it.
+            (
+                "plugin-hooks",
+                include_str!("../../../../skills/plugin-hooks/SKILL.md"),
+            ),
+        ]
         .into_iter()
         .filter_map(|(what, text)| {
             let skill = from_text(text);
