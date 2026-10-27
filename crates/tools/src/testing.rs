@@ -707,8 +707,8 @@ pub fn write_stub(path: &std::path::Path, body: &str) {
 pub const STUB_PROBE: &str = "LETIBOT_STUB_PROBE";
 
 /// The race `write_stub` closes, forced to happen — so the fix is measured 1 of 1 rather than
-/// waiting for the one run in three hundred that fails under load.
-#[cfg(test)]
+/// waiting for the one run in three hundred that fails under load. Linux only: see the test.
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -725,6 +725,10 @@ mod tests {
     /// cleared so the holder keeps the descriptor across its own exec — exactly what such a
     /// child does by accident — and a plain exec of the file is refused before `write_stub` is
     /// even called. `write_stub` must therefore take about as long as the holder lives.
+    ///
+    /// **Linux only**: `ETXTBSY` for a file open for writing is Linux's `deny_write_access`.
+    /// MEASURED on macOS 2026-10-27: the same exec succeeds while the holder lives, so there
+    /// is no refusal to reproduce and nothing for the probe to wait out.
     #[test]
     fn a_stub_a_forked_child_holds_is_waited_for() {
         let dir = std::env::temp_dir().join(format!("letibot-write-stub-{}", std::process::id()));
