@@ -375,10 +375,14 @@ fn a_confined_command_runs_inside_the_helper_with_the_local_policys_view() {
             rig.home.display(),
             rig.home.display()
         ),
-        // `$HOME` is letibot's own directory on that host, NOT the operator's.
+        // `$HOME` is letibot's own directory on that host, NOT the operator's. The view resolves
+        // it, so it is spelled through the canonical root: on a Mac the temp dir is `/var/…` and
+        // its real path `/private/var/…`, and the argv carries the real one.
         &format!(
             "--setenv HOME {}/letibot-remote/.letibot-home/{SHORT}",
-            rig.home.display()
+            std::fs::canonicalize(&rig.home)
+                .unwrap_or_else(|_| rig.home.clone())
+                .display()
         ),
         // The keep-list is expanded by the FAR shell — a `$PATH` taken from this box is a list of
         // directories that do not exist there. The fake ssh puts its own `bin` in front of the
