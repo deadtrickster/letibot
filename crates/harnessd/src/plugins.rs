@@ -2645,6 +2645,7 @@ mod tests {
     fn a_layer_asks_below_and_the_lower_layer_is_called() {
         let root = tempdir("notice-below");
         let table = Table::new();
+        table.layer(&root, "a-below", &[("notice_monitor", vec![None])]);
         table.layer(
             &root,
             "z-above",
@@ -2656,7 +2657,6 @@ mod tests {
                 ],
             )],
         );
-        table.layer(&root, "a-below", &[("notice_monitor", vec![None])]);
         let host = table_host(&root, &table);
         let hub = Hub::new("s-plugins");
         let resolved = host
@@ -2917,6 +2917,7 @@ mod tests {
     fn a_result_layer_asks_below_and_answers_for_itself() {
         let root = tempdir("result-below");
         let table = Table::new();
+        table.layer(&root, "a-below", &[("on_tool_result", vec![None])]);
         table.layer(
             &root,
             "z-above",
@@ -2928,7 +2929,6 @@ mod tests {
                 ],
             )],
         );
-        table.layer(&root, "a-below", &[("on_tool_result", vec![None])]);
         let host = table_host(&root, &table);
         let hub = Hub::new("s-plugins");
         let resolved = host
@@ -3140,6 +3140,7 @@ mod tests {
     fn a_call_layer_asks_below_and_answers_for_itself() {
         let root = tempdir("call-below");
         let table = Table::new();
+        table.layer(&root, "a-below", &[("on_tool_call", vec![None])]);
         table.layer(
             &root,
             "z-above",
@@ -3151,7 +3152,6 @@ mod tests {
                 ],
             )],
         );
-        table.layer(&root, "a-below", &[("on_tool_call", vec![None])]);
         let host = table_host(&root, &table);
         let hub = Hub::new("s-plugins");
         let asked = letibot_plugin::Call::new("monitor", json!({}));
