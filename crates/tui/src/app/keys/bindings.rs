@@ -185,7 +185,7 @@ const PICKER: &[Binding] = &[
         Text("opens its subagents"),
     ),
     b(&[On::Left], Empty, Act::Collapse, Text("closes them")),
-    b(&[On::Enter], Empty, Act::Open, Text("switches")),
+    b(&[On::Enter], Empty, Act::Open, Says::Row),
     // Short, and its cursor keeps itself in view: a page key moves nothing under it.
     b(&[On::Page, On::Wheel], Always, Act::Swallow, Nothing),
 ];
@@ -537,6 +537,34 @@ impl App {
     /// **The words for a row-dependent binding**, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
+            // **What Enter does on the session under the cursor** — and it is two different
+            // things, which is why this is read off the row: a session's row switches to it, and
+            // a group's line opens or closes the group. The picker's footer used to say *enter
+            // switches* over a group, because the sentence was written once for the list instead
+            // of once for the row the cursor is on.
+            //
+            // **`mine` is the row where Enter does nothing**, and the bar says so rather than
+            // offering a fold that cannot happen: `toggle_group` refuses it, and a key that does
+            // nothing and says nothing is indistinguishable from a broken one.
+            (Surface::Picker, Act::Open) => {
+                let rows = self.session_rows();
+                let at = self.picker_sel.min(rows.len().saturating_sub(1));
+                Some(
+                    match rows.get(at) {
+                        Some(r) if r.idx.is_none() => {
+                            if r.group.is_mine() {
+                                "on mine does nothing — it is always open"
+                            } else if self.open_groups.contains(&r.group) {
+                                "folds it away"
+                            } else {
+                                "unfolds it"
+                            }
+                        }
+                        _ => "switches",
+                    }
+                    .to_string(),
+                )
+            }
             // **Said only on a row that waits on something** — `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {

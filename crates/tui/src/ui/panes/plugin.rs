@@ -29,6 +29,7 @@
 use letibot_sessionlog::pane as pv;
 use rano::agent::pane::{self, PaneLines};
 use rano::agent::text::{clean, clean_line, wrapped};
+use rano::agent::tree_list::{Action as TreeAction, Cell, Row as TreeRow, TreeList};
 use rano::render::{Line, Span};
 use rano::style::Role;
 
@@ -86,7 +87,6 @@ pub(crate) enum Item<'a> {
         block: usize,
         item: usize,
         row: &'a pv::Row,
-        depth: usize,
     },
     Kv {
         label: &'a str,
@@ -267,18 +267,20 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
                         block,
                         item,
                         row,
-                        depth: 0,
                     }));
                 }
             }
+            // **A tree's rows are stops of the walk and rows of one list**: the walk is what the
+            // arrows, Enter and a click read, and the drawing hands the whole stand to rano's
+            // list at once (`tree_lines`), so the depth it needs is `rows_deep`'s and not this
+            // item's.
             pv::Block::Tree(t) => {
-                for (item, (depth, row)) in pv::rows_deep(&t.rows).into_iter().enumerate() {
+                for (item, (_, row)) in pv::rows_deep(&t.rows).into_iter().enumerate() {
                     f(Walk::Item(Item::Row {
                         panel,
                         block,
                         item,
                         row,
-                        depth,
                     }));
                 }
             }
@@ -386,6 +388,95 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
         Some(pv::Role::Failure) => Role::Failure,
         Some(pv::Role::Plain) | None => Role::Plain,
     }
+}
+
+/// **C3's `Row` as rano's one tree list draws it** — the plain function this port exists for:
+/// no drawing code, no terminal, just the row's own facts.
+///
+/// **Two fields of the primitive are deliberately left empty, and each would be a lie if it
+/// were not.** C3's `detail` is prose *read whole on Enter* (`docs/plugins-slice1.md` C3),
+/// where rano's `Row::detail` is the faint line drawn **under** the row — the session picker's
+/// id, a job's redirected path. Mapping one onto the other would draw every row's whole prose
+/// beneath it and double a pane's height, so `detail` stays where the keys already read it (the
+/// walk's own [`Target`]) and the tree draws the row alone. And C3 has no fold, so `open` is
+/// `None` and the list reserves no fold column: a `-` that folds nothing is a promise this
+/// contract cannot keep.
+fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
+    TreeRow {
+        // **Stop-ness is C3's `id`, and an empty one is not a stop** — the same field
+        // `Item::stop` reads, so a row the list draws and a row the cursor walks to are one
+        // row.
+        id: Some(r.id().to_string()).filter(|id| !id.is_empty()),
+        depth,
+        number: None,
+        open: None,
+        role: Some(role(r.role)),
+        cells: r.cells.iter().map(|c| Cell::new(c.clone())).collect(),
+        facts: Vec::new(),
+        detail: Vec::new(),
+        detail_column: None,
+        actions: r
+            .actions
+            .iter()
+            .map(|a| TreeAction::new(clean_line(&a.key), clean_line(&a.label)))
+            .collect(),
+        children: Vec::new(),
+    }
+}
+
+/// **One `Tree` block's rows, drawn by rano's list** — in the order the pane's walk numbers them.
+///
+/// `depth_first` is the block's rows as [`pv::rows_deep`] flattens them — the pane's OWN walk,
+/// which is what the arrows, Enter and a click read — so the drawing and the keys cannot come to
+/// different conclusions about how many rows there are or which one is third. Rano's list draws
+/// a flat list happily: "a caller that already holds a flat list sets `Row::depth` itself and
+/// leaves `children` empty", which is this caller exactly.
+///
+/// `cursor` is where THIS pane's cursor sits among the tree's own stops, or `None` when it is on
+/// another block. **Rano's list always marks its selected stop and has no way to say *nothing is
+/// selected***, so a block the cursor is not in is handed over with its ids cleared: it draws the
+/// same rows and marks none of them, while the pane's own stop-ness stays C3's (`Item::stop`) and
+/// its stop RECORD is written by the caller, from the same ids, not read back out of the list.
+///
+/// One line per row, which is what makes the caller's splice exact: the list is given no title, no
+/// detail and no frame lines.
+fn tree_lines(depth_first: &[(usize, &pv::Row)], cursor: Option<usize>, w: usize) -> PaneLines {
+    let rows: Vec<TreeRow> = depth_first
+        .iter()
+        .map(|&(depth, r)| {
+            let mut row = tree_row(depth, r);
+            if cursor.is_none() {
+                row.id = None;
+            }
+            row
+        })
+        .collect();
+    let drawn = rows.len();
+    let list = TreeList {
+        // The pane draws the panel's title itself; the list is the rows.
+        title: String::new(),
+        rows,
+        // Clamped by the list: with nothing selected the ids are already gone, so the clamp
+        // lands on a row that draws no mark.
+        selected: cursor.unwrap_or(0),
+        empty: String::new(),
+        // No fold column: see [`tree_row`].
+        fold_column: false,
+        detail_column: 0,
+        // The margin and the frame lines (empty state, hint, notes) are this pane's, and the
+        // list draws none it was not given.
+        margin: 0,
+        hint: Vec::new(),
+        notes: Vec::new(),
+    };
+    let mut content = list.content(w);
+    // **The rows, and only the rows.** The list also draws its own hint under them — the
+    // selected row's action letters, which is what a pane that IS a list wants and a block in
+    // the middle of a dashboard does not: a board of three panels would carry three hints. This
+    // pane's keys are the head's, said once in the bottom bar (`App::plugin_actions_hint`), and
+    // the rows themselves the list owns.
+    content.lines.truncate(drawn);
+    content
 }
 
 /// The severity's word and role, for the findings list and the summary line.
@@ -651,6 +742,9 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
     let before = out.lines.len();
 
     let mut next = 0usize;
+    // **Whether the items now arriving belong to a tree block**, whose rows their block already
+    // drew as one list. Set on every block, so an item always knows which block it is under.
+    let mut in_tree = false;
     let selected = |it: &Item<'_>, next: &mut usize| -> bool {
         if it.stop().is_some() {
             let on = *next == sel;
@@ -682,29 +776,71 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                 }
             }
         }
-        // **A block's own header**: a table's column names, and the kind of a block this host
-        // does not draw — one muted line naming it, which is C3's rule.
-        Walk::Block { block } => match block {
-            pv::Block::Table(t) if !t.columns.is_empty() => {
-                let cells: Vec<String> = t.columns.iter().map(|c| clean_line(c)).collect();
-                out.push(pane::faint(format!(
-                    "   {}",
-                    cut(&cells.join("  "), w.saturating_sub(4))
-                )));
+        // **A block's own header**: a table's column names, a tree's whole stand of rows, and
+        // the kind of a block this host does not draw — one muted line naming it, which is
+        // C3's rule.
+        Walk::Block { block } => {
+            // **The tree is drawn HERE, as one list**, and its rows are skipped below: rano's
+            // list draws a mark per row from one `selected`, so it has to see the whole stand at
+            // once, and the pane's stop counter is advanced here instead of once per item below.
+            in_tree = matches!(block, pv::Block::Tree(_));
+            match block {
+                pv::Block::Table(t) if !t.columns.is_empty() => {
+                    let cells: Vec<String> = t.columns.iter().map(|c| clean_line(c)).collect();
+                    out.push(pane::faint(format!(
+                        "   {}",
+                        cut(&cells.join("  "), w.saturating_sub(4))
+                    )));
+                }
+                // **A plugin's tree, drawn by rano's one list** ([`tree_lines`]). Where its
+                // stops sit in the pane's own numbering is what tells the list whether the
+                // cursor is in this block at all: `next` is the first stop this tree contributes
+                // and `sel` is the pane's cursor.
+                pv::Block::Tree(t) => {
+                    let deep = pv::rows_deep(&t.rows);
+                    let stops_n = deep.iter().filter(|(_, r)| !r.id().is_empty()).count();
+                    let here = (sel >= next && sel < next + stops_n).then(|| sel - next);
+                    next += stops_n;
+                    let drawn = tree_lines(&deep, here, w);
+                    // **One drawn line per row**: the list is given no title, no detail column
+                    // and no frame lines, so a row's line and its index are the same number —
+                    // and that is what makes this splice exact rather than arithmetic over the
+                    // primitive's internals.
+                    for (i, line) in drawn.lines.into_iter().enumerate() {
+                        let row = deep[i].1;
+                        if row.id().is_empty() {
+                            out.push(line);
+                        } else {
+                            out.push_stop(line);
+                        }
+                        // A row whose first cell the legend documents answers on hover, exactly
+                        // as a line does: the record is written where the row is drawn.
+                        if !view.legend.is_empty()
+                            && let Some(label) = row.cells.first().map(|c| clean_line(c))
+                            && view.legend.contains_key(&label)
+                        {
+                            legend.push((out.lines.len() - 1, label));
+                        }
+                    }
+                }
+                pv::Block::Unknown(kind) => {
+                    let kind = if kind.is_empty() {
+                        "unknown"
+                    } else {
+                        kind.as_str()
+                    };
+                    out.push(pane::faint(format!(
+                        "   {kind} — this head does not draw that block kind"
+                    )));
+                }
+                _ => {}
             }
-            pv::Block::Unknown(kind) => {
-                let kind = if kind.is_empty() {
-                    "unknown"
-                } else {
-                    kind.as_str()
-                };
-                out.push(pane::faint(format!(
-                    "   {kind} — this head does not draw that block kind"
-                )));
-            }
-            _ => {}
-        },
+        }
         Walk::Item(it) => {
+            // A tree's rows were drawn with their block, above, and counted there.
+            if in_tree {
+                return;
+            }
             let on = selected(&it, &mut next);
             let lead = if it.stop().is_some() {
                 format!("{} ", pane::mark(on))
@@ -714,13 +850,14 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
             let mut rows: Vec<Line> = Vec::new();
             let first = match it {
                 Item::Line { line, .. } => line_row(line, &g, &lead),
-                Item::Row { row, depth, .. } => {
+                // **A table's row**, which is the pane's only flat row: a tree's rows go through
+                // rano's list with their block, above.
+                Item::Row { row, .. } => {
                     let cells: Vec<String> = row.cells.iter().map(|c| clean_line(c)).collect();
                     Line::new(vec![
                         Span::role(lead, Role::Faint),
-                        Span::raw("  ".repeat(depth.min(6))),
                         Span::role(
-                            cut(&cells.join("  "), w.saturating_sub(LEAD + 2 * depth)),
+                            cut(&cells.join("  "), w.saturating_sub(LEAD)),
                             role(row.role),
                         ),
                     ])

@@ -197,26 +197,183 @@ fn opening_a_group_draws_its_tree_under_its_parent() {
     );
 }
 
-/// **A number that names a group's line is refused with the reason**, rather than switching to the
-/// session above or below it — the numbering is what the screen draws, and a group's line is one
-/// of its rows.
+/// **A number is the n-th SESSION, not the n-th row** — `/switch 2` takes the second
+/// conversation even though its row is the third on the screen, and a group's line, which has no
+/// number at all, cannot be reached by one.
+///
+/// This is the semantic the port to rano's tree list moved: the list numbers the sessions it
+/// draws and nothing else (`rano::agent::picker`), so a number is somewhere to GO and a group's
+/// line — which you can only fold — is not.
 #[test]
-fn a_typed_number_on_a_group_line_says_what_it_is() {
+fn a_number_names_the_nth_session_and_a_group_line_has_none() {
     let mut a = a_daemon_with_every_kind();
     a.push_surface(Surface::Picker);
-    // Row 4 of the drawn list is `[subagents]`: two mine rows above it, numbered from 1.
-    assert_eq!(a.pick("4"), None);
-    let screen = a.screen(100, 43).join("\n");
-    assert!(
-        screen.contains("is the subagents group's line"),
-        "the number is answered rather than acted on:\n{screen}"
+    // The drawn order: `[mine]`, the habr article, the rust rewrite, `[subagents]`, …
+    assert_eq!(
+        rows(&a)[..4],
+        [
+            "[mine]",
+            "the habr article",
+            "the rust rewrite",
+            "[subagents]"
+        ]
     );
-    // And a number that names a session still switches — row 3 is the second conversation, the
-    // first being the one this head is already in.
+    // **Three rows down, the second session.**
     assert_eq!(
         a.pick("3"),
+        None,
+        "there is no third session on a list with two drawn"
+    );
+    assert_eq!(
+        a.pick("2"),
         Some(Action::Switch("s-rust".into())),
-        "row 3 is the second conversation"
+        "the second session, which is the third ROW"
+    );
+    // A number past the end says so rather than reading as a name that did not match.
+    assert_eq!(a.pick("9"), None);
+    let screen = a.screen(100, 43).join("\n");
+    assert!(
+        screen.contains("there is no session 9"),
+        "the list is shorter than the number typed:\n{screen}"
+    );
+}
+
+/// **A number past the last session still searches the names** — `3` is also a thing a title can
+/// say, and a list that refused it would have stopped searching for names that look like numbers.
+///
+/// With two sessions, `2` is the second one and `3` is nobody's number: it falls through to the
+/// name search, finds `3 days of work`, and only a number that neither reading matches is
+/// answered as a number.
+#[test]
+fn a_number_past_the_end_still_finds_a_title_that_says_it() {
+    let mut a = app();
+    a.apply(hello(
+        "s-a",
+        vec![
+            brief("s-a", "the one", true),
+            brief("s-b", "3 days of work", false),
+        ],
+        Hub::new("s-a").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    assert_eq!(
+        a.pick("3"),
+        Some(Action::Switch("s-b".into())),
+        "no third session, but a title that starts with 3"
+    );
+    assert_eq!(
+        a.pick("2"),
+        Some(Action::Switch("s-b".into())),
+        "and a number that IS one of the list's still wins"
+    );
+    assert_eq!(a.pick("7"), None, "neither a session nor a name");
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        screen.contains("there is no session 7"),
+        "the number is answered as a number:\n{screen}"
+    );
+}
+
+/// **A group's line is drawn without a number**, and the sessions are numbered from 1 in the
+/// order they appear — the drawn number and the typed one are one number.
+#[test]
+fn the_drawn_numbers_are_the_sessions_and_a_group_has_none() {
+    let a = a_daemon_with_every_kind();
+    // **The list's own rows**, not the frame: the session header at the top of the screen also
+    // carries a title, and a `contains` over the whole screen would find that one first.
+    let rows = a.picker_lines(100);
+    let line = |needle: &str| {
+        rows.iter()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("`{needle}` is drawn:\n{}", rows.join("\n")))
+            .clone()
+    };
+    let before = |text: &str, needle: &str| text[..text.find(needle).unwrap()].to_string();
+    // The two conversations carry 1 and 2, whatever is drawn between them.
+    let habr = line("the habr article");
+    assert!(
+        before(&habr, "the habr article").trim().ends_with('1'),
+        "the first session is numbered 1: {habr:?}"
+    );
+    let rust = line("the rust rewrite");
+    assert!(
+        before(&rust, "the rust rewrite").trim().ends_with('2'),
+        "the second session is numbered 2: {rust:?}"
+    );
+    // **A group's line has no field at all**: nothing before its name is a number. The `(3)`
+    // after it is its COUNT, which is why the test reads the part before the word.
+    let group = line("subagents (3)");
+    assert!(
+        !before(&group, "subagents")
+            .chars()
+            .any(|c| c.is_ascii_digit()),
+        "a group's line is not a number you can type: {group:?}"
+    );
+}
+
+/// **A click on a group's line folds it** — the one row in this head where a click acts rather
+/// than marks, because a group has no session to mark for a later Enter.
+#[test]
+fn a_click_on_a_groups_line_folds_it() {
+    let mut a = a_daemon_with_every_kind();
+    let screen = a.screen(100, 48);
+    let y = screen
+        .iter()
+        .position(|l| l.contains("subagents (3)"))
+        .expect("the subagents line is drawn") as u16;
+    let group = letibot_sessionlog::SessionGroup::Subagents;
+    assert!(a.open_groups.is_empty(), "it starts folded");
+    a.key(Key::Click { x: 6, y });
+    assert_eq!(
+        a.open_groups,
+        vec![group],
+        "the click opened the group it landed on"
+    );
+    assert!(
+        a.screen(100, 48).join("\n").contains("read the repo"),
+        "and its rows are drawn now"
+    );
+    a.key(Key::Click { x: 6, y });
+    assert!(a.open_groups.is_empty(), "a second click folds it away");
+}
+
+/// **The bar says what Enter does on the row under the cursor** — `switches` on a session,
+/// `unfolds it` / `folds it away` on a group's line, and the truth on `mine`, where Enter does
+/// nothing at all.
+///
+/// The picker's footer used to say *enter switches* over a group, because the sentence was written
+/// once for the list instead of once for the row the cursor is on. This is that sentence read off
+/// the row (`Surface::row_says`), the way the subagents and jobs panes already read theirs.
+#[test]
+fn the_bar_follows_the_cursor_onto_a_groups_line() {
+    /// The drawn row of a title, or of a group's `[name]`.
+    fn row_of(a: &App, title: &str) -> usize {
+        rows(a)
+            .iter()
+            .position(|r| r == title)
+            .unwrap_or_else(|| panic!("{title} is drawn: {:?}", rows(a)))
+    }
+    let mut a = a_daemon_with_every_kind();
+    a.picker_sel = row_of(&a, "the habr article");
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("enter switches"), "{bar}");
+    a.picker_sel = row_of(&a, "[subagents]");
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("enter unfolds it"),
+        "a folded group says what Enter does to it: {bar}"
+    );
+    // Opened by hand, the same row says the other half.
+    a.open_groups
+        .push(letibot_sessionlog::SessionGroup::Subagents);
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("enter folds it away"), "{bar}");
+    // `mine` is the row where nothing happens, and the bar does not pretend otherwise.
+    a.picker_sel = row_of(&a, "[mine]");
+    let bar = a.hint_bar(200);
+    assert!(
+        bar.contains("on mine does nothing"),
+        "the one row Enter cannot act on says so: {bar}"
     );
 }
 

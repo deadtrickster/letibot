@@ -291,19 +291,10 @@ impl App {
                 else {
                     return ControlFlow::Continue(());
                 };
-                // **A group's line opens and closes its group** — the same act `→` has, and the
-                // only act a row with no session behind it could have. Saying *mine is always
-                // open* rather than redrawing nothing is the same rule `switch_to`'s *already
-                // here* follows: a key that does nothing and says nothing is indistinguishable
-                // from a broken one.
+                // **A group's line opens and closes its group** — the same act `→` and a click
+                // have, and the only act a row with no session behind it could have.
                 let Some(i) = row.idx else {
-                    if !self.toggle_group(row.group) {
-                        self.say(&format!(
-                            "{} is always open — the conversations you opened are what this list \
-                             is for",
-                            row.group.title()
-                        ));
-                    }
+                    self.fold_group(row);
                     return ControlFlow::Break(None);
                 };
                 let id = self.sessions[i].session_id.clone();
@@ -366,10 +357,7 @@ impl App {
         // too — one gesture, two keys, because a tree's arrows are where a reader reaches first.
         let Some(i) = row.idx else {
             if row.group.is_mine() {
-                self.say(
-                    "mine is always open — the conversations you opened are what this list is \
-                     for",
-                );
+                self.say_mine_always_open();
             } else if open != self.open_groups.contains(&row.group) {
                 self.toggle_group(row.group);
             }

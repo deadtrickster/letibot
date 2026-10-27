@@ -1268,7 +1268,7 @@ impl App {
 pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("new", "TITLE — start a fresh session"),
     ("sessions", "the session picker"),
-    ("switch", "ID — go to another session"),
+    ("switch", "ID or list number — go to another session"),
     ("rename", "NAME — name the session you are in"),
     ("help", "the key and command reference"),
     ("status", "the bottom border's telemetry, full screen"),

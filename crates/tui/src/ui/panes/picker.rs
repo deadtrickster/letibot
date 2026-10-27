@@ -5,7 +5,10 @@ use crate::app::*;
 use crate::ui::render::row_strings;
 use crate::ui::*;
 use letibot_sessionlog::registry::short_id;
-use rano::agent::picker::{SessionPicker, SessionRow as PickRow, SettingPicker, SettingValue};
+use rano::agent::picker::{
+    SessionGroup as PickGroup, SessionItem, SessionPicker, SessionRow as PickRow, SettingPicker,
+    SettingValue,
+};
 
 impl App {
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -44,10 +47,18 @@ impl App {
     /// **The session list's facts, in rano's words** — through the ONE enumeration
     /// ([`App::session_rows`]): a sub-session indented under the conversation that spawned it,
     /// a conversation with children carrying the fold every tree in this head uses (`-` open,
-    /// `+` folded), and the numbering the ROW's, so the number a reader counts to is the number
-    /// `/switch N` takes. The rest — the reserved fold column, the number field as wide as the
-    /// list is long, the facts at the right edge — is rano's, with the measurements that
-    /// decided it.
+    /// `+` folded), and the numbering rano's own.
+    ///
+    /// **A group's line is a [`SessionItem::Group`], not a session with an empty id.** It used
+    /// to be faked as one, and the fake cost the list its one honest sentence: the picker's
+    /// footer said *enter switches* over a row where Enter folds, because the footer was
+    /// written once for the list rather than read off the row the cursor is on. Group rows and
+    /// session rows now carry their own action, and rano's list draws whichever one the cursor
+    /// is on.
+    ///
+    /// **A number is the n-th SESSION**, which is rano's rule and the one
+    /// [`App::session_at_number`] reads: a group's line takes no number, because a number is
+    /// something you type to go somewhere.
     pub(crate) fn session_picker(&self) -> SessionPicker {
         let rows = self.session_rows();
         let groups = self.session_groups();
@@ -66,30 +77,25 @@ impl App {
             rows: rows
                 .iter()
                 .map(|row| {
-                    // **A group's own line** — `subagents (14)`, its fold, and one line saying
-                    // what the group is. It is a stop like every other row (so the cursor, the key
-                    // and the drawing are one enumeration), and it has no session: `enter` on it
-                    // opens or closes the group, which is why it carries `None` for the id.
+                    // **A group's own line** — `subagents (14)`, its fold, and the legend
+                    // sentence under it. It is a stop like every other row (so the cursor, the
+                    // key and the drawing are one enumeration), and it has no session: `enter`
+                    // on it opens or closes the group, which is why it carries no id of one.
                     let Some(i) = row.idx else {
-                        let count = groups.iter().filter(|g| **g == row.group).count();
-                        return PickRow {
-                            depth: row.depth,
-                            // **The count is the group's own**, and it is the whole reason the line
-                            // exists: *fourteen subagents* is one number to read instead of fourteen
-                            // rows to scroll past.
-                            name: format!("{} ({count})", row.group.title()),
-                            session_id: String::new(),
-                            here: false,
-                            // `mine` is never folded — its rows are why the list is open.
-                            children: (!row.group.is_mine())
-                                .then(|| self.open_groups.contains(&row.group)),
-                            generating: false,
-                            live: true,
-                            rows: 0,
-                            heads: 0,
-                            model: String::new(),
-                            workspace: row.group.legend().to_string(),
-                        };
+                        return SessionItem::Group(PickGroup {
+                            name: row.group.title().to_string(),
+                            // **The count is the group's own**, and it is the whole reason the
+                            // line exists: *fourteen subagents* is one number to read instead of
+                            // fourteen rows to scroll past.
+                            count: groups.iter().filter(|g| **g == row.group).count(),
+                            // **`mine` is never folded** — its rows are why the list is open —
+                            // and a group this head is standing in opens itself, which is what
+                            // `group_open` answers (the same rule `session_rows` enumerated by).
+                            open: self.group_open(row.group, &groups),
+                            // What the group IS, one line: the header is a word like `packages`
+                            // and a reader cannot be expected to know what a package is.
+                            note: row.group.legend().to_string(),
+                        });
                     };
                     let s = &self.sessions[i];
                     // **The fold glyph is about the tree inside a group**, and only for a session
@@ -107,7 +113,7 @@ impl App {
                             || self.expanded.iter().any(|e| *e == s.session_id)
                     });
                     let stored = s.stored_items as usize;
-                    PickRow {
+                    SessionItem::Session(PickRow {
                         depth: row.depth,
                         // **A paused session says so on its row** (`/nag pause`): rano's row has
                         // no field for it, and the name is the one cell every width keeps — so a
@@ -153,7 +159,7 @@ impl App {
                         } else {
                             tilde(&s.wiring.workspace)
                         },
-                    }
+                    })
                 })
                 .collect(),
             selected: self.picker_sel,

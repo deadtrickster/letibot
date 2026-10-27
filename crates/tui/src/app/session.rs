@@ -472,6 +472,22 @@ impl App {
         out
     }
 
+    /// **The session a typed number names — the n-th SESSION, not the n-th row.**
+    ///
+    /// The list's numbers are its sessions': a group's line takes none, because a number is
+    /// something a reader types to go somewhere and there is nowhere to go on a group's line.
+    /// That is rano's own rule (`agent::picker` numbers the [`SessionItem::Session`] rows and
+    /// nothing else), and it is read here so the drawn number and the typed one are one
+    /// number — the two-enumerations defect this list has paid for twice.
+    ///
+    /// `None` past the last session, and `None` for `0`: the list is numbered from 1.
+    pub(crate) fn session_at_number(&self, n: usize) -> Option<usize> {
+        self.session_rows()
+            .iter()
+            .filter_map(|r| r.idx)
+            .nth(n.checked_sub(1)?)
+    }
+
     /// **Which group each session in the daemon's list is in** — one answer per draw, from the
     /// one rule (`letibot_sessionlog::group_of`), so the folds, the counts, the rows and the keys
     /// cannot disagree about a session.

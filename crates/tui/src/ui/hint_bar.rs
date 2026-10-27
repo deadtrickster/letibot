@@ -216,15 +216,21 @@ impl App {
             }
             None => self.conversation_hint(),
         };
-        // **A plugin pane's legend answers on hover** (C3: *a legend documents every label, and
-        // the same text answers on hover*). Said FIRST, because it is the sentence the pointer
-        // asked for: the key hints still follow and fall off the right of a narrow bar, which is
-        // the right way round — a reader who is pointing at a word wants the word explained.
-        let tail = match self.plugin_hover_legend() {
-            Some(text) if self.drawn() == Drawn::Surface(Surface::PluginPane) => {
-                format!("{text} · {tail}")
-            }
-            _ => tail,
+        // **The plugin pane's two dynamic halves, said FIRST**: the legend's words for the row
+        // the pointer is over (C3: *the same text answers on hover* — the sentence the pointer
+        // asked for) and the selected stop's own action letters (C3: *shown in the hint bar*).
+        // Both before the key hints, which still follow and fall off the right of a narrow bar —
+        // that is the right way round: a reader who is pointing at a word wants the word
+        // explained, and one who is reading a row wants its keys.
+        let mut lead: Vec<String> = Vec::new();
+        if self.drawn() == Drawn::Surface(Surface::PluginPane) {
+            lead.extend(self.plugin_hover_legend().map(str::to_string));
+            lead.extend(self.plugin_actions_hint());
+        }
+        let tail = if lead.is_empty() {
+            tail
+        } else {
+            format!("{} · {tail}", lead.join(" · "))
         };
         crate::ui::render::row(
             &HintBar {

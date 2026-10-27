@@ -159,7 +159,9 @@ impl App {
             }
             (_, None) => return ControlFlow::Break(None),
             (Target::Surface(s), Some(k)) => match s {
-                Surface::Picker => self.picker_sel = k,
+                // **A click on a group's line folds it** (`App::click_picker`): a session's row
+                // only marks, and Enter still switches.
+                Surface::Picker => self.click_picker(k),
                 Surface::Todos => {
                     self.todos_sel = k;
                     let stops = self.todos_stops();

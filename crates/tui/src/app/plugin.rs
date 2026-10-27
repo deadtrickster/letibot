@@ -382,6 +382,24 @@ impl App {
             .collect()
     }
 
+    /// **The selected stop's own action letters**, for the bottom bar — C3: *action keys are
+    /// shown in the hint bar for the selected stop*.
+    ///
+    /// Read off the stop under the cursor ([`App::plugin_selected`]), which is the same value the
+    /// key dispatch reads, so the bar cannot offer a letter that does nothing on the row the
+    /// cursor is on. Empty when the stop has no actions — a markdown item, a finding with none —
+    /// and the bar then says the host's keys alone rather than an empty promise.
+    pub(crate) fn plugin_actions_hint(&self) -> Option<String> {
+        let target = self.plugin_selected()?;
+        let letters: Vec<String> = target
+            .actions()
+            .iter()
+            .filter(|a| a.letter().is_some())
+            .map(|a| format!("{} {}", a.key, rano::agent::text::clean_line(&a.label)))
+            .collect();
+        (!letters.is_empty()).then(|| letters.join(" · "))
+    }
+
     /// **`/pane`'s listing**: every plugin pane this session has, by title, with the spelling
     /// that opens it. The panes list the operator picks from, on this head, is this one and the
     /// help screen's `/pane NAME` row: the names are the daemon's and a fixed list would be a

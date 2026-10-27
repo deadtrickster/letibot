@@ -326,6 +326,36 @@ fn a_look_action_asks_for_a_fresh_look() {
     );
 }
 
+/// **The selected stop's own action letters are on the bottom bar** — C3: *action keys are single
+/// lowercase letters shown in the hint bar for the selected stop*.
+///
+/// The bar is where a reader learns that `s` and `e` exist at all, and it has to follow the
+/// cursor: a letter offered on a row the cursor has left is a letter that does nothing.
+#[test]
+fn the_bar_names_the_selected_stops_action_keys() {
+    let mut a = opened();
+    a.screen(110, 40);
+    let bar = a.hint_bar(220);
+    assert!(bar.contains("s start"), "the first stop's action: {bar}");
+    a.key(Key::Down);
+    let bar = a.hint_bar(220);
+    assert!(
+        bar.contains("e expand"),
+        "the row the cursor moved to: {bar}"
+    );
+    assert!(!bar.contains("s start"), "and not the one it left: {bar}");
+    // **A tree's rows carry theirs the same way** — C3's `Row` has `actions`, exactly as a `Line`
+    // does, and rano's tree list takes them as data.
+    let mut t = tree_opened();
+    t.screen(110, 40);
+    let bar = t.hint_bar(220);
+    assert!(bar.contains("s start"), "the tree's root: {bar}");
+    // The child with no actions adds nothing at all — the bar does not invent a key.
+    t.key(Key::Down);
+    let bar = t.hint_bar(220);
+    assert!(!bar.contains("s start"), "{bar}");
+}
+
 /// **A block kind this host does not draw is one muted line naming it** — never a silently
 /// missing row: the plugin's answer is not wrong and this head is old.
 #[test]
@@ -515,12 +545,17 @@ fn the_wheel_over_the_pane_scrolls_the_pane() {
 }
 
 /// **A tree block draws its rows indented under their parent** — the snapshot this port has to
-/// keep: what a plan's rows read like, before rano's own tree list draws them.
+/// keep: what a plan's rows read like, drawn by rano's one tree list.
 ///
-/// A snapshot and not a set of `contains` assertions, because the port replaces the drawing
+/// A snapshot and not a set of `contains` assertions, because the port replaced the drawing
 /// function wholesale: the indent, the mark, the columns and the break between one cell and the
 /// next are exactly what changes when a private renderer becomes a primitive's, and a test that
 /// only asked *is `step a` on the screen* would stay green through all of it.
+///
+/// **The one difference the port made, on purpose**: two cells of a row are now one space apart
+/// rather than two, because that is the list's own separator (`rano::agent::tree_list::row_line`)
+/// and a plugin's row should be laid out by the same rule as a session's. The mark, the indent,
+/// the order and the roles are unchanged, which is what the other half of this test pair checks.
 #[test]
 fn a_tree_block_draws_its_rows_indented_under_their_parent() {
     let mut a = tree_opened();
@@ -530,10 +565,10 @@ fn a_tree_block_draws_its_rows_indented_under_their_parent() {
             "a plan",
             "",
             "p plan",
-            "▸ the plan  2/3",
-            "  step a  done",
-            "  step b  blocked",
-            "    the reason  io",
+            "▸ the plan 2/3",
+            "  step a done",
+            "  step b blocked",
+            "    the reason io",
         ]
     );
 }

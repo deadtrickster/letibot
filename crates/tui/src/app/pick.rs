@@ -16,25 +16,22 @@ impl App {
             self.redraw = true;
             return None;
         }
-        // **The number is the row the picker DREW.** They are the same list only while nothing is
-        // expanded, and a number that means one thing on the screen and another in this function is
-        // the two-enumerations defect. The prefix search below stays over every session on purpose:
-        // a collapsed child is still reachable by name, which is what collapsing is for.
-        let rows = self.session_rows();
-        if let Ok(n) = typed.parse::<usize>()
-            && n >= 1
-            && n <= rows.len()
+        // **The number is the n-th SESSION** — [`App::session_at_number`], which is the same
+        // reading rano's list writes its numbers from. They are the same list only while nothing
+        // is expanded, and a number that means one thing on the screen and another in this
+        // function is the two-enumerations defect. A group's line has no number, so there is
+        // nothing here to refuse: the numbers run over the sessions alone, and a list with two
+        // group lines above three conversations numbers those conversations 1, 2, 3.
+        //
+        // The prefix search below stays over every session on purpose: a collapsed child is still
+        // reachable by name, which is what collapsing is for — **and a number past the end falls
+        // through to it**, because `3` is also a thing a title can say (`3 days of work`) and a
+        // list that refused it would be a list that stopped searching for names that look like
+        // numbers. Only when neither reading finds anything is the number answered as a number.
+        let numbered = typed.parse::<usize>().ok().filter(|n| *n >= 1);
+        if let Some(n) = numbered
+            && let Some(i) = self.session_at_number(n)
         {
-            // **A group's line is a number on the screen and not a session**, so the number that
-            // names it has to say so rather than switch to the row below or above it.
-            let Some(i) = rows[n - 1].idx else {
-                self.say(&format!(
-                    "{n} is the {} group's line, not a session — enter on it opens or closes the \
-                     group",
-                    rows[n - 1].group.title()
-                ));
-                return None;
-            };
             let id = self.sessions[i].session_id.clone();
             return self.switch_to(id);
         }
@@ -55,9 +52,25 @@ impl App {
                 self.switch_to(id)
             }
             0 => {
-                self.say(&format!(
-                    "no session matches {typed:?} — esc closes the list"
-                ));
+                // **A number nothing named is answered as a number** — the list numbers its
+                // sessions, so `no session matches "9"` would read like a naming problem rather
+                // than a list that is shorter than what was typed.
+                match numbered {
+                    Some(n) => {
+                        let sessions = self
+                            .session_rows()
+                            .iter()
+                            .filter(|r| r.idx.is_some())
+                            .count();
+                        self.say(&format!(
+                            "there is no session {n} in this list — it numbers its sessions, and \
+                             this daemon has {sessions}"
+                        ));
+                    }
+                    None => self.say(&format!(
+                        "no session matches {typed:?} — esc closes the list"
+                    )),
+                }
                 None
             }
             n => {
@@ -67,6 +80,45 @@ impl App {
                 None
             }
         }
+    }
+
+    /// **A click on the session list** — the row under the pointer, and the act of the row it
+    /// landed on.
+    ///
+    /// **A group's line folds, and that is the one place in this head where a click ACTS rather
+    /// than marks.** A group has no session to mark for a later Enter, so a click that only moved
+    /// the cursor would be a click that did nothing at all — the same rule Enter follows on the
+    /// same row. A session's row keeps its two acts apart (the click marks, Enter switches),
+    /// because switching to the wrong session is not a keystroke you can take back.
+    pub(crate) fn click_picker(&mut self, k: usize) {
+        self.picker_sel = k;
+        self.redraw = true;
+        let rows = self.session_rows();
+        let Some(row) = rows.get(k).copied() else {
+            return;
+        };
+        if row.idx.is_none() {
+            self.fold_group(row);
+        }
+    }
+
+    /// **Enter or a click on a group's line**: open or close it, or say why nothing moved.
+    ///
+    /// `mine` is the group that cannot fold — its rows are why the list is open — and a key that
+    /// does nothing and says nothing is indistinguishable from a broken one, which is the same
+    /// rule [`App::switch_to`]'s *already here* follows.
+    pub(crate) fn fold_group(&mut self, row: SessionRow) -> bool {
+        if self.toggle_group(row.group) {
+            return true;
+        }
+        self.say_mine_always_open();
+        false
+    }
+
+    /// **Why nothing moved on a `mine` line** — the one sentence `enter`, `→`, `←` and a click
+    /// all answer with, so a row that cannot fold cannot come to say four different things.
+    pub(crate) fn say_mine_always_open(&mut self) {
+        self.say("mine is always open — the conversations you opened are what this list is for");
     }
 
     /// Take a submitted line while the mode picker is up: a row number, or a
