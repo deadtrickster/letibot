@@ -913,19 +913,54 @@ pub fn rundir() -> PathBuf {
     base.join("letibot")
 }
 
-/// The `ControlMaster` socket for one host, under [`rundir`].
+/// The `ControlMaster` socket for one host **and one daemon**, under [`rundir`].
+///
+/// **The pid is in the name, and that is R99's fix.** One socket per host, shared by every daemon
+/// on the box, is one OpenSSH connection with `MaxSessions` (10) slots on it — and six package
+/// daemons placing work, polling their jobs and writing their files ask for far more than ten at
+/// once. The eleventh is refused by the *server* (`channel 0: open failed: administratively
+/// prohibited`) or lost by the client (`mux_client_request_session: session request failed`), and
+/// a write refused halfway is how a file ends up at zero bytes (FB's note, and
+/// `crates/tools/src/builtins/fanout.rs` twice). A socket per daemon makes the in-process bound
+/// ([`rpc::MAX_SESSIONS_PER_HOST`]) the only bound that matters: nothing else multiplexes on it,
+/// so eight calls at once is eight sessions and not eight of the ten somebody else's daemon left.
+///
+/// The cost is one dial per daemon per host instead of one per host — measured on lab2x1
+/// (32 cores, its own sshd on loopback): a full handshake, key exchange and public-key attempt is
+/// **50-70 ms**, and `ControlPersist=120` makes it once per two minutes of idleness. Six daemons
+/// therefore pay six dials where they paid one, and stop paying it in refusals.
 ///
 /// **A unix socket path is capped** (`SUN_LEN`: 104 bytes on this Mac, 108 on Linux), and a
 /// per-user temp directory under `/var/folders/…` is most of that before a name is added — so the
 /// long answer falls back to `/tmp`, which is short on every box this runs on. Measured: a path
 /// past the cap fails the bind with a sentence that reads like a bug in the caller.
 pub fn control_path(host: &str, pid: u32) -> PathBuf {
+    control_path_for(host, pid, "call")
+}
+
+/// The socket this daemon's **git** work multiplexes over — [`control_path`] with a role of its
+/// own.
+///
+/// `git fetch` reaches `git-upload-pack` through an ssh that this crate does not run: it hands git
+/// the flags ([`Ssh::git_flags`]) and git starts the process (`core.sshCommand`). That ssh never
+/// passes [`rpc::enter`], so it is not counted by the eight-slot gate and it can be the ninth or
+/// tenth session on a master — which is exactly the arithmetic R99 is about. A second socket makes
+/// the two workloads unable to meet: the call master holds at most `MAX_SESSIONS_PER_HOST` and the
+/// git master holds one session per fetch, and neither can refuse the other.
+///
+/// It is a second TCP connection per daemon per host, dialled only when a session is closed or a
+/// placement asks for its branch back — a handful per hour, at 50-70 ms each.
+pub fn git_control_path(host: &str, pid: u32) -> PathBuf {
+    control_path_for(host, pid, "git")
+}
+
+fn control_path_for(host: &str, pid: u32, role: &str) -> PathBuf {
     let short = sanitise(host);
-    let preferred = rundir().join(format!("ssh-{short}.sock"));
+    let preferred = rundir().join(format!("ssh-{short}-{pid}-{role}.sock"));
     if preferred.as_os_str().len() <= 100 {
         return preferred;
     }
-    PathBuf::from("/tmp").join(format!("letibot-ssh-{pid}-{short}.sock"))
+    PathBuf::from("/tmp").join(format!("letibot-ssh-{pid}-{short}-{role}.sock"))
 }
 
 /// **The host's `path` list as the export a remote command starts with** — `None` when the file
@@ -1075,6 +1110,48 @@ enum Call {
     /// does not verify. Definite: not a lost connection, never retried, and its sentence names the
     /// fix ([`Ssh::denied`]).
     Denied(AuthRefusal, Vec<u8>),
+    /// **The multiplexer refused a session, so the command never started** — a full master
+    /// (`MaxSessions`), a control socket that went away, an fd that would not pass. It is a
+    /// transport failure about *this call*, not the command's own exit and not the host being
+    /// down, and it is retried on a fresh connection whatever the caller's policy says, because
+    /// nothing ran ([`mux_refusal`]).
+    MuxRefused(MuxRefusal, Vec<u8>),
+}
+
+/// **The four ways OpenSSH's multiplexer loses a session, and what each one proves.**
+///
+/// They look like four different faults and they are one: the connection is up, and this call did
+/// not get a channel on it. That is why they are separated from [`Call::Dropped`] — which says
+/// *the connection went away and nobody knows what happened* — and why they are retried even for
+/// an at-most-once operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MuxRefusal {
+    /// `mux_client_request_session: session request failed` — the master refused to open the
+    /// session. With `SendEnv`/`SetEnv` or a full session table, the request never became a
+    /// channel.
+    Session,
+    /// `mm_send_fd: sendmsg(1): Message too long` — the client could not hand the session's file
+    /// descriptors to the master. **Measured 2026-10-27** as the sentence an `edit` through the
+    /// git placement died of (FB's note), and it is the one that reads most like a broken pipe.
+    Fds,
+    /// `channel 0: open failed: administratively prohibited` — the *server* refused the channel:
+    /// `MaxSessions` reached, or the server's own limit on the account.
+    Channel,
+    /// `Control socket connect …: Connection refused` — the socket file is there and nothing is
+    /// listening on it: a master that died or was killed.
+    StaleSocket,
+}
+
+impl MuxRefusal {
+    /// The short form a sentence and a test can name it by.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MuxRefusal::Session => "the master refused the session",
+            MuxRefusal::Fds => "the session's descriptors could not be handed over",
+            MuxRefusal::Channel => "the server refused the channel (MaxSessions)",
+            MuxRefusal::StaleSocket => "the control socket is there and nothing is listening",
+        }
+    }
 }
 
 /// **The two ways ssh says *not you*.** They are separated because the fix differs — a key that is
@@ -1090,8 +1167,16 @@ pub enum AuthRefusal {
 
 /// **Did the far side say anything at all?** A refusal counts — `Permission denied` is a machine
 /// that is up — and a lost connection or a passed deadline does not.
+///
+/// **A refused mux session counts as connected, and that is deliberate**: a master with no free
+/// session slot is a busy *path*, not a host that is down, and a stale socket is this box's own
+/// litter. Counting either as a connection failure would open the breaker on a healthy host the
+/// moment six packages wrote at once — which is exactly the load R99 is about.
 fn connected(call: &Call) -> bool {
-    matches!(call, Call::Answered(..) | Call::Denied(..))
+    matches!(
+        call,
+        Call::Answered(..) | Call::Denied(..) | Call::MuxRefused(..)
+    )
 }
 
 /// **Read ssh's own words as *refused* or *lost*.** OpenSSH prints these and exits 255 with
@@ -1111,6 +1196,40 @@ fn auth_refusal(stderr: &str) -> Option<AuthRefusal> {
         || lower.contains("remote host identification has changed")
     {
         return Some(AuthRefusal::HostKey);
+    }
+    None
+}
+
+/// **Read ssh's words for *the connection is fine, this session was not*** — R99's
+/// classification.
+///
+/// These four arrive exactly like a dropped connection: exit 255, nothing on stdout, and a line on
+/// stderr that mentions something a reader has to know OpenSSH to understand. Reported as
+/// [`Call::Dropped`] they cost two things, both measured on 2026-10-27 with six packages on
+/// lab2x1: a write's chunk was **retried by the whole-write rule and its stderr thrown away** (so
+/// the model was told the connection was lost, or worse, nothing at all), and a `run` — which is
+/// at-most-once — was reported as *it may have run*, when in fact no channel ever existed.
+///
+/// The last one carries the fact that makes the retry safe: `mm_send_fd` failing means the
+/// session's descriptors never reached the master, so the remote shell was never started. The same
+/// is true of a refused session request, of a channel the server refused, and of a socket nothing
+/// listens on. **None of them can have run the command**, so rule 3 permits the retry even for an
+/// operation that is otherwise at-most-once.
+fn mux_refusal(stderr: &str) -> Option<MuxRefusal> {
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("mux_client_request_session") || lower.contains("session request failed") {
+        return Some(MuxRefusal::Session);
+    }
+    if lower.contains("mm_send_fd")
+        || (lower.contains("sendmsg") && lower.contains("message too long"))
+    {
+        return Some(MuxRefusal::Fds);
+    }
+    if lower.contains("open failed") || lower.contains("channel") && lower.contains("refused") {
+        return Some(MuxRefusal::Channel);
+    }
+    if lower.contains("control socket connect") || lower.contains("mux_client") {
+        return Some(MuxRefusal::StaleSocket);
     }
     None
 }
@@ -1204,7 +1323,12 @@ pub struct Ssh {
     program: PathBuf,
     /// The identity file ssh is given, resolved and checked once, at [`Ssh::connect`].
     key: PathBuf,
+    /// This daemon's master for its own RPC calls — [`control_path`], and the socket
+    /// [`rpc::MAX_SESSIONS_PER_HOST`] is a promise about.
     control: PathBuf,
+    /// This daemon's master for **git's** ssh, which this process does not run and therefore
+    /// cannot count against that bound ([`git_control_path`]).
+    git_control: PathBuf,
     paths: Paths,
     /// The wall clock on every call that is *not* a command — [`STEP_BOUND`] unless a caller (a
     /// test, mostly) names another.
@@ -1234,17 +1358,21 @@ impl Ssh {
             return Err(unknown_host_key(&host.hostname, &paths));
         }
         let control = control_path(&host.name, std::process::id());
+        let git_control = git_control_path(&host.name, std::process::id());
         // The socket's directory has to exist or ssh cannot make the master — and a missing
         // master is not an error, it is a handshake per command, which nobody asked for. A
         // failure here is not fatal: ssh says so on its own stderr.
-        if let Some(dir) = control.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        for socket in [&control, &git_control] {
+            if let Some(dir) = socket.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
         }
         Ok(Ssh {
             host,
             program: program.unwrap_or_else(ssh_program_default),
             key,
             control,
+            git_control,
             paths,
             bound: STEP_BOUND,
             dir: None,
@@ -1317,6 +1445,22 @@ impl Ssh {
     /// destination and the command are git's to append.
     pub fn flags(&self) -> Vec<String> {
         flags(&self.key, &self.control, &self.paths)
+    }
+
+    /// **The same flags, pointed at the git master** — what `core.sshCommand` is built from.
+    ///
+    /// A fetch is an ssh this process never sees: git starts it, so it takes no place in
+    /// [`rpc::enter`]'s queue and it would be the ninth session on the master the calls are
+    /// bounded on. One socket for the calls and one for git is the whole of the fix, and it is why
+    /// `MAX_SESSIONS_PER_HOST` is a guarantee rather than an average.
+    pub fn git_flags(&self) -> Vec<String> {
+        flags(&self.key, &self.git_control, &self.paths)
+    }
+
+    /// The socket this connection's own calls multiplex over — a test asks this, production does
+    /// not: it is the one fact that says *one master per daemon*.
+    pub fn control_socket(&self) -> &Path {
+        &self.control
     }
 
     /// The argv that runs `command` on the remote: flags, destination, command — the
@@ -1503,7 +1647,14 @@ impl Ssh {
             Some(file) => grouped(script, file),
             None => script.to_string(),
         };
-        let ended = self.call(step, &wrapped, Retry::Never, self.bound, Reported::Always)?;
+        let ended = self.call(
+            step,
+            &wrapped,
+            Retry::Never,
+            self.bound,
+            Reported::Always,
+            None,
+        )?;
         match ended {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => {
@@ -1564,7 +1715,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(step, script, Retry::Once, within, Reported::Always)? {
+        match self.call(step, script, Retry::Once, within, Reported::Always, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1588,7 +1739,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(step, script, Retry::Never, within, Reported::Always)? {
+        match self.call(step, script, Retry::Never, within, Reported::Always, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1606,7 +1757,7 @@ impl Ssh {
         script: &str,
         within: Duration,
     ) -> Result<(String, Vec<u8>, i32), BackendError> {
-        match self.call(step, script, Retry::Never, within, Reported::Failures)? {
+        match self.call(step, script, Retry::Never, within, Reported::Failures, None)? {
             Call::Answered(out, stderr, exit) => Ok((out, stderr, exit)),
             other => Err(BackendError::Io(self.no_answer(step, &other, within))),
         }
@@ -1626,10 +1777,11 @@ impl Ssh {
         retry: Retry,
         within: Duration,
     ) -> Result<String, BackendError> {
-        let (out, stderr, exit) = match self.call(what, script, retry, within, Reported::Always)? {
-            Call::Answered(out, stderr, exit) => (out, stderr, exit),
-            other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
-        };
+        let (out, stderr, exit) =
+            match self.call(what, script, retry, within, Reported::Always, None)? {
+                Call::Answered(out, stderr, exit) => (out, stderr, exit),
+                other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
+            };
         if exit != 0 {
             let said = if stderr.is_empty() {
                 out.trim().to_string()
@@ -1670,6 +1822,12 @@ impl Ssh {
     /// about the host's history. **Both attempts are counted**, though — a step that retried once
     /// and failed twice is two connection failures, which is what the threshold's arithmetic
     /// (three attempts) is written against.
+    ///
+    /// **A refused mux session is retried whatever `retry` says** ([`Call::MuxRefused`]): the one
+    /// thing `Retry::Never` exists to prevent is a second *effect*, and a session that never opened
+    /// had none. That is R99's other half — the sentence ssh printed is not the command's own exit,
+    /// and reporting it as one is how an `edit` through the placement came back *nothing was
+    /// written* over a file at zero bytes.
     fn call(
         &self,
         step: &str,
@@ -1677,10 +1835,11 @@ impl Ssh {
         retry: Retry,
         within: Duration,
         reported: Reported,
+        fed: Option<&[u8]>,
     ) -> Result<Call, BackendError> {
         let pass = rpc::before(&self.host.name).map_err(BackendError::Io)?;
         self.fresh_master();
-        let first = self.attempt(step, script, within, reported);
+        let first = self.attempt(step, script, within, reported, fed);
         let first = match first {
             Ok(call) => call,
             // The local process could not be started at all: nobody knows what happened, and the
@@ -1691,13 +1850,22 @@ impl Ssh {
             }
         };
         rpc::after(&self.host.name, pass, connected(&first));
-        // **The one thing worth asking twice**, and only because the operation cannot have
-        // changed anything: no answer arrived. A refusal is definite, so it is not retried — a key
-        // that is not authorised does not become authorised by being offered again.
-        if retry == Retry::Once && !matches!(first, Call::Answered(..) | Call::Denied(..)) {
+        // **The things worth asking twice** — and both of them for the same reason: nothing on the
+        // far side can have changed. Either no answer arrived at all (which the caller's policy
+        // allows to be retried when its operation is idempotent), or no session was ever opened
+        // (which allows the retry for any operation, because there was nothing to be at-most-once
+        // about). A refusal is definite, so it is not retried — a key that is not authorised does
+        // not become authorised by being offered again.
+        let again = match &first {
+            Call::Answered(..) | Call::Denied(..) => false,
+            Call::MuxRefused(..) => true,
+            _ => retry == Retry::Once,
+        };
+        if again {
             // The master may be what died, and a second attempt through the same dead socket would
-            // fail the same way. This one is not a probe: the cooldown's one call was already spent.
-            let second = self.attempt(step, script, within, reported);
+            // fail the same way — `attempt` has already dropped a socket it was refused on. This
+            // one is not a probe: the cooldown's one call was already spent.
+            let second = self.attempt(step, script, within, reported, fed);
             return match second {
                 Ok(call) => {
                     rpc::after(
@@ -1732,6 +1900,7 @@ impl Ssh {
         script: &str,
         within: Duration,
         reported: Reported,
+        fed: Option<&[u8]>,
     ) -> Result<Call, BackendError> {
         let command = self.remote_command(script);
         let _slot = rpc::enter(&self.host.name, within).map_err(BackendError::Io)?;
@@ -1743,7 +1912,15 @@ impl Ssh {
                 rpc::record(&self.host.name, step, began.elapsed(), outcome);
             }
         };
-        match rpc::run_bounded(&self.program, &self.argv(&command), within) {
+        let argv = self.argv(&command);
+        let ended = match fed {
+            // **The bytes go on stdin and nowhere near the argv** — a command line is capped
+            // (`ARG_MAX`), which is why this used to be hundreds of calls of 48 KiB each and one
+            // of them a refusal away from a half-written file (R99).
+            Some(bytes) => rpc::run_bounded_fed(&self.program, &argv, within, bytes),
+            None => rpc::run_bounded(&self.program, &argv, within),
+        };
+        match ended {
             rpc::Ended::Unstartable(why) => {
                 note(rpc::Outcome::Unknown);
                 Err(BackendError::Io(format!(
@@ -1773,9 +1950,17 @@ impl Ssh {
                 // and says something did run, and its words are the answer.
                 if exit == 255 && said.is_empty() {
                     self.drop_socket();
-                    if let Some(kind) = auth_refusal(&String::from_utf8_lossy(&stderr)) {
+                    let words = String::from_utf8_lossy(&stderr).into_owned();
+                    if let Some(kind) = auth_refusal(&words) {
                         note(rpc::Outcome::Refused);
                         return Ok(Call::Denied(kind, stderr));
+                    }
+                    // **A session the multiplexer refused is not the command's exit.** Classified
+                    // before the catch-all, because the retry rule differs: `Dropped` is
+                    // *may have run*, and this is *never ran* ([`mux_refusal`]).
+                    if let Some(kind) = mux_refusal(&words) {
+                        note(rpc::Outcome::Dropped);
+                        return Ok(Call::MuxRefused(kind, stderr));
                     }
                     note(rpc::Outcome::Dropped);
                     return Ok(Call::Dropped(stderr));
@@ -1830,7 +2015,8 @@ impl Ssh {
                 if exit == 255 && said.is_empty() {
                     self.drop_socket();
                     let stderr = out.stderr;
-                    if let Some(kind) = auth_refusal(&String::from_utf8_lossy(&stderr)) {
+                    let words = String::from_utf8_lossy(&stderr).into_owned();
+                    if let Some(kind) = auth_refusal(&words) {
                         rpc::record(
                             &self.host.name,
                             step,
@@ -1839,13 +2025,22 @@ impl Ssh {
                         );
                         return Some(Ok(Call::Denied(kind, stderr)));
                     }
+                    // **A probe that was refused a session has not answered**, and the caller's
+                    // cache rules already say such an answer is not remembered — which is why
+                    // this arm exists here too: a `mise` probe reported as `Dropped` was fine by
+                    // luck, and one reported as a *command that exited 255* would have been
+                    // remembered as `no mise on that host`.
+                    let mux = mux_refusal(&words);
                     rpc::record(
                         &self.host.name,
                         step,
                         began.elapsed(),
                         rpc::Outcome::Dropped,
                     );
-                    return Some(Ok(Call::Dropped(stderr)));
+                    return Some(Ok(match mux {
+                        Some(kind) => Call::MuxRefused(kind, stderr),
+                        None => Call::Dropped(stderr),
+                    }));
                 }
                 rpc::record(&self.host.name, step, began.elapsed(), rpc::Outcome::Ok);
                 Some(Ok(Call::Answered(said, out.stderr, exit)))
@@ -1858,6 +2053,20 @@ impl Ssh {
     fn no_answer(&self, step: &str, ended: &Call, within: Duration) -> String {
         if let Call::Denied(kind, stderr) = ended {
             return self.denied(step, *kind, stderr);
+        }
+        // **A refused session gets its own sentence**, and it is the one a reader needs: ssh's
+        // words were not the command's, nothing ran, and the call was already asked again on a
+        // fresh connection. Saying *lost the connection* here is what made R99 take a day to find.
+        if let Call::MuxRefused(kind, stderr) = ended {
+            return format!(
+                "`{step}` on {} never started: ssh's multiplexer lost the session ({}) — ssh said \
+                 `{}`. Nothing ran there, so nothing on that machine changed; the socket was \
+                 dropped and the call was asked again on a fresh connection, which failed the same \
+                 way. This is a refused session, not your command's exit status.",
+                self.host.name,
+                kind.as_str(),
+                first_line(&String::from_utf8_lossy(stderr))
+            );
         }
         let how = match ended {
             Call::TimedOut(_) => {
@@ -1883,6 +2092,20 @@ impl Ssh {
     fn unknown(&self, step: &str, ended: &Call) -> String {
         if let Call::Denied(kind, stderr) = ended {
             return self.denied(step, *kind, stderr);
+        }
+        // A refused session is the one *not answered* case whose outcome is not unknown: no
+        // channel existed, so the command cannot have run ([`mux_refusal`]). Said as itself, so a
+        // `run` that was never started is not reported as *it may be running there*.
+        if let Call::MuxRefused(kind, stderr) = ended {
+            return format!(
+                "`{step}` on {} did NOT run: ssh's multiplexer lost the session ({}) — ssh said \
+                 `{}`. No session reached the remote shell, so nothing ran and nothing there \
+                 changed; the socket was dropped and the call was asked again on a fresh \
+                 connection, which failed the same way. Ask again once the host is less busy.",
+                self.host.name,
+                kind.as_str(),
+                first_line(&String::from_utf8_lossy(stderr))
+            );
         }
         let how = match ended {
             Call::TimedOut(within) => {
@@ -2015,16 +2238,24 @@ impl Ssh {
         }
     }
 
-    /// **Written atomically**: every chunk goes into a temporary name beside the target
-    /// and one `mv -f` puts it in place. A half-written file is worse than a refused
-    /// edit — [`ExecBackend::write`] says why — and over ssh the window is wider, not
-    /// narrower.
+    /// **Written atomically, in ONE call, and only if the far side agrees about the bytes.**
     ///
-    /// **The retry is the whole write's, never a chunk's.** A chunk that is sent twice appends
-    /// itself twice — the temp file is opened with `>` only for the first one — so a chunk is
-    /// asked exactly once ([`Ssh::sh_once`]) and a write that loses the connection starts again
-    /// from the top, where the first chunk truncates what the failed attempt left. The target is
-    /// only ever touched by the last `mv -f`, so nothing half-written can land.
+    /// R99's third half. What was here sent the file as `ceil(len / 48 KiB)` separate ssh calls,
+    /// each splicing a base64 slice into an argv, because a command line is capped (`ARG_MAX`) — a
+    /// 19 MB bundle was **~400 calls**, and a placement on a busy host lost one of them part way
+    /// and left `incoming.bundle.letibot-<pid>` at 2.8 MB. Two properties were worse than the
+    /// cost: **every chunk's exit status was discarded**, and the `mv -f` that put the temp file in
+    /// place was unconditional — so a chunk the far side failed to decode still moved whatever the
+    /// temp file held over the target. A file at zero bytes with a tool result that said *nothing
+    /// was written* (FB's note, `fanout.rs` twice) is that sequence.
+    ///
+    /// Now: the bytes go **on stdin of one ssh call**, the far side counts them and hashes them,
+    /// and the `mv` is inside the same script after both checks. A stream that is cut — the ssh
+    /// killed at the deadline, a session that went away — is short, the count catches it, the
+    /// script removes its own temp file, and the target is byte-identical to what it was.
+    ///
+    /// **The retry is the whole write's, once** — idempotent by construction, since the temp name
+    /// is this attempt's own and the target is only touched by the last `mv`.
     fn write_abs(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         let mut last = None;
         for _ in 0..2 {
@@ -2036,52 +2267,114 @@ impl Ssh {
         Err(last.expect("the loop ran"))
     }
 
-    /// One whole attempt at [`Ssh::write_abs`], from `mkdir` to `mv`.
+    /// One whole attempt at [`Ssh::write_abs`]: one call, one temp file, one verified `mv`.
     fn write_once(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         let dir = match path.rfind('/') {
             Some(0) => "/".to_string(),
             Some(i) => path[..i].to_string(),
             None => ".".to_string(),
         };
-        let tmp = format!("{path}.letibot-{}", std::process::id());
-        // **No step inside one attempt is retried on its own** — neither the chunk above nor these.
-        // The retry is [`Ssh::write_abs`]'s, once, for the whole sequence: two levels of retry would
-        // be four attempts at a host that is not answering, which is a bound nobody can predict
-        // from the outside.
-        self.must_within(
-            &format!("making {dir}"),
-            &format!("mkdir -p {}", quote(&dir)),
+        // **A temp name that belongs to this attempt and no other.** It used to be
+        // `{path}.letibot-{pid}`, which is one name per path per PROCESS: two writes to the same
+        // file at once — a retry started while the attempt it replaces was still running on the
+        // far side — truncated each other's temp, and an `mv` from either moved whatever was in
+        // it, including nothing. The counter makes the collision impossible rather than unlikely;
+        // the checks below make a short temp un-movable even if one happened.
+        static ATTEMPT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let tmp = format!(
+            "{path}.letibot-{}-{}",
+            std::process::id(),
+            ATTEMPT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let sha = {
+            use sha2::Digest;
+            let digest = sha2::Sha256::digest(bytes);
+            digest
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        // One script, one session: `mkdir`, the stream, the two checks, the `mv`. Every one of
+        // them is inside the same call, so there is no window in which two calls of this write can
+        // interleave and no stage whose failure can be mistaken for a success.
+        let script = format!(
+            "set -e\n\
+             t={tmp}\n\
+             mkdir -p {dir}\n\
+             trap 'rm -f \"$t\"' EXIT HUP INT TERM\n\
+             base64 -d > \"$t\"\n\
+             n=$(wc -c < \"$t\" | tr -d ' \\t')\n\
+             [ \"$n\" = {len} ] || {{ echo \"the stream arrived as $n bytes, not {len}\" >&2; exit 41; }}\n\
+             if command -v sha256sum >/dev/null 2>&1; then s=$(sha256sum < \"$t\" | cut -d' ' -f1)\n\
+             elif command -v shasum >/dev/null 2>&1; then s=$(shasum -a 256 < \"$t\" | cut -d' ' -f1)\n\
+             elif command -v openssl >/dev/null 2>&1; then s=$(openssl dgst -sha256 -r < \"$t\" | cut -d' ' -f1)\n\
+             else s=; fi\n\
+             if [ -n \"$s\" ] && [ \"$s\" != {sha} ]; then\n\
+               echo \"the bytes on that machine are not the bytes that were sent\" >&2; exit 42\n\
+             fi\n\
+             mv -f \"$t\" {target}",
+            tmp = quote(&tmp),
+            dir = quote(&dir),
+            len = bytes.len(),
+            sha = quote(&sha),
+            target = quote(path)
+        );
+        let body = crate::firecode::encode_base64(bytes);
+        self.must_fed(
+            &format!("writing {path}"),
+            &script,
             Retry::Never,
-            self.bound,
-        )?;
-        if bytes.is_empty() {
-            self.must_within(
-                "making an empty file",
-                &format!(": > {}", quote(&tmp)),
-                Retry::Never,
-                self.bound,
-            )?;
-        }
-        // One ssh call per 48 KiB chunk: a command line is capped (ARG_MAX) and a base64
-        // of the whole file would meet that cap on the first large write.
-        for (i, chunk) in bytes.chunks(INLINE_WRITE_BYTES).enumerate() {
-            let redir = if i == 0 { ">" } else { ">>" };
-            self.sh_once(
-                &format!("writing {path}"),
-                &format!(
-                    "printf %s {} | base64 -d {redir} {}",
-                    quote(&crate::firecode::encode_base64(chunk)),
-                    quote(&tmp)
-                ),
-            )?;
-        }
-        self.must_within(
-            &format!("putting {path} in place"),
-            &format!("mv -f {} {}", quote(&tmp), quote(path)),
-            Retry::Never,
-            self.bound,
+            self.write_bound(bytes.len()),
+            body.as_bytes(),
         )
         .map(|_| ())
+    }
+
+    /// **The wall clock one streamed write gets** — the connection's bound, plus a second for every
+    /// 512 KiB it carries.
+    ///
+    /// A write is the one step whose cost is the payload's, and a single 20 s bound would have
+    /// been a regression for the very case R99 came from: the 19 MB bundle used to be 400 calls of
+    /// 48 KiB, each with its own `STEP_BOUND`, and one call streaming all of it is 58 s here — a
+    /// 330 KB/s link. Every other step keeps exactly the bound it had.
+    fn write_bound(&self, len: usize) -> Duration {
+        self.bound + Duration::from_secs((len / (512 * 1024)) as u64)
+    }
+
+    /// **A step that is fed on stdin**, and the only one: [`Ssh::write_abs`].
+    fn must_fed(
+        &self,
+        what: &str,
+        script: &str,
+        retry: Retry,
+        within: Duration,
+        fed: &[u8],
+    ) -> Result<String, BackendError> {
+        let (out, stderr, exit) =
+            match self.call(what, script, retry, within, Reported::Always, Some(fed))? {
+                Call::Answered(out, stderr, exit) => (out, stderr, exit),
+                other => return Err(BackendError::Io(self.no_answer(what, &other, within))),
+            };
+        if exit != 0 {
+            let said = if stderr.is_empty() {
+                out.trim().to_string()
+            } else {
+                String::from_utf8_lossy(&stderr).trim().to_string()
+            };
+            return Err(BackendError::Io(format!(
+                "{what} on {}: the far side refused it after {} byte(s) — exit {exit}: {} — and the \
+                 target was not touched, because the bytes are checked and moved into place in the \
+                 same call",
+                self.host.name,
+                fed.len(),
+                if said.is_empty() {
+                    "it said nothing"
+                } else {
+                    &said
+                }
+            )));
+        }
+        Ok(out)
     }
 
     /// Drop the ControlMaster, if one was made. Best effort: an ssh that says it has no
@@ -2538,9 +2831,6 @@ pub(crate) fn quote(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // The backend
 // ---------------------------------------------------------------------------
-
-/// Inline writes up to this many bytes ride in one ssh command.
-const INLINE_WRITE_BYTES: usize = 48 * 1024;
 
 /// **How many commands this process has run on a remote host**, for the per-command name of the
 /// file that records its process group. A counter rather than a timestamp: two runs in the same
@@ -3145,10 +3435,13 @@ impl SshBackend {
         }
         let url = format!("{}:{}", self.ssh.destination(), self.mirror);
         let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
-        // `git fetch` over ssh, with **this backend's ssh**: the same flags and the same
-        // ControlMaster, so the fetch reuses the connection the session's commands used.
+        // `git fetch` over ssh, with **this backend's ssh**: the same flags, and the **git**
+        // ControlMaster — not the one the calls are multiplexed on. git starts that ssh itself, so
+        // it takes no slot in the gate that keeps a daemon's calls under `MaxSessions`; giving it a
+        // socket of its own is what stops a fetch being the ninth session on a master whose eighth
+        // was promised to a call ([`Ssh::git_flags`]).
         let ssh_command = std::iter::once(self.ssh.program().display().to_string())
-            .chain(self.ssh.flags())
+            .chain(self.ssh.git_flags())
             .map(|a| quote(&a))
             .collect::<Vec<_>>()
             .join(" ");
@@ -4708,6 +5001,86 @@ user     = "root"
             "and never handed over as a literal tilde: {said}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A refused mux session is read as transport, and nothing else is.**
+    ///
+    /// Four sentences were taken from OpenSSH's own source and its bug reports, and each one has to
+    /// be recognised for what it is: *the connection is up and this call did not get a channel*. The
+    /// negative half matters as much — `Permission denied` is a definite refusal (`auth_refusal`
+    /// takes it first) and `Could not resolve hostname` is a host that is not there, and neither may
+    /// be retried under *nothing ran*.
+    ///
+    /// Measured 2026-10-27: `mm_send_fd: sendmsg(1): Message too long` is the sentence an `edit`
+    /// through the git placement died of, and it arrived at the model as *lost the connection*.
+    #[test]
+    fn the_four_ways_a_mux_loses_a_session_are_read_as_transport() {
+        for (said, want) in [
+            (
+                "mux_client_request_session: session request failed",
+                MuxRefusal::Session,
+            ),
+            ("mm_send_fd: sendmsg(1): Message too long", MuxRefusal::Fds),
+            ("mm_send_fd: sendmsg(2): Message too long", MuxRefusal::Fds),
+            (
+                "channel 3: open failed: administratively prohibited: open failed",
+                MuxRefusal::Channel,
+            ),
+            (
+                "Control socket connect /tmp/letibot/ssh-lab2x1-7-call.sock: Connection refused",
+                MuxRefusal::StaleSocket,
+            ),
+        ] {
+            assert_eq!(mux_refusal(said), Some(want), "as transport: {said}");
+            assert!(
+                auth_refusal(said).is_none(),
+                "and not as an auth refusal: {said}"
+            );
+        }
+        for said in [
+            "Permission denied (publickey).",
+            "ssh: Could not resolve hostname gone.invalid: Name or service not known",
+            "Connection timed out during banner exchange",
+            "Host key verification failed.",
+            "",
+        ] {
+            assert_eq!(mux_refusal(said), None, "not a refusal of the mux: {said}");
+        }
+    }
+
+    /// **Every daemon gets its own master, and the socket fits.**
+    ///
+    /// R99: the name used to be the host's alone, so every daemon on the box multiplexed over one
+    /// connection and `MaxSessions` was divided among all of them. The pid in the name is the fix;
+    /// git's socket beside it is what keeps a `git fetch` — an ssh this process never starts and so
+    /// cannot count — off the master the calls are bounded on.
+    #[test]
+    fn one_daemon_has_one_master_and_git_has_a_second() {
+        let mine = control_path("lab2x1", 4242);
+        assert_eq!(mine, control_path("lab2x1", 4242));
+        assert_ne!(control_path("lab2x1", 4243), mine);
+        assert_ne!(git_control_path("lab2x1", 4242), mine);
+        assert_ne!(
+            git_control_path("lab2x1", 4243),
+            git_control_path("lab2x1", 4242)
+        );
+        assert_eq!(
+            mine,
+            control_path("lab2x1", 4242),
+            "and the same name again"
+        );
+        assert!(
+            mine.as_os_str().len() <= 100,
+            "under the `SUN_LEN` cap: {}",
+            mine.display()
+        );
+        assert!(
+            mine.file_name()
+                .map(|n| n.to_string_lossy().contains("4242"))
+                .unwrap_or(false),
+            "the daemon is named in the file: {}",
+            mine.display()
+        );
     }
 
     /// **The ssh argv is the policy's, and nothing in it names the operator's ssh material.**

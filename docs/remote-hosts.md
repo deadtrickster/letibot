@@ -99,12 +99,13 @@ sentence.
 
 ### What a connection costs
 
-One TCP connection per host: `ControlMaster=auto` and a `ControlPath` under letibot's own runtime
-directory (`$XDG_RUNTIME_DIR/letibot`, or the box's temp directory when there is none), so a command
-costs a round trip rather than a handshake. `BatchMode=yes` and `StrictHostKeyChecking=yes`: a host
-that asks for a password or a host-key confirmation is **refused by name**, never prompted for — a
-daemon has no one at a terminal, and a prompt it cannot answer is a call that hangs until its
-deadline.
+One TCP connection per host **per daemon**: `ControlMaster=auto` and a `ControlPath` under
+letibot's own runtime directory (`$XDG_RUNTIME_DIR/letibot`, or the box's temp directory when there
+is none) named by the host **and the daemon's pid**, so a command costs a round trip rather than a
+handshake and no two daemons queue for the same ten sessions (R99, § *As built (R99)*).
+`BatchMode=yes` and `StrictHostKeyChecking=yes`: a host that asks for a password or a host-key
+confirmation is **refused by name**, never prompted for — a daemon has no one at a terminal, and a
+prompt it cannot answer is a call that hangs until its deadline.
 
 ## Where it is asked for
 
@@ -163,9 +164,10 @@ ControlMaster is the connection pool, the remote shell is the server. The operat
    answering mid-call is noticed in seconds; a stale ControlMaster is checked or replaced, never
    waited on.
 3. **Retries follow idempotency.** Idempotent operations (read, stat, list, workdir, a probe,
-   job output, and write — temp + `mv -f`) may be retried once, on a fresh connection.
-   **Non-idempotent ones (`run`, starting a job) are at-most-once**: never re-sent after a timeout
-   or a dropped connection.
+   job output, and write — one session, temp + size and hash checked + `mv -f`) may be retried
+   once, on a fresh connection. **Non-idempotent ones (`run`, starting a job) are at-most-once**:
+   never re-sent after a timeout or a dropped connection — with the one exception of a session the
+   multiplexer *refused*, which never reached the shell and is retried for any operation.
 4. **An unknown outcome is said as unknown.** A `run` whose connection dropped is reported as
    *"it may have run, partly run, or still be running on HOST — check before running it again"*,
    never as a failure that implies it did not happen.
@@ -178,9 +180,9 @@ ControlMaster is the connection pool, the remote shell is the server. The operat
 7. **Observability.** Every remote call is recorded with host, step, duration and outcome, so a
    slow or flaky host is visible on the head and in `hosts {probe: true}`, not guessed at.
    **Built (RH6).**
-8. **Back-pressure.** A host has a bound on concurrent calls (the ControlMaster's sessions);
-   calls beyond it queue with the same deadlines rather than opening unbounded connections.
-   **Built (RH6).**
+8. **Back-pressure.** A host has a bound on concurrent calls (this daemon's own ControlMaster and
+   its sessions), and calls beyond it queue with the same deadlines rather than opening unbounded
+   connections. **Built (RH6)**, and made a real bound per daemon by **R99**.
 
 How each of them is built, and the numbers chosen where the contract left them open, is
 [§ As built (RH6)](#as-built-rh6-four-practices-one-refusal-and-a-toolchain).
@@ -314,10 +316,10 @@ defect this tree keeps paying for:
 * **The seam is a branch, and the branch is checked.** `task`'s `seam:` line for a remote
   child says what comes back (`remote/<host>/<short id>`) and when (when it ends) — the
   opposite of the VM's line, which had to stop promising a branch.
-* **`git fetch` runs through the same ssh** (`-c core.sshCommand=…` built from the
-  backend's own flags and ControlPath), so the fetch reuses the connection the session's
-  commands used and the fake-ssh tests exercise the real transport shape rather than a
-  second code path.
+* **`git fetch` runs through the same ssh policy** (`-c core.sshCommand=…` built from the
+  backend's own flags) but on a **ControlPath of its own**: git starts that ssh itself, so the call
+  takes no place in the eight-slot gate, and a socket of its own is what keeps a fetch from being
+  the ninth session on the master the calls are bounded on (R99).
 * **`~` in `root` is expanded by the remote shell, once, and the answer must be
   absolute.** Quoting it (`cd '~/x'`) silently makes a directory literally named `~`, and
   the result is a worktree neither this box nor `git fetch` can name; a non-absolute answer
@@ -430,12 +432,14 @@ it may place work, and never waits on a machine that has stopped answering.
   the question, then the socket (ours, in letibot's runtime directory) is removed so the next
   call dials afresh instead of waiting on a master that is gone.
 * **The retry follows idempotency.** `read`, `stat`, `list`, `list_tree`, `workdir`, a probe,
-  `job_output` and `write` are asked **once more** after a timeout or a dropped connection; a
-  write's *chunks* are never retried on their own (a chunk sent twice appends itself twice — the
-  whole write starts again from the top instead, and only the last `mv -f` touches the target).
-  `run` and a job's start are **never** retried: a call that dies in flight may have run, partly
-  run, or still be running there, and the refusal says so in those words rather than reporting a
-  failure that would suggest nothing happened.
+  `job_output` and `write` are asked **once more** after a timeout or a dropped connection. A
+  write is one session with its bytes on stdin and its own size and SHA-256 checked before an `mv`
+  (R99), so the retry is the whole write and never a part of it. `run` and a job's start are
+  **never** retried: a call that dies in flight may have run, partly run, or still be running
+  there, and the refusal says so in those words rather than reporting a failure that would suggest
+  nothing happened. **One exception, and it is a refusal, not a loss**: a session the multiplexer
+  refused never reached the remote shell, so it is retried whatever the operation — including
+  `run`, which then runs exactly once (§ *As built (R99)*).
 * **The session's own job directory is not a change in the tree.** `.letibot-remote/` is written
   into the checkout's own `info/exclude` when the checkout is made — `git rev-parse --git-path`
   answering where that file is, rather than this side guessing a path that differs per layout —
@@ -491,14 +495,17 @@ timeouts, which is the cost the breaker exists to remove.
   exception is a heartbeat**: a job's status poll is one call every 120 ms, so 256 of them are
   half a minute's worth and would evict every call a reader could act on — a poll is recorded
   only when it fails, which is the only time it says anything a reader needs.
-* **Rule 8 — eight ssh invocations per host at once.** `MaxSessions` defaults to 10 per
-  connection (a ControlMaster is one connection); the two this leaves are the master's own channel
-  and one `-O check`. Ten exactly would have the *server* refuse the eleventh with
-  `Session open refused`, which reads like a fault on the host rather than a queue we forgot to
-  keep. A call beyond the bound **waits for a slot under its own deadline** and is refused with a
-  sentence if it does not get one — a queue that outlives the deadline it was queued under is the
-  hang coming back through the door marked back-pressure. `-O check`/`-O exit` do not take a slot:
-  they are local IPC to a socket, not a session on the far side.
+* **Rule 8 — eight ssh invocations per host at once, and the connection is this daemon's own.**
+  `MaxSessions` defaults to 10 per connection (a ControlMaster is one connection); the two this
+  leaves are the master's own channel and one `-O check`. Ten exactly would have the *server*
+  refuse the eleventh with `Session open refused`, which reads like a fault on the host rather than
+  a queue we forgot to keep. **The bound is a promise only because the socket is per daemon**
+  (R99): shared by every daemon on the box, eight per process was eight times the number of
+  daemons against one limit of ten. A call beyond the bound **waits for a slot under its own
+  deadline** and is refused with a sentence if it does not get one — a queue that outlives the
+  deadline it was queued under is the hang coming back through the door marked back-pressure.
+  `-O check`/`-O exit` do not take a slot: they are local IPC to a socket, not a session on the far
+  side.
 * **An auth refusal is definite, said in words, and never retried.** Measured live that day: three
   hosts whose key had not been installed answered `Permission denied (publickey)`, and the client
   called it *lost the connection, it may not have happened* — and asked **twice**. OpenSSH prints
@@ -1165,3 +1172,94 @@ queued, and its `detail` is the table. `crates/harnessd/src/harness/tests/jobs.r
 reaches the notice text, indented under the job's row, and that an ordinary job's notice is
 unchanged. `crates/harnessd/src/supervise/tests.rs` proves both local never-touch doors.
 
+
+## As built (R99): one master per daemon, a refused session that is transport, and a write that is one call
+
+Written 2026-10-27, from the operator's report: with five or six packages placed on lab2x1, two
+placements failed writing the 19 MB bundle (`incoming.bundle.letibot-<pid>` stopped at 2.8 MB) and
+an `edit` through the placement **left a file at 0 bytes twice**, once with
+`mm_send_fd: sendmsg(1): Message too long` and once reporting `found no match … Nothing was
+written`. Retried one at a time, both placements succeeded — the failure was load, and the load was
+the multiplexer.
+
+```text
+crates/tools/src/remote.rs   control_path (pid + role), git_control_path, MuxRefusal,
+                             mux_refusal, write_abs/write_once (one streamed call)
+crates/tools/src/rpc.rs      run_bounded_fed — the same runner, with bytes on stdin
+crates/tools/tests/remote_sessions.rs   the fake ssh with a ledger, and seven forcing tests
+```
+
+* **One `ControlMaster` per daemon per host, and a second one for git.** The socket was named by the
+  host alone, so every daemon on the box multiplexed over **one** OpenSSH connection with
+  `MaxSessions` (10) slots on it, while each daemon's own back-pressure allows eight — i.e. eight
+  times the number of packages against a limit of ten. It is now `ssh-<host>-<pid>-call.sock`, with
+  `ssh-<host>-<pid>-git.sock` beside it for the `git fetch` that this process does not start and so
+  cannot count (`core.sshCommand`), which is why the two cannot meet. **Measured, and this is why the
+  cost is acceptable:** a full handshake, key exchange and public-key attempt against lab2x1's own
+  sshd is **50–70 ms** (five runs, loopback, 32 cores), and `ControlPersist=120` makes that once per
+  daemon per two minutes of idleness — six daemons pay six dials where they paid one, and stop paying
+  it in refusals. The session count per call was the other measurement: a 400 KiB write was **9
+  sessions** before (one per 48 KiB) and is **1** after, and the 19 MB bundle goes from ~400 to one.
+* **A refused session is transport, not the command's exit.** Four sentences are read out of ssh's
+  stderr and told apart from a lost connection: `mux_client_request_session: session request failed`,
+  `mm_send_fd: sendmsg(N): Message too long`, `channel N: open failed: administratively prohibited`
+  (the server's own `MaxSessions` refusal) and `Control socket connect …: Connection refused`. All
+  four mean **no session reached the remote shell**, so nothing ran: the socket is dropped, the call
+  is retried on a fresh connection **whatever the caller's retry policy says** — including `run`,
+  which is otherwise at-most-once — and the sentence a model reads is *this is a refused session, not
+  your command's exit status*. A refused session also counts as *the host is up* for the circuit
+  breaker: a full session table is a busy path, not a dead machine, and counting it would have opened
+  the breaker on a healthy host the moment six packages wrote at once.
+* **A write is ONE ssh call, and the far side checks it before the `mv`.** The bytes go on the
+  session's **stdin** (base64, so a short stream cannot look complete), and one script does
+  `mkdir` → `base64 -d > <temp>` → `wc -c` → `sha256sum` (or `shasum`, or `openssl dgst`) → `mv -f`.
+  The temp name belongs to that attempt alone (`<path>.letibot-<pid>-<counter>`) and a trap removes
+  it on any exit, so a stream cut by a deadline or a lost connection leaves the **target
+  byte-identical**. The bound scales with the payload — `STEP_BOUND` plus a second per 512 KiB — so
+  the 19 MB bundle gets ~58 s where 400 chunked calls each had 20.
+* **What was wrong with the old write, measured.** `crates/tools/src/remote.rs` sent one call per
+  48 KiB, **discarded every chunk's exit status**, and ran `mv -f` unconditionally; the temp name was
+  one per path per *process*, so an attempt that outlived its deadline could move a file a retry was
+  still writing. Forced through the fake ssh with a far side whose `base64` cannot write, the old
+  code returned **no error at all** and left the target at **0 bytes** — which is FB's report
+  exactly, and why the `edit` that followed said *found no match*.
+
+### Tests, and what they cost
+
+`crates/tools/tests/remote_sessions.rs` — a fake `ssh` with a ledger of the sessions it opened
+(files under the fake's own directory: a live file per session, an append-only event log, and the
+arithmetic done in Rust), and **no network at all**:
+
+* **`a_far_side_that_cannot_decode_never_touches_the_target`** — the zero-byte file as a forcing
+  test: the write fails, the target is byte-identical, and no temp file is left behind.
+* **`a_write_is_one_session_whatever_its_size`** — 400 KiB in **one** `base64 -d` session.
+* **`a_refused_session_is_retried_on_a_fresh_connection`** — the first write session is refused with
+  the mux sentence, the retry lands, two sessions carried it.
+* **`a_run_whose_session_was_refused_runs_exactly_once`** — the at-most-once door, refused once and
+  retried: the command's effect is in the file **once** and the tool result is the command's own exit
+  0, not ssh's 255.
+* **`a_cut_stream_leaves_the_target_byte_identical`** — the far side receives 64 characters of a
+  300 KiB stream, twice; the write fails naming the short stream, the target is untouched, and a
+  third write lands whole.
+* **`twelve_threads_through_one_host_all_get_an_answer`** — twelve threads writing, reading and
+  running at once against a fake that refuses the ninth concurrent session the way a full master
+  does: **zero refusals**, and the peak it saw was eight.
+* **`one_daemon_has_one_master_and_git_has_another`** — the socket names the daemon, git's differs,
+  and the path fits `SUN_LEN`.
+
+A rake worth keeping, measured while writing them: **a `mkdir` lock in a fake is not a lock.** The
+first version of the ledger took one around a read-modify-write counter; 40 concurrent callers left
+it at **32**, because a releaser's `rmdir` can land after the next holder's `mkdir` and delete *its*
+lock. Files that are created and removed need no lock at all.
+
+### What this does not do, said plainly
+
+* **`MaxSessions` is not raised, and letibot does not read it.** The bound the client keeps is eight,
+  which is safe for the default of ten; an `sshd` configured *below* that would still refuse, and the
+  refusal is now a retried transport failure rather than a truncated file.
+* **A per-daemon master means a daemon's own gate is the only limit** — which is what makes it a
+  promise — but a `git fetch` and a `letibot --migrate` in another process each dial their own
+  connection, so a box with many short-lived processes sees more handshakes than before. At 50–70 ms
+  each and with `ControlPersist=120`, that is the price this slice chose over a cross-process pool.
+* **The old socket names are not cleaned up.** A daemon built before this change left
+  `ssh-<host>.sock` behind; it expires on its own `ControlPersist` and nothing reads it again.

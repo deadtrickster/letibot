@@ -522,9 +522,45 @@ pub enum Ended {
 /// grandchild lives — measured once as a 2 s bound costing 120 s, because a fake `ssh` that ran
 /// `sleep 30` made the sleeps outlive every kill.
 pub fn run_bounded(program: &Path, args: &[String], within: Duration) -> Ended {
+    run_with_input(program, args, within, None)
+}
+
+/// **The same runner, with bytes fed to the child's stdin** — how a large write leaves this box
+/// without being spliced into an argv.
+///
+/// It is the same function underneath on purpose: the process group, the deadline and the two
+/// drained pipes are the ones [`run_bounded`] documents, and a second runner that spelled them
+/// again would be a second thing to be wrong about. The one addition is a writer thread, because
+/// a payload bigger than a pipe's buffer cannot be written before the child is waited on: the
+/// child would block on a full pipe while this side blocks on the child.
+///
+/// **A child that exits early is not a write failure.** Its end of the pipe closes, the writer's
+/// last `write` answers `EPIPE`, and the child's exit status is the answer — which is the shape a
+/// stream that a refused session killed half way has, and the reason this returns `Ended` and not
+/// an error.
+pub fn run_bounded_fed(program: &Path, args: &[String], within: Duration, fed: &[u8]) -> Ended {
+    run_with_input(program, args, within, Some(fed))
+}
+
+fn run_with_input(program: &Path, args: &[String], within: Duration, fed: Option<&[u8]>) -> Ended {
+    std::thread::scope(|scope| run_in_scope(scope, program, args, within, fed))
+}
+
+/// The body, inside a [`std::thread::Scope`] — so the writer may borrow the caller's bytes without
+/// copying a 19 MB bundle, and the threads it starts are joined before this returns.
+fn run_in_scope<'scope, 'env>(
+    scope: &'scope std::thread::Scope<'scope, 'env>,
+    program: &Path,
+    args: &[String],
+    within: Duration,
+    fed: Option<&'scope [u8]>,
+) -> Ended {
     let mut child = match std::process::Command::new(program)
         .args(args)
-        .stdin(std::process::Stdio::null())
+        .stdin(match fed {
+            Some(_) => std::process::Stdio::piped(),
+            None => std::process::Stdio::null(),
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .process_group(0)
@@ -534,6 +570,15 @@ pub fn run_bounded(program: &Path, args: &[String], within: Duration) -> Ended {
         Err(e) => return Ended::Unstartable(format!("running `{}`: {e}", program.display())),
     };
     let pid = child.id();
+    // The writer is spawned before the readers are joined, and it is inside the scope so a child
+    // that never reads is still waited on: the deadline kills the group, which closes the pipe.
+    if let (Some(bytes), Some(mut pipe)) = (fed, child.stdin.take()) {
+        scope.spawn(move || {
+            use std::io::Write;
+            let _ = pipe.write_all(bytes);
+            let _ = pipe.flush();
+        });
+    }
     let out = drain(child.stdout.take());
     let err = drain(child.stderr.take());
     let began = Instant::now();
