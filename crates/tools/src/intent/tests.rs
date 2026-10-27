@@ -1511,3 +1511,126 @@ fn the_summary_is_one_line_and_names_the_tier() {
     assert!(s.contains("INEXPRESSIBLE"), "{s}");
     assert!(s.lines().count() == 1, "{s}");
 }
+
+// ---------------------------------------------------------------------------
+// The parameters a call already fixes
+// ---------------------------------------------------------------------------
+
+/// **The measured command resolves, because `$PWD` is the call's own directory.**
+///
+/// MEASURED 2026-10-26: 15 of one session's 22 asks had a baseline reading *"the meaning
+/// was never resolved"*, and every one of them was this shape. Nothing about it was a
+/// mystery — `$PWD` is where the call runs, and the harness has known that since it
+/// started placing relative operands against the workspace.
+#[test]
+fn the_measured_command_resolves_because_pwd_is_the_calls_own_directory() {
+    let cmd = "cd /home/dead/Projects/letibot && export CARGO_TARGET_DIR=$PWD/target \
+               && cargo test --offline -p letibot-tools";
+    let x = b(cmd);
+    assert!(
+        x.resolved,
+        "the operator's own command shape is still unreadable: {:?}",
+        x.findings
+    );
+    assert!(
+        !matches!(x.verdict, BaselineVerdict::NotRun { .. }),
+        "{:?}",
+        x.verdict
+    );
+    // The value `$PWD` stood for is placed where the `cd` landed, not left unbounded:
+    // the whole point of writing it out is that everything downstream reads a path.
+    assert!(x.regions.contains(&Region::Workspace), "{:?}", x.regions);
+    assert!(
+        !x.regions.contains(&Region::Unbounded),
+        "a resolved direct path was widened anyway: {:?}",
+        x.regions
+    );
+    // And the substitution is on the record: the card's regions now name a directory
+    // the operator never typed, and a person reading the card must be able to see why.
+    assert!(
+        x.findings
+            .iter()
+            .any(|f| f.contains("`$PWD`") && f.contains("/home/dead/Projects/letibot")),
+        "nothing said where the directory came from: {:?}",
+        x.findings
+    );
+}
+
+/// **`$HOME` and a variable the same command assigned are values; nothing else is.**
+///
+/// The three that must stay unreadable are the three the brief names, and they stay that
+/// way for one reason each: a substitution's value is not in the text (`$(…)`), nothing
+/// assigned it (`$RANDOM`, `$X`), or bash expands the argument list before the prefix
+/// assignment lands (`X=1 echo $X` prints an empty line, so resolving that `$X` to `1`
+/// would be a claim about a command that is not the one in front of the operator).
+#[test]
+fn home_and_an_earlier_assignment_resolve_and_nothing_else_does() {
+    assert!(b("cat $HOME/notes.md").resolved);
+    // An assignment that is its own statement sets the variable for what follows it.
+    assert!(b("X=/home/dead/Projects/letibot/f; cat $X").resolved);
+    // `export X=…` is the measured spelling, and it holds for later stages too.
+    assert!(b("export X=/home/dead/Projects/letibot/f; cat $X").resolved);
+    // A chain needs the round after the one that read its value: `B` is an expansion
+    // until `$A` has been written out.
+    assert!(b("A=/home/dead/Projects/letibot; B=$A/f; cat $B").resolved);
+    // `unset` takes the value away again, and a stale binding must not survive it.
+    assert!(!b("X=/home/dead/Projects/letibot/f; unset X; cat $X").resolved);
+
+    for cmd in [
+        "cat $(which x)",  // the value is produced by running something
+        "cat $RANDOM",     // nothing assigned it
+        "cat $X",          // nothing assigned it
+        "X='/w a' cat $X", // a prefix assignment is not in force for its own arguments
+        "cat $X; X=/w/f",  // assigned after the use, which is not "earlier"
+    ] {
+        assert!(
+            !b(cmd).resolved,
+            "{cmd} was resolved, and its meaning is not in the text: {:?}",
+            b(cmd).command
+        );
+    }
+    // A value that would be split or globbed is not written back: `X='a b'` is two
+    // arguments to the shell's reader of `$X`, and one word is not the command.
+    assert!(!b("X=/w/a; Y=$X b; cat $Y").resolved);
+    // A value outside the plain set is not written back either, and the reason is the
+    // splice's position rather than its bytes: `echo "p=$PWD"` would come back as
+    // `"p='/w'"` if the value needed a quote of ours, which is an argument the program
+    // would receive verbatim. A PATH-ish value still resolves, because it is plain.
+    assert!(b("echo \"p=$PWD\"").resolved);
+    assert!(b("export PATH=/w/bin; cat $PATH").resolved);
+    assert!(!b("export F=-DFOO=1; cat $F").resolved);
+}
+
+/// **The stage that names a grant is the one doing the work, not the last one.**
+///
+/// `grant_program` read the last stage, so the measured command offered *"Allow `export`
+/// (this class) for the rest of the session"* and `cd x && grep … | head` offered `head`
+/// — neither of them the thing the person was looking at.
+#[test]
+fn the_grant_is_named_by_the_stage_that_does_the_work() {
+    let measured = b(
+        "cd /home/dead/Projects/letibot && export CARGO_TARGET_DIR=$PWD/target \
+         && cargo test --offline -p letibot-tools",
+    );
+    assert_eq!(measured.grant_program.as_deref(), Some("cargo"));
+    // A pipeline names the stage with something to say, not the reader at its end.
+    assert_eq!(
+        b("grep -n x /home/dead/Projects/letibot/f | head")
+            .grant_program
+            .as_deref(),
+        Some("grep")
+    );
+    // A build piped into `head` is still a build.
+    assert_eq!(
+        b("cargo test | head").grant_program.as_deref(),
+        Some("cargo")
+    );
+    // The wrapper is named, not what it wraps: a grant over `sudo git status` carries
+    // `privilege_escalation`, and keying it on `git` would let it cover plain `git status`.
+    assert_eq!(b("sudo git status").grant_program.as_deref(), Some("sudo"));
+    // A path-shaped call has no stage at all, which the gate spells `NO_PROGRAM`.
+    assert_eq!(
+        Baseline::of_paths(["/home/dead/Projects/letibot/f"], true, false, &env()).grant_program,
+        None
+    );
+}

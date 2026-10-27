@@ -2903,6 +2903,27 @@ pub struct Baseline {
     /// empty list is *no write the scanner could place*, and a card that says more than that is
     /// claiming a negative it cannot support.
     pub write_targets: Vec<WriteTarget>,
+    /// **The stage that names a grant over this command** — the program doing the work,
+    /// which is not the last program in the line.
+    ///
+    /// `grant_program` used to read the last stage, so
+    /// `cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo test --offline` offered
+    /// *"Allow `export`"* to a person who was looking at a cargo build, and
+    /// `cd x && grep … | head` offered `head`. A grant keyed on a stage that carries no
+    /// authority is a grant nobody can read, and the operator cannot weigh what they
+    /// cannot name.
+    ///
+    /// Chosen **here**, in the pass that reads every stage anyway, rather than recomputed
+    /// by whoever wants it: the intents of a stage are this module's table and a second
+    /// reader of them would be a second answer to *what does this stage do*. `None` for a
+    /// call that is not a command ([`Baseline::of_paths`]), which is the sentinel
+    /// `crate::adjudicate::NO_PROGRAM`'s case.
+    ///
+    /// See `name_stage`, below, for what "doing the work" is taken to mean.
+    pub grant_program: Option<String>,
+    /// The weight of [`Baseline::grant_program`]'s stage, so a later stage can win only
+    /// by doing more. Not read outside this module.
+    grant_program_weight: Option<u8>,
 }
 
 impl Baseline {
@@ -3103,11 +3124,18 @@ impl Baseline {
         env: &Surroundings,
         scripts: &[ScriptSource],
     ) -> Baseline {
-        let n = shell::normalise(command);
+        // **The parameters this call fixes, written out before the grammar reads it.**
+        // A `$PWD` or an `export X=…` earlier in the same command is not a mystery, and
+        // calling it one cost the card every standing offer it has — see
+        // [`parameters`] for what is resolved and what deliberately is not.
+        let (source, substituted) = parameters::resolve(command, env);
+        let n = shell::normalise(&source);
         let mut b = Baseline {
             write_targets: Vec::new(),
             command: None,
             resolved: n.is_resolved(),
+            grant_program: None,
+            grant_program_weight: None,
             intents: BTreeSet::new(),
             regions: BTreeSet::new(),
             tier: Tier::MayApprove,
@@ -3244,6 +3272,19 @@ impl Baseline {
         //    blocked tier must still be reachable: `cat ~/.ssh/$KEY` is
         //    unresolvable AND its known prefix is in the secret store, and the
         //    stronger of the two facts must not be lost to the weaker.
+        //
+        //    **And what was substituted to get here is said, before any of it.** The
+        //    card's regions are placed against directories the operator never typed —
+        //    `$PWD` is the call's own — so a reading that named `/home/dead/…` without
+        //    saying where it came from would be evidence a person cannot check against
+        //    their own command.
+        if !substituted.is_empty() {
+            b.findings.push(format!(
+                "the shell's own values were written out before this was read, so what \
+                 follows is what the command MEANS rather than what it spells: {}",
+                substituted.join(", ")
+            ));
+        }
         let egresses = n
             .stages
             .iter()
@@ -3570,6 +3611,11 @@ impl Baseline {
         let mut b = Baseline {
             write_targets: if writes { named } else { Vec::new() },
             command: None,
+            // A path-shaped call has no command, so there is no stage to name: the grant
+            // is keyed on `crate::adjudicate::NO_PROGRAM`, which matches nothing a
+            // command produces.
+            grant_program: None,
+            grant_program_weight: None,
             // Not a shell command, so there is no grammar to have resolved or not: the
             // paths came from the caller as literals. `true` is the honest answer —
             // nothing about this action was read *partially*.
@@ -3763,6 +3809,18 @@ impl Baseline {
             }
             effective = inner;
         }
+
+        // **Which stage would a person name if they answered "stop asking me about
+        // this"?** — asked here because this is the pass that has the stage's own
+        // intents, and a second reader of the program table would be a second answer to
+        // *what does this stage do*. See [`Baseline::grant_program`] for the
+        // measurement; the rule itself is [`name_stage`].
+        name_stage(
+            &mut self.grant_program,
+            &mut self.grant_program_weight,
+            &program,
+            stage,
+        );
 
         // The vehicle finding is a sentence, not just an intent. `ExecuteCode` says
         // that code runs; the operator deciding about `git -c core.pager=… log` needs
@@ -5393,8 +5451,113 @@ fn stage_intents(s: &Stage) -> Vec<Intent> {
     v
 }
 
+// ---------------------------------------------------------------------------
+// Which stage names a grant
+// ---------------------------------------------------------------------------
+
+/// **Fold one stage into the choice of the stage that names a grant** — see
+/// [`Baseline::grant_program`].
+///
+/// `program` is the name as WRITTEN, not the wrapper's inner one: `sudo git status` is
+/// keyed on `sudo`, because its intent set carries `privilege_escalation` and a later
+/// plain `git status` is a subset of that. Keying it on `git` would let a grant taken
+/// over a sudo call cover the same command without sudo.
+///
+/// The rule, in order of who wins:
+///
+/// 1. **A stage that only sets the shell's own state never names a grant** while some
+///    stage that runs something exists — [`crate::permission::SHELL_STATE`]. It is not
+///    the thing the person is looking at, and there is nothing under it to grant.
+/// 2. **Otherwise the most consequential intent wins** ([`consequence`]), because that is
+///    the intent which decides the tier — in eleven of the twelve always-ask rules a
+///    single intent names the rule, and the stage carrying it is the stage the person is
+///    being asked about.
+/// 3. **A tie goes to the FIRST stage**, and that is a departure from what this replaced
+///    (the last stage). A pipeline produces its work at the front and filters at the end
+///    — `head`, `tail`, `wc` — and every one of those reads too, so they tie with the
+///    stage that did the reading. Naming `head` is exactly the complaint this exists to
+///    fix, and it is worth saying that the old rule got the OTHER case right
+///    (`cat f | grep x` now names `cat`): the two are equally honest, and a grant over a
+///    filter is the one nobody can use.
+///
+/// A stage whose program nobody could read names nothing: `"<unresolved>"` is not a key a
+/// grant could match, and inventing one is the placeholder defect `NO_PROGRAM` exists to
+/// refuse.
+fn name_stage(slot: &mut Option<String>, weight: &mut Option<u8>, program: &str, stage: &Stage) {
+    if stage.program_name().is_none() {
+        return;
+    }
+    let w = naming_weight(program, stage);
+    match *weight {
+        // The incumbent keeps its place on a tie.
+        Some(have) if have >= w => {}
+        _ => {
+            *weight = Some(w);
+            *slot = Some(program.to_string());
+        }
+    }
+}
+
+/// A stage that runs something outranks one that does not, whatever their intents say —
+/// hence the bit rather than a wider number.
+fn naming_weight(program: &str, stage: &Stage) -> u8 {
+    const RUNS_SOMETHING: u8 = 128;
+    let base = intents_of(program, &stage.argv)
+        .into_iter()
+        .map(consequence)
+        .max()
+        .unwrap_or(0)
+        .min(RUNS_SOMETHING - 1);
+    if crate::permission::sets_shell_state(program) {
+        base
+    } else {
+        RUNS_SOMETHING + base
+    }
+}
+
+/// **How much this intent asks to be the one that names an action.**
+///
+/// Not a ranking of danger: the tier is, and it is computed from the same intents further
+/// down this file. This answers a narrower question — *of the stages in this line, which
+/// one is doing the work?* — and it answers it with the intent a person would describe the
+/// command by. A destroy outranks a build, a build outranks a search.
+///
+/// **`EnvironmentMutation` sits below a read, on purpose.** `export` is the preamble to a
+/// command rather than the command, which is why a grant over it names nothing; and the
+/// ranking is used for exactly that choice. `Unknown` is last because a name built on no
+/// finding is the least informative name there is.
+fn consequence(i: Intent) -> u8 {
+    match i {
+        // Nothing restores what this loses.
+        Intent::Destroy => 90,
+        // Out of the authority the session was given.
+        Intent::PrivilegeEscalation => 85,
+        // Outlives the session, and every process on the box, respectively.
+        Intent::Persist => 84,
+        Intent::Power => 83,
+        // Code from the tree runs, which is what a build or an interpreter means.
+        Intent::ExecuteCode => 80,
+        Intent::Network => 70,
+        Intent::ProcessControl => 60,
+        Intent::DeviceWrite => 58,
+        Intent::ChangePermissions => 55,
+        Intent::WriteFile => 50,
+        Intent::VersionControlPublish => 45,
+        Intent::PackageChange => 44,
+        Intent::Disclose => 42,
+        Intent::ReadFile => 20,
+        Intent::EnvironmentMutation => 10,
+        Intent::Inspect => 5,
+        Intent::Unknown => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+/// The parameters this call already fixes, written out before the grammar reads them —
+/// `$PWD`, `$HOME`, and a variable an earlier stage of the same command assigned.
+mod parameters;
 
 #[cfg(test)]
 mod destructive_flags {
