@@ -390,3 +390,31 @@ So the rule has two halves:
 The way out of asking is a boundary, not a better oracle: unasked test execution requires a
 sandbox of some type on every platform. On Linux that is `bwrap` + cgroups (local) and RH3
 (remote); on macOS it does not exist yet, which is R98.
+
+## D17 — a plugin's trust is who wrote it: the operator's run freely, a model's go through the gate — **SETTLED 2026-10-27**
+
+The operator, 2026-10-27, after PG put every plugin `exec` look through the adjudicator: *"there
+are two types of plugins - written by "me" and written by "you". My plugins must be able to do
+whatever and yours go thru adjunctor"*, and *"I can mark "yours" as trusted (hash it?)"*.
+
+So a layer's trust is a fact about **who wrote its bytes**, not about its scope, its hook or what
+its look does:
+
+1. **The operator's layers are trusted.** The built-ins compiled into the binary, and layers the
+   operator put in their user or project plugin directory themselves. A trusted layer's looks run
+   as the operator's own shell would: no adjudication, and `exec` is available to it (a pane
+   included), within the capabilities its `plugin.toml` declares.
+2. **A model's layers are not.** A layer written by the `plugin` tool, the butler, a package, or
+   any model tool call — including the ordinary `write` into a project's `.letibot/plugins/`,
+   because where a file sits does not prove who wrote it. Every look such a layer declares goes
+   through `Gate::admit_unasked` (PG): admitted by the operator's rules or the session's point,
+   otherwise refused with one notice; never a card.
+3. **Provenance is a hash.** The harness records the sha256 of every plugin module and
+   `plugin.toml` a model's tool call writes. A layer whose bytes match one is the model's, wherever
+   it now sits and whether or not it was committed.
+4. **The operator promotes by hash.** `/plugin trust <name>` (and a CLI equivalent) pins the
+   sha256 of that exact module and manifest as trusted. Any change to those bytes, by anyone,
+   makes the layer untrusted again until it is trusted anew. Trust is listed and revocable.
+
+Supersedes, for trusted layers, the pane rule written the same evening (*panes get feeds and
+`read`, not `exec`*): that stays the rule for a model's layers.
