@@ -352,6 +352,9 @@ fn a_wait_link_on_a_done_row_lands_on_the_row_it_is_drawn_on() {
     });
     let mut done = row("the finished rewrite", Some("j96"), Vec::new());
     done.status = TodoStatus::Completed;
+    // **The group is read OPEN**: the subject is where a done row's link is DRAWN, and the folded
+    // default draws no done row to put one on.
+    a.todos_fold_done = false;
     a.apply(ServerFrame::Todos {
         session_id: "s1".into(),
         todos: vec![

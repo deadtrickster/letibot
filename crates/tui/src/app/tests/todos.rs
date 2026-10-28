@@ -356,6 +356,9 @@ fn a_click_on_the_todos_pane_puts_the_cursor_on_the_row_it_is_on() {
 #[test]
 fn the_todos_pane_shows_both_sources_and_says_which_is_which() {
     let mut a = app();
+    // **The board is read UNFOLDED here**, because the subject is that both sources are drawn and
+    // named: the folded default takes a `[x]` row out of both halves, and `d` has its own tests.
+    a.todos_fold_done = false;
     // The session's list, as the event carried it.
     a.apply(ServerFrame::Event(env(
         1,
@@ -692,6 +695,9 @@ fn the_todo_header_counts_the_rows_the_pane_draws() {
             },
         ],
     });
+    // **Every state is drawn, so the board is read UNFOLDED** — the numbers below are counted
+    // against the marks the pane paints, and the folded default paints no `[x]` at all.
+    a.todos_fold_done = false;
     a.key(Key::CtrlT);
 
     // **The marks the pane painted**, read off its own lines: each mark is followed by a space
@@ -1256,6 +1262,9 @@ fn a_todo_is_painted_by_its_state_in_both_halves() {
         ..plain_cfg(110)
     });
     a.wiring.workspace = dir.display().to_string();
+    // **Both halves are read UNFOLDED**: the subject is that a finished row is painted GREEN in
+    // the session's list and in the file's, and the folded default draws neither of them.
+    a.todos_fold_done = false;
     a.apply(ServerFrame::Event(env(
         1,
         SessionEvent::TodosUpdated {
@@ -2176,6 +2185,11 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
 fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = todos_head(&[(TodoBy::Operator, "the operator's own row")]);
+    // **The board is read UNFOLDED**, because the second Tab has to find the row the first one
+    // moved: under the folded default the row it marks leaves the drawn list, the cursor falls
+    // back to the add control, and the toggle is then one-way — which is the thing this test says
+    // it is not.
+    a.todos_fold_done = false;
     // The pane's own open (`ListTodos`) is drained first, so what is left is what the keys sent.
     let _ = a.take_actions();
     // Enter READS it — the same overlay, and nothing is sent by the read.
@@ -2885,6 +2899,9 @@ fn the_done_rows_are_gathered_under_a_line_of_their_own_below_the_rows_owed() {
             TodoStatus::Completed,
         ),
     ]);
+    // **The group is read OPEN**, which is what this test is about: the folded default draws the
+    // line where the rows are, and there would be nothing to compare the order of.
+    a.todos_fold_done = false;
     let screen = a.screen(110, 40);
     let group = at(&screen, "done (3)");
     let owed = ["still owed", "set aside", "in progress"].map(|r| at(&screen, r));
@@ -2933,6 +2950,9 @@ fn the_numbers_are_the_boards_and_a_row_moving_into_the_group_keeps_its_own() {
         ("the second, done", TodoBy::Operator, TodoStatus::Completed),
         ("the third", TodoBy::Operator, TodoStatus::Pending),
     ]);
+    // **The board is read UNFOLDED**, because a number is a property of a DRAWN row: the folded
+    // default draws `done (1)` where the second row's number used to stand.
+    a.todos_fold_done = false;
     let screen = a.screen(110, 40);
     assert!(
         screen.iter().any(|l| l.contains("1  [ ] the first")),
@@ -2991,6 +3011,9 @@ fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
         ),
         ("the last", TodoBy::Operator, TodoStatus::Pending),
     ]);
+    // **The group is read OPEN**: the row this test marks done has to stay DRAWN for the cursor to
+    // be found on it, and under the folded default it would leave the list the moment it is marked.
+    a.todos_fold_done = false;
     a.screen(110, 40);
     a.key(Key::Down);
     a.key(Key::Down);
@@ -3015,14 +3038,15 @@ fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
     );
 }
 
-/// **`d` folds the done group to the one line that names it, and `d` again opens it** — the
-/// operator: *"done todos still not in their own group"*, and the fold is `d`'s own switch.
+/// **`d` opens the folded group, and `d` again folds it to the one line that names it** — the
+/// operator: *"done todos still not in their own group"*, and the fold is `d`'s own switch, which
+/// a head nobody has asked starts in the folded half (`HeadPrefs::default`).
 ///
 /// The folded line says how many rows it holds and which key shows them; the open one says the
 /// count alone. **The number is the same either way**, so opening the group cannot read as a
 /// different set of rows.
 #[test]
-fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
+fn d_opens_the_folded_group_and_d_again_folds_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
         ("the model's done row", TodoBy::Model, TodoStatus::Completed),
@@ -3040,6 +3064,10 @@ fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
             TodoStatus::Postponed,
         ),
     ]);
+    assert!(
+        a.todos_fold_done,
+        "a head nobody has asked starts with the done group folded"
+    );
     // The header's own line, so the count is compared with ITSELF rather than with a number this
     // test would have to keep in step with the fixture.
     let head_of = |screen: &str| {
@@ -3050,22 +3078,18 @@ fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
             .unwrap_or_else(|| panic!("no header: {screen}"))
     };
     let before = a.screen(110, 40).join("\n");
-    assert!(before.contains("done (3)"), "{before}");
     assert!(
-        !before.contains("d shows them"),
-        "the reminder is on the folded line, not on the open one: {before}"
+        before.contains("done (3) · d shows them"),
+        "the folded line does not name the count and the key: {before}"
     );
-
-    a.key(Key::Char('d'));
-    let after = a.screen(110, 40).join("\n");
     for row in [
         "the model's done row",
         "your done row",
         "a subagent's done row",
     ] {
         assert!(
-            !after.contains(row),
-            "{row} is still drawn with the group folded: {after}"
+            !before.contains(row),
+            "{row} is drawn with the group folded: {before}"
         );
     }
     for row in [
@@ -3074,13 +3098,24 @@ fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
         "a row you set aside",
     ] {
         assert!(
-            after.contains(row),
-            "{row} went with the done ones: {after}"
+            before.contains(row),
+            "{row} went with the done ones: {before}"
         );
     }
+
+    // **The first press is the SHOWING half**, because the head opens folded.
+    a.key(Key::Char('d'));
+    let after = a.screen(110, 40).join("\n");
+    for row in [
+        "the model's done row",
+        "your done row",
+        "a subagent's done row",
+    ] {
+        assert!(after.contains(row), "{row} did not come back: {after}");
+    }
     assert!(
-        after.contains("done (3) · d shows them"),
-        "the folded line does not name the count and the key: {after}"
+        after.contains("done (3)") && !after.contains("d shows them"),
+        "the group is open but its line still reads folded: {after}"
     );
     assert_eq!(
         head_of(&before),
@@ -3088,16 +3123,13 @@ fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
         "the header counts what it counted before"
     );
     assert!(
-        a.notice
-            .clone()
-            .unwrap_or_default()
-            .contains("3 done folded away"),
+        a.notice.clone().unwrap_or_default().contains("are back"),
         "the key says what it did: {:?}",
         a.notice
     );
 
-    // **And `d` again opens it** — the fold is not a one-way door, and the rows come back under
-    // the same line and the same count.
+    // **And `d` again folds it** — the fold is not a one-way door, and the rows go back under the
+    // same line and the same count.
     a.key(Key::Char('d'));
     let back = a.screen(110, 40).join("\n");
     for row in [
@@ -3105,15 +3137,28 @@ fn d_folds_the_group_to_one_line_and_d_again_shows_it() {
         "your done row",
         "a subagent's done row",
     ] {
-        assert!(back.contains(row), "{row} did not come back: {back}");
+        assert!(
+            !back.contains(row),
+            "{row} is still drawn with the group folded: {back}"
+        );
+    }
+    for row in [
+        "the model's open row",
+        "your open row",
+        "a row you set aside",
+    ] {
+        assert!(back.contains(row), "{row} went with the done ones: {back}");
     }
     assert!(
-        back.contains("done (3)") && !back.contains("d shows them"),
-        "the group is open but its line still reads folded: {back}"
+        back.contains("done (3) · d shows them"),
+        "the folded line does not name the count and the key: {back}"
     );
     assert!(
-        a.notice.clone().unwrap_or_default().contains("are back"),
-        "the second press says the rows are back: {:?}",
+        a.notice
+            .clone()
+            .unwrap_or_default()
+            .contains("3 done folded away"),
+        "the second press says what it did: {:?}",
         a.notice
     );
 }
@@ -3139,6 +3184,9 @@ fn the_cursor_keeps_the_row_it_was_on_when_the_group_folds() {
         ),
         ("the last row", TodoBy::Model, TodoStatus::Pending),
     ]);
+    // **The group is read OPEN**: this test walks INTO it and then folds it shut under the cursor,
+    // and the folded default would have the first press opening rather than folding.
+    a.todos_fold_done = false;
     // The add control, then the FIRST row still owed: onto the row this test is about.
     a.key(Key::Down);
     let screen = a.screen(110, 40);
@@ -3212,6 +3260,9 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
         ("owed second", TodoBy::Model, TodoStatus::InProgress),
         ("done above", TodoBy::Model, TodoStatus::Completed),
     ]);
+    // **The stops are the DRAWN order**, so the group is read OPEN — the folded default draws
+    // three stops where this test counts five.
+    a.todos_fold_done = false;
     let _ = a.screen(110, 40);
     // The add control, then the two rows owed, then — past the group line — the two done ones.
     assert_eq!(
@@ -3269,6 +3320,8 @@ fn the_arrows_and_a_click_walk_the_rows_in_the_order_they_are_drawn() {
         ("owed second", TodoBy::Model, TodoStatus::InProgress),
         ("done above", TodoBy::Model, TodoStatus::Completed),
     ]);
+    // Open here too: four Downs reach the second done row only while the group is drawn.
+    a.todos_fold_done = false;
     for _ in 0..4 {
         a.key(Key::Down);
     }
@@ -3306,7 +3359,8 @@ fn a_board_with_nothing_done_draws_no_group_line() {
 
 /// **A board whose rows are ALL done** — the group is the whole list, and rano's `none yet` must
 /// not stand over it: that sentence is true of the argument it was handed (an empty list) and
-/// false of the board.
+/// false of the board. **The first look is the folded one**, which is the case the sentence would
+/// be most tempting on: the line stands where every row of the board is.
 #[test]
 fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
@@ -3322,6 +3376,18 @@ fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
             TodoStatus::Completed,
         ),
     ]);
+    let folded = a.screen(110, 40).join("\n");
+    assert!(
+        !folded.contains("none yet"),
+        "the pane says there is nothing on a board with two rows folded away: {folded}"
+    );
+    assert!(
+        folded.contains("done (2) · d shows them"),
+        "the folded line does not stand in its place: {folded}"
+    );
+
+    // **And the line opens onto the rows it counts**, under the same words and the same number.
+    a.key(Key::Char('d'));
     let screen = a.screen(110, 40).join("\n");
     let line = screen
         .lines()
@@ -3331,17 +3397,6 @@ fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     assert!(
         screen.contains("the model's only row, done") && screen.contains("your only row, done"),
         "the group is open and holds both rows: {screen}"
-    );
-
-    a.key(Key::Char('d'));
-    let folded = a.screen(110, 40).join("\n");
-    assert!(
-        !folded.contains("none yet"),
-        "the pane says there is nothing on a board with two rows folded away: {folded}"
-    );
-    assert!(
-        folded.contains("done (2) · d shows them"),
-        "the folded line does not stand in its place: {folded}"
     );
 }
 
@@ -3364,6 +3419,9 @@ fn the_files_done_items_are_gathered_under_a_line_in_their_own_section() {
     )
     .expect("write");
     let mut a = status_head(&[("a session row", TodoBy::Model, TodoStatus::Pending)]);
+    // **The sections are read UNFOLDED**: the subject is where the file's `[x]` item is drawn, and
+    // the folded default draws its section's line in its place.
+    a.todos_fold_done = false;
     a.wiring.workspace = dir.display().to_string();
     a.refresh_repo_todos();
 
@@ -3440,6 +3498,9 @@ fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
         })
         .collect();
     let mut a = status_head(&rows);
+    // **The group is read OPEN**, because the cursor has to be able to walk INTO it: the case is a
+    // cursor five rows inside the group when it shuts, and the folded default has no such rows.
+    a.todos_fold_done = false;
     // **Drawn between presses**, because the arrows scroll by the rows the last DRAW recorded: a
     // walk with no frames in it never moves the window, and the case this test is about is a
     // window that HAS moved.
@@ -3470,23 +3531,24 @@ fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
 }
 
 /// **`d` says which way it stands** — a bar that went on offering `folds done` over a group that is
-/// already shut names a key whose press does the opposite of what it says.
+/// already shut names a key whose press does the opposite of what it says. **The head opens folded**
+/// (`HeadPrefs::default`), so the first sentence a reader meets is the showing one.
 #[test]
-fn the_bar_says_d_folds_the_group_and_then_that_it_shows_it() {
+fn the_bar_says_d_shows_the_group_and_then_that_it_folds_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[
         ("done already", TodoBy::Model, TodoStatus::Completed),
         ("still open", TodoBy::Model, TodoStatus::Pending),
     ]);
     let bar = a.hint_bar(200);
-    assert!(bar.contains("d folds done"), "{bar}");
-    assert!(!bar.contains("d shows done"), "{bar}");
+    assert!(bar.contains("d shows done"), "{bar}");
+    assert!(!bar.contains("d folds done"), "{bar}");
 
     a.key(Key::Char('d'));
     let bar = a.hint_bar(200);
-    assert!(bar.contains("d shows done"), "{bar}");
+    assert!(bar.contains("d folds done"), "{bar}");
     assert!(
-        !bar.contains("d folds done"),
+        !bar.contains("d shows done"),
         "the bar still offers the act that already happened: {bar}"
     );
     // The help lists both, because it is read without a list in front of it.
@@ -3506,8 +3568,14 @@ fn the_bar_says_d_folds_the_group_and_then_that_it_shows_it() {
 fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
+    // The head opens folded, so the first `d` OPENS the group — the key is still the pane's, which
+    // is what this test is about.
+    assert!(
+        a.todos_fold_done,
+        "the fixture does not start where a head does"
+    );
     a.key(Key::Char('d'));
-    assert!(a.todos_fold_done, "the first `d` is the pane's");
+    assert!(!a.todos_fold_done, "the first `d` is the pane's");
     assert!(a.editor.text().is_empty(), "{}", a.editor.text());
 
     let mut sent = Vec::new();
@@ -3517,7 +3585,7 @@ fn a_word_typed_over_the_todos_pane_reaches_the_composer_even_with_a_d_in_it() {
     assert!(sent.is_empty(), "typing sent {sent:?}");
     assert_eq!(a.editor.text(), "legacy deploy");
     assert!(
-        a.todos_fold_done,
+        !a.todos_fold_done,
         "a `d` inside a typed line flipped the switch"
     );
 }
@@ -3538,11 +3606,15 @@ fn the_fold_is_remembered_by_the_next_head() {
 
     let mut a = status_head(&[("done already", TodoBy::Model, TodoStatus::Completed)]);
     a.prefs_path = Some(path.clone());
+    assert!(
+        a.todos_fold_done,
+        "the switch does not start where `HeadPrefs::default` puts it"
+    );
     a.key(Key::Char('d'));
-    assert!(a.todos_fold_done, "the key did not flip the switch");
+    assert!(!a.todos_fold_done, "the key did not flip the switch");
     let on_disk = std::fs::read_to_string(&path).expect("head.toml written");
     assert!(
-        on_disk.contains("todos_hide_done = true"),
+        on_disk.contains("todos_hide_done = false"),
         "the switch was not written down under the key every head already has: {on_disk}"
     );
     assert!(
@@ -3556,7 +3628,7 @@ fn the_fold_is_remembered_by_the_next_head() {
     fresh.prefs_path = Some(path.clone());
     fresh.load_prefs();
     assert!(
-        fresh.todos_fold_done,
+        !fresh.todos_fold_done,
         "the switch did not come back on a restarted head"
     );
     let _ = std::fs::remove_dir_all(&dir);

@@ -1308,23 +1308,23 @@ fn the_config_pane_shows_and_flips_the_todo_done_switch() {
 
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("todo done rows") && screen.contains("shown"),
-        "the switch is not a row of the pane: {screen}"
+        screen.contains("todo done rows") && screen.contains("folded"),
+        "the switch is not a row of the pane, or it does not show where a head starts: {screen}"
     );
 
     // The sixth of the head's rows: diff view, verbosity, thinking, tool output, raw tool calls,
     // and then this one.
     a.config_sel = 5;
     a.key(Key::Enter);
-    assert!(a.todos_fold_done, "Enter did not flip the switch");
+    assert!(!a.todos_fold_done, "Enter did not flip the switch");
     let screen = a.screen(120, 30).join("\n");
     assert!(
-        screen.contains("todo done rows") && screen.contains("folded"),
+        screen.contains("todo done rows") && screen.contains("shown"),
         "the row does not show the new state: {screen}"
     );
     let on_disk = std::fs::read_to_string(dir.join("head.toml")).expect("head.toml written");
     assert!(
-        on_disk.contains("todos_hide_done = true"),
+        on_disk.contains("todos_hide_done = false"),
         "the flip was not written down: {on_disk}"
     );
     let _ = std::fs::remove_dir_all(&dir);
