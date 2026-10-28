@@ -743,6 +743,16 @@ pub const SYSTEM_ROOTS: &[&str] = &[
     "/etc/terminfo",
 ];
 
+/// The resolver's files, bound only for a view that shares the host's network
+/// ([`Egress::Host`]): with a network and without these, every name fails to resolve.
+/// `nsswitch.conf` is already in [`SYSTEM_ROOTS`], because `getpwuid` reads it too.
+pub const NETWORK_ROOTS: &[&str] = &[
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/host.conf",
+    "/etc/gai.conf",
+];
+
 /// The environment variables a confined command keeps.
 ///
 /// The environment is cleared (`--clearenv`) and these are put back, which is
@@ -2409,6 +2419,19 @@ fn pieces_of(
         arg(&mut a, p.display().to_string());
         arg(&mut a, p.display().to_string());
     }
+    // **A shared network has to be able to name things.** `Egress::Host` hands the command
+    // the host's interfaces and routes, and without the resolver's files every name failed
+    // anyway (`failed to resolve address for github.com`, MEASURED 2026-10-27 in a lab2x1
+    // placement), so the decision to share the network read as no network at all. Only
+    // with egress: a view with no network has nothing to resolve with. `-try`, and a
+    // symlink (`resolv.conf` -> systemd-resolved's stub) binds its target.
+    if egress.allowed() {
+        for p in NETWORK_ROOTS {
+            arg(&mut a, "--ro-bind-try");
+            arg(&mut a, *p);
+            arg(&mut a, *p);
+        }
+    }
     // The kernel interfaces a process needs to be a process. `--proc` is the one
     // that makes the PID namespace visible as isolation rather than as a lie:
     // without it the sandbox would read the host's `/proc` and see every pid.
@@ -3127,7 +3150,7 @@ mod tests {
     }
 
     #[test]
-    fn declared_egress_drops_the_network_unshare_and_nothing_else() {
+    fn declared_egress_drops_the_network_unshare_and_binds_the_resolver() {
         let view = ViewSpec::project_only("/proj");
         let denied = build_argv(
             Path::new("/usr/bin/bwrap"),
@@ -3151,9 +3174,26 @@ mod tests {
         );
         assert!(denied.iter().any(|a| a == "--unshare-net"));
         assert!(!host.iter().any(|a| a == "--unshare-net"));
-        // The one difference, and only that one: everything else is identical.
+        // The resolver's files come with the network and only with it.
+        for p in NETWORK_ROOTS {
+            assert!(host.iter().any(|a| a == p), "{p} is bound with the network");
+            assert!(
+                !denied.iter().any(|a| a == p),
+                "{p} is not bound without it"
+            );
+        }
+        // Those two differences, and only those: everything else is identical.
         let d: Vec<&String> = denied.iter().filter(|a| *a != "--unshare-net").collect();
-        let h: Vec<&String> = host.iter().collect();
+        let mut h: Vec<&String> = Vec::new();
+        let mut i = 0;
+        while i < host.len() {
+            if host[i] == "--ro-bind-try" && NETWORK_ROOTS.contains(&host[i + 1].as_str()) {
+                i += 3;
+                continue;
+            }
+            h.push(&host[i]);
+            i += 1;
+        }
         assert_eq!(d, h);
     }
 
