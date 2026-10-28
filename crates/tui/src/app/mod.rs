@@ -2172,7 +2172,10 @@ impl App {
             absorbed: std::collections::HashMap::new(),
             todo_answered: Vec::new(),
             model_pending: None,
-            todos_fold_done: false,
+            // **The done group starts folded**, matching `HeadPrefs::default` — this is the
+            // builder's value, and `apply_prefs` puts the file's answer over it at startup. The
+            // operator's ruling (2026-10-28): *"i want done collapsed by default"*.
+            todos_fold_done: true,
             todos_follow: false,
             bye: None,
             daemon_pid: None,

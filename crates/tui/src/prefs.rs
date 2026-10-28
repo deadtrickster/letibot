@@ -169,9 +169,12 @@ impl Default for HeadPrefs {
             thinking: "folded".into(),
             tools: "folded".into(),
             raw_calls: false,
-            // Off: a head that started with the done group folded would be a head whose pane was
-            // missing things on the first look, before anybody asked for that.
-            todos_fold_done: false,
+            // **On: the done group starts folded.** The operator: *"d collapses - so that means i
+            // want done collapsed by default"* (2026-10-28). The pane still says how many are
+            // there — `done (3) · d shows them` — so nothing is missing on the first look, which
+            // is what this comment used to argue for the other default: the count is on the row,
+            // and the rows are one key away.
+            todos_fold_done: true,
             // The rung the head has always started at when nothing said otherwise.
             verbosity: "normal".into(),
             retired: Vec::new(),
