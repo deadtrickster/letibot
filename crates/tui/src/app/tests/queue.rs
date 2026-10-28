@@ -588,6 +588,286 @@ fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     );
 }
 
+// -- the edge's standings, as a click target -------------------------------------------
+//
+// The operator, 2026-10-27: *"i want to click '5 in review' and be taken to the merge
+// queue"*. The standings are the one piece of the composer's bottom edge that is not about
+// this head, and they are drawn on every screen — so the click is the only door to the queue
+// a reader finds without knowing `/queue`. Every test draws a frame FIRST and aims the click
+// at the rectangle that frame recorded, because the whole feature is that the target is where
+// the draw put it: a click measured against columns a test worked out for itself would pass
+// while the operator clicked the edge.
+
+/// **The standings' rectangle, as the last frame recorded it.**
+fn standings_rect(a: &App) -> crate::app::hits::Rect {
+    a.hits
+        .iter()
+        .find(|h| h.target == Target::QueueStandings)
+        .map(|h| h.rect)
+        .unwrap_or_else(|| {
+            panic!(
+                "no standings target on the frame: {:?}",
+                a.hits.iter().map(|h| h.target).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// **The column a drawn row carries `needle` in**, counted in cells — the record's own
+/// arithmetic done independently, so the two can disagree and say so.
+fn column_of(row: &str, needle: &str) -> usize {
+    let cells = crate::app::keyhints::cells(row);
+    let want: Vec<char> = needle.chars().collect();
+    (0..=cells.len() - want.len())
+        .find(|i| cells[*i..*i + want.len()] == want[..])
+        .unwrap_or_else(|| panic!("{needle:?} is not drawn on {row:?}"))
+}
+
+/// **A click on the standings opens the merge queue** — `/queue`'s act, through the verb's own
+/// door, and the hover mark covers exactly the words the frame drew.
+#[test]
+fn a_click_on_the_standings_opens_the_queue() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(120, 24);
+    let rect = standings_rect(&a);
+    let words = "1 in review · 0 being merged · 0 parked";
+    // The record and the glass agree — the rectangle IS the span the frame drew, gutter and
+    // all — or the click below proves nothing.
+    let row = screen
+        .get(rect.y)
+        .unwrap_or_else(|| panic!("the recorded row is not in the frame: {rect:?}"));
+    assert_eq!(
+        column_of(row, words),
+        rect.x,
+        "the target is not where the words are: {row:?}"
+    );
+    assert_eq!(
+        rect.w,
+        words.chars().count(),
+        "the target is not the words' width"
+    );
+
+    // **The hover lights the drawn span and nothing beside it** — what a click there would act
+    // on, which is the rule the pointer follows everywhere (`App::relight`).
+    a.hover_at(rect.x as u16 + 1, rect.y as u16);
+    assert_eq!(
+        a.hovered.as_ref().map(|h| h.rows.clone()),
+        Some(vec![(rect.y, Some((rect.x, rect.x + rect.w)))]),
+        "the hover does not cover the span the frame drew"
+    );
+    assert!(
+        a.screen(120, 24)[rect.y].contains("\x1b[22;1m"),
+        "the span is not drawn brighter under the pointer"
+    );
+
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16 + 1,
+            y: rect.y as u16
+        }),
+        Some(Action::ListMergeQueue),
+        "the click ran `/queue`'s act, table and all"
+    );
+    assert_eq!(
+        a.top_surface(),
+        Some(Surface::Queue),
+        "and the pane it opened is the queue's"
+    );
+    let screen = a.screen(120, 24).join("\n");
+    assert!(screen.contains("review queue · merge queue"), "{screen}");
+}
+
+/// **A click one cell outside the standings asks for nothing.** The edge around the words is
+/// furniture, and a click on it is a click nobody claimed — it must not reach the queue by
+/// rounding, luck or the gutter.
+///
+/// **Aimed at the GLASS, not at the record**: the two columns are the drawn span's own, worked
+/// out from the frame, so a record one column too wide or one column to the left fails here
+/// rather than agreeing with itself.
+#[test]
+fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(120, 24);
+    let rect = standings_rect(&a);
+    let words = "1 in review · 0 being merged · 0 parked";
+    let row = screen
+        .get(rect.y)
+        .expect("the recorded row is in the frame");
+    let drawn = column_of(row, words);
+    assert_eq!(drawn, rect.x, "the premise: the record is the drawn span");
+    // The separator before the words, and the first cell after the last drawn character.
+    for x in [drawn.saturating_sub(1), drawn + words.chars().count()] {
+        assert_eq!(
+            a.key(Key::Click {
+                x: x as u16,
+                y: rect.y as u16
+            }),
+            None,
+            "a click at {x} acted — one cell outside the drawn span is nobody's"
+        );
+        assert!(!a.is_open(Surface::Queue), "the queue opened from {x}");
+    }
+}
+
+/// **The two live cases carry their alarm prefix, and the click still opens the queue** — an
+/// unjudged target's `⚠` and a red one's `‼` are part of the span the frame draws, so they are
+/// part of the target, not a thing beside it.
+#[test]
+fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
+    for (state, prefix) in [
+        ("timed_out", "⚠ 1 target(s) unjudged"),
+        ("red", "‼ 1 red target(s)"),
+    ] {
+        let mut a = app();
+        a.session_id = "s1".into();
+        let mut snap = queues(Vec::new(), Vec::new());
+        snap.targets.push(target(LETIBOT, state));
+        snap.here = Some(here_in(LETIBOT));
+        a.apply(queue_frame(snap));
+        let screen = a.screen(120, 24);
+        let rect = standings_rect(&a);
+        let words = format!("{prefix} · 0 in review · 0 being merged · 0 parked");
+        let row = screen
+            .get(rect.y)
+            .expect("the recorded row is in the frame");
+        assert!(row.contains(prefix), "{state}: the premise — {row:?}");
+        assert_eq!(
+            column_of(row, &words),
+            rect.x,
+            "{state}: the target is not the span the frame drew: {row:?}"
+        );
+        assert_eq!(
+            a.key(Key::Click {
+                x: rect.x as u16,
+                y: rect.y as u16
+            }),
+            Some(Action::ListMergeQueue),
+            "{state}: a click on the alarm prefix is a click on the standings"
+        );
+        assert_eq!(a.top_surface(), Some(Surface::Queue), "{state}");
+    }
+}
+
+/// **A click while the queue is open closes it** — the click is `/queue`'s spelling and the verb
+/// TOGGLES: the standings stay drawn on the queue's own edge, and pressing that door again
+/// leaves, exactly as the count labels do for their panes.
+#[test]
+fn a_click_on_the_standings_of_an_open_queue_closes_it() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    assert_eq!(a.command("queue"), Some(Action::ListMergeQueue));
+    assert!(a.is_open(Surface::Queue), "the premise: the pane is up");
+    a.screen(120, 24);
+    let rect = standings_rect(&a);
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16 + 1,
+            y: rect.y as u16
+        }),
+        None,
+        "closing asks the daemon for nothing"
+    );
+    assert!(
+        !a.is_open(Surface::Queue),
+        "the second press left, as `/queue` does"
+    );
+}
+
+/// **The edge's standings are a target on whatever screen is up** — they are the one piece of
+/// the composer's edge that is not about this head, and the operator reads them wherever they
+/// are: a click from the subagents pane opens the queue just as one from the conversation does.
+#[test]
+fn the_standings_are_a_target_from_another_pane_too() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    a.key(Key::CtrlG);
+    assert_eq!(a.top_surface(), Some(Surface::Subagents), "the premise");
+    a.screen(120, 24);
+    let rect = standings_rect(&a);
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16 + 1,
+            y: rect.y as u16
+        }),
+        Some(Action::ListMergeQueue),
+        "the standings are the queue's door from another pane"
+    );
+    assert_eq!(a.top_surface(), Some(Surface::Queue));
+}
+
+/// **A narrow edge keeps no target for standings it cut** — the edge truncates from the right
+/// and the standings are the last thing on it, so a terminal too narrow to hold the words draws
+/// a piece of them and records nothing. A target for words the frame cut is a click nobody can
+/// see land, which is the failure `drawn_span` exists to make safe.
+#[test]
+fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(30, 24);
+    let edge = screen
+        .iter()
+        .find(|l| l.contains('╰'))
+        .expect("the composer's bottom edge");
+    assert!(
+        !edge.contains("0 parked"),
+        "the premise: thirty columns cut the words: {edge:?}"
+    );
+    assert!(
+        a.hits.iter().all(|h| h.target != Target::QueueStandings),
+        "a target exists for standings the edge truncated: {:?}",
+        a.hits.iter().map(|h| h.target).collect::<Vec<_>>()
+    );
+}
+
+/// **A queue that stands nothing has no standings, and the edge records no target for them** —
+/// the counts are drawn only while they are true, so the click's target is absent with them:
+/// the same frame, the same row, nothing to claim the pointer.
+#[test]
+fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(queue_frame(queues(
+        vec![queue_review_row("a", "approved")],
+        vec![queue_merge_row("m-a", "landed")],
+    )));
+    let screen = a.screen(120, 24);
+    assert!(
+        !screen.iter().any(|l| l.contains("in review")),
+        "the premise: nothing stands, so nothing is drawn: {}",
+        screen.join("\n")
+    );
+    assert!(
+        a.hits.iter().all(|h| h.target != Target::QueueStandings),
+        "a target exists for words the edge did not draw: {:?}",
+        a.hits.iter().map(|h| h.target).collect::<Vec<_>>()
+    );
+    // And behaviourally: a sweep of the edge's own row opens nothing.
+    let y = screen
+        .iter()
+        .position(|l| l.contains('╰'))
+        .expect("the composer's bottom edge") as u16;
+    for x in (0..120u16).step_by(3) {
+        assert_eq!(a.key(Key::Click { x, y }), None, "a click at {x} acted");
+    }
+    assert!(!a.is_open(Surface::Queue), "some pane opened anyway");
+}
+
 /// **A click on a row selects it, and Enter opens THAT row.**
 #[test]
 fn a_click_on_a_queue_row_selects_the_row_drawn_there() {

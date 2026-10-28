@@ -34,7 +34,10 @@ impl App {
             Target::QuitCard => self.quit_card,
             Target::ReseatCard => self.reseat_card_up(),
             Target::SettingCard => self.pick.is_some(),
-            Target::CountLabel(_) | Target::GitField => true,
+            // **The chrome's labels are drawn by whatever screen is up** — the composer's two
+            // edges and the header belong to no surface, so there is none that can have closed
+            // under them between the frame and the click.
+            Target::CountLabel(_) | Target::GitField | Target::QueueStandings => true,
             // **A panel's title is a door only while its pane is the one on the screen**: the
             // frame that recorded it may have been covered by another pane since.
             Target::PluginPanel => self.focused_surface() == Some(Surface::PluginPane),
@@ -54,7 +57,8 @@ impl App {
     /// **What a click does is select**, everywhere a row is a choice — the picker's own rule,
     /// *"select and confirm stay two acts"*: Enter still does the switching, the answering, the
     /// opening. The exceptions are the targets that are buttons: a count label opens its pane,
-    /// a queue tab switches the view, an edit row opens its change.
+    /// a queue tab switches the view, an edit row opens its change, the edge's standings open the
+    /// queue.
     pub(crate) fn key_click(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         let Key::Click { x, y } = *k else {
             return ControlFlow::Continue(());
@@ -100,6 +104,13 @@ impl App {
                 }));
             }
             (Target::QueueTab(view), _) => self.queue_view = view,
+            // **The merge queue's standings open the queue** — the operator, 2026-10-27: *"i want
+            // to click '5 in review' and be taken to the merge queue"*. It is `/queue`'s act
+            // through the verb's own door (`App::command`), which is how the git field opens the
+            // repo card, so the click keeps the rule a bare `/queue` keeps: the pane opens on
+            // THIS session's repository, not on whatever scope the last `/queue all` left behind
+            // — and a second click while the pane is up closes it, as the verb would.
+            (Target::QueueStandings, _) => return ControlFlow::Break(self.command("queue")),
             // **An edit or write row opens its change in the diff popup** — the whole file with
             // the change inline; `ctrl-]` from there is the editor. A click elsewhere in the
             // conversation is nobody's and falls through.
@@ -235,6 +246,7 @@ impl App {
             Target::SettingCard
             | Target::CountLabel(_)
             | Target::GitField
+            | Target::QueueStandings
             | Target::FlashNotice => {}
         }
         ControlFlow::Break(None)

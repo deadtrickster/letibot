@@ -239,7 +239,15 @@ impl App {
         let hit = self.hit_at(x, y)?;
         let row = usize::from(y);
         match hit.target {
-            Target::CountLabel(_) | Target::QueueTab(_) | Target::GitField => Some(Hovered::one(
+            // **A label on either edge is a button, and its hover is exactly the span the frame
+            // drew** — the count labels and the queue tab on the composer's top edge and in the
+            // queue's strip, the git field on the header, the queue's standings on the bottom
+            // edge. The rectangle is the drawn one, so the mark covers the words and stops where
+            // they stop: a click one cell outside them is nobody's.
+            Target::CountLabel(_)
+            | Target::QueueTab(_)
+            | Target::GitField
+            | Target::QueueStandings => Some(Hovered::one(
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),

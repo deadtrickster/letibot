@@ -451,11 +451,11 @@ fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
     );
     a.key(Key::AltH);
     assert!(line(&a).is_empty(), "folded: {}", line(&a));
-    let edge = a.box_bottom(100, None);
+    let (edge, _) = a.box_bottom(100, None);
     assert!(edge.contains("2 waiting · alt-h"), "{edge}");
     a.key(Key::AltH);
     assert!(line(&a).contains("WAITING ON YOU"), "alt-h again unfolds");
-    assert!(!a.box_bottom(100, None).contains("waiting"));
+    assert!(!a.box_bottom(100, None).0.contains("waiting"));
     // Folded, and then a third question arrives: it is news, so the line is back.
     a.key(Key::AltH);
     assert!(line(&a).is_empty());

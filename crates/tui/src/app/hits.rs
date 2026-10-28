@@ -83,6 +83,16 @@ pub(crate) enum Target {
     Picture,
     /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
     GitField,
+    /// **The merge queue's standings on the composer's bottom edge** — `3 in review · 1 being
+    /// merged · 0 parked`, the words `Standings::words()` drew, with the `⚠`/`‼` alarms in front
+    /// when a target could not be judged or is red. A click opens the queue pane.
+    ///
+    /// It is the one piece of the edge that is not about this head (see `bottom_markers`), and it
+    /// is drawn on every screen — so it is the only door to the queue that a reader finds without
+    /// knowing `/queue`. The rectangle is the span's own columns on the row the frame drew, read
+    /// off that row (`screen::drawn_span`), because the edge truncates from the right and the
+    /// standings are the last thing on it.
+    QueueStandings,
 }
 
 /// **One target on the last frame**: where it was, what it was, and which of its stops each

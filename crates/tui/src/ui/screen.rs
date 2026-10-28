@@ -460,12 +460,18 @@ impl App {
         }
         let caret_at = chrome.len() + caret_row;
         chrome.extend(input_rows);
+        // **The bottom edge's standings, and where on the edge they were drawn** — kept the way
+        // `box_top_at` keeps the count labels', because the fit and the backstop below can still
+        // move the row, so the row is resolved once the frame's final shape is known.
+        let mut standings_at: Option<(usize, (usize, usize))> = None;
         if boxed {
             // The bottom edge, pinned right: the alarm as a triangle — the counters behind it are
             // /status's, and were never worth a resident sentence of bright yellow. **The turn's
             // own status is no longer here** (R51 item 1): it is a row above the box, because a
             // legend on an edge truncates and a status is allowed to grow a sentence.
-            chrome.push(self.box_bottom(w, completions.as_ref()));
+            let (edge, at) = self.box_bottom(w, completions.as_ref());
+            standings_at = at.map(|cols| (chrome.len(), cols));
+            chrome.push(edge);
         } else if self.alarmed() {
             chrome.push(self.status_line(w));
         }
@@ -661,6 +667,30 @@ impl App {
                 }
             }
         }
+        // **And the standings on the bottom edge, as a target** — the operator: *"i want to click
+        // '5 in review' and be taken to the merge queue"*. Its rectangle is the span's own
+        // columns on the row rano drew it on (`drawn_span`), not a placement worked out from the
+        // words' length, and the row is resolved here, after the backstop and the truncate, for
+        // the count labels' reason: a target for words the frame cut is a click nobody can see
+        // land. The columns are the row's own plus the gutter, because a click's `x` is in
+        // terminal cells.
+        if let Some((at, (col, cols))) = standings_at
+            && let Some(row) = at
+                .checked_sub(drained)
+                .map(|at| body_rows + at)
+                .filter(|row| *row < out.len())
+        {
+            self.hits.push(Hit {
+                rect: Rect {
+                    x: col + gutter,
+                    y: row,
+                    w: cols,
+                    h: 1,
+                },
+                target: Target::QueueStandings,
+                stops: Vec::new(),
+            });
+        }
         // The caret is the affordance. It goes where the composer says, and the
         // terminal draws it as a steady block because `term::enter` asked for one.
         self.cursor = Some((
@@ -768,6 +798,24 @@ fn box_top_label(line: &rano::render::Line, needle: &str) -> Option<(usize, usiz
     None
 }
 
+/// **Where a drawn row carries `words`** — `(first column, width)` in the row's own columns, or
+/// `None` when this frame did not draw them whole.
+///
+/// The walk [`box_top_label`] makes of the edge's count labels, made of any span: the edge is
+/// truncated from the right when the terminal is narrow, and the standings are the LAST thing on
+/// it, so the cut eats them first. A target for words the frame cut is a click nobody can see
+/// land, and a wording this head changes stops matching — the only failure this walk can have is
+/// the safe one.
+fn drawn_span(line: &str, words: &str) -> Option<(usize, usize)> {
+    let cells = crate::app::keyhints::cells(line);
+    let want: Vec<char> = words.chars().collect();
+    let at = (0..=cells.len().checked_sub(want.len())?)
+        .find(|i| cells[*i..*i + want.len()] == want[..])?;
+    let before: String = cells[..at].iter().collect();
+    let span: String = cells[at..at + want.len()].iter().collect();
+    Some((visible_width(&before), visible_width(&span)))
+}
+
 impl App {
     /// **The composer box's top edge**, carrying what this session has running: its live
     /// subagents and its background jobs — **and the labels' columns, read off the line
@@ -800,8 +848,20 @@ impl App {
     }
 
     /// **The composer box's bottom edge**, carrying the alarm, where the reader is in the
-    /// conversation, the visibility rung, and the merge queue's standings.
-    pub(crate) fn box_bottom(&self, w: usize, completions: Option<&rano::render::Line>) -> String {
+    /// conversation, the visibility rung, and the merge queue's standings — **and where the
+    /// standings were drawn**, because that span is a click target.
+    ///
+    /// The second half of the return is the standings' `(column, width)` in the row's own
+    /// columns, read off the line rano returned and not rebuilt from the words: the edge is cut
+    /// from the right on a narrow terminal and the standings are the last thing on it, so
+    /// arithmetic over the counts would place a target for words the frame dropped — a click
+    /// nobody can see land. `None` when the queue stands nothing (there are no words to draw) or
+    /// when this frame did not draw them whole.
+    pub(crate) fn box_bottom(
+        &self,
+        w: usize,
+        completions: Option<&rano::render::Line>,
+    ) -> (String, Option<(usize, usize)>) {
         // The alarm, then the viewport's state **only when it is holding** (R36 — following is
         // the ordinary state and owes the reader nothing), then the rung **when it is the one
         // that hides things** (R37): each drawn only when it is news, because a marker that is
@@ -814,6 +874,9 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
+        // **The words, kept for the record below** — the same string `bottom_markers` draws, so
+        // the search for it on the finished row can only find what this frame put there.
+        let words = standings.words();
         let right = bottom_markers(
             &bottom,
             &standings,
@@ -821,12 +884,12 @@ impl App {
             self.plugin_badge(),
         );
         let p = self.cfg.palette();
-        let Some(legend) = completions.filter(|l| l.width() > 0) else {
+        let edge = match completions.filter(|l| l.width() > 0) {
             // **One builder for both paths.** rano's `BoxBottom::line` composes this same right
             // side, and the path below has always built it here (it needs the width before the
             // left legend is cut); using the local builder for both is what keeps the edge from
             // saying one thing with a completion open and another without.
-            return crate::ui::rows::row(
+            None => crate::ui::rows::row(
                 &rano::agent::composer::box_edge(
                     w,
                     '╰',
@@ -835,22 +898,36 @@ impl App {
                     &right.unwrap_or_default(),
                 ),
                 p,
-            );
+            ),
+            Some(legend) => {
+                // **The completions inlaid at the left**, as leticl draws them. The right side's
+                // own markers are what the edge pins there, and they keep their room: the
+                // completions are cut to what is left, so typing `/` never hides an alarm or a
+                // standing queue.
+                let keep = right.as_ref().map_or(0, |r| r.width() + 4);
+                let room = w.saturating_sub(6 + keep).max(8);
+                let mut left = legend.clone();
+                if let Some(first) = left.spans.first_mut() {
+                    first.content = first.content.trim_start().to_string();
+                }
+                let left = rano::render::text::truncate(&left, room);
+                crate::ui::rows::row(
+                    &rano::agent::composer::box_edge(
+                        w,
+                        '╰',
+                        '╯',
+                        &left,
+                        &right.unwrap_or_default(),
+                    ),
+                    p,
+                )
+            }
         };
-        // **The completions inlaid at the left**, as leticl draws them. The right side's own
-        // markers are what the edge pins there, and they keep their room: the completions are
-        // cut to what is left, so typing `/` never hides an alarm or a standing queue.
-        let keep = right.as_ref().map_or(0, |r| r.width() + 4);
-        let room = w.saturating_sub(6 + keep).max(8);
-        let mut left = legend.clone();
-        if let Some(first) = left.spans.first_mut() {
-            first.content = first.content.trim_start().to_string();
-        }
-        let left = rano::render::text::truncate(&left, room);
-        crate::ui::rows::row(
-            &rano::agent::composer::box_edge(w, '╰', '╯', &left, &right.unwrap_or_default()),
-            p,
-        )
+        // **Where the standings landed, off the finished row** — the target's rectangle is the
+        // span's own columns, and the only thing that knows them is the line the terminal is
+        // about to draw.
+        let at = words.and_then(|words| drawn_span(&edge, &words));
+        (edge, at)
     }
 
     /// **What fills the screen above the cards**: the terminal pane, an open output or pane,
