@@ -185,6 +185,10 @@ Declared in `plugin.toml`, enforced by the host at the moment a plugin declares 
 - `exec:<program>` — a look may run `<program>` (e.g. `exec:gh`, `exec:git`) with arguments the
   plugin chooses, in the workspace, through the gate. No shell, no other program.
 - `read` — a look may read files under the workspace (the same confinement `read` has).
+- `read:<path>` — a look may read **one tree outside the workspace**, named as a person wrote it
+  down (`read:~/.claude/projects`). §4.8.1 is the whole of it: absolute or `~/…`, strictly deeper
+  than the root or a home directory, no `..`, and the manifest's line is the approval — a layer
+  reads what somebody wrote down and nothing else.
 - `http:<host>` — a look may GET from `<host>` (later; network egress is the operator's call).
 
 **Granting.** Built-in and user plugins: granted by being installed. Project plugins: granted by
@@ -225,6 +229,7 @@ through wasmtime's adapter).
 | capability | in WASI |
 |---|---|
 | `read` | the workspace pre-opened read-only |
+| `read:<path>` | that one tree pre-opened read-only, and no other |
 | `write` (new, scripts only) | the workspace pre-opened read-write |
 | `http:<host>` | `wasi:http` outgoing, refused for any other authority |
 | `exec:<prog>` | `letibot:host/exec`, refused for any other program |
@@ -398,6 +403,96 @@ the one door now, and both callers go through it.
 A plugin tool's schema is prompt bytes in the cached prefix, so plugin tools load only at session
 start and at a reseat — which already announces tool changes. Calls go through the gate as the
 built-ins do; a tool that needs the world declares looks like a condition does.
+
+**Built, 2026-10-27 (package B).** A layer declares the tool in its manifest and answers it in
+`tool_<name>`:
+
+```toml
+# plugin.toml
+hooks = ["tool_claude_transcript"]
+capabilities = ["read:~/.claude/projects"]
+
+[[tools]]
+name = "claude_transcript"          # the export is `tool_claude_transcript`
+description = "…the prompt's one line…"
+
+[tools.schema]                       # JSON Schema, as a TOML table
+type = "object"
+```
+
+```jsonc
+// in
+{"v":1, "name":"claude_transcript", "args":{…}, "feeds":{…}, "looks":[…], "state":…}
+// out — a result, in the tree's own vocabulary
+{"outcome":"ok",       "payload":"…"}
+{"outcome":"failed",   "reason":"…", "payload":"…"}
+{"outcome":"abstained","reason":"…", "payload":"…"}
+{"outcome":"refused",  "reason":"…", "payload":"…"}   // `not_run`: nothing ran
+// — or a question, when the layer needs data the host has
+{"looks":[{"read":"/abs/path","from":12,"lines":40}], "state":{…}}
+```
+
+**`feeds` is the host's own facts** — `home`, `workspace`, `session`, `now_ms` — read once per call
+and adjudicated by nothing, the same rule a pane's feeds follow. **`state` is the host's to keep**
+(§1 principle 5): it is handed back unchanged on the next round, and a layer is stateless between
+calls.
+
+**A hook does no I/O, so a tool asks for it.** The three looks are the ones a filesystem tool
+needs, and all three stream: `read` (a line range, or a list of line numbers), `list` (a
+directory's entries with size and mtime), `grep` (every line containing a substring, with its line
+index, byte offset and bounded context). The host runs them, in order, against the layer's
+capabilities, and asks the hook again with the results — up to four rounds. Every look is bounded
+and every truncation is in the answer (`cut` on a line, `more` on a page, `scanned` on a sweep),
+because a tool whose whole reason for existing is *do not put 100 MB into a context* cannot answer
+a big file with silence about the part it left out.
+
+**Where it is seated, and why there.** The prompt is composed in `Harness::open`, before the daemon
+has a hub to build a plugin host with, so the declarations are read from `plugin.toml`s alone
+(`crate::plugins::declared_tools`) and the tool is registered **after** the role is resolved — a
+layer's tool is not one a role names, and `resolve_role` would refuse a role listing a tool it does
+not hold. The tool then answers through the same slot the `plugin` tool holds, filled by
+`Sessions::open_plugins`. A session whose slot is never filled (a subagent) answers `not_run` and
+says which of the two facts is missing.
+
+**What a broken layer costs is a tool call, never a session.** A trap falls to the layer below
+(the stack's own rule); a layer that answers nonsense, an outcome nobody defined, a look for a
+path it may not read, or a fifth round of questions is a `failed` result that names the layer, says
+what the contract is and what fixes it. A tool that could not be seated at all — a name the seat
+already has, a class this session's downgrade denies, or more than four tools from layers — is one
+`plugin_layer` warning naming each.
+
+**The class is the layer's most consequential capability**: `exec:` makes its tool `Exec`, `http:`
+makes it `Network`, and a layer that only reads is `Read` and never reaches the gate. `access_for`
+can only narrow, so a schema that carried the least would be the hole that note is about.
+
+**The first user is `plugins/builtin/claude_transcript/`** — Claude Code's own store
+(`~/.claude/projects/<project>/<uuid>.jsonl`), modelled on the tree's `transcript` tool: `sessions`,
+`search`, `read`, `outline`. It reads `~/.claude/history.jsonl` not at all, and that is the point
+of the next section.
+
+### 4.8.1 `read:<path>` — one tree outside the workspace
+
+`read` means *the workspace and nothing above it*, which is the right default and stays unchanged.
+`read:<path>` names **one tree outside it**, as a person wrote it down:
+
+```toml
+capabilities = ["read:~/.claude/projects"]
+```
+
+* absolute (`/…`) or home-relative (`~/…`) — a relative path names a different tree on every
+  machine, which is not something a reviewer can approve;
+* strictly deeper than the root or a home directory: `read:/` and `read:~` are refused, because
+  *everything* spelled as one word is not a declaration a person can check;
+* no `..` segment. A path that climbs out of the tree it names is a path whose declaration is not
+  what it reads.
+
+**The declaration is the approval.** A layer can only read what a person wrote down, `admit` is
+what checks the module against it, and the check at the moment of a look is on the **resolved**
+path — so a symlink inside a declared tree that points out of it (`~/.claude/projects` holds one,
+`memory` → a folder under `~/Projects`) is refused for where it points. `~/.ssh` is not under a
+declared tree and no spelling of a path makes it so. The same rule is enforced for a pane's look
+(`crates/harnessd/src/plugins/look.rs`) and for a tool's (`crates/harnessd/src/plugins/tool.rs`):
+one expansion of `~/`, in one place.
 
 ### 4.9 `pane` — the UI language
 
@@ -957,6 +1052,7 @@ why its work runs between the session's turns when the two share a server.
     | the head's host | `crates/tui/src/app/sessions_pane.rs` — its own stack (the session's, the project's, the user's, then the built-ins), the feed, the acts, the fold state, and the way out |
     | the C3 additions | `crates/plugin-sdk/src/pane.rs` (`Input`, `Feed`, `Act`, `Fold`, `Cell`), `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `Tree::empty`, `View::validate_for`) |
     | the example | `plugins/examples/sessions-override` — a project layer that calls below, renames a group and hides its rows |
+    | **the first plugin TOOL** | `plugins/builtin/claude_transcript` — Claude Code's own store as a tool (§4.8), and the first user of `read:<path>` (§4.8.1): `sessions`, `search`, `read`, `outline`, every answer bounded. The daemon's stack installs the built-ins that declare a tool and no others (`PluginHost::production`), because a pane belongs to the head's stack and installing one here would announce it twice |
 
     Four things differed from the plan as written, and each is a decision a reader should see:
 
@@ -978,6 +1074,12 @@ why its work runs between the session's turns when the two share a server.
       that was a bug found by the pin, not a decision.
     * **A built-in is a layer, so it can be masked by name** — a project's `sessions` sits above it
       in the stack and may `mask` the hook as any layer may.
+
+    **And a built-in can be a TOOL, which is the second thing the built-in table had to answer**
+    (2026-10-27): a built-in whose manifest declares `[[tools]]` is installed into the *daemon's*
+    stack as well as the head's, because `tool_` is a hook only the daemon dispatches. The split
+    is by what a hook needs: a pane needs a head to draw it, a tool needs the model's registry,
+    and the layer's own module is the same bytes either way.
 11. **Script layers: a layer that is source text, with no toolchain.** A layer today is a Rust
     crate compiled to wasm, so writing one needs cargo and the wasm target, which most boxes and
     most operators do not have. A JavaScript engine compiled to wasm (QuickJS, as Javy embeds

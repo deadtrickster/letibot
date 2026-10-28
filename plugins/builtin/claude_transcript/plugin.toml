@@ -1,0 +1,66 @@
+name = "claude-transcript"
+purpose = "read Claude Code's own transcripts: which sessions a project has, a search across them, a line range, and an outline of what was asked and concluded"
+hooks = ["tool_claude_transcript"]
+# **One tree, named as a person wrote it down.** `read` alone is the workspace; these transcripts
+# live in a folder no repository holds, so the layer says which one it may look at — and that line
+# is the approval. `~/.claude/history.jsonl` is deliberately NOT here: it holds the operator's
+# prompts across every project, and the four operations are answerable from `projects/` alone.
+capabilities = ["read:~/.claude/projects"]
+contract = 1
+
+# **The tool the model is offered.** Its export is `tool_claude_transcript`; a manifest that names a
+# tool and does not export its hook is refused by `admit`, because a tool in the prompt that nothing
+# answers is the harness telling a model about a capability it does not have.
+[[tools]]
+name = "claude_transcript"
+description = """
+READ CLAUDE CODE'S OWN TRANSCRIPTS — the sessions that tool kept on this machine, which this \
+session cannot otherwise see. Use it when the operator refers to work done in another agent \
+("what did I do in the letibot project yesterday", "find where I said X", "what did Claude \
+conclude about the queue"), instead of guessing or asking them to repeat it. Four operations \
+under `what`: `sessions` lists a project's transcripts with size, mtime and the operator's first \
+line; `search` finds a line by text and answers its line number and byte offset with bounded \
+context; `read` answers a line range; `outline` answers what the operator asked and what the \
+assistant concluded, with tool traffic left out. Every answer is bounded and says what it left \
+out. Read-only: nothing here writes, and the layer may only read `~/.claude/projects`.
+"""
+
+[tools.schema]
+type = "object"
+
+[tools.schema.properties.what]
+type = "string"
+enum = ["sessions", "search", "read", "outline"]
+description = "`sessions` (the default) lists a project's transcripts; `search` finds text; `read` answers a line range; `outline` answers asks and conclusions."
+
+[tools.schema.properties.project]
+type = "string"
+description = "A project path (`/Users/me/Projects/x`), or the directory name Claude Code gave it (`-Users-me-Projects-x`). Defaults to this session's workspace."
+
+[tools.schema.properties.session]
+type = "string"
+description = "One transcript: a session id, or the first few characters of one. Defaults to the newest in the project."
+
+[tools.schema.properties.match]
+type = "string"
+description = "For `search`: the text to look for, case-insensitive. A plain substring, not a regex."
+
+[tools.schema.properties.from]
+type = "integer"
+description = "For `read`: the first line, 1-based. Default 1."
+
+[tools.schema.properties.lines]
+type = "integer"
+description = "For `read`: how many lines. Default 60, at most 400."
+
+[tools.schema.properties.limit]
+type = "integer"
+description = "For `search`: how many matches. Default 10, at most 40."
+
+[tools.schema.properties.context]
+type = "integer"
+description = "For `search`: lines of context around each match. Default 1, at most 8."
+
+[tools.schema.properties.all_projects]
+type = "boolean"
+description = "For `search`: look in every project, not only one. Costs one pass over each transcript and is bounded the same way."

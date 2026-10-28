@@ -32,7 +32,8 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::manifest::{Manifest, Scope};
+use crate::Capability;
+use crate::manifest::{Manifest, Scope, ToolDecl};
 use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 
 /// How many module calls one resolution may make.
@@ -43,7 +44,22 @@ use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 /// second to draw. Ten layers of one ask each need far fewer than this.
 const MAX_CALLS: usize = 32;
 
-/// A layer: where it came from, what it declares, and which bytes it is.
+/// **One tool a layer declares, with the layer it came from and what that layer may read.**
+///
+/// A [`ToolDecl`] alone is prompt bytes; a tool the host seats needs three more facts, and all
+/// three are the layer's rather than the tool's: which layer it is (for the sentence a failure
+/// carries), what it may read (a tool hook's looks are checked against the layer's capabilities),
+/// and the scope it came from (so a project layer overrides a built-in one by being higher).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredTool {
+    /// The layer's directory name for a layer on disk, the built-in's name for one compiled in.
+    pub layer: String,
+    pub scope: Scope,
+    pub tool: ToolDecl,
+    pub capabilities: Vec<Capability>,
+}
+
+/// A layer: where it came from, what it declares, and which bytes it is./// A layer: where it came from, what it declares, and which bytes it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     /// `s3`, `p1`, `u1` — or `b-github-pr` for a built-in.
@@ -271,6 +287,65 @@ impl Stack {
             stack.discover_scope(Scope::User, &root.join("plugins"));
         }
         stack
+    }
+
+    /// **What the layers of these three scopes declare, without loading a single module.**
+    ///
+    /// `Stack::discover` compiles every `plugin.wasm`, which is the right price at session open
+    /// and the wrong one *before* it: a declared tool is prompt bytes, and the prompt is composed
+    /// before the daemon has a hub to build a plugin host with. So this walks the same three
+    /// directories in the same order — session, project, user; newest layer first inside each —
+    /// and reads only the `plugin.toml`s.
+    ///
+    /// **No dedupe here, on purpose.** The order IS the precedence, so the caller that also has
+    /// the built-in table (which this crate cannot see — `crates/builtins` depends on this crate,
+    /// not the other way) appends it and keeps the first declaration of each tool name. A layer
+    /// whose module does not load is still listed: the tool is then seated and answers *the layer
+    /// is not loaded*, which is a sentence a model can act on rather than a tool that silently is
+    /// not there.
+    ///
+    /// A `plugin.toml` that does not parse is skipped here and reported by `discover`, which is
+    /// the caller that has a `Failure` list to put it in.
+    pub fn declared_tools(
+        session_dir: Option<&Path>,
+        project: Option<&Path>,
+        user: Option<&Path>,
+    ) -> Vec<DeclaredTool> {
+        let mut out = Vec::new();
+        let scopes = [
+            (Scope::Session, session_dir.map(Path::to_path_buf)),
+            (
+                Scope::Project,
+                project.map(|root| root.join(".letibot").join("plugins")),
+            ),
+            (Scope::User, user.map(|root| root.join("plugins"))),
+        ];
+        for (scope, dir) in scopes {
+            let Some(dir) = dir else { continue };
+            // Newest first: a later layer is on top, so its declaration is the one the model is
+            // offered when two of them name the same tool.
+            for path in layer_dirs(&dir).into_iter().rev() {
+                let Ok(manifest) = Manifest::read(&path) else {
+                    continue;
+                };
+                if manifest.tools.is_empty() {
+                    continue;
+                }
+                let layer = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                for tool in manifest.tools.clone() {
+                    out.push(DeclaredTool {
+                        layer: layer.clone(),
+                        scope,
+                        tool,
+                        capabilities: manifest.capabilities.clone(),
+                    });
+                }
+            }
+        }
+        out
     }
 
     /// Every layer, in the order a hook is resolved through them.
@@ -893,6 +968,78 @@ mod tests {
 
     fn answer_of(r: &Resolved) -> Value {
         r.answer.clone().expect("an answer")
+    }
+
+    /// A layer directory whose manifest declares one tool.
+    fn tool_layer(root: &Path, name: &str, tool: &str, caps: &[&str]) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("a layer directory");
+        let caps: Vec<String> = caps.iter().map(|c| format!("\"{c}\"")).collect();
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "name = \"{name}\"\npurpose = \"p\"\nhooks = [\"tool_{tool}\"]\n\
+                 capabilities = [{}]\ncontract = 1\n\n[[tools]]\nname = \"{tool}\"\n\
+                 description = \"what {name} offers\"\n\nschema = {{ type = \"object\" }}\n",
+                caps.join(", ")
+            ),
+        )
+        .expect("plugin.toml");
+        write_wasm(&dir, &[&format!("tool_{tool}")], Act::answer(json!({})));
+    }
+
+    #[test]
+    fn declared_tools_are_read_without_loading_a_module_and_in_precedence_order() {
+        let t = TempDir::new("declared-tools");
+        // Two layers in the project scope — one declaring a tool, one that is only a pane — and a
+        // session layer that overrides the project's tool by name.
+        tool_layer(
+            &t.path().join("project/.letibot/plugins"),
+            "from-project",
+            "look",
+            &["read"],
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "a-pane",
+            &["pane_dashboard"],
+            Act::answer(json!({})),
+        );
+        tool_layer(
+            &t.path().join("session"),
+            "from-session",
+            "look",
+            &["read:~/.claude/projects"],
+        );
+        let declared = Stack::declared_tools(
+            Some(&t.path().join("session")),
+            Some(&t.path().join("project")),
+            Some(&t.path().join("user")),
+        );
+        // **The session layer first**: it is the one on top, so it is the declaration the model is
+        // offered. The pane layer contributes nothing, and nothing was compiled to find that out.
+        assert_eq!(declared.len(), 2, "{declared:?}");
+        assert_eq!(declared[0].layer, "from-session");
+        assert_eq!(declared[0].scope, Scope::Session);
+        assert_eq!(declared[0].tool.name, "look");
+        assert_eq!(
+            declared[0].capabilities,
+            vec![Capability::ReadPath("~/.claude/projects".into())]
+        );
+        assert_eq!(declared[1].layer, "from-project");
+        assert_eq!(declared[1].scope, Scope::Project);
+        assert_eq!(declared[1].tool.description, "what from-project offers");
+    }
+
+    #[test]
+    fn a_layer_whose_manifest_does_not_parse_is_skipped_by_the_scanner() {
+        // `discover` reports it; this scanner is the prompt's half and has no failure list.
+        let t = TempDir::new("declared-broken");
+        let dir = t.path().join("project/.letibot/plugins/broken");
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join(MANIFEST), "name = \"x\"\n").expect("a bad manifest");
+        let declared = Stack::declared_tools(None, Some(&t.path().join("project")), None);
+        assert!(declared.is_empty(), "{declared:?}");
     }
 
     #[test]

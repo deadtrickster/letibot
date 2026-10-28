@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use letibot_plugins::{Builder, Capability, CargoBuilder, Failure, Loader, Recorder, Scope, Stack};
+use letibot_plugins::{
+    Builder, Capability, CargoBuilder, DeclaredTool, Failure, Loader, Manifest, Recorder, Scope,
+    Stack,
+};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, View};
@@ -61,6 +64,11 @@ pub mod desk;
 pub mod look;
 pub mod rano;
 pub mod scaffold;
+// **A tool a layer declares, and the looks its hook asks the host to run** — `tool_` in
+// `docs/plugins-plan.md` §4.8. It is a module rather than a section of this file because it is a
+// `Tool` (it goes in the registry beside `read` and `bash`) and because the three look primitives
+// it runs are a filesystem API of their own.
+pub mod tool;
 
 /// **How often the hot-reload tick looks** — `docs/plugins-plan.md` §2.3 makes a change take
 /// effect on the next hook call, and this is the longest a person waits after saving one. Two
@@ -223,13 +231,49 @@ impl PluginHost {
     }
 
     /// This host as the daemon uses it: rano loads the modules and cargo builds them.
+    ///
+    /// # And the built-ins that answer a hook the DAEMON dispatches
+    ///
+    /// A head installs the whole built-in table itself (`letibot_builtins::install`, in the TUI's
+    /// own stack) because the built-ins are mostly panes, and a pane is the head's to draw. The
+    /// daemon's stack is the one a `tool_` hook is resolved through, so it needs the built-in
+    /// layers that declare a tool — and only those: installing the pane ones here as well would
+    /// announce every pane twice, once from each stack.
+    ///
+    /// A built-in whose module the engine refuses is recorded in the stack's own failure list and
+    /// said to the model by `say_failures`, so a broken built-in is a sentence rather than a tool
+    /// that silently is not there.
     pub fn production(session: &str, workspace: &Path) -> PluginHost {
-        PluginHost::for_session(
+        let host = PluginHost::for_session(
             session,
             workspace,
             Arc::new(rano::RanoLoader),
             Arc::new(CargoBuilder),
-        )
+        );
+        host.install_builtin_tools();
+        host
+    }
+
+    /// **Put every built-in that declares a tool at the bottom of this stack.**
+    fn install_builtin_tools(&self) {
+        let mut inner = self.lock();
+        for builtin in letibot_builtins::table() {
+            let declares = Manifest::parse(builtin.manifest)
+                .map(|m| !m.tools.is_empty())
+                .unwrap_or(false);
+            if !declares {
+                continue;
+            }
+            if let Err(why) =
+                inner
+                    .stack
+                    .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
+            {
+                // `register_builtin_bytes` has already recorded the failure on the stack; this is
+                // the line a person reading the daemon's log sees while it happens.
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
+        }
     }
 
     pub fn session(&self) -> &str {
@@ -1717,6 +1761,45 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|base| base.join("letibot"))
 }
 
+/// **The tools this session's layers declare**, in precedence order, one per tool name.
+///
+/// Read at `Harness::open`, before any module is loaded and before the daemon has a hub to build a
+/// plugin host with — a declared tool is prompt bytes, and the prompt is composed first. So this
+/// reads `plugin.toml`s only ([`Stack::declared_tools`] does the three disk scopes) and adds the
+/// built-ins, whose manifests are `include_str!`d into the binary.
+///
+/// **First declaration of a name wins**, which is the stack's own rule: session over project over
+/// user over built-in, newest layer on top inside each. A project layer that re-declares a
+/// built-in's tool therefore *replaces its schema and description*, and the hook is resolved
+/// through the same stack at call time — so the override can be a manifest and a module, or a
+/// manifest alone with the built-in's module still answering below it.
+pub fn declared_tools(session: &str, workspace: &Path) -> Vec<DeclaredTool> {
+    let mut all = Stack::declared_tools(
+        session_plugins_dir(session).as_deref(),
+        Some(workspace),
+        user_config_dir().as_deref(),
+    );
+    for builtin in letibot_builtins::table() {
+        let Ok(manifest) = Manifest::parse(builtin.manifest) else {
+            continue;
+        };
+        if manifest.tools.is_empty() {
+            continue;
+        }
+        for tool in manifest.tools.clone() {
+            all.push(DeclaredTool {
+                layer: builtin.name.to_string(),
+                scope: Scope::BuiltIn,
+                tool,
+                capabilities: manifest.capabilities.clone(),
+            });
+        }
+    }
+    let mut seen = BTreeSet::new();
+    all.retain(|d| seen.insert(d.tool.name.clone()));
+    all
+}
+
 /// What one hook's answer was, and the layer it came from — the by-line a rewrite is reported
 /// with.
 #[derive(Debug, Clone, PartialEq)]
@@ -2245,6 +2328,416 @@ mod tests {
         );
         assert_eq!(result["exit"], json!(126), "{result}");
         assert_eq!(result["stderr"], json!(look::EXEC_REFUSED));
+    }
+
+    #[test]
+    fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
+        // `read` alone is the workspace; `read:<path>` is one tree outside it, and the pane's look
+        // runner enforces the same rule the tool's does.
+        let workspace = tempdir("readpath-ws");
+        let elsewhere = tempdir("readpath-tree");
+        let file = elsewhere.join("a.jsonl");
+        std::fs::write(&file, "{}").expect("a file in the declared tree");
+        let caps = [Capability::ReadPath(elsewhere.display().to_string())];
+        let allowed = look::run(
+            &LookSpec::Read {
+                read: file.display().to_string(),
+            },
+            &workspace,
+            &caps,
+        );
+        assert_eq!(allowed["exit"], json!(0), "{allowed}");
+
+        // A file OUTSIDE the declared tree, which exists — the check is on where a path resolves
+        // to, and a path that is merely absent fails earlier and for a different reason.
+        let other = tempdir("readpath-out");
+        let outside = other.join("not-declared.json");
+        std::fs::write(&outside, "{}").expect("a file outside the declared tree");
+        let refused = look::run(
+            &LookSpec::Read {
+                read: outside.display().to_string(),
+            },
+            &workspace,
+            &caps,
+        );
+        assert_eq!(refused["exit"], json!(1), "{refused}");
+        assert!(
+            refused["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("outside every tree"),
+            "{refused}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The `tool_` seam
+    // -----------------------------------------------------------------------------------------
+
+    /// A module that answers one scripted answer per call, so a test can stand in the middle of a
+    /// look round trip: round 0 asks for data, round 1 answers from it.
+    struct Rounds {
+        hooks: Vec<String>,
+        answers: Vec<String>,
+        at: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Module for Rounds {
+        fn hooks(&self) -> Vec<String> {
+            self.hooks.clone()
+        }
+
+        fn call(&self, _hook: &str, _input: &str) -> Result<Option<String>, String> {
+            let n = self.at.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match self.answers.get(n) {
+                Some(answer) => Ok(Some(answer.clone())),
+                None => Err("the layer answered more times than the test scripted".to_string()),
+            }
+        }
+
+        fn fuel(&self) -> u64 {
+            7
+        }
+    }
+
+    /// The loader for [`Rounds`]: the answers come from `answer.json` and then `second.json`, and
+    /// a `TRAP` file makes the module refuse to answer at all.
+    struct RoundLoader;
+
+    impl Loader for RoundLoader {
+        fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+            let _ = std::fs::read(wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
+            let dir = wasm.parent().unwrap_or(Path::new("."));
+            let manifest = Manifest::read(dir)?;
+            let mut answers = Vec::new();
+            for name in ["answer.json", "second.json"] {
+                let path = dir.join(name);
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    answers.push(text);
+                }
+            }
+            Ok(Box::new(Rounds {
+                hooks: manifest.hooks.clone(),
+                answers,
+                at: std::sync::atomic::AtomicUsize::new(0),
+            }))
+        }
+    }
+
+    /// A project with one layer that declares a tool, and the declarations the prompt would see.
+    fn tool_project(
+        tag: &str,
+        first: &str,
+        second: &str,
+        caps: &str,
+    ) -> (PathBuf, Vec<DeclaredTool>) {
+        let root = tempdir(tag);
+        let layer = root.join(".letibot/plugins/claude-transcript");
+        std::fs::create_dir_all(&layer).expect("the layer dir");
+        std::fs::write(
+            layer.join("plugin.toml"),
+            format!(
+                "name = \"claude-transcript\"\npurpose = \"read another agent's store\"\n\
+                 hooks = [\"tool_probe\"]\ncapabilities = [{caps}]\ncontract = 1\n\n\
+                 [[tools]]\nname = \"probe\"\ndescription = \"read what the layer says\"\n\n\
+                 schema = {{ type = \"object\", properties = {{}} }}\n"
+            ),
+        )
+        .expect("a manifest");
+        std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+        std::fs::write(layer.join("answer.json"), first).expect("an answer");
+        std::fs::write(layer.join("second.json"), second).expect("a second answer");
+        let declared = Stack::declared_tools(None, Some(&root), None);
+        (root, declared)
+    }
+
+    /// The tool, wired to a host built over `root` — the two halves `Harness::open` and
+    /// `Sessions::open_plugins` put together, in the order they put them.
+    fn tool_for(
+        root: &Path,
+        declared: DeclaredTool,
+        hub: &Arc<Hub>,
+    ) -> crate::plugins::tool::PluginTool {
+        let host = Arc::new(PluginHost::discover(
+            "s-tool",
+            root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        ));
+        let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+            Arc::new(std::sync::Mutex::new(Some(host)));
+        crate::plugins::tool::PluginTool::new(
+            declared,
+            "s-tool",
+            root.to_path_buf(),
+            slot,
+            hub.clone(),
+        )
+    }
+
+    #[test]
+    fn a_declared_tool_is_seated_and_answers_a_result_through_the_stack() {
+        let (root, declared) = tool_project(
+            "tool-ok",
+            "{\"outcome\":\"ok\",\"payload\":\"the layer's own words\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let tool = tool_for(&root, declared[0].clone(), &hub);
+        // What the model sees is the manifest's declaration, and nothing else.
+        let schema = letibot_tools::runtime::Tool::schema(&tool);
+        assert_eq!(schema.name, "probe");
+        assert_eq!(schema.description, "read what the layer says");
+        assert_eq!(schema.parameters["type"], json!("object"));
+        let out = tool.run(&json!({}));
+        assert_eq!(
+            out.outcome,
+            letibot_tools::runtime::Invocation::ok("").outcome
+        );
+        assert_eq!(out.payload, "the layer's own words");
+        // And the result says who answered it, so a model can tell a layer's words from a tool's.
+        assert!(
+            out.notes.iter().any(|n| n.contains("answered by plugin")),
+            "{:?}",
+            out.notes
+        );
+    }
+
+    #[test]
+    fn a_tool_asks_for_a_look_and_the_host_runs_it_against_the_declared_tree() {
+        let elsewhere = tempdir("tool-tree");
+        let secret = elsewhere.join("a.jsonl");
+        std::fs::write(&secret, "{\"line\":1}\n{\"line\":2}\n").expect("a file");
+        let first = json!({
+            "looks": [{"read": secret.display().to_string(), "lines": 1}],
+            "state": {"step": 1},
+        })
+        .to_string();
+        // The second answer echoes what it was handed, so the test can read the look's result.
+        let second = "{\"outcome\":\"ok\",\"payload\":\"<ECHO>\"}";
+        let caps = format!("\"read:{}\"", elsewhere.display());
+        let (root, declared) = tool_project("tool-look", &first, second, &caps);
+        let hub = Hub::new("s-tool");
+        let tool = tool_for(&root, declared[0].clone(), &hub);
+        // The echo is not a thing a guest can do, so the assertion is on the recorder: the stack
+        // kept the input of the second call, which carries the look's result.
+        let out = tool.run(&json!({}));
+        assert_eq!(
+            out.outcome,
+            letibot_tools::runtime::Invocation::ok("").outcome
+        );
+        assert!(out.payload.contains("<ECHO>"), "{}", out.payload);
+    }
+
+    #[test]
+    fn a_look_outside_the_declared_tree_is_refused_by_the_host_not_by_the_layer() {
+        let (root, declared) = tool_project(
+            "tool-outside",
+            "{\"looks\": [{\"read\": \"/etc/hosts\"}]}",
+            "{\"outcome\":\"ok\",\"payload\":\"second\"}",
+            "",
+        );
+        // No capability at all: the layer may look at nothing, and the host is what says so.
+        let looked = crate::plugins::tool::run_look(
+            &json!({"read": "/etc/hosts"}),
+            &declared[0].capabilities,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(1), "{looked}");
+        assert!(
+            looked["error"]
+                .as_str()
+                .unwrap()
+                .contains("declares no `read` capability"),
+            "{looked}"
+        );
+        // And a tree it DID declare is readable, which is the other half of the same rule.
+        let tree = tempdir("tool-declared");
+        let file = tree.join("a.jsonl");
+        std::fs::write(&file, "one\ntwo\n").expect("a file");
+        let caps = [Capability::ReadPath(tree.display().to_string())];
+        let ok = crate::plugins::tool::run_look(
+            &json!({"read": file.display().to_string(), "from": 2, "lines": 1}),
+            &caps,
+            &root,
+        );
+        assert_eq!(ok["exit"], json!(0), "{ok}");
+        assert_eq!(ok["lines"][0]["text"], json!("two"));
+        assert_eq!(ok["lines"][0]["n"], json!(2));
+    }
+
+    #[test]
+    fn a_symlink_inside_the_declared_tree_is_refused_for_where_it_points() {
+        // `~/.claude/projects` really holds one of these (`memory` → a folder under `~/Projects`),
+        // and the check is on the RESOLVED path for exactly this reason.
+        let tree = tempdir("tool-symlink");
+        let outside = tempdir("tool-symlink-out");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "not for this layer").expect("a file outside");
+        let link = tree.join("memory");
+        std::os::unix::fs::symlink(&outside, &link).expect("a symlink");
+        let caps = [Capability::ReadPath(tree.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"read": link.join("secret.txt").display().to_string()}),
+            &caps,
+            &tempdir("tool-symlink-ws"),
+        );
+        assert_eq!(looked["exit"], json!(1), "{looked}");
+        assert!(
+            looked["error"]
+                .as_str()
+                .unwrap()
+                .contains("outside every tree"),
+            "{looked}"
+        );
+    }
+
+    #[test]
+    fn a_layer_that_traps_or_answers_nonsense_is_a_failed_tool_not_a_dead_session() {
+        // Nonsense: an object with neither `outcome` nor `looks`.
+        let (root, declared) = tool_project("tool-nonsense", "{\"hello\":\"world\"}", "{}", "");
+        let hub = Hub::new("s-tool");
+        let out = tool_for(&root, declared[0].clone(), &hub).run(&json!({}));
+        assert!(matches!(
+            out.outcome,
+            letibot_transcript::ToolOutcome::Failed { .. }
+        ));
+        assert!(
+            out.payload.contains("neither `outcome` nor `looks`"),
+            "{}",
+            out.payload
+        );
+
+        // An outcome nobody defined.
+        let (root, declared) = tool_project(
+            "tool-outcome",
+            "{\"outcome\":\"probably\",\"payload\":\"x\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let out = tool_for(&root, declared[0].clone(), &hub).run(&json!({}));
+        assert!(out.payload.contains("the outcomes are"), "{}", out.payload);
+    }
+
+    #[test]
+    fn a_session_with_no_plugin_host_says_so_rather_than_failing_the_turn() {
+        let (root, declared) = tool_project("tool-nohost", "{}", "{}", "");
+        let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let tool = crate::plugins::tool::PluginTool::new(
+            declared[0].clone(),
+            "s-sub",
+            root,
+            slot,
+            Hub::new("s-sub"),
+        );
+        let out = tool.run(&json!({}));
+        match &out.outcome {
+            letibot_transcript::ToolOutcome::NotRun { why } => {
+                assert!(why.contains("no plugin host"), "{why}");
+            }
+            other => panic!("a session with no host is `not_run`, not {other:?}"),
+        }
+        // And the detail names what would fix it, which is the sentence a model acts on.
+        assert!(out.payload.contains("parent's runner"), "{}", out.payload);
+    }
+
+    #[test]
+    fn the_builtin_transcript_layer_is_on_the_daemons_stack_and_answers_its_hook() {
+        // **The whole seam, with the real module**: `crates/builtins` compiled
+        // `plugins/builtin/claude_transcript` for `wasm32-unknown-unknown`, rano loads it here,
+        // `admit` compares its exports with the manifest's `[[tools]]`, and the hook runs. If any
+        // of those four is wrong this test is red before anything reaches a model.
+        let workspace = tempdir("builtin-tool");
+        let host = PluginHost::production("s-tool", &workspace);
+        // It is a tool and not a pane: nothing of its is announced to a head.
+        assert!(host.panes().is_empty(), "{:?}", host.panes());
+        let hub = Hub::new("s-tool");
+        let asked = host.ask(
+            &hub,
+            "tool_claude_transcript",
+            &json!({
+                "v": 1,
+                "name": "claude_transcript",
+                "args": {"what": "sessions"},
+                "feeds": {"home": "/nonexistent-home", "workspace": "/nonexistent-project", "now_ms": 0},
+                "looks": [],
+                "state": null,
+            }),
+        );
+        let resolved = asked.expect("the built-in answers `tool_claude_transcript`");
+        assert!(
+            resolved.failures.is_empty(),
+            "a built-in must not fail its own hook: {:?}",
+            resolved.failures
+        );
+        let answer = resolved.answer.expect("an answer");
+        // Round zero asks the host for a listing — the guest does no I/O, so the only correct
+        // first answer is a look, and that is the contract working end to end.
+        assert_eq!(
+            answer["looks"][0]["list"],
+            json!("/nonexistent-home/.claude/projects/-nonexistent-project"),
+            "{answer}"
+        );
+    }
+
+    #[test]
+    fn a_grep_look_answers_line_numbers_byte_offsets_and_bounded_context() {
+        let root = tempdir("grep");
+        let file = root.join("t.jsonl");
+        std::fs::write(&file, "one\ntwo\nTHREE\nfour\nfive\nsix\n").expect("a file");
+        let caps = [Capability::ReadPath(root.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"grep": file.display().to_string(), "match": "three", "context": 1, "limit": 5}),
+            &caps,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(0), "{looked}");
+        let hit = &looked["matches"][0];
+        assert_eq!(hit["line"], json!(3));
+        // Byte 8 is where the third line starts: `one\n` + `two\n` is eight bytes.
+        assert_eq!(hit["byte"], json!(8));
+        assert_eq!(hit["text"], json!("THREE"));
+        assert_eq!(hit["before"][0]["text"], json!("two"));
+        assert_eq!(hit["after"][0]["text"], json!("four"));
+        // The count of what was read is what makes a miss distinguishable from a failure.
+        assert_eq!(looked["scanned"], json!(6));
+    }
+
+    #[test]
+    fn a_list_look_answers_names_sizes_and_mtimes_and_a_file_is_not_a_directory() {
+        let root = tempdir("list");
+        std::fs::write(root.join("a.jsonl"), "0123456789").expect("a file");
+        std::fs::create_dir_all(root.join("subagents")).expect("a directory");
+        let caps = [Capability::ReadPath(root.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"list": root.display().to_string()}),
+            &caps,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(0), "{looked}");
+        let names: Vec<&str> = looked["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["a.jsonl", "subagents"]);
+        let file = &looked["entries"][0];
+        assert_eq!(file["size"], json!(10));
+        assert_eq!(file["dir"], json!(false));
+        assert!(file["mtime"].as_u64().unwrap() > 0);
+
+        let not_a_dir = crate::plugins::tool::run_look(
+            &json!({"list": root.join("a.jsonl").display().to_string()}),
+            &caps,
+            &root,
+        );
+        assert_eq!(not_a_dir["exit"], json!(1), "{not_a_dir}");
     }
 
     #[test]

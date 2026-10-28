@@ -13,7 +13,7 @@
 //!
 //! | piece | is |
 //! |---|---|
-//! | [`Manifest`] | `plugin.toml`: the name, the one-line purpose, the hooks it exports, the capabilities it asks for, the contract it speaks |
+//! | [`Manifest`] | `plugin.toml`: the name, the one-line purpose, the hooks it exports, the capabilities it asks for, the tools it offers the model, the contract it speaks |
 //! | [`Stack`] | the four scopes resolved into one order — session over project over user over built-in — and [`Stack::call`], the answer protocol |
 //! | [`Recorder`] | the last 32 inputs per hook, which is what a replay can be run over |
 //! | [`gate`] | build, load, shadow, replay, report: the dry run every change takes before it answers |
@@ -45,6 +45,17 @@
 //! The order of the three markers is fixed — `mask`, then `below`, then `pass` — because an answer
 //! carrying two of them has to mean one thing, and the strongest statement is the one that gets
 //! to speak.
+//!
+//! # Two spellings this crate added after the pane, and what each is for
+//!
+//! * **`tool_<name>`** — a layer that declares `[[tools]]` offers the model a tool, and the export
+//!   `tool_<name>` answers it. The declaration is the prompt bytes (name, one line, JSON Schema)
+//!   and [`Manifest::admit`] refuses a layer whose manifest names a tool its exports do not
+//!   answer. Where the host seats it and what the hook's input and answer are is
+//!   `crates/harnessd/src/plugins/tool.rs`; this crate owns only the declaration and the check.
+//! * **`read:<path>`** — [`Capability::ReadPath`], one tree outside the workspace, named as a
+//!   person wrote it down. `read` is unchanged and still means the workspace. The manifest line is
+//!   the approval, and the host's look runner is what makes a module unable to reach past it.
 
 use std::path::Path;
 
@@ -59,9 +70,9 @@ mod stack;
 mod testing;
 
 pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
-pub use manifest::{Capability, Manifest, Scope};
+pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
-pub use stack::{Candidate, Failure, Layer, Resolved, Stack};
+pub use stack::{Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
 
 /// One plugin module, as the stack sees it.
 ///
