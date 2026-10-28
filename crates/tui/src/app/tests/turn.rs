@@ -1917,6 +1917,101 @@ fn a_waiting_list_is_drawn_while_no_turn_runs() {
     assert!(a.turn_status(120).is_empty(), "quiet draws nothing");
 }
 
+/// **A child is named the way the subagents pane names it, and a kind that repeats is counted** —
+/// the operator's screen, 2026-10-27:
+///
+/// ```text
+/// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
+/// ```
+///
+/// Every fact in it is right — one monitor, three children — and the line is unusable: a session id
+/// is not a name a person can hold on to, and three of them are a wall that pushes the monitor off
+/// a narrow row. So the child is `child fix-login · …<tail>` (the pane's own
+/// [`crate::app::child_name`]), and three of a kind is `3 subagents`.
+///
+/// **One of a kind keeps the singular spelling**, which is the half a count must not swallow: a
+/// reader who sees `1 subagent` learns nothing about *which*, and the id is what they act on.
+#[test]
+fn a_waiting_list_names_its_children_and_counts_what_repeats() {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    let child = |a: &mut App, seq: u64, id: &str, slug: &str| {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::Subagent {
+                subagent_id: id.into(),
+                state: "running".into(),
+                prompt: "port the picker".into(),
+                role: "coder".into(),
+                task: String::new(),
+                model: String::new(),
+                answer: None,
+                slug: slug.into(),
+            },
+        )));
+    };
+    let waiting = |waiting_on: Vec<Waiting>| SessionEvent::ActivityChanged {
+        activity: Activity::of(waiting_on),
+    };
+
+    // The reported case: one monitor, three children.
+    let mut a = app();
+    let kids = [
+        (
+            "s-1793010881933039000-sub-1793225939092557000",
+            "port the picker",
+        ),
+        (
+            "s-1793010881933039000-sub-1793225939285082000",
+            "port the table",
+        ),
+        (
+            "s-1793010881933039000-sub-1793225939482158000",
+            "port the tree",
+        ),
+    ];
+    for (i, (id, slug)) in kids.iter().enumerate() {
+        child(&mut a, i as u64 + 1, id, slug);
+    }
+    a.apply(ServerFrame::Event(env(
+        10,
+        waiting(
+            std::iter::once(Waiting::Monitor("letibot-gate-after-wired".into()))
+                .chain(kids.iter().map(|(id, _)| Waiting::Child((*id).into())))
+                .collect(),
+        ),
+    )));
+    let line = a.turn_status(200);
+    assert!(
+        line.contains("waiting on: monitor letibot-gate-after-wired · 3 subagents"),
+        "the monitor named, the children counted: {line:?}"
+    );
+    // Nothing of the ids the report complained about survives: they name nothing a person can use.
+    assert!(
+        !line.contains("sub-1793"),
+        "a session id is not a name: {line:?}"
+    );
+
+    // **One child is named, not counted** — its slug and the short id, exactly as the pane draws it.
+    a.apply(ServerFrame::Event(env(
+        11,
+        waiting(vec![Waiting::Child(kids[0].0.into())]),
+    )));
+    let line = a.turn_status(200);
+    assert_eq!(
+        line.trim_end(),
+        "waiting on: child port the picker · …92557000",
+        "the pane's own name for a child"
+    );
+
+    // A child nobody named still has a name here — its short id — rather than an empty gap.
+    a.apply(ServerFrame::Event(env(
+        12,
+        waiting(vec![Waiting::Child("s-unheard-of-child".into())]),
+    )));
+    let line = a.turn_status(200);
+    assert_eq!(line.trim_end(), "waiting on: child …of-child");
+}
+
 /// **The daemon's `Turn` is the PROMPT, and the row stays up across a round boundary because of
 /// it** (R55, R51 §3).
 ///

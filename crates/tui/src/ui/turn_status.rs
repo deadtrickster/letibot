@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::ui::render::{row, trim_to, visible_width};
+use letibot_sessionlog::activity::Waiting;
 use rano::agent::turn_status::{Prefill, SLOW_AFTER_MS, TurnStatus};
 use rano::render::{Line, Role};
 
@@ -104,8 +105,23 @@ impl App {
     ///
     /// **Empty for a quiet session**, and empty for a daemon older than 52 — which is what makes
     /// this invisible to a head talking to one.
+    ///
+    /// # The words are the operator's report, measured 2026-10-27
+    ///
+    /// The line was [`letibot_sessionlog::activity::Activity::line`]'s — the daemon's labels,
+    /// joined — and the operator's screen said:
+    ///
+    /// ```text
+    /// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
+    /// ```
+    ///
+    /// Every fact in it is right and the line is useless: a session id is not a name a person can
+    /// use — the subagents pane calls that child `fix-login · …14688401` — and the three of them
+    /// push the monitor, the one thing the row was drawn for, off the end of a narrow screen. So
+    /// [`App::waiting_words`] names a child the way the pane names it and counts a kind that
+    /// repeats, and the singular forms (`job j8032`, `monitor ci`, `child …`) are unchanged.
     fn activity_line(&self, w: usize) -> Line {
-        let mut text = self.activity.line();
+        let mut text = self.waiting_words();
         // **A switch waiting for a turn reads here too**, for the one case where it is true of an
         // idle session: a head that attached mid-turn folds the daemon's `model_switch_pending`
         // out of the replayed log, and for that moment the switch is both pending and nothing is
@@ -124,6 +140,54 @@ impl App {
         line.spans
             .push(rano::render::Span::role(trim_to(&text, w), Role::Faint));
         line
+    }
+
+    /// **The daemon's list in a person's words** — the whole of [`App::activity_line`]'s text, and
+    /// the one place that decides how a [`Waiting`] is spelled on the screen.
+    ///
+    /// Two rules, and both are the operator's report rather than a preference:
+    ///
+    /// * **A child is named, not numbered** — [`App::child_label`], which is the subagents pane's
+    ///   own [`crate::app::child_name`]: the slug the model gave it, then the short id. A session
+    ///   id is forty-odd characters of digits that name nothing a person can hold on to.
+    /// * **A kind that repeats is counted** — `3 subagents`, `2 monitors`. The count is the fact a
+    ///   reader acts on (*how many are still out*), and listing the ids is the wall the operator
+    ///   reported. One of a kind keeps the singular spelling this line has always had.
+    ///
+    /// The order is the daemon's (`Waiting::rank`, which
+    /// [`Activity::of`](letibot_sessionlog::activity::Activity::of) fixes), and grouping
+    /// keeps it: the same set of facts must spell the same line here as on the wire.
+    fn waiting_words(&self) -> String {
+        let list = self.activity.waiting_on();
+        if list.is_empty() {
+            return String::new();
+        }
+        // Grouped by KIND in first-seen order, which is the daemon's order — a run of one kind is
+        // what the count is about, and a `Waiting` the daemon sent out of order still groups.
+        let mut groups: Vec<(&'static str, Vec<&Waiting>)> = Vec::new();
+        for w in list {
+            match groups.iter_mut().find(|(k, _)| *k == w.kind()) {
+                Some((_, group)) => group.push(w),
+                None => groups.push((w.kind(), vec![w])),
+            }
+        }
+        let parts: Vec<String> = groups
+            .iter()
+            .map(|(_, group)| match group.as_slice() {
+                [one] => self.one_waiting(one),
+                many => format!("{} {}", many.len(), plural(many[0])),
+            })
+            .collect();
+        format!("waiting on: {}", parts.join(" · "))
+    }
+
+    /// One entry of the list, named: a child by the name the subagents pane gives it, everything
+    /// else by the daemon's own label (`job j8032`, `monitor ci`, `ask adj-s1-0001`, `turn`).
+    fn one_waiting(&self, w: &Waiting) -> String {
+        match w {
+            Waiting::Child(id) => format!("child {}", self.child_label(id)),
+            _ => w.label(),
+        }
     }
 
     /// **The status row whole: the turn's words, then a progress, then the transients** — and what
@@ -352,5 +416,25 @@ impl App {
             && self.turn_generating()
             && self.last_event_at != 0
             && self.now_ms.saturating_sub(self.last_event_at) > SLOW_AFTER_MS
+    }
+}
+
+/// **A kind's plural, for the count** — `3 subagents`, `2 monitors`, `2 jobs`.
+///
+/// **A child is a `subagent` when there is more than one of it**, and the daemon's word is `child`:
+/// the singular stays `child <name>` because that is the form this line has always had and the form
+/// the wire's own [`Waiting::label`] spells, while the count is a number of *things out there* —
+/// the subagents pane's word, the composer's `held: 2 subagents`, the attention line's. Written as
+/// a `match` over the enum rather than over [`Waiting::kind`]'s string so a new kind cannot arrive
+/// without a word for it.
+fn plural(w: &Waiting) -> &'static str {
+    match w {
+        Waiting::Turn => "turns",
+        Waiting::Calls => "calls",
+        Waiting::Delivery => "deliveries",
+        Waiting::Job(_) => "jobs",
+        Waiting::Monitor(_) => "monitors",
+        Waiting::Child(_) => "subagents",
+        Waiting::Ask(_) => "asks",
     }
 }
