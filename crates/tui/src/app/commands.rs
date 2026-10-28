@@ -3,6 +3,24 @@
 
 use super::*;
 
+/// **The words out of a `command_todo` answer** — `Some(content)` when the layer asked the host to
+/// add a row, and `None` for every other answer: a pass, a malformed act, an act name this head
+/// does not perform. **The one name is the trust boundary** — `plugin.toml` declares `add_todo` in
+/// its `actions`, and the head performs nothing it has not heard of, so a layer that answered
+/// `{"act": {"name": "run_shell"}}` gets a line nothing happens to rather than a shell.
+pub(crate) fn add_todo_words(answer: serde_json::Value) -> Option<String> {
+    if answer.get("act")?.get("name")?.as_str()? != "add_todo" {
+        return None;
+    }
+    let content = answer
+        .get("act")?
+        .get("args")?
+        .get("content")?
+        .as_str()?
+        .trim();
+    (!content.is_empty()).then(|| content.to_string())
+}
+
 impl App {
     /// A fold changes how many lines every cached block renders to, so the history
     /// buffer and every block cache are stale at once.
@@ -911,6 +929,37 @@ impl App {
             Some((v, a)) => (v, a.trim()),
             None => (rest, ""),
         };
+        // **`/todo title:"…" body:"…"` — and `/todo buy milk` — ADDS a row, and the words are the
+        // `todo` LAYER's to parse.** The operator: *"do a plugin so that `/todo title:\"werwer\"
+        // body:\"blabla\"` adds todo"* (2026-10-28). The split is `docs/plugins-plan.md`'s: the
+        // guest reads the line and answers an act, the head performs it — so what `/todo` accepts
+        // is a project's policy, and the write stays the head's.
+        //
+        // Only the four verbs this head owns are kept back; everything else is offered to the
+        // layer, and the layer passing (`done 2`, an empty line, a line it cannot read) leaves the
+        // line to the head exactly as it was.
+        if !matches!(verb, "done" | "rm" | "postpone" | "resume") {
+            let asked = {
+                let host = self.sessions_host.borrow();
+                host.as_ref()
+                    .map(|h| h.call("command_todo", &serde_json::json!({"line": rest})))
+            };
+            if let Some(content) = asked.and_then(|r| r.answer).and_then(add_todo_words) {
+                if let Some(why) = title_refusal(&content) {
+                    self.say(&why);
+                    return None;
+                }
+                mine.push(letibot_sessionlog::event::TodoEntry {
+                    content,
+                    status: letibot_sessionlog::event::TodoStatus::Pending,
+                    by: letibot_sessionlog::event::TodoBy::Operator,
+                    when: None,
+                    needs: Vec::new(),
+                });
+                self.echo_operator_todos(mine.clone());
+                return Some(Action::SetOperatorTodos { items: mine, moved });
+            }
+        }
         match (verb, arg) {
             ("done" | "rm", n) if !n.is_empty() => {
                 let Ok(at) = n.parse::<usize>() else {

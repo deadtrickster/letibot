@@ -131,6 +131,18 @@ struct Answered {
 }
 
 impl Host {
+    /// **One hook through this host's stack** — the seam a slash command asks a layer by
+    /// (`command_todo`), with the same stack the pane draws from: one stack per head, so a layer
+    /// the person approved for the pane is the layer that answers their command.
+    ///
+    /// The answer is the raw [`Resolved`](letibot_plugins::Resolved): what an `act` means is the
+    /// CALLER's to validate, because the caller is what performs it. The head understands exactly
+    /// one act name (`add_todo`) and ignores every other, which is the half of the trust story
+    /// `plugin.toml`'s `actions` is the other end of.
+    pub(crate) fn call(&self, hook: &str, input: &serde_json::Value) -> letibot_plugins::Resolved {
+        self.stack.call(hook, input)
+    }
+
     /// The failure the last call recorded, taken — the seam [`App::take_sessions_failure`] reads
     /// through, and the one a test uses to see that a broken layer was SEEN rather than skipped.
     #[cfg(test)]

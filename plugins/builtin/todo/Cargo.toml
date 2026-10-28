@@ -1,0 +1,28 @@
+[package]
+name = "letibot-builtin-todo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the operator's `/todo`: a row added from the composer, answered as an act"
+
+# **Not a member of letibot's workspace, deliberately** — the same shape as its neighbour
+# `plugins/builtin/sessions`: this crate is a GUEST, built by `crates/builtins`' build script for
+# `wasm32-unknown-unknown`, and its module is `include_bytes!`d into the binary. The root manifest
+# excludes `plugins` so the workspace never builds a wasm ABI's `cdylib` for the host.
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link, so the parse
+# of `title:"…" body:"…"` is tested natively, with no engine in the way.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The guest ABI v1 — the input region, the answer arena and the result block.
+letibot-guest-abi = { path = "../abi" }
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

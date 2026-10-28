@@ -1,0 +1,13 @@
+name = "todo"
+purpose = "the operator's `/todo`: a row added from the composer, with a title and a body"
+# **`command_<verb>`** is the prefix the host reserves for a slash command a layer owns: the head
+# asks this hook for `/todo …` before it answers the line itself, and `pass` leaves the line to the
+# head's own verbs (`done`, `rm`, `postpone`, `resume`).
+hooks = ["command_todo"]
+# Nothing it reads, nothing it runs: the line is handed to it and it answers with words.
+capabilities = []
+# **The one act the host performs for it.** A layer cannot make the head do anything it has not
+# named here, and the head understands exactly one name — `add_todo` — so the manifest and the
+# host are two ends of the same sentence.
+actions = ["add_todo"]
+contract = 1
