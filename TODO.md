@@ -190,6 +190,64 @@ the target byte-identical. **Still open?** `grep -n "ssh-{short}.sock" crates/to
 
 ---
 
+## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **OPEN, filed 2026-10-28, operator's ask**
+
+The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
+has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
+`~/Projects/firecode`, and `/dev/kvm` with an ACL for the operator's user (checked 2026-10-28;
+`firecode ls` answers). What is missing is on letibot's side: `Placement` is either `Firecode`
+(local, this Mac) or a remote host, and `cli.rs` says a remote session is not in a VM.
+
+**Build**: a combined placement, `leticode --host lab2x1 --vm` — `firecode up`/`in` driven over the
+session's existing ssh link (login shell, so `~/bin` is on `PATH`), the session's tools inside that
+guest, the VM measured as the session's boundary so D16 admits builds and tests in it, and the
+commits coming back the way remote placements' do. Then `leticode_start {host, vm: true}` in the
+bridge. This is also where Docker for sessions belongs (the operator, 2026-10-27: *"firecode suites
+better here"*): lab2x1's `dockerd` is rootful, so the socket is root on the host, and a container
+inside a guest stays inside a boundary.
+
+**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
+guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
+**Still open?** `leticode --help | grep -A2 -- '--host'` still says a remote session is not in a VM.
+
+---
+
+## R101 — Three placements started together on one host: two failed the bundle hand-off, though R99 landed — **OPEN, filed 2026-10-28**
+
+MEASURED 2026-10-27 ~20:05: R2, WJ and TF were started on lab2x1 within a minute, by daemons that
+already had R99 (one ssh master per daemon, streamed verified writes). All three failed with
+`daemon_start_failed: placing this session on lab2x1: … handing the bundle to the remote
+repository`; R2 restarted alone placed fine. So R99's own **Done when** (six at once) is not met:
+whatever the hand-off shares between daemons — the remote mirror repository, a lock, the
+`incoming.bundle` name — still collides. Find it with a forcing test (N concurrent placements of
+the same and of different worktrees), fix it, and only then close R99.
+**Still open?** start three packages on lab2x1 at once.
+
+---
+
+## R102 — `letibot --daemons` and `--stop` cannot see a daemon the bridge started — **OPEN, filed 2026-10-28**
+
+MEASURED 2026-10-27 on the Mac: about forty `harnessd` processes were running (every one started by
+a `letibot-mcp` bridge, the operator's sessions' and the orchestrator's), and `letibot --daemons`
+answered *"no daemons recorded"*: a bridge starts `harnessd` without writing the launcher's record.
+So the operator's own tools are blind to most of what runs, and the launcher's liveness test
+(`every_live_daemon_agrees_with_the_boxs_socket_table`) has nothing to compare against and fails
+under `LETIBOT_REQUIRE_APPARATUS=1` — the one red of the 2026-10-27 Mac gate. The bridge should
+write the same record the launcher does (one writer for it, not a copy).
+**Still open?** start a session with `leticode_start`, then `letibot --daemons`.
+
+---
+
+## R103 — `letibot-mcp wait` on a session whose daemon never started does not return — **OPEN, filed 2026-10-28**
+
+MEASURED 2026-10-27: WJ's and TF's daemons failed at placement (R101) and their sessions never ran
+a round, and `wait --until attention` on each sat for an hour instead of exiting 20 (*the session
+failed*). `leticode_status` said `idle`, zero rounds, and `leticode_events` held one
+`daemon_start_failed` warning — the fact `wait` should exit on.
+**Still open?** `wait` on a session whose only event is `daemon_start_failed`.
+
+---
+
 ## The review of 2026-10-12 — five read-only reviews of main at `50b3e55`, filed as R89–R93
 
 The operator's ask: *"start review subagents - we need to find edge cases, ux inconsistencies,
