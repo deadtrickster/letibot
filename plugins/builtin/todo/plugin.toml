@@ -2,12 +2,19 @@ name = "todo"
 purpose = "the operator's `/todo`: a row added from the composer, with a title and a body"
 # **`command_<verb>`** is the prefix the host reserves for a slash command a layer owns: the head
 # asks this hook for `/todo …` before it answers the line itself, and `pass` leaves the line to the
-# head's own verbs (`done`, `rm`, `postpone`, `resume`).
+# head's own verbs (`done`, `rm`, `postpone`, `resume`, `when`).
 hooks = ["command_todo"]
-# Nothing it reads, nothing it runs: the line is handed to it and it answers with words.
+#
+# **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
+# fetches nothing, so the words it answers with are all it can produce.
 capabilities = []
-# **The one act the host performs for it.** A layer cannot make the head do anything it has not
-# named here, and the head understands exactly one name — `add_todo` — so the manifest and the
-# host are two ends of the same sentence.
+# **`actions = ["add_todo"]` is the other half**: a layer may answer any JSON it likes, and the head
+# performs exactly this one name and ignores every other, so the list is the whole of what an answer
+# can cause. Together the two make the sentence this layer is: *it may say anything and cause one
+# thing, and that one thing is a row on the operator's own half of the board.*
+#
+# No `feeds` key: a `command_` hook is handed the head's command feeds whole (`docs/plugins-plan.md`
+# §4.9, "the feeds a `command_` hook is handed") — the `feeds` key's vocabulary is a PANE's, and a
+# command's set is not that set. Nothing here reads them yet.
 actions = ["add_todo"]
 contract = 1

@@ -284,9 +284,11 @@ pub struct App {
     /// green on one whose was not). A test sets this field; production reads the environment once,
     /// in `App::new`.
     pub(crate) home: String,
-    /// **The head's stack for the session list's pane** — the built-in `sessions` layer and
-    /// whatever a project or the operator put above it (`crate::app::sessions_pane`). Built on the
-    /// first draw and kept: discovering layers reads the disk.
+    /// **The head's stack** — the built-in `sessions` and `todo` layers and whatever a project or
+    /// the operator put above them (`crate::app::sessions_pane`). Built on the first draw of the
+    /// session list OR the first `/todo` that is not one of the head's own verbs — whichever comes
+    /// first, because both ask the same stack (`App::plugin_host`) — and kept: discovering layers
+    /// reads the disk, and the modules compile.
     pub(crate) sessions_host: std::cell::RefCell<Option<crate::app::sessions_pane::Host>>,
     /// **Which rows the person has folded or opened**, by row id — the session list's fold state,
     /// which belongs to the host and not to the layer (`docs/plugins-plan.md` §7 step 10): a fold

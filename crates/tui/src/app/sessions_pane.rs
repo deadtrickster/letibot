@@ -131,16 +131,38 @@ struct Answered {
 }
 
 impl Host {
-    /// **One hook through this host's stack** — the seam a slash command asks a layer by
-    /// (`command_todo`), with the same stack the pane draws from: one stack per head, so a layer
-    /// the person approved for the pane is the layer that answers their command.
+    /// **One `command_` hook through this host's stack** — the seam a slash command asks a layer
+    /// by, over the same stack the pane draws from: one stack per head, so a layer the person
+    /// approved for the pane is the layer that answers their command.
+    ///
+    /// The hook name is built from the VERB (`todo` → `command_todo`), because the prefix is the
+    /// whole of what makes a verb a layer's: a second command a layer owns is a second word here
+    /// and no new mechanism, the same way a pane's next act is one more word in `actions`.
     ///
     /// The answer is the raw [`Resolved`](letibot_plugins::Resolved): what an `act` means is the
     /// CALLER's to validate, because the caller is what performs it. The head understands exactly
     /// one act name (`add_todo`) and ignores every other, which is the half of the trust story
     /// `plugin.toml`'s `actions` is the other end of.
-    pub(crate) fn call(&self, hook: &str, input: &serde_json::Value) -> letibot_plugins::Resolved {
-        self.stack.call(hook, input)
+    ///
+    /// **A layer that failed is kept, once.** The stack already skipped it and asked the layer
+    /// below (§1, principle 4: fail down, loudly), and `Resolved::failures` carries the sentence —
+    /// but the caller that says it is the one with a screen, and by the time a command's answer is
+    /// read the `Resolved` may already be dropped. So the first failure also lands in `problem`,
+    /// where [`App::take_sessions_failure`] finds it, exactly as a pane's does.
+    pub(crate) fn command(
+        &self,
+        verb: &str,
+        input: &serde_json::Value,
+    ) -> letibot_plugins::Resolved {
+        let hook = format!("command_{verb}");
+        let resolved = self.stack.call(&hook, input);
+        if let (Some(said), Ok(mut slot)) = (resolved.failures.first(), self.problem.lock()) {
+            *slot = Some(format!(
+                "a plugin layer could not answer `/{verb}`, so it was answered from below it: \
+                 {said}"
+            ));
+        }
+        resolved
     }
 
     /// The failure the last call recorded, taken — the seam [`App::take_sessions_failure`] reads
@@ -164,7 +186,12 @@ impl Host {
         }
     }
 
-    fn build(session: &str, workspace: &Path) -> Host {
+    /// **A host for this session's folder, with the binary's own layers at the bottom.**
+    ///
+    /// One door for the head ([`App::plugin_host`]) and public in the crate because a test stands
+    /// the real build in for a head whose folder it cannot create: `docs/plugins-plan.md` §7 step
+    /// 10's built-in scope is only proved by the module this binary carries.
+    pub(crate) fn build(session: &str, workspace: &Path) -> Host {
         let mut stack = Stack::discover(
             session_plugins_dir(session).as_deref(),
             Some(workspace),
@@ -250,14 +277,20 @@ impl Host {
 /// with a sentence rather than shipping one), so a failure here means a module the engine refused
 /// at load — which a person has to be told, because what they will see otherwise is a list that
 /// quietly stopped being the layer's.
+///
+/// **The sentence names no particular question**, because it now reaches two: the session list
+/// (which the head then draws itself) and a slash command (`/todo`, which the head then answers in
+/// its own words). It used to say *so the session list is drawn by the head itself*, which was true
+/// while the picker was the only reader of this slot — and would have been a lie on the screen of
+/// somebody typing `/todo` in a binary whose wasm is broken.
 fn install_builtins(stack: &mut Stack) -> Option<String> {
     let failed = letibot_builtins::install(stack);
     if failed.is_empty() {
         return None;
     }
     Some(format!(
-        "this binary's built-in plugin layer could not be loaded — {} — so the session list is \
-         drawn by the head itself",
+        "this binary's built-in plugin layer could not be loaded — {} — so whatever it answers is \
+         answered by the head itself",
         failed.join("; ")
     ))
 }
@@ -284,10 +317,19 @@ fn user_config_dir() -> Option<PathBuf> {
 }
 
 impl App {
-    /// **The session list, from the plugin** — `None` when there is no layer to ask, when its
-    /// answer is not a list this head can draw, or when it could not be trusted enough to draw it.
-    /// Each of those is the head's own list's cue.
-    pub(crate) fn sessions_list(&self, w: usize) -> Option<List> {
+    /// **The head's plugin stack, built for this session's folder if it is not there yet** — one
+    /// door, so the picker and a slash command ask the SAME stack.
+    ///
+    /// It was the picker's alone (`sessions_list` built it on the first draw), and that was the
+    /// hole this package found: `/todo` in a head that had never opened the list found no host and
+    /// answered in the head's own words, so the built-in `todo` layer was installed and never
+    /// asked — a layer that answers only after somebody presses a key that has nothing to do with
+    /// it. The command asks for the host now, and the cost is the one the picker already paid:
+    /// discovery reads the disk and the modules compile, once per head per folder.
+    ///
+    /// A head that moves to another folder gets another stack (`Host::workspace` is what the
+    /// staleness is measured against), because a project's layers belong to the project.
+    pub(crate) fn plugin_host(&self) -> std::cell::Ref<'_, Option<Host>> {
         let workspace = self.workspace_path();
         {
             let mut slot = self.sessions_host.borrow_mut();
@@ -299,7 +341,14 @@ impl App {
                 *slot = Some(Host::build(&self.session_id, &workspace));
             }
         }
-        let slot = self.sessions_host.borrow();
+        self.sessions_host.borrow()
+    }
+
+    /// **The session list, from the plugin** — `None` when there is no layer to ask, when its
+    /// answer is not a list this head can draw, or when it could not be trusted enough to draw it.
+    /// Each of those is the head's own list's cue.
+    pub(crate) fn sessions_list(&self, w: usize) -> Option<List> {
+        let slot = self.plugin_host();
         let host = slot.as_ref()?;
         host.reader()?;
         let declared = host.declared();
@@ -339,10 +388,11 @@ impl App {
     /// **The sentence a layer's failure owes the person**, once — taken by whoever opens the list.
     ///
     /// Taken rather than drawn: the picker is a list, and a failure line in a list of sessions is a
-    /// row nobody asked for. It goes where every other one-off sentence in this head goes. Two
-    /// kinds arrive here and each says what it is: a layer that failed a call (and was skipped for
-    /// the one below) and a built-in that would not load at all (and was skipped for the head's own
-    /// list) — see [`install_builtins`].
+    /// row nobody asked for. It goes where every other one-off sentence in this head goes. Three
+    /// kinds arrive here and each says what it is: a layer that failed a pane call (and was skipped
+    /// for the one below), a layer that failed a `/todo` (same, said at the command —
+    /// `Host::command`), and a built-in that would not load at all (and was skipped for the head's
+    /// own words) — see [`install_builtins`].
     pub(crate) fn take_sessions_failure(&mut self) -> Option<String> {
         let slot = self.sessions_host.get_mut().as_ref()?;
         slot.problem.lock().ok().and_then(|mut p| p.take())
@@ -769,6 +819,76 @@ mod tests {
         );
     }
 
+    /// **The built-in `todo` layer is installed and answers the head's command** — the other half
+    /// of §7 step 10, and the one a person actually types: `/todo title:"x" body:"y"` is a row
+    /// because this binary carries a module that reads the line, and not because the head guessed.
+    ///
+    /// `install_builtins` is the function under test as much as the module is: the table is
+    /// generated from `plugins/builtin/` at build time, so a layer that was added to the tree and
+    /// not to the binary — or a manifest whose `hooks` and exports disagree, which
+    /// `Manifest::admit` refuses — fails HERE, with the layer named, rather than as a command that
+    /// quietly answers in the head's own words.
+    #[test]
+    fn the_builtin_todo_layer_is_installed_and_answers_the_heads_command() {
+        let tmp = std::env::temp_dir().join(format!("letibot-head-todo-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).expect("a temp dir");
+        let host = Host::build("s-none", &tmp);
+        assert!(
+            host.stack.failures().is_empty(),
+            "nothing failed to load: {:?}",
+            host.stack.failures()
+        );
+        let layer = host
+            .stack
+            .layers()
+            .iter()
+            .find(|l| l.id == "b-todo")
+            .expect("the built-in `todo` layer is in the stack");
+        assert!(
+            layer.manifest.hooks.iter().any(|h| h == "command_todo"),
+            "and it declares the hook the head asks: {:?}",
+            layer.manifest.hooks
+        );
+        assert_eq!(
+            layer.manifest.actions,
+            vec!["add_todo".to_string()],
+            "the one act the head performs, declared where a reviewer reads it"
+        );
+        assert!(
+            layer.manifest.capabilities.is_empty(),
+            "it writes nothing itself — the head is what writes"
+        );
+
+        let resolved = host.command(
+            "todo",
+            &json!({"line": "title:\"x\" body:\"y\"", "feeds": {}}),
+        );
+        assert_eq!(
+            resolved.by.as_deref(),
+            Some("b-todo"),
+            "the answer is this binary's own layer: {:?}",
+            resolved.failures
+        );
+        assert_eq!(
+            resolved
+                .answer
+                .as_ref()
+                .and_then(|a| a.pointer("/act/args/content"))
+                .and_then(Value::as_str),
+            Some("x — y"),
+            "and it parsed the line"
+        );
+        assert_eq!(
+            resolved
+                .answer
+                .as_ref()
+                .and_then(|a| a.pointer("/act/name"))
+                .and_then(Value::as_str),
+            Some("add_todo")
+        );
+        assert_eq!(host.take_problem(), None, "and nothing was owed a sentence");
+    }
+
     /// **A built-in that will not load is SAID, not silently skipped.** The head still falls back
     /// to its own list — that is the way out — but a binary whose own layer is broken is a defect,
     /// and the sentence names the layer and the reason. (A build cannot ship an EMPTY table: the
@@ -785,7 +905,10 @@ mod tests {
         let said = install_builtins(&mut stack).expect("a refusal is a sentence");
         assert!(said.contains("built-in plugin layer"), "{said}");
         assert!(said.contains("sessions"), "the layer is named: {said}");
-        assert!(said.contains("drawn by the head itself"), "{said}");
+        assert!(
+            said.contains("answered by the head itself"),
+            "and the fallback is named: {said}"
+        );
         // And a stack whose built-ins DID install says nothing at all.
         let mut good = Stack::discover(None, None, None, Arc::new(RanoLoader));
         assert_eq!(install_builtins(&mut good), None);

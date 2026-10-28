@@ -348,6 +348,51 @@ cached by word. The refs keep being read by the host (`ghlinks::read_refs`).
 
 `/<name> args` → `{"say": "…to the model…"} | {"show": "…to the operator…"}`.
 
+**As built (2026-10-28): `command_todo`, and the split it settles.** The first command a layer owns
+is the operator's `/todo`, and building it answered the question this section had left open — *what
+is a command's answer, and who performs it?* The answer is the pane's, one hook over: **the guest
+reads the line and answers an ACT, the host performs it.** So a command's answer is
+
+```jsonc
+// command_<verb>: out — an act the head performs, or nothing at all
+{"act": {"name": "add_todo", "args": {"content": "a — b"}}}
+```
+
+and `say`/`show` above stay unbuilt: the first command needed a row added, not a line delivered.
+When one does need to speak, `{"say": "…"}` is one more arm in the head and one more word in the
+manifest — not a second protocol.
+
+**Who owns which line.** The head keeps the verbs that MOVE a row (`done`, `rm`, `postpone`,
+`resume`, `when`) and offers every other line to the layer (`command_todo`). The list is one
+constant (`OWN_VERBS`, `crates/tui/src/app/commands.rs`) and the match that answers them is
+beside it, because the first cut had the two as separate lists and `when` was missing from one of
+them — with a layer installed, `/todo when 1 j7` became a row called `when 1 j7`. A verb added to
+one without the other is that defect again, so a test drives every word in the list at a recording
+layer and asserts none of them is ever asked.
+
+**What the four answers mean**, and the difference between the middle two is the whole design:
+
+| the layer | the head |
+|---|---|
+| `-1` (pass) | answers the line exactly as it did before there was a layer |
+| an act it has heard of | performs it — `add_todo` is the only name today |
+| any other answer | performs nothing, and says which act it refused |
+| a trap, a fuel exhaustion | says so, and the layer below answers (fail down, loudly) |
+
+**The trust boundary is the manifest pair, not the answer.** `capabilities = []` is what the layer
+cannot DO (no `read`, no `exec:`, no `http:` — the words it answers with are all it can produce),
+and `actions = ["add_todo"]` is what the HOST will do for it. A layer may answer any JSON it likes;
+the head performs exactly the names it knows, so the manifest is the whole of what an answer can
+cause — and it is a manifest field rather than a constant in the head because it is what a reviewer
+reads before a session layer is consented to.
+
+**One stack, two questions.** A command asks the stack the session list is drawn from
+(`Host::command`), so a layer approved for the pane is the layer that answers a typed line. That is
+also the bug this build found and fixed: the host was built by the first DRAW of the list, so a
+head that had never opened the picker had no stack at all and `/todo` answered in the head's own
+words — the built-in `todo` layer installed in every binary and never asked. `App::plugin_host` is
+the one door now, and both callers go through it.
+
 ### 4.8 `tool` — tools the model calls (last)
 
 A plugin tool's schema is prompt bytes in the cached prefix, so plugin tools load only at session
@@ -459,6 +504,49 @@ the head — not a new mechanism.
 **As built (2026-10-27)**: `crates/plugin-sdk/src/pane.rs` (the input, `Feed`, `Act`, `Fold`,
 `Cell`), `crates/sessionlog/src/pane.rs` (C3's `Row`/`Tree` grown to match), `crates/plugins`'s
 `Manifest` (`feeds`, `actions`). The first pane to use all of it is the session list below.
+
+#### The feeds a `command_` hook is handed (built 2026-10-28)
+
+The same idea, one hook kind over, and **not the same list**: a slash command's layer is handed what
+the head is holding at the moment the line is typed, in a `feeds` object beside the `line`:
+
+```jsonc
+// command_todo: in
+{"line": "title:\"a\" body:\"b\"",
+ "feeds": {
+   "todos":      [{"content": "…", "status": "pending", "by": "operator"}],
+   "session":    {"id": "s-1793…", "workspace": "/home/dead/Projects/x"},
+   "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}}
+```
+
+| feed | is |
+|---|---|
+| `todos` | the session's whole board — both halves, in board order — as `content`, `status` (`pending`, `in_progress`, `completed`, `postponed`, `cancelled`) and `by` (`model`, `operator`, `queue`, `Parent s-…`) |
+| `session` | where the head is standing: `id` and `workspace` |
+| `repo_todos` | the workspace's `TODO.md` as the todos pane parsed it: `text`, `mark` (`[ ]`, `[~]`, `[x]`, `[p]` or null), `indent`, `item` (an item rather than a section heading) — **absent, not empty, when the head has not read the file** |
+
+Three things about that shape are decisions rather than defaults:
+
+- **A row's `when` and `needs` are NOT in it.** They are the board's edges, no act in `actions` can
+  move one, and a word a layer cannot act on is a contract somebody keeps for nobody's benefit. An
+  act that moves an edge (`when_todo`) adds the field and the word together.
+- **`repo_todos` is absent when the head has not read the file**, because the pane reads `TODO.md`
+  at DRAW time: a head that never opened the todos pane holds no outline, and `[]` would tell a
+  layer the project's list is empty — a lie a layer checking *is this already in the project's list*
+  would act on.
+- **It is handed whole, not declared.** A pane's `feeds = [...]` is a manifest key whose vocabulary
+  is `Feed`'s five names, and a command's set is not that set (`session` is not `sessions`, and a
+  command has no `size`, no `folded`, no `state`). So this build hands the command feeds to the
+  layer it asks, and says here that the declaration is what a model-written layer will need before
+  it may be handed the operator's board: **the missing piece is a `command`-scoped feed list in
+  `crates/plugins`'s `Manifest`**, whose words are the ones above. Until then the honest reading is
+  that these feeds are the head's own screen — the board the model already reads through
+  `todo_write`, and the folder and id it is already wired to — so handing them to a `command_`
+  layer grants nothing the layer did not already have a way to be told.
+
+Nothing is adjudicated by any of it, which is why a feed is a field and not a capability: the
+`command_todo` layer that reads these today reads none of them (its act needs only the line), and
+the shapes are here for the first policy that does.
 
 ### Not hooks
 

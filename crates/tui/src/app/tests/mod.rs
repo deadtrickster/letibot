@@ -1466,6 +1466,7 @@ mod standing;
 mod statusrow;
 mod subagents;
 mod surfaces;
+mod todo_layer;
 mod todos;
 mod tools;
 mod toolspanel;

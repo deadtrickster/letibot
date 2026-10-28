@@ -3,13 +3,32 @@
 
 use super::*;
 
+/// **The verbs `/todo` answers itself** — the four that move a row, plus `when`, which gives one a
+/// condition. Everything else is offered to the `todo` layer first (`command_todo`), because what
+/// a NEW row may be spelled like is a project's policy, and the write stays the head's.
+///
+/// **This list and the `match` in [`App::todo_command`] are one list, and the first cut had them as
+/// two.** `when` was missing here, so with a layer installed `/todo when 1 j7` was handed to the
+/// guest, which read it as a bare title — `when 1 j7` — and answered an `add_todo`: the head's own
+/// verb, swallowed by a layer that had no way to know it was one. Nothing was red, because no head
+/// had a host built at the time a command ran (see [`App::plugin_host`]); installing the built-in
+/// is what made it reachable. A verb added to the match without a word here is the same defect
+/// again, which is why the words are one constant and one test drives every one of them at a
+/// recording layer (`the_heads_own_verbs_never_reach_a_layer`, `app/tests/todo_layer.rs`).
+pub(crate) const OWN_VERBS: [&str; 5] = ["done", "rm", "postpone", "resume", "when"];
+
+/// Is this word one the head answers, rather than one a layer may own?
+pub(crate) fn is_own_verb(verb: &str) -> bool {
+    OWN_VERBS.contains(&verb)
+}
+
 /// **The words out of a `command_todo` answer** — `Some(content)` when the layer asked the host to
 /// add a row, and `None` for every other answer: a pass, a malformed act, an act name this head
 /// does not perform. **The one name is the trust boundary** — `plugin.toml` declares `add_todo` in
 /// its `actions`, and the head performs nothing it has not heard of, so a layer that answered
 /// `{"act": {"name": "run_shell"}}` gets a line nothing happens to rather than a shell.
-pub(crate) fn add_todo_words(answer: serde_json::Value) -> Option<String> {
-    if answer.get("act")?.get("name")?.as_str()? != "add_todo" {
+pub(crate) fn add_todo_words(answer: &serde_json::Value) -> Option<String> {
+    if act_name(answer)? != "add_todo" {
         return None;
     }
     let content = answer
@@ -19,6 +38,12 @@ pub(crate) fn add_todo_words(answer: serde_json::Value) -> Option<String> {
         .as_str()?
         .trim();
     (!content.is_empty()).then(|| content.to_string())
+}
+
+/// The act name an answer carries, whatever it is — so the head can say WHICH act it refused
+/// instead of leaving the person with a line that did nothing.
+fn act_name(answer: &serde_json::Value) -> Option<&str> {
+    answer.get("act")?.get("name")?.as_str()
 }
 
 impl App {
@@ -931,33 +956,64 @@ impl App {
         };
         // **`/todo title:"…" body:"…"` — and `/todo buy milk` — ADDS a row, and the words are the
         // `todo` LAYER's to parse.** The operator: *"do a plugin so that `/todo title:\"werwer\"
-        // body:\"blabla\"` adds todo"* (2026-10-28). The split is `docs/plugins-plan.md`'s: the
+        // body:\"blabla\"` adds todo"* (2026-10-28). The split is `docs/plugins-plan.md` §4.7's: the
         // guest reads the line and answers an act, the head performs it — so what `/todo` accepts
         // is a project's policy, and the write stays the head's.
         //
-        // Only the four verbs this head owns are kept back; everything else is offered to the
-        // layer, and the layer passing (`done 2`, an empty line, a line it cannot read) leaves the
-        // line to the head exactly as it was.
-        if !matches!(verb, "done" | "rm" | "postpone" | "resume") {
+        // **The verbs this head owns are kept back** ([`OWN_VERBS`]) and everything else is offered
+        // to the layer. Two answers leave the line to the head, and they are different facts:
+        //
+        // * **the layer PASSED** (`None`): nothing here was its business — an empty line, a line it
+        //   cannot read — so the head answers the line exactly as it did before there was a layer;
+        // * **the layer SPOKE**: whatever it said is the whole of what this line does. An act this
+        //   head has not heard of performs nothing at all, and the head does not then add its own
+        //   row — a layer that answered is the policy for that line, including a policy of *no*.
+        //
+        // The input is the line and the feeds (`command_feeds`): what the head already holds, handed
+        // over so a layer can decide rather than only parse. Nothing in it is reachable by any act
+        // this head performs, which is what makes handing it over cheap.
+        //
+        // **A bare `/todo` is not offered** — there is no line to read, and the head's answer to it
+        // is the card, which is a door a layer has no business closing.
+        if !is_own_verb(verb) && !rest.is_empty() {
+            let input = serde_json::json!({"line": rest, "feeds": self.command_feeds()});
             let asked = {
-                let host = self.sessions_host.borrow();
-                host.as_ref()
-                    .map(|h| h.call("command_todo", &serde_json::json!({"line": rest})))
+                let host = self.plugin_host();
+                host.as_ref().map(|h| h.command("todo", &input))
             };
-            if let Some(content) = asked.and_then(|r| r.answer).and_then(add_todo_words) {
-                if let Some(why) = title_refusal(&content) {
+            // **A layer that could not answer is said HERE**, because this is the moment it was
+            // asked: the stack already fell through to the layer below (the built-in, then the
+            // head's own words), and `Host::command` kept the sentence for whoever has a screen.
+            // Taken rather than left in the slot so it cannot arrive later as news about a pane —
+            // and said AFTER the act, because the sentence that survives is the one that explains
+            // why the row the person sees was not written by the layer they installed.
+            let broke = self.take_sessions_failure();
+            if let Some(answer) = asked.and_then(|r| r.answer) {
+                let done = match add_todo_words(&answer) {
+                    Some(content) => self.add_operator_row(content, mine, moved),
+                    None => {
+                        // **Said, not swallowed.** The line did nothing, and the person who typed it
+                        // is owed the reason: a layer may ask only for what its `plugin.toml`
+                        // declares, and this head performs exactly one act name.
+                        let what = act_name(&answer).unwrap_or("no act at all");
+                        let what: String = what.chars().take(40).collect();
+                        self.say(&format!(
+                            "the `todo` layer answered `{what}`, and this head performs only \
+                             `add_todo` — nothing was added"
+                        ));
+                        None
+                    }
+                };
+                if let Some(why) = broke {
                     self.say(&why);
-                    return None;
                 }
-                mine.push(letibot_sessionlog::event::TodoEntry {
-                    content,
-                    status: letibot_sessionlog::event::TodoStatus::Pending,
-                    by: letibot_sessionlog::event::TodoBy::Operator,
-                    when: None,
-                    needs: Vec::new(),
-                });
-                self.echo_operator_todos(mine.clone());
-                return Some(Action::SetOperatorTodos { items: mine, moved });
+                return done;
+            }
+            // **The layer PASSED, so the line is the head's** — exactly as it was before there was
+            // a layer — and the match below answers it. A failure met on the way here is said
+            // first, because what follows may say something of its own.
+            if let Some(why) = broke {
+                self.say(&why);
             }
         }
         match (verb, arg) {
@@ -1187,25 +1243,11 @@ impl App {
                 }
             }
             // Anything else is the text of a new row — including a line that begins with a number,
-            // or with `done` and no argument, because those are sentences somebody could type.
-            _ if !rest.is_empty() => {
-                // **The title cap, before the row is added** — the same rule `todo_write` holds the
-                // model to, refused in the operator's own words on their own screen rather than
-                // silently cut by the pane. `title_refusal`'s doc says why the check is here and
-                // not at the door the half is sent through.
-                if let Some(why) = title_refusal(rest) {
-                    self.say(&why);
-                    return None;
-                }
-                mine.push(letibot_sessionlog::event::TodoEntry {
-                    content: rest.to_string(),
-                    status: letibot_sessionlog::event::TodoStatus::Pending,
-                    by: letibot_sessionlog::event::TodoBy::Operator,
-                    when: None,
-                    needs: Vec::new(),
-                });
-                self.say(&format!("added to your list — {} row(s)", mine.len()));
-            }
+            // or with `done` and no argument, because those are sentences somebody could type. **It
+            // is reached only when no layer answered**, which is the way out of a broken one: the
+            // head's own reading of a line is what `/todo` was before there was a layer, and it has
+            // to keep working when the layer does not.
+            _ if !rest.is_empty() => return self.add_operator_row(rest.to_string(), mine, moved),
             // **Bare `/todo` opens the card**, which is the shape `/mode` and `/models` keep: a
             // setting or an act with more than one part is CHOSEN from a card rather than typed
             // blind. The three forms are still there and the card's hint line says where.
@@ -1216,6 +1258,109 @@ impl App {
         }
         self.echo_operator_todos(mine.clone());
         Some(Action::SetOperatorTodos { items: mine, moved })
+    }
+
+    /// **One row on the operator's own half of the board** — the single door an add goes through,
+    /// whichever half parsed the words.
+    ///
+    /// It is one function because there are now two readers of a `/todo` line (the `todo` layer and
+    /// the head's own fallback) and a row added by one of them must be the same row: the title cap,
+    /// the author, the status, the echo and the frame are decided here and nowhere else. The
+    /// alternative — the layer's path and the head's path each pushing their own `TodoEntry` — is
+    /// how a plugin's row ends up with a different `by` than the head's, or without the cap.
+    ///
+    /// The cap is checked BEFORE the push, in the operator's own words on their own screen rather
+    /// than silently cut by the pane (`title_refusal`'s doc says why the check is here and not at
+    /// the door the half is sent through).
+    fn add_operator_row(
+        &mut self,
+        content: String,
+        mut mine: Vec<letibot_sessionlog::event::TodoEntry>,
+        moved: Vec<letibot_sessionlog::event::TodoState>,
+    ) -> Option<Action> {
+        if let Some(why) = title_refusal(&content) {
+            self.say(&why);
+            return None;
+        }
+        mine.push(letibot_sessionlog::event::TodoEntry {
+            content,
+            status: letibot_sessionlog::event::TodoStatus::Pending,
+            by: letibot_sessionlog::event::TodoBy::Operator,
+            when: None,
+            needs: Vec::new(),
+        });
+        self.say(&format!("added to your list — {} row(s)", mine.len()));
+        self.echo_operator_todos(mine.clone());
+        Some(Action::SetOperatorTodos { items: mine, moved })
+    }
+
+    /// **What a `command_` layer is handed beside the line** — the `feeds` object of
+    /// `docs/plugins-plan.md` §4.9's Feeds section, in the head's own reading of it.
+    ///
+    /// A feed is a fact the head ALREADY HOLDS and is already showing; handing it over adjudicates
+    /// nothing and grants nothing, which is why it is a field on the input rather than a capability.
+    /// Three here, and each is a shape written by hand rather than `serde_json::to_value` of the
+    /// head's struct — an added field on `TodoEntry` must not silently become a field of the
+    /// contract:
+    ///
+    /// ```jsonc
+    /// {"todos":      [{"content": "…", "status": "pending", "by": "operator"}],
+    ///  "session":    {"id": "s-1793…", "workspace": "/home/dead/Projects/x"},
+    ///  "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}
+    /// ```
+    ///
+    /// * **`todos`** is the WHOLE board — the model's half and the operator's — in board order, with
+    ///   the wire's own words for `status` (`pending`, `in_progress`, `completed`, `postponed`,
+    ///   `cancelled`) and `by` (`model`, `operator`, `queue`, `Parent s-…`). Both halves, because a
+    ///   layer deciding whether to add a row needs the rows that exist, and the model already reads
+    ///   this same board through `todo_write`'s getter.
+    /// * **`session`** is where the head is standing: the id and the folder a layer's own policy
+    ///   may key on.
+    /// * **`repo_todos`** is the workspace's `TODO.md` as the todos pane drew it — and it is
+    ///   **absent, not empty, when the head has not read the file** (the pane reads it at draw
+    ///   time, so a head that never opened the pane holds none). The two are different facts: `[]`
+    ///   would say the file is empty, and a layer that wanted to check *is this already in the
+    ///   project's list* would believe it.
+    ///
+    /// **What is deliberately not here**: a row's `when` and `needs`. They are the board's edges,
+    /// no act in `actions` can move one, and a word a layer cannot act on is a contract somebody has
+    /// to keep for nobody's benefit.
+    fn command_feeds(&self) -> serde_json::Value {
+        let todos: Vec<serde_json::Value> = self
+            .todos
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "content": &t.content,
+                    "status": t.status,
+                    "by": t.by,
+                })
+            })
+            .collect();
+        let mut feeds = serde_json::Map::new();
+        feeds.insert("todos".into(), serde_json::Value::Array(todos));
+        feeds.insert(
+            "session".into(),
+            serde_json::json!({
+                "id": &self.session_id,
+                "workspace": self.workspace_path().to_string_lossy(),
+            }),
+        );
+        if let Some(rows) = &self.repo_todos {
+            let rows: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "text": &r.text,
+                        "mark": r.mark.map(|m| m.glyph()),
+                        "indent": r.indent,
+                        "item": r.item,
+                    })
+                })
+                .collect();
+            feeds.insert("repo_todos".into(), serde_json::Value::Array(rows));
+        }
+        serde_json::Value::Object(feeds)
     }
 
     /// **`/notes` — what this head has shown, and how to retire it.**
