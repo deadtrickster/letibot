@@ -2757,6 +2757,11 @@ fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> 
     let Some(boundary) = crate::exec::Confinement::boundary(b) else {
         return Vec::new();
     };
+    env_for_grants(boundary.view.grants.iter().map(|g| g.path()))
+}
+
+/// The variables that point a tool at a granted path, since the view's `$HOME` is fresh.
+fn env_for_grants<'a>(grants: impl Iterator<Item = &'a Path> + Clone) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (var, leaf) in [
         ("CARGO_HOME", ".cargo"),
@@ -2764,14 +2769,10 @@ fn toolchain_env(confine: Option<&crate::exec::Bwrap>) -> Vec<(String, String)> 
         // mise keeps its installs and its state apart, and `mise` itself reads both.
         ("MISE_DATA_DIR", ".local/share/mise"),
         ("MISE_STATE_DIR", ".local/state/mise"),
+        // Without it git reads the empty `$HOME` and commits under `user@host`.
+        ("GIT_CONFIG_GLOBAL", ".gitconfig"),
     ] {
-        if let Some(p) = boundary
-            .view
-            .grants
-            .iter()
-            .map(|g| g.path())
-            .find(|p| p.ends_with(leaf))
-        {
+        if let Some(p) = grants.clone().find(|p| p.ends_with(leaf)) {
             out.push((var.to_string(), p.display().to_string()));
         }
     }
@@ -5516,5 +5517,18 @@ user     = "root"
             "a pid that went away and wrote nothing is still a kill: {view:?}"
         );
         std::fs::remove_dir_all(&nothing.dir).ok();
+    }
+
+    #[test]
+    fn a_granted_gitconfig_is_the_global_one() {
+        let grants = [
+            Path::new("/home/dead/.cargo"),
+            Path::new("/home/dead/.gitconfig"),
+        ];
+        let env = env_for_grants(grants.iter().copied());
+        assert!(env.contains(&("GIT_CONFIG_GLOBAL".into(), "/home/dead/.gitconfig".into())));
+        assert!(env.contains(&("CARGO_HOME".into(), "/home/dead/.cargo".into())));
+        let none = env_for_grants([Path::new("/home/dead/.cargo")].iter().copied());
+        assert!(none.iter().all(|(k, _)| k != "GIT_CONFIG_GLOBAL"));
     }
 }
