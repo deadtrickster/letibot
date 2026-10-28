@@ -98,7 +98,10 @@ exclude = ["plugins"]
 # **0.5.0 rather than 0.4.1, by the same rule.** `v0.4.0` spoke `PROTOCOL_VERSION` 48 and
 # this tree speaks 54. It is also the first release that builds the built-in plugin layers
 # (R2), so every machine that builds it needs the `wasm32-unknown-unknown` target.
-version = "0.5.0"
+#
+# **0.5.1**: the `v0.5.0` tag was pushed before the release workflow could build the
+# built-in plugins on a fresh runner, so it has no release behind it; same protocol (54).
+version = "0.5.1"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0"
