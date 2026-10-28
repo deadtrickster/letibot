@@ -219,3 +219,39 @@ fn a_folder_is_one_project_when_its_repositories_share_an_owner() {
     );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// **A github ssh url becomes the https one `gh`'s helper answers for** — and nothing else is
+/// translated. The translation exists because this box has no ssh key for github while `gh` is
+/// authenticated for https ([`push`]'s own note); the forms below are the ones a clone, a
+/// `--push` url and a forwarded agent actually write.
+#[test]
+fn a_github_ssh_url_becomes_the_https_one_gh_answers_for() {
+    for (url, want) in [
+        (
+            "git@github.com:deadtrickster/letibot.git",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "git@github.com:deadtrickster/letibot",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "ssh://git@github.com/deadtrickster/letibot.git",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "ssh://git@github.com:22/deadtrickster/letibot.git",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "  git@github.com:o/r.git  ",
+            Some("https://github.com/o/r.git"),
+        ),
+        ("https://github.com/deadtrickster/letibot.git", None),
+        ("git@gitlab.com:o/r.git", None),
+        ("/Users/dead/Projects/letibot/letibot", None),
+        ("git@github.com:", None),
+    ] {
+        assert_eq!(github_https(url).as_deref(), want, "{url}");
+    }
+}

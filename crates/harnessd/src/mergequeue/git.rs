@@ -484,19 +484,74 @@ pub enum Pushed {
     Failed(String),
 }
 
-/// **Push `sha` to `origin`'s `target`** — a fast-forward or a refusal, never a force. The
-/// credential is whatever git's own helper supplies for this one invocation.
+/// **Push `sha` to `origin`'s `target`** — a fast-forward or a refusal, never a force.
+///
+/// **A GitHub remote is pushed over https, on `gh`'s credential**, when `gh` is installed and
+/// authenticated: this box has no ssh key for github (`git push origin` answers
+/// `git@github.com: Permission denied (publickey)`) while `gh auth git-credential` is what
+/// serves https. MEASURED 2026-10-28: every landing's push failed that way and
+/// `install-gate-build` was skipped with it (decision 7: nothing is installed that is not where
+/// it was pushed), while the operator's own `gh` pushes kept the remote current. The operator's
+/// rule: *"if gh is authenticated then for github remotes we must use it, not raw git"*.
+/// Another remote, or a `gh` that is not logged in, keeps the old `origin` push and its own
+/// failure message — a credential is not assumed.
 pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
-    if git(repo, &["remote", "get-url", "origin"]).is_err() {
+    let Ok(url) = git(repo, &["remote", "get-url", "origin"]) else {
         return Pushed::NoRemote;
-    }
-    match git(
-        repo,
-        &["push", "origin", &format!("{sha}:refs/heads/{target}")],
-    ) {
-        Ok(_) => Pushed::Yes(format!("pushed {sha} to origin/{target}")),
+    };
+    let url = url.trim().to_string();
+    let (dest, how) = match github_https(&url).filter(|_| gh_authenticated()) {
+        Some(https) => (https, " over https, on `gh`'s credential"),
+        None => ("origin".to_string(), ""),
+    };
+    let refspec = format!("{sha}:refs/heads/{target}");
+    match git(repo, &["push", &dest, &refspec]) {
+        Ok(_) => Pushed::Yes(format!("pushed {sha} to origin/{target}{how}")),
         Err(e) => Pushed::Failed(e),
     }
+}
+
+/// **The https url `gh`'s credential helper answers for**, when `url` is github's ssh form;
+/// `None` for anything else (an https url needs no translation, and another host is not ours).
+///
+/// Both spellings matter: `git@github.com:owner/repo.git` is what a clone prints, and
+/// `ssh://git@github.com[:port]/owner/repo.git` is what a `--push` url or a forwarded agent
+/// sometimes writes. The path keeps its `.git` and gains one when it is missing, which is the
+/// form both GitHub and gh's helper are happy with.
+pub fn github_https(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (host, path) = if let Some(rest) = url.strip_prefix("git@") {
+        rest.split_once(':')?
+    } else if let Some(rest) = url.strip_prefix("ssh://") {
+        let rest = rest.split_once('@').map_or(rest, |(_, after)| after);
+        rest.split_once('/')?
+    } else {
+        return None;
+    };
+    let host = host.split(':').next().unwrap_or(host);
+    let path = path.trim_start_matches('/');
+    if host != "github.com" || path.is_empty() {
+        return None;
+    }
+    let path = if path.ends_with(".git") {
+        path.to_string()
+    } else {
+        format!("{path}.git")
+    };
+    Some(format!("https://github.com/{path}"))
+}
+
+/// Is `gh` installed **and** authenticated? Asked on every push, not remembered: a logged-out
+/// `gh` is a fact about the box that can change under a long-lived daemon, and a remembered
+/// `true` would turn that into an authentication failure in the middle of a landing.
+fn gh_authenticated() -> bool {
+    Command::new("gh")
+        .args(["auth", "status"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// **A fresh clone of the branch for a reviewer** (decision 3) — the branch alone, at `head`,
