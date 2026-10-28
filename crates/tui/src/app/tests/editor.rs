@@ -1140,6 +1140,56 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     assert!(a.diff_popup.is_none(), "a drag was taken for a click");
 }
 
+/// **A selection holds the VIEW still, not the keyboard** — the other half of the operator's
+/// ⌘C report (2026-10-27): *"Cmd-C with a mouse selection copies AND types a `c`"*, so a
+/// selection copied mid-prompt corrupts the prompt.
+///
+/// **The `c` is not this head's doing and cannot be fixed here**, and that is measured rather than
+/// assumed: Ghostty forwards ⌘C as `CSI 99;9u` under the kitty keyboard this head asks for, and
+/// rano drops the super bit on the way in, so what reaches [`crate::app::App::key`] is the same
+/// [`Key::Char('c')`](Key) a person types. See
+/// `crate::app::keys::input`'s `a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit`
+/// for the decode, and the two-line rano change that swallows it.
+///
+/// The fix a reader will reach for is *swallow typing while a selection is held*, and this test is
+/// why not: a drag copies and then holds the frame (`selection_held`, ctrl-p's hold), and the
+/// operator keeps typing into a prompt under it. A head that went deaf there would trade one
+/// corrupted prompt for a prompt that cannot be written at all.
+#[test]
+fn a_selection_does_not_swallow_what_is_typed() {
+    let ws = workspace("pointer-typing");
+    let mut a = edited(&ws);
+    let screen = a.screen(100, 40);
+    let qy = screen
+        .iter()
+        .position(|l| l.contains("please fix line eleven"))
+        .expect("the operator's row");
+    let qx = crate::app::keyhints::cells(&screen[qy])
+        .windows(6)
+        .position(|w| w.iter().collect::<String>() == "please")
+        .unwrap();
+    a.key(Key::Press {
+        x: qx as u16,
+        y: qy as u16,
+    });
+    a.key(Key::Drag {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    a.key(Key::Release {
+        x: (qx + 10) as u16,
+        y: qy as u16,
+    });
+    assert!(a.selection.is_some(), "the premise: a selection is up");
+    assert!(a.selection_held, "and the frame is held under it");
+    typed(&mut a, "c");
+    assert_eq!(
+        a.editor.text(),
+        "c",
+        "a selection is no reason to swallow a key — the ⌘C fix is upstream, not here"
+    );
+}
+
 /// **A code block copies as code** — the operator, 2026-10-12: *"can i copy code block without
 /// vertical bars?"*. The block's frame is drawn as text (`┌─ lang`, a `│ ` rail, `└─`), and a
 /// selection across it copies the code alone, its own indentation kept.
