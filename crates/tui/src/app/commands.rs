@@ -768,12 +768,33 @@ impl App {
             // **Scoped to this session's repository** (R92 item 5): a bare `/queue` that opens
             // the pane opens it on this session's repository; `/queue all` and `/queue /PATH`
             // name another scope. Any other `/queue …` is a daemon verb.
+            //
+            // **`/queue builtin` is the way back to the head's own pane.** `/queue` opens the
+            // plugin's (`plugins/builtin/queue`, `crates/tui/src/app/queue_pane.rs`), and the pane
+            // this file's `ui/panes/queue.rs` draws is what a person gets when the layer is
+            // disabled, broken, or refused — and what `/queue builtin` gives them on purpose.
+            // `/queue plugin` puts the layer back.
             "queue" => {
                 if !self.is_open(Surface::Queue) && self.queue_scope != QueueScope::Here {
                     self.queue_scope = QueueScope::Here;
                     self.rescope_queues();
                 }
                 self.toggle_surface(Surface::Queue)
+            }
+            _ if verb_arg(cmd, "queue") == Some("builtin") => {
+                self.queue_builtin = true;
+                self.say(
+                    "the queue pane is the head's own drawing — `/queue plugin` asks the layer \
+                     again",
+                );
+                self.redraw = true;
+                self.queue_in(QueueScope::Here)
+            }
+            _ if verb_arg(cmd, "queue") == Some("plugin") => {
+                self.queue_builtin = false;
+                self.say("the queue pane is drawn by the `queue` layer again");
+                self.redraw = true;
+                self.queue_in(QueueScope::Here)
             }
             _ if verb_arg(cmd, "queue") == Some("all") => {
                 return self.queue_in(QueueScope::All);

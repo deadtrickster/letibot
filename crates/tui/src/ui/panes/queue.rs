@@ -63,7 +63,6 @@ pub(crate) enum QRow {
 fn review_open(state: &str) -> bool {
     matches!(state, "waiting" | "reviewing" | "blocked")
 }
-
 fn merge_open(state: &str) -> bool {
     matches!(state, "queued" | "gating" | "blocked")
 }
@@ -114,13 +113,38 @@ impl App {
             .copied()
     }
 
+    /// **How many stops the pane on the screen has** — the plugin view's when a layer is drawing
+    /// it, this file's own rows when not. The arrows clamp against this, so the cursor cannot walk
+    /// off a list the plugin drew.
+    pub(crate) fn queue_stop_count(&self) -> usize {
+        if self.queue_plugin_stops > 0 {
+            self.queue_plugin_stops
+        } else {
+            self.queue_rows().len()
+        }
+    }
+
+    /// **The entry the row under the cursor NAMES** — the id `/queue approve` and the overlay take,
+    /// and what the person's `a`/`v`/`r`/`d` act on.
+    ///
+    /// A plugin row answers with the entry its own act carries (`{"verb":…,"id":…}`), which is
+    /// the whole point of `Act::Verb`: a row can draw one entry and mean it, whatever the host's
+    /// own enumeration would have put there. The head's own pane answers with the row's id.
+    pub(crate) fn queue_selected_id(&self) -> Option<String> {
+        if self.queue_plugin_stops > 0 {
+            return self.queue_plugin_entry();
+        }
+        self.queue_selected().map(|row| self.queue_row_id(row))
+    }
+
     /// **Into the session of the reviewer working the row** — the row opened whole, else the one
     /// under the cursor. A row nobody is reviewing says so and goes nowhere.
     pub(crate) fn go_to_reviewer(&mut self) -> Option<Action> {
-        let review = match (&self.queue_open, self.queue_selected()) {
-            (Some(id), _) => self.queues.reviews.iter().find(|r| &r.id == id),
-            (None, Some(QRow::Review(i))) => self.queues.reviews.get(i),
-            (None, _) => None,
+        let review = match &self.queue_open {
+            Some(id) => self.queues.reviews.iter().find(|r| &r.id == id),
+            None => self
+                .queue_selected_id()
+                .and_then(|id| self.queues.reviews.iter().find(|r| r.id == id)),
         };
         let Some(r) = review else {
             self.say("that row is a landing, not a review — it has no reviewer");
@@ -159,6 +183,11 @@ impl App {
 
     /// **The pane** — see the module docs. Takes `&mut self` to record where each row was drawn
     /// (the arrows and a click read it) and to ask for a fresh snapshot while the pane is open.
+    ///
+    /// **The plugin's pane, unless it cannot be one.** `plugins/builtin/queue` draws the queue from
+    /// the snapshot the head holds (`app::queue_pane`), and `/queue builtin` — or a layer that is
+    /// missing, broken or refused — falls back to this file's own rows. Both paths record
+    /// `queue_stop_rows`, so the arrows, Enter and a click read what was drawn whichever it was.
     pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
         if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
             self.queues_asked_ms = self.now_ms;
@@ -166,6 +195,17 @@ impl App {
                 self.queued.push(Action::ListMergeQueue);
             }
         }
+        // **A snapshot that has not arrived is nobody's to draw.** The plugin is not asked: an
+        // empty `reviews` would be a queue it drew as empty, which is the one thing the host pane
+        // never does (R61 defect 12).
+        if self.queues_got_ms > 0
+            && let Some(lines) = self.queue_plugin_lines(w)
+        {
+            return lines;
+        }
+        // The head's own pane from here down: the plugin did not answer, or `/queue builtin`.
+        self.queue_held = None;
+        self.queue_plugin_stops = 0;
         let now = self.queue_now();
         let mut out = PaneLines::new();
         out.push(pane::title("review queue · merge queue"));
@@ -583,7 +623,7 @@ impl App {
 }
 
 /// The repository's last path component — the name a person knows it by.
-fn repo_name(repo: &str) -> String {
+pub(crate) fn repo_name(repo: &str) -> String {
     if repo.is_empty() {
         return "(unresolved)".into();
     }
@@ -598,7 +638,7 @@ fn first_line(s: &str) -> String {
 }
 
 /// The owner as a person reads it: `host/pid`, the start stamp dropped.
-fn owner_word(owner: &str) -> String {
+pub(crate) fn owner_word(owner: &str) -> String {
     let mut parts = owner.split('/');
     match (parts.next(), parts.next()) {
         (Some(h), Some(p)) => format!("{h}/{p}"),
@@ -756,7 +796,7 @@ pub(crate) fn gate_running_words(sha: &str, for_ms: u64) -> String {
 /// **The gate each repository is running** (one at a time: R92 item 8) — what its queued
 /// landings wait for. The store has it: a `gating` target since its `checked_ms`, or a `gating`
 /// landing since its `state_ms`, rebased.
-fn gates_running(q: &QueueSnapshot, now: u64) -> std::collections::HashMap<&str, String> {
+pub(crate) fn gates_running(q: &QueueSnapshot, now: u64) -> std::collections::HashMap<&str, String> {
     let mut out = std::collections::HashMap::new();
     for t in q.targets.iter().filter(|t| t.state == "gating") {
         out.insert(

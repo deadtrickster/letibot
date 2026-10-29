@@ -1,0 +1,15 @@
+name = "queue"
+purpose = "the merge queue: what the queue is doing now, what it has finished, and the keys that move it"
+hooks = ["pane_queue"]
+# **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
+# fetches nothing. Every fact it draws arrives in the `queue` feed, which the head already holds.
+capabilities = []
+# **What it reads**, and the only thing it is handed: the merge queue as the head holds it —
+# reviews, landings, targets, leases, moves — with each row's age in milliseconds and the verbs that
+# would move it. Read-only, adjudicated by nobody.
+feeds = ["queue"]
+# **What its rows may ask the host to do.** The four the person's keys send, plus `fold` for the
+# panels that fold. A row carrying a verb this list does not name is refused by the host, so the
+# verbs a layer can reach are the verbs a reviewer read.
+actions = ["approve", "veto", "restart", "rm", "fold"]
+contract = 1

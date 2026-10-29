@@ -1,0 +1,411 @@
+//! **The queue pane, drawn by a plugin** — `plugins/builtin/queue`, through the head's own host.
+//!
+//! Three claims, and each one is a seam that can be silently dead:
+//!
+//! | the claim | the test |
+//! |---|---|
+//! | the built-in `queue` layer loads and draws the pane | `the_builtin_queue_layer_draws_the_pane` |
+//! | a row's act names ITS entry, not the host's cursor | `a_rows_verb_acts_on_the_entry_the_row_names` |
+//! | an act the manifest does not declare is refused | `a_layer_that_uses_an_undeclared_verb_falls_back` |
+//!
+//! **Nothing is faked except the answer** where it can be avoided: `RanoLoader` compiles the real
+//! module `crates/builtins` embedded, `letibot_builtins::install` is the function the head calls,
+//! and the pane is drawn through `App::screen` — so a test that passes here is a head that draws it.
+
+use super::*;
+use letibot_plugins::{Capability, Loader, Module, Stack};
+use serde_json::{json, Value};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// **A layer with a scripted answer**, so a test can stand in a view the built-in would not draw —
+/// and record what it was asked, which the answer alone cannot tell.
+#[derive(Clone, Default)]
+struct Seen(Arc<Mutex<Vec<Value>>>);
+
+impl Seen {
+    fn record(&self, input: &str) {
+        self.0
+            .lock()
+            .expect("the recorder")
+            .push(serde_json::from_str(input).unwrap_or(Value::Null));
+    }
+
+    fn take(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.0.lock().expect("the recorder"))
+    }
+}
+
+/// A layer that answers exactly what it was given, or traps.
+struct Scripted {
+    seen: Seen,
+    answer: Option<String>,
+}
+
+impl Module for Scripted {
+    fn hooks(&self) -> Vec<String> {
+        vec!["pane_queue".to_string()]
+    }
+
+    fn call(&self, _hook: &str, input: &str) -> Result<Option<String>, String> {
+        self.seen.record(input);
+        Ok(self.answer.clone())
+    }
+
+    fn fuel(&self) -> u64 {
+        0
+    }
+}
+
+/// The loader that puts [`Scripted`] behind a project layer's `plugin.wasm`, and the REAL engine
+/// behind the built-ins — so a test that means *the layer below* gets this binary's own module.
+struct ScriptedLoader {
+    seen: Seen,
+    answer: Option<String>,
+}
+
+impl Loader for ScriptedLoader {
+    fn load(&self, _wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+        Ok(Box::new(Scripted {
+            seen: self.seen.clone(),
+            answer: self.answer.clone(),
+        }))
+    }
+
+    fn load_bytes(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<Box<dyn Module>, String> {
+        crate::app::sessions_pane::RanoLoader.load_bytes(name, bytes, caps)
+    }
+}
+
+/// A project directory holding one `queue` layer whose manifest is `manifest`.
+fn a_project(tag: &str, manifest: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "letibot-queue-pane-{tag}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let layer = dir.join(".letibot").join("plugins").join("queue");
+    std::fs::create_dir_all(&layer).expect("the project's plugin dir");
+    std::fs::write(layer.join("plugin.toml"), manifest).expect("the manifest");
+    // The module is a placeholder: the scripted loader answers for it, and the manifest's `admit`
+    // only checks the HOOKS, which come from the module the loader hands back.
+    std::fs::write(layer.join("plugin.wasm"), b"\0asm").expect("a module");
+    dir
+}
+
+/// The manifest a scripted layer carries — the same shape the built-in's does.
+fn a_manifest(actions: &str) -> String {
+    format!(
+        "name = \"queue\"\n\
+         purpose = \"a scripted queue pane\"\n\
+         hooks = [\"pane_queue\"]\n\
+         capabilities = []\n\
+         feeds = [\"queue\"]\n\
+         actions = [{actions}]\n\
+         contract = 1\n"
+    )
+}
+
+/// **A head holding a snapshot** with two live rows and a finished one — the fixture the operator's
+/// screenshot is about.
+fn a_head_with_a_queue() -> App {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 62_500;
+    a.apply(queue_frame(queues(
+        vec![
+            queue_review_row("one", "reviewing"),
+            queue_review_row("two", "landed"),
+        ],
+        vec![queue_merge_row("m-three", "queued")],
+    )));
+    a.queues_got_ms = 62_500;
+    a.command("queue");
+    a
+}
+
+/// **The built-in `queue` layer loads through the real engine and draws the pane** — the module this
+/// binary carries, the same `install` the head calls, and the frame `App::screen` produces.
+#[test]
+fn the_builtin_queue_layer_draws_the_pane() {
+    let mut a = a_head_with_a_queue();
+    // The head's own host, with this binary's built-ins at the bottom — the production path.
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("the queue"),
+        "the layer's title, not the host pane's: {screen}"
+    );
+    assert!(
+        screen.contains("agent/one") && screen.contains("agent/three"),
+        "both live rows are drawn: {screen}"
+    );
+    assert!(
+        !screen.contains("agent/two"),
+        "the finished row is behind the fold, not on the frame: {screen}"
+    );
+    assert!(
+        screen.contains("finished · 1"),
+        "and the fold says how many there are: {screen}"
+    );
+    // The host pane's own title is nowhere — this is the layer's pane.
+    assert!(
+        !screen.contains("review queue · merge queue"),
+        "the host pane did not draw this: {screen}"
+    );
+    assert!(
+        !screen.contains("asking the daemon"),
+        "and it is not the empty frame: {screen}"
+    );
+}
+
+/// **The plugin's view draws at 80×24 and at 239×61 without a refusal** — the two rectangles the
+/// brief names, and the two a real terminal gives: a narrow one where every column competes and a
+/// wide one where nothing is cut.
+#[test]
+fn the_plugins_view_draws_at_both_widths_without_a_refusal() {
+    for (w, h) in [(80, 24), (239, 61)] {
+        let mut a = a_head_with_a_queue();
+        *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+            "s1",
+            &std::env::temp_dir(),
+        ));
+        a.cfg.width = w;
+        let rows = a.screen(w, h);
+        let screen = rows.join("\n");
+        // **A refused view is a pane that says why**, and that is what this rules out: the host
+        // draws the reason in a one-panel view whose title is the pane's name.
+        assert!(
+            !screen.contains("this head cannot read that pane")
+                && !screen.contains("the host's pane contract refuses"),
+            "{w}×{h}: the view was refused:\n{screen}"
+        );
+        assert!(
+            screen.contains("agent/one"),
+            "{w}×{h}: the live row is drawn:\n{screen}"
+        );
+        assert!(
+            rows.iter().all(|r| crate::app::line_width(r) <= w),
+            "{w}×{h}: a row is wider than the pane:\n{screen}"
+        );
+    }
+}
+
+/// **A row's verb acts on the entry the ROW names** — the seam `Act::Verb` exists for.
+///
+/// The host's own cursor is on the first row; the plugin's view is written so the row it draws
+/// carries `approve` for a *different* entry. Pressing `a` must send the row's entry, and that is
+/// the whole difference between this and the pane it replaces.
+#[test]
+fn a_rows_verb_acts_on_the_entry_the_row_names() {
+    let seen = Seen::default();
+    let view = json!({
+        "title": "a queue",
+        "panels": [{"id": "rows", "title": "live", "summary": [{"tree": {"rows": [
+            {"id": "row-i-am-looking-at", "cells": ["[~]", "agent/mine", "reviewing"],
+             "enter": {"verb": "approve", "id": "one"}},
+            {"id": "another-row", "cells": ["[ ]", "agent/other", "waiting"],
+             "enter": {"verb": "approve", "id": "m-three"}},
+        ]}}]}],
+    })
+    .to_string();
+    let project = a_project("act", &a_manifest("\"approve\", \"veto\", \"restart\", \"rm\""));
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: Some(view),
+        }),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = a_head_with_a_queue();
+    let workspace = a.workspace_path();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, workspace));
+    // Draw, so the pane holds the view the keys read.
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("agent/mine"), "{screen}");
+
+    // **The cursor is on the first row, whose act names `one`.**
+    a.queue_sel = 0;
+    assert_eq!(
+        a.key(Key::Char('a')),
+        Some(Action::Slash {
+            line: "queue approve one".into()
+        }),
+        "the row's own entry, not the host's cursor's"
+    );
+
+    // **And on the second row it is the OTHER entry** — the same act, the row's id. `v` because
+    // that row is a `queued` landing, and the daemon refuses `approve` on one of those (which is
+    // the same rule `verb_moves` keeps for the host pane: a merge row is approved already).
+    a.queue_sel = 1;
+    assert_eq!(
+        a.key(Key::Char('v')),
+        Some(Action::Slash {
+            line: "queue veto m-three".into()
+        }),
+    );
+
+    // **The feed was what the layer read**: one feed, named `queue`, with the snapshot's rows in it.
+    let inputs = seen.take();
+    let first = inputs.first().expect("the layer was asked");
+    let feed = &first["feeds"]["queue"];
+    assert_eq!(feed["reviews"][0]["id"], "one", "{feed}");
+    assert_eq!(
+        feed["reviews"][0]["state"], "reviewing",
+        "the daemon's own word"
+    );
+    assert_eq!(feed["reviews"][0]["live"], true);
+    assert_eq!(
+        feed["merges"][0]["waits_on"],
+        Value::Null,
+        "a `queued` landing with no gate in flight waits on nothing"
+    );
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// **A row asking for a verb its manifest does not declare is refused, and the host pane is drawn**
+/// — the allowlist a reviewer reads is the list of words that can be sent.
+#[test]
+fn a_layer_that_uses_an_undeclared_verb_falls_back() {
+    let seen = Seen::default();
+    let view = json!({
+        "title": "a queue",
+        "panels": [{"id": "rows", "title": "live", "summary": [{"tree": {"rows": [
+            {"id": "one", "cells": ["agent/one"],
+             "enter": {"verb": "rm", "id": "one"}},
+        ]}}]}],
+    })
+    .to_string();
+    // The manifest declares `approve` and nothing else.
+    let project = a_project("undeclared", &a_manifest("\"approve\""));
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: Some(view),
+        }),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = a_head_with_a_queue();
+    let workspace = a.workspace_path();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, workspace));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("review queue · merge queue"),
+        "the refused view falls back to the host's own pane:\n{screen}"
+    );
+    assert!(
+        !screen.contains("a queue"),
+        "and the refused view is not drawn:\n{screen}"
+    );
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// **A snapshot that has not arrived is nobody's to draw** — the plugin is not asked, because an
+/// empty `reviews` would be a queue it drew as empty, which is the one thing the pane never does.
+#[test]
+fn a_queue_the_head_has_not_been_told_about_is_not_drawn_by_a_layer() {
+    let seen = Seen::default();
+    let project = a_project("empty", &a_manifest("\"approve\""));
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: Some("{\"title\":\"a queue\",\"panels\":[]}".to_string()),
+        }),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = app();
+    a.session_id = "s1".into();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, a.workspace_path()));
+    a.command("queue");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("asking the daemon"),
+        "the head says it is asking, not that the queue is empty:\n{screen}"
+    );
+    assert!(
+        seen.take().is_empty(),
+        "and the layer was not asked at all — there is no snapshot to hand it"
+    );
+    std::fs::remove_dir_all(&project).ok();
+}
+
+/// **`/queue builtin` is the way back to the head's own pane** — the escape the conversion owes, so
+/// a person whose layer is broken (or unwanted) still has a queue pane.
+#[test]
+fn the_builtin_escape_draws_the_hosts_own_pane() {
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("the queue"), "the layer's pane: {screen}");
+
+    a.command("queue builtin");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("review queue · merge queue"),
+        "the head's own pane, by name:\n{screen}"
+    );
+    assert!(a.queue_builtin);
+
+    a.command("queue plugin");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("the queue"),
+        "and the layer's again:\n{screen}"
+    );
+    assert!(!a.queue_builtin);
+}
+
+/// **The fold is the host's**, keyed by row id — pressing Enter on the history row opens it and the
+/// next answer draws the finished rows, with no call in between to say so.
+#[test]
+fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(!screen.contains("agent/two"), "folded to begin with: {screen}");
+    // Walk the cursor to the history row: the two live rows, then it.
+    let stops = a.queue_plugin_stops;
+    assert!(stops >= 3, "the pane has the live rows and the fold: {stops}");
+    a.queue_sel = stops - 1;
+    // The row the fold row names is `finished`; the head's own Enter opens the entry overlay, so
+    // the fold is opened by the fold map — which is what the act's id keys it by.
+    a.queue_folds.insert("finished".into(), true);
+    a.redraw = true;
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("agent/two"),
+        "the finished row is drawn once the fold is open:\n{screen}"
+    );
+}

@@ -136,8 +136,8 @@ struct Cached {
 
 /// What one call came back with. The failure a layer met is not here: [`Host::ask`] keeps it for
 /// [`App::take_sessions_failure`], because the one that has to say it is a caller with a screen.
-struct Answered {
-    view: Option<pv::View>,
+pub(crate) struct Answered {
+    pub(crate) view: Option<pv::View>,
 }
 
 impl Host {
