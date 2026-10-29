@@ -143,6 +143,39 @@ fn project_layer(root: &Path, seen: &Seen, answer: Option<&str>, traps: bool) ->
     stack
 }
 
+/// The same stack **without the built-in table** — the shape in which a layer that could not
+/// answer leaves the line to the HEAD rather than to `b-todo`: a binary whose built-in failed to
+/// load (`install_builtins`' sentence, or a stale table), or a project layer trapping on a line
+/// the built-in below would have passed on. It is the only shape that reaches
+/// `todo_command`'s `_ if !rest.is_empty() => add_operator_row` arm, which is the arm the
+/// reviewer's finding was about: the test that used `project_layer` was answered by `b-todo`
+/// and so measured nothing of the head's own fallback.
+fn project_layer_without_builtins(root: &Path, seen: &Seen) -> Stack {
+    let dir = root.join(".letibot").join("plugins").join("todo");
+    std::fs::create_dir_all(&dir).expect("the project's plugin dir");
+    std::fs::write(
+        dir.join("plugin.toml"),
+        "name = \"todo\"\n\
+         purpose = \"a project's own reading of a `/todo` line, scripted for this test\"\n\
+         hooks = [\"command_todo\"]\n\
+         capabilities = []\n\
+         actions = [\"add_todo\"]\n\
+         contract = 1\n",
+    )
+    .expect("a manifest");
+    std::fs::write(dir.join("plugin.wasm"), b"not a module").expect("a module");
+    Stack::discover(
+        None,
+        Some(root),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: None,
+            traps: true,
+        }),
+    )
+}
+
 /// The head in one conversation, with a stack of the test's choosing — the same door
 /// `sessions_way_out.rs` uses, because the folder a test can create is not the folder the fixture
 /// names and a host that disagreed about it would be rebuilt on the next command.
@@ -295,7 +328,10 @@ fn an_act_the_head_does_not_know_adds_nothing() {
 fn a_layer_that_passes_leaves_the_line_to_the_head() {
     let seen = Seen::default();
     let tmp = tempdir("pass");
-    let stack = project_layer(&tmp, &seen, None, false);
+    // **No built-ins, and a layer that traps**, so the line reaches the head's own reading — the
+    // fallback arm — with a failure in hand. With `project_layer` the built-in answered `buy milk`
+    // itself and this test measured nothing of the arm it names.
+    let stack = project_layer_without_builtins(&tmp, &seen);
     let mut a = a_head_with(stack);
 
     match a.command("todo buy milk") {
@@ -307,6 +343,19 @@ fn a_layer_that_passes_leaves_the_line_to_the_head() {
         other => panic!("expected the head's own add, got {other:?}"),
     }
     assert_eq!(seen.len(), 1, "it was asked, and it passed");
+    // **And the layer's failure is what the person reads LAST** — `say` keeps only the last line,
+    // so a failure said before the row's own sentence is overwritten by it and a session whose
+    // layer is broken adds rows silently. This assertion is the one that fails on the old order.
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("could not answer `/todo`"),
+        "the row's own sentence overwrote the layer's failure: {said}"
+    );
+    assert_eq!(
+        a.take_sessions_failure(),
+        None,
+        "said once, and taken rather than left for a pane"
+    );
     std::fs::remove_dir_all(&tmp).ok();
 }
 

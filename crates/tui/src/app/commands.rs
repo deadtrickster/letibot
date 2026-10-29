@@ -1010,11 +1010,12 @@ impl App {
                 return done;
             }
             // **The layer PASSED, so the line is the head's** — exactly as it was before there was
-            // a layer — and the match below answers it. A failure met on the way here is said
-            // first, because what follows may say something of its own.
-            if let Some(why) = broke {
-                self.say(&why);
-            }
+            // a layer — and the match below answers it. A failure met on the way here is HELD, not
+            // said: `say` keeps only the last line, so saying it here would be overwritten by the
+            // row's own sentence and the person would read *a row was added* and never learn their
+            // layer is broken. It is said after the act, by the arm that acts
+            // ([`App::add_operator_row`]).
+            self.layer_failure = broke;
         }
         match (verb, arg) {
             ("done" | "rm", n) if !n.is_empty() => {
@@ -1278,8 +1279,16 @@ impl App {
         mut mine: Vec<letibot_sessionlog::event::TodoEntry>,
         moved: Vec<letibot_sessionlog::event::TodoState>,
     ) -> Option<Action> {
+        // **The layer's failure is said LAST**, after this row's own sentence, because `say` keeps
+        // only the last line (`app/notes.rs`): said first, the row overwrites it and a session
+        // whose layer is broken adds rows silently — the reviewer's measured defect, and the same
+        // rule the answered path already follows.
+        let broke = self.layer_failure.take();
         if let Some(why) = title_refusal(&content) {
             self.say(&why);
+            if let Some(why) = broke {
+                self.say(&why);
+            }
             return None;
         }
         mine.push(letibot_sessionlog::event::TodoEntry {
@@ -1290,6 +1299,9 @@ impl App {
             needs: Vec::new(),
         });
         self.say(&format!("added to your list — {} row(s)", mine.len()));
+        if let Some(why) = broke {
+            self.say(&why);
+        }
         self.echo_operator_todos(mine.clone());
         Some(Action::SetOperatorTodos { items: mine, moved })
     }

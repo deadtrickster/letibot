@@ -1185,6 +1185,14 @@ pub struct App {
     /// until the next frame writes one. So the change asks the DRAW to follow the cursor, which
     /// is the sibling of `scroll_into_view` for the case the row is not known yet.
     pub(crate) todos_follow: bool,
+    /// **A layer's failure sentence, waiting for the act it explains.** A `/todo` line whose
+    /// layer could not answer is answered by the head instead, and `say` keeps only the LAST line
+    /// (`app/notes.rs`): the layer's failure is therefore held here and said AFTER the row's own
+    /// sentence, so the person who typed the line reads *a row was added* and then *and your
+    /// layer is broken* — never the row alone. The measured defect this field exists for: the
+    /// pass path used to say the failure first and `add_operator_row` then overwrote it, so a
+    /// session whose built-in failed to load added rows silently.
+    pub(crate) layer_failure: Option<String>,
     pub(crate) repo_sel: usize,
     pub(crate) repo_open: bool,
     /// **How far the open pane is scrolled**, in rows hidden above it.
@@ -2179,6 +2187,7 @@ impl App {
             // operator's ruling (2026-10-28): *"i want done collapsed by default"*.
             todos_fold_done: true,
             todos_follow: false,
+            layer_failure: None,
             bye: None,
             daemon_pid: None,
             unconfirmed: Vec::new(),
