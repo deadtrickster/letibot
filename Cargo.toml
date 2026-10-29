@@ -17,6 +17,10 @@ members = [
     "crates/llama",
     "crates/http",
     "crates/flowy",
+    # **The room**: one host's agents, one queue per tag, a claim as a lease with a beat. A pure
+    # state machine and a wire — no store, no socket, no clock — because the coordinator daemon
+    # that owns the socket is a later slice, and the semantics are what must be right first.
+    "crates/room",
     "crates/provider",
     "crates/websearch",
     "crates/webfetch",
@@ -132,6 +136,7 @@ letibot-tokencore = { path = "crates/tokencore" }
 letibot-metrics = { path = "crates/metrics" }
 letibot-http = { path = "crates/http" }
 letibot-flowy = { path = "crates/flowy" }
+letibot-room = { path = "crates/room" }
 letibot-provider = { path = "crates/provider" }
 letibot-websearch = { path = "crates/websearch" }
 letibot-webfetch = { path = "crates/webfetch" }
