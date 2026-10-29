@@ -537,7 +537,7 @@ pub const CLONE_GRACE: std::time::Duration = std::time::Duration::from_secs(10 *
 /// '…/review-s-…/.git/objects/pack/tmp_pack_cgbKfF' for reading: No such file or directory"* — a
 /// clone whose directory this sweep had removed WHILE git was writing into it. The row was not
 /// live at that instant (a withdrawal, a block, a target that moved), and the tree was half-made.
-/// Three rules, and each of them alone would have stopped it:
+/// Two rules, and each of them ALONE would have stopped it:
 ///
 /// * **A tree in flight is not a `review-<id>`.** [`git::clone_branch`] clones beside the name and
 ///   renames into it, so the only name this sweep can ever see is a COMPLETE clone. The remainder
@@ -547,8 +547,6 @@ pub const CLONE_GRACE: std::time::Duration = std::time::Duration::from_secs(10 *
 ///   belt under the brace: a row can leave `waiting`/`reviewing` while its clone is still being
 ///   made (a person's veto, a blocked row, a target that moved), and the store's answer at that
 ///   instant is not evidence that the tree is nobody's yet.
-/// * **Only a DIRECTORY is removed, a name that does not parse is left alone, and a store that
-///   will not answer is not evidence that a tree is nobody's** — as before.
 ///
 /// **Four refusals, each of which is a real way this could destroy something:**
 /// * a directory that is not named [`CLONES_DIR`] is never swept — that refuses `std::env::temp_dir()`
