@@ -372,8 +372,9 @@ fn usage() -> String {
      \x20                           their build cache; the merge itself stays here.\n\
      \x20                           Unset -- the default -- is this machine. The\n\
      \x20                           project's `[queue] gate_host` says the same\n\
-     \x20                           thing, and this flag overrides it; `--gate-host`\n\
-     \x20                           with no name, or `local`, puts it back here\n\
+     \x20                           thing, and this flag overrides it;\n\
+     \x20                           `--gate-host local` (or an empty name) puts\n\
+     \x20                           it back on this machine\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
