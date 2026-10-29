@@ -405,6 +405,14 @@ pub struct App {
     /// an attachment that is simply not there — no separate bookkeeping to fall out of step with
     /// what the operator is looking at.
     pub(crate) chips: Vec<crate::app::attachments::Chip>,
+    /// **Where a pasted picture is written**, when it is not the default.
+    ///
+    /// `None` is the production answer — `app::attachments::attachments_dir()`, resolved when the
+    /// paste happens — and nothing outside a test sets it. It is `Some` in a test because a test's
+    /// directory must be its own: MEASURED 2026-10-30, a head a test built wrote a fake screenshot
+    /// into the operator's real paste directory, `read` called that file an image, and the session
+    /// it was read in could not be revived by any restart.
+    pub(crate) attachments_dir: Option<std::path::PathBuf>,
     /// **Where a pasted picture comes from.** A trait object because a test must never read the
     /// operator's real clipboard — see `app::attachments`.
     pub(crate) clipboard: Box<dyn crate::app::attachments::Clipboard>,
@@ -1978,6 +1986,7 @@ impl App {
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             chips: Vec::new(),
+            attachments_dir: None,
             clipboard: crate::app::attachments::default_clipboard(),
             pasted_images: 0,
             bound_prompts: std::collections::HashMap::new(),

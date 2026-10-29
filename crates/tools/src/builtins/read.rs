@@ -426,13 +426,9 @@ mod tests {
     #[test]
     fn an_image_read_returns_the_bytes_and_a_sentence_rather_than_lossy_text() {
         let mut h = crate::testing::harness();
-        // A PNG header with real dimensions; the bytes need not decode (see `media`'s tests).
-        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
-        png.extend_from_slice(&13u32.to_be_bytes());
-        png.extend_from_slice(b"IHDR");
-        png.extend_from_slice(&640u32.to_be_bytes());
-        png.extend_from_slice(&480u32.to_be_bytes());
-        png.extend_from_slice(&[8, 2, 0, 0, 0, 0, 0, 0, 0]);
+        // **A real PNG**, from the shared fixture: `Media::of` now refuses a file that is a header
+        // and no picture, which is what this used to be — and what a provider then refused.
+        let png = letibot_transcript::testing::png(640, 480);
         std::fs::write(h.root().join("shot.png"), &png).expect("fixture write");
 
         let got = h.call("read", r#"{"path":"shot.png"}"#);

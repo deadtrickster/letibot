@@ -28,21 +28,26 @@ fn dir(tag: &str) -> std::path::PathBuf {
     d
 }
 
-/// A PNG header with real dimensions — the bytes need not decode into a picture for the sniff to
-/// call it one.
+/// A **real** PNG, 2×2 — `letibot_transcript::testing`'s, because a fixture that only *looks* like
+/// an image is what this module's incident was made of: a header-only PNG went in as a chip, was
+/// sent, was stored, and a provider refused every turn that carried it.
 fn png() -> Vec<u8> {
-    let mut p = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-    p.extend_from_slice(&13u32.to_be_bytes());
-    p.extend_from_slice(b"IHDR");
-    p.extend_from_slice(&640u32.to_be_bytes());
-    p.extend_from_slice(&480u32.to_be_bytes());
-    p.extend_from_slice(&[8, 6, 0, 0, 0]);
-    p.extend_from_slice(&[0, 0, 0, 0]);
-    p
+    letibot_transcript::testing::png(2, 2)
 }
 
-fn a_picture_with_clipboard() -> App {
+/// **The bytes the incident wrote** — a signature, an `IHDR`, and no picture.
+fn png_header_only() -> Vec<u8> {
+    letibot_transcript::testing::png_header_only(640, 480)
+}
+
+/// A head with a picture on the fake clipboard AND a directory of its own to write it in.
+///
+/// **The directory is not optional.** Without it the head writes into the operator's real paste
+/// directory — `$TMPDIR/letibot-<uid>/attachments`, with `session_id: ""` making the name `-1.png`
+/// — which is exactly what happened on 2026-10-30 and what `set_attachments_dir` exists to stop.
+fn a_picture_with_clipboard(tag: &str) -> App {
     let mut a = app();
+    a.set_attachments_dir(dir(tag));
     a.set_clipboard(FakeClipboard(Ok(Some(png()))));
     a
 }
@@ -50,7 +55,7 @@ fn a_picture_with_clipboard() -> App {
 /// **Ctrl-V takes the picture off the clipboard and puts a chip in the composer.**
 #[test]
 fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
-    let mut a = a_picture_with_clipboard();
+    let mut a = a_picture_with_clipboard("ctrl-v");
     a.key(Key::CtrlV);
     let input = a.input().to_string();
     assert!(
@@ -73,13 +78,68 @@ fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
 /// text on the clipboard — and it is the same act as ctrl-v.
 #[test]
 fn an_empty_paste_with_an_image_on_the_clipboard_makes_a_chip() {
-    let mut a = a_picture_with_clipboard();
+    let mut a = a_picture_with_clipboard("empty-paste");
     a.key(Key::Paste(String::new()));
     assert_eq!(a.chips.len(), 1, "{:?}", a.input());
     assert!(
         a.input().starts_with("[image 1 · png · "),
         "{:?}",
         a.input()
+    );
+}
+
+/// **A clipboard that hands over a PNG header is refused, not chipped.**
+///
+/// These are the incident's bytes — 33 of them, a signature and an `IHDR` — and the whole chain
+/// started with a head chipping them. A chip is a promise that the file is a picture, and this one
+/// is not; saying so here is the only place in the chain where the person can paste again.
+#[test]
+fn ctrl_v_with_a_png_header_attaches_nothing_and_says_so() {
+    let mut a = app();
+    let where_it_would_go = dir("header-only");
+    a.set_attachments_dir(where_it_would_go.clone());
+    a.set_clipboard(FakeClipboard(Ok(Some(png_header_only()))));
+    a.key(Key::CtrlV);
+    assert!(a.chips.is_empty(), "a header was chipped: {:?}", a.input());
+    assert_eq!(a.input(), "", "something went into the composer");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("not a complete PNG"),
+        "no sentence said why: {said}"
+    );
+    // And nothing was written either — the bytes are refused BEFORE the file, so a refused paste
+    // leaves no `-1.png` for `read` to find later, which is how the incident began.
+    let wrote = std::fs::read_dir(&where_it_would_go)
+        .map(|d| d.count())
+        .unwrap_or(0);
+    assert_eq!(wrote, 0, "the refused bytes left a file behind");
+    let _ = std::fs::remove_dir_all(&where_it_would_go);
+}
+
+/// **No head a test builds can name the operator's paste directory.**
+///
+/// MEASURED 2026-10-30: a `letibot-tui` unit test pasted a fake screenshot and the head wrote it
+/// into `$TMPDIR/letibot-<uid>/attachments/-1.png` — the operator's own directory, because
+/// `App::new` starts with `session_id: ""`. `read` then called that file an image, and the session
+/// it was read in was dead for good.
+///
+/// So this is the guard the fix is held to: the directory a TEST build resolves is not the
+/// operator's, and a head that has not been given one still does not get the operator's.
+#[test]
+fn a_test_build_cannot_name_the_operators_attachment_directory() {
+    let operators = crate::app::panes::head_runtime_dir().join("attachments");
+    let mine = crate::app::attachments::attachments_dir();
+    assert_ne!(mine, operators, "a test build resolved the operator's own");
+    assert!(
+        !mine.starts_with(crate::app::panes::head_runtime_dir()),
+        "a test build resolved something inside the operator's runtime directory: {}",
+        mine.display()
+    );
+    // And the head a test builds without saying anything lands there too, not on the operator's.
+    let a = app();
+    assert!(
+        a.attachments_dir.is_none(),
+        "the default is the helper's answer, not a field a test had to remember to set"
     );
 }
 

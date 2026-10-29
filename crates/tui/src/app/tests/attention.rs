@@ -9,8 +9,10 @@ use super::*;
 /// same size the rows draw.
 #[test]
 fn a_png_result_is_drawn_inline_and_uploaded_once() {
-    let media =
-        letibot_transcript::media::Media::of("shot.png", &png_header(200, 100)).expect("a png");
+    // **Small enough to be ONE chunk of the kitty transmit** (rano cuts the base64 at 4096 bytes),
+    // so this test is about the drawing and not about rano's chunking — and 8×4 is the same 2:1
+    // box a 200×100 screenshot is, which is the arithmetic the assertions below are about.
+    let media = letibot_transcript::media::Media::of("shot.png", &png_header(8, 4)).expect("a png");
     let row = |a: &mut App| {
         a.apply(ServerFrame::Event(env(
             1,
@@ -22,7 +24,7 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
                 call_id: "c0".into(),
                 name: "read".into(),
                 outcome: letibot_transcript::ToolOutcome::Ok,
-                payload: "image/png 200×100".into(),
+                payload: "image/png 8×4".into(),
                 edit: None,
                 origin: None,
                 media: Some(media.clone()),
@@ -45,7 +47,7 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
     let screen = a.screen(160, 40);
     let id = rano::term::graphics::image_id("r.img");
     let box_cols = rano::term::graphics::image_box(a.cfg.width);
-    let (cols, rows) = rano::term::graphics::image_cells(Some(200), Some(100), box_cols);
+    let (cols, rows) = rano::term::graphics::image_cells(Some(8), Some(4), box_cols);
     assert_eq!(cols, box_cols, "as wide as the box");
     assert_eq!(rows, box_cols.div_ceil(4), "a 2:1 picture in 2:1 cells");
     assert_eq!(placeholders(&screen), rows as usize, "{screen:#?}");
@@ -78,7 +80,7 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
         box2, box_cols,
         "the fixture has to change the box to show anything"
     );
-    let (c2, r2) = rano::term::graphics::image_cells(Some(200), Some(100), box2);
+    let (c2, r2) = rano::term::graphics::image_cells(Some(8), Some(4), box2);
     assert_eq!(
         a.take_image_uploads(),
         vec![rano::term::graphics::image_place(id, c2, r2)]

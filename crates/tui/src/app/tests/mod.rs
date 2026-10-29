@@ -1214,12 +1214,11 @@ fn plain_cfg(width: usize) -> RenderConfig {
     }
 }
 
+/// A **real** PNG, `w`×`h` — `letibot_transcript::testing`'s, because a fixture that only *looks*
+/// like an image is what let a 33-byte header be stored as a picture and wedge a session. A test
+/// that needs the bytes that are NOT a picture asks for `png_header_only` by name.
 fn png_header(w: u32, h: u32) -> Vec<u8> {
-    let mut png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR".to_vec();
-    png.extend_from_slice(&w.to_be_bytes());
-    png.extend_from_slice(&h.to_be_bytes());
-    png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
-    png
+    letibot_transcript::testing::png(w, h)
 }
 
 fn placeholders(screen: &[String]) -> usize {

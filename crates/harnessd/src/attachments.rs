@@ -186,17 +186,11 @@ mod tests {
         d
     }
 
-    /// A PNG header with real dimensions — the bytes need not decode into a picture for
-    /// `Media::of` to recognise them, and the same fixture `read`'s test uses.
+    /// A **real** PNG, 640×480 — `letibot_transcript::testing`'s, because a header-only fixture is
+    /// what let a 33-byte file be stored as a picture and wedge a session. `Media::of` now asks
+    /// whether there is a picture in the bytes, not only what they claim to be.
     fn png() -> Vec<u8> {
-        let mut png = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-        png.extend_from_slice(&13u32.to_be_bytes());
-        png.extend_from_slice(b"IHDR");
-        png.extend_from_slice(&640u32.to_be_bytes());
-        png.extend_from_slice(&480u32.to_be_bytes());
-        png.extend_from_slice(&[8, 6, 0, 0, 0]);
-        png.extend_from_slice(&[0, 0, 0, 0]);
-        png
+        letibot_transcript::testing::png(640, 480)
     }
 
     fn chip(kind: AttachmentKind, path: &std::path::Path, name: &str) -> Attachment {

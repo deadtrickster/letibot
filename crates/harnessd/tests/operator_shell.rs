@@ -298,6 +298,7 @@ fn the_turn_the_line_starts_hands_the_model_the_commands_output() {
         &items,
         false,
         letibot_provider::messages::Eyes::Sees,
+        letibot_provider::messages::Withheld::nothing(),
     );
     let said: Vec<&str> = messages
         .iter()

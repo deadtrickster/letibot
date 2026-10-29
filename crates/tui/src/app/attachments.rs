@@ -111,6 +111,16 @@ pub(crate) fn default_clipboard() -> Box<dyn Clipboard> {
 #[cfg(target_os = "macos")]
 #[cfg_attr(test, allow(dead_code))]
 fn macos_image() -> Result<Option<Vec<u8>>, String> {
+    macos_image_in(&attachments_dir())
+}
+
+/// **The same read, with the intermediate written where the caller says** — the seam a test would
+/// need, and the reason `macos_image` has one: the two files below are named after this PROCESS, so
+/// a head a test built and a head the operator runs would write the same path in the same directory.
+/// Nothing in a test build may name that directory; see [`attachments_dir`].
+#[cfg(target_os = "macos")]
+#[cfg_attr(test, allow(dead_code))]
+fn macos_image_in(dir: &Path) -> Result<Option<Vec<u8>>, String> {
     if let Some(png) = applescript_data("«class PNGf»")? {
         return Ok(Some(png));
     }
@@ -119,8 +129,7 @@ fn macos_image() -> Result<Option<Vec<u8>>, String> {
     };
     // A scratch path of this head's own, so two pastes in one session cannot cross and the
     // intermediate is not left in `/tmp`.
-    let dir = crate::app::panes::head_runtime_dir().join("attachments");
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .map_err(|e| format!("nowhere to put the picture ({}): {e}", dir.display()))?;
     let stamp = std::process::id();
     let tiff_path = dir.join(format!("clipboard-{stamp}.tiff"));
@@ -424,6 +433,36 @@ pub(crate) fn size_said(bytes: u64) -> String {
     }
 }
 
+/// **Where a head keeps the pictures it was given** — one function, so a test can be given a
+/// directory of its own and no test can reach the operator's.
+///
+/// In production this is [`crate::app::panes::head_runtime_dir`] + `attachments`: whatever the
+/// person had on their clipboard, in a per-user 0700 directory, never `/tmp` at a predictable
+/// name. That is the rule the runtime directory already exists for.
+///
+/// **In a test build it is a directory of the test process's own, and that is a fix rather than a
+/// convenience.** MEASURED 2026-10-30: `App::new` starts with `session_id: ""`, so a head a test
+/// built and pasted into wrote `$TMPDIR/letibot-<uid>/attachments/-1.png` — into the operator's own
+/// paste directory. The bytes it wrote were a 33-byte PNG header, and when `read` later called that
+/// file an image the session it was read in was dead for good. So the default here is resolved
+/// once, under `$TMPDIR`, and a test that wants its own directory says so with
+/// [`crate::app::App::set_attachments_dir`]; the guard is
+/// `tests::a_test_build_cannot_name_the_operators_attachment_directory`.
+pub(crate) fn attachments_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        // A directory per test PROCESS, so two test binaries cannot collide either.
+        std::env::temp_dir().join(format!(
+            "letibot-tui-tests-{}/attachments",
+            std::process::id()
+        ))
+    }
+    #[cfg(not(test))]
+    {
+        crate::app::panes::head_runtime_dir().join("attachments")
+    }
+}
+
 /// **A clipboard picture kept for the session** — the file the chip points at.
 ///
 /// Under [`crate::app::panes::head_runtime_dir`] and not `/tmp`: this is whatever the person had
@@ -432,13 +471,20 @@ pub(crate) fn size_said(bytes: u64) -> String {
 ///
 /// The name is the session and a counter, so two pastes never collide and a chip's path says
 /// which session asked for it.
-pub(crate) fn save_clipboard_image(
+pub(crate) fn save_clipboard_image(session_id: &str, n: u64, png: &[u8]) -> Result<PathBuf, String> {
+    save_clipboard_image_under(&attachments_dir(), session_id, n, png)
+}
+
+/// **The same write, into a directory the caller names** — the seam `spill_sub_out_under` is, and
+/// for the same reason: a test must be able to put the file somewhere of its own, and there must be
+/// one implementation of the write for it to reach.
+pub(crate) fn save_clipboard_image_under(
+    dir: &Path,
     session_id: &str,
     n: u64,
     png: &[u8],
 ) -> Result<PathBuf, String> {
-    let dir = crate::app::panes::head_runtime_dir().join("attachments");
-    std::fs::create_dir_all(&dir)
+    std::fs::create_dir_all(dir)
         .map_err(|e| format!("nowhere to put the picture ({}): {e}", dir.display()))?;
     let safe: String = session_id
         .chars()
@@ -468,6 +514,13 @@ impl crate::app::App {
     #[cfg(test)]
     pub(crate) fn set_clipboard(&mut self, c: FakeClipboard) {
         self.clipboard = Box::new(c);
+    }
+
+    /// **A test's directory for pasted pictures** — the other door, and the one that keeps a
+    /// fixture's screenshot out of the operator's paste directory. See [`attachments_dir`].
+    #[cfg(test)]
+    pub(crate) fn set_attachments_dir(&mut self, dir: std::path::PathBuf) {
+        self.attachments_dir = Some(dir);
     }
 
     /// **Put one file in the composer as a chip.**
@@ -535,10 +588,26 @@ impl crate::app::App {
                 return true;
             }
         };
+        // **What the clipboard hands over has to be a picture, not a claim of one.** MEASURED
+        // 2026-10-30: a 33-byte PNG header went into the composer as an image chip, was sent, was
+        // stored, and a provider refused every request that carried it for ever. The check is the
+        // same one `read` and the daemon make — see `letibot_transcript::media::complete_image` —
+        // so a truncated copy is refused here, at the one moment a person can paste again.
+        if !letibot_transcript::media::complete_image("image/png", &png) {
+            self.say(
+                "the clipboard's picture is not a complete PNG — nothing was attached. Copy it \
+                 again, or save it and paste the file's path instead.",
+            );
+            return true;
+        }
         self.pasted_images += 1;
         let n = self.pasted_images;
         let session = self.session_id.clone();
-        let path = match crate::app::attachments::save_clipboard_image(&session, n, &png) {
+        let path = match &self.attachments_dir {
+            Some(dir) => crate::app::attachments::save_clipboard_image_under(dir, &session, n, &png),
+            None => crate::app::attachments::save_clipboard_image(&session, n, &png),
+        };
+        let path = match path {
             Ok(p) => p,
             Err(why) => {
                 self.say(&why);
@@ -648,15 +717,42 @@ mod tests {
         d
     }
 
+    /// A **real** PNG — the shared fixture, so this module's tests cannot drift back into a header
+    /// that is not a picture. See `letibot_transcript::testing` for why that matters.
     fn png() -> Vec<u8> {
-        let mut p = vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
-        p.extend_from_slice(&13u32.to_be_bytes());
-        p.extend_from_slice(b"IHDR");
-        p.extend_from_slice(&640u32.to_be_bytes());
-        p.extend_from_slice(&480u32.to_be_bytes());
-        p.extend_from_slice(&[8, 6, 0, 0, 0]);
-        p.extend_from_slice(&[0, 0, 0, 0]);
-        p
+        letibot_transcript::testing::png(2, 2)
+    }
+
+    /// **The write goes where it is told**, and the seam is the reason a test can say so.
+    #[test]
+    fn a_clipboard_picture_is_written_into_the_directory_it_is_given() {
+        let d = dir("under");
+        let path = save_clipboard_image_under(&d, "s-1", 3, &png()).expect("a write");
+        assert_eq!(path, d.join("s-1-3.png"), "{} ", path.display());
+        assert_eq!(std::fs::read(&path).expect("the file"), png());
+        // A session id with punctuation is a NAME, not a path: a separator here would be a write
+        // somewhere else entirely.
+        let odd = save_clipboard_image_under(&d, "a/b", 1, &png()).expect("a write");
+        assert_eq!(odd, d.join("a-b-1.png"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// **The default this build resolves is not the operator's directory** — the guard, from the
+    /// module that owns the answer. `tests/paste.rs` holds the same rule as behaviour.
+    #[test]
+    fn a_test_build_resolves_a_directory_of_its_own() {
+        let mine = attachments_dir();
+        assert_ne!(mine, crate::app::panes::head_runtime_dir().join("attachments"));
+        assert!(
+            mine.starts_with(std::env::temp_dir()),
+            "a test build's directory is not under the temp dir: {}",
+            mine.display()
+        );
+        assert!(
+            !mine.starts_with(crate::app::panes::head_runtime_dir()),
+            "{}",
+            mine.display()
+        );
     }
 
     /// **One path is one chip.**
