@@ -527,10 +527,17 @@ pub fn serving_line(workspace: &Path) -> String {
 /// `--no-queue` takes away. A package worker's daemon is one of the repository's session daemons
 /// by the queue's own rule, so it would take the lease and tell its model to fix `main`
 /// (2026-10-26); it must not.
+///
+/// `desk` is the daemon's review desk — the one its review session opens reviews on and its
+/// gatekeeper children hand verdicts to. It is a parameter rather than something made here
+/// because **the same desk has to be on both sides of one judgement**: this thread's workers ask
+/// it whether a reviewer that is no longer alive has already handed its verdict in
+/// ([`serve::QueueEnv::desk`]), and the review pass is what writes that verdict onto the row.
 pub fn spawn_for(
     cfg: &crate::config::Config,
     stop: Arc<AtomicBool>,
     registry: Arc<letibot_sessionlog::registry::Registry>,
+    desk: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
 ) -> Option<JoinHandle<()>> {
     let store_path = cfg.store.clone()?;
     let env = serve::QueueEnv::production(
@@ -539,6 +546,7 @@ pub fn spawn_for(
             store_path: store_path.clone(),
         }),
         cfg.landing_root.clone(),
+        desk,
     );
     // **Every daemon hears every repository's moves** (R92 item 5): the worker below announces
     // only what THIS daemon moves, so a head attached here would never re-read a queue another

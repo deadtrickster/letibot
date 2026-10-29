@@ -1444,8 +1444,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // reviewers are `task` children of the review queue's session (`Sessions::serve_reviews`);
     // the threads ring it, and every move is announced on every hub (`Registry::broadcast`),
     // because the queues are daemon-level and a pane may be open on any session.
+    //
+    // **The review desk is made HERE, not by `Parts::load` below**, because the queue's thread is
+    // started first and both loops that judge a reviewer's fate have to see one desk: the worker
+    // asks it whether a reviewer whose session is gone has already handed its verdict in, and the
+    // review pass takes the verdict and writes the row. Two desks would be two answers to one
+    // question — the worker would re-seat a row that had just been judged, and the verdict would
+    // be discarded by a pass that found the row was no longer its reviewer's (measured 2026-10-29).
+    let reviews = std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new());
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let merge_queue = crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone());
+    let merge_queue =
+        crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone(), reviews.clone());
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
@@ -1902,7 +1911,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // vocabulary a daemon needs depends on who answers: a cloud provider with no
     // `--vocab` is the byte vocabulary, and that is only knowable once the provider is.
     boot.step("loading the vocabulary");
-    let parts = match Parts::load(&cfg) {
+    let mut parts = match Parts::load(&cfg) {
         Ok(p) => p,
         Err(e) => {
             let why = boot.failed(e.to_string());
@@ -1910,6 +1919,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             return Err(why);
         }
     };
+    // **The desk the queue's thread is already holding** — see where it is made, above. Every
+    // session's harness registers its own `review_verdict` against `parts.reviews`, and a
+    // reviewer's verdict has to reach the queue that asked for it, so this is not a second desk.
+    parts.reviews = reviews;
 
     // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
     // needs the same vocabulary and dialect and none of the session state.
