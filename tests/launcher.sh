@@ -64,6 +64,104 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
   else echo "ok   $1"; fi
 }
 
+# ---------------------------------------------------------------------------------------
+# **The shell scripts, under the bash the Mac actually has.**
+#
+# `scripts/letibot` and `scripts/leticode` run under `/usr/bin/env bash`, which on a stock Mac
+# is **3.2.57 (2007)**, and CI's macOS job parses them with `/bin/bash -n` for that reason;
+# the launcher's own `EXTRA_ARGS` note (`scripts/letibot`, "every expansion of an array that
+# may be empty") is the first bug of this class. **A parse is not enough**: `declare -A` is a
+# *runtime* error, so a script carrying one parses cleanly and dies only on the Mac.
+#
+# MEASURED 2026-10-29, two of them in one night:
+#   * `scripts/etalon-snapshot` died at its own redaction table — `openssh_key_body: unbound
+#     variable`, because bash 3.2 reads the `[name]=` subscripts of a `declare -A` it
+#     rejected as arithmetic, and `set -u` makes that fatal. No check ran at all.
+#   * the operator's `! cp …` in the head came back `bash: declare: -A: invalid option` — the
+#     `~/.bashrc` chain read by the `/bin/bash -ic` the daemon hands a `!` line, written for
+#     bash 4. (That half is fixed in the daemon, not here: `crates/tools/src/console_bash.rs`.)
+#
+# Two lists, because two different promises:
+#
+#   BASH32    run under the Mac's `/bin/bash`: parsed with `/bin/bash -n` AND grepped for the
+#             bash-4 spellings. **A new bash script under `scripts/` belongs here.**
+#   POSIX_SH  `#!/bin/sh`, so POSIX: grepped only. bash-4 syntax is not `sh` syntax either.
+#
+# Named as out of scope, so nobody has to guess: `tests/acceptance/*.sh` (CI runs them under
+# Linux's bash 5), `tests/fidelity/serve_oracle.sh`, `experiments/`, and `firecode.layer`
+# (a VM recipe, not a shell on this box).
+#
+# **`+=` on an array is NOT in the spelling list**: that is bash 3.1, not 4, and
+# `scripts/letibot`/`leticode` use it deliberately. The 3.2 hazard beside it is *expanding*
+# an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
+# macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
+BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/rrun tests/launcher.sh"
+POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
+# The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
+# `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
+# case fallthrough (`;;&`, `;&`), `&>>`, `|&`, and the case-modifying expansions
+# (`${x,,}`, `${x^^}`).
+#
+# **Each literal that would match its own line is written with a character class** — `map[f]ile`,
+# `[|]&`, `[&]>>`, `;;[&]` — because this file is in BASH32 and greps itself, and a guard that
+# flags its own pattern would fail on every run.
+BASH4_SPELLINGS='declare +-[[:alpha:]]*[An]|local +-[[:alpha:]]*[An]|typeset +-[[:alpha:]]*[An]|declare +-[gn]|local +-[gn]|map[f]ile|readarra[y]|copro[c]|wai[t] -n|\[\[ +-v |\$\{[[:alpha:]_][[:alnum:]_]*(\[[^]]*\])?(,,|\^\^|,|\^)\}|[&]>>|[|]&|;;[&]|;[&][[:space:]]*$'
+
+for f in $BASH32; do
+  if /bin/bash -n "$ROOT/$f" 2>"$T/parse.err"; then
+    echo "ok   bash-3.2: $f parses under /bin/bash"
+  else
+    echo "FAIL bash-3.2: $f does not parse under /bin/bash ($(/bin/bash --version | head -1)):"
+    sed 's/^/     /' "$T/parse.err"; fails=$((fails + 1))
+  fi
+done
+for f in $BASH32 $POSIX_SH; do
+  # A COMMENT may name a spelling (`# we used to declare -A here`); a command may not. The
+  # `-v` drops the comment lines, which is also what lets the note above say the words.
+  hits="$(grep -nE -- "$BASH4_SPELLINGS" "$ROOT/$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+  if [ -n "$hits" ]; then
+    echo "FAIL bash-3.2: $f uses a bash-4 spelling the Mac's /bin/bash does not have:"
+    printf '%s\n' "$hits" | sed 's/^/     /'
+    fails=$((fails + 1))
+  else
+    echo "ok   bash-3.2: $f has no bash-4 spelling"
+  fi
+done
+# **A new script under `scripts/` is in scope by existing**, so the lists cannot drift from
+# the directory: a file whose first line names bash and is not in `BASH32` — or a `/bin/sh`
+# one that is not in `POSIX_SH` — fails here, by name, instead of going unchecked because
+# nobody remembered a list in a test file. Add the file to the list and it is covered.
+for f in "$ROOT"/scripts/*; do
+  [ -f "$f" ] || continue
+  rel="scripts/${f##*/}"
+  case "$(head -n 1 "$f" 2>/dev/null)" in
+    *bash*)
+      case " $BASH32 " in
+        *" $rel "*) ;;
+        *) echo "FAIL bash-3.2: $rel names bash and is not in BASH32 — add it to the guard"; fails=$((fails + 1)) ;;
+      esac ;;
+    # `*bin/sh*` and not `*sh`: a `#!/usr/bin/env zsh` is a shell script of a third kind,
+    # and this guard is about the two the launchers and the installer are written in.
+    *bin/sh*)
+      case " $POSIX_SH " in
+        *" $rel "*) ;;
+        *) echo "FAIL bash-3.2: $rel is a /bin/sh script and is not in POSIX_SH — add it to the guard"; fails=$((fails + 1)) ;;
+      esac ;;
+  esac
+done
+# **And a run, not only a parse.** `--help` reaches the launcher's argument handling and its
+# array expansions without starting a daemon — the one path that would have caught
+# `EXTRA_ARGS[@]: unbound variable` under 3.2 — and it is run with the same scrubbed
+# environment the cases above use, so it can touch nothing of the operator's.
+help_out="$( (cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  LETIBOT_BIN="$T/bin" /bin/bash "$LAUNCHER" --help) 2>&1 )"
+if printf '%s' "$help_out" | grep -q "one command to start chatting"; then
+  echo "ok   bash-3.2: /bin/bash scripts/letibot --help runs on the Mac's bash"
+else
+  echo "FAIL bash-3.2: /bin/bash scripts/letibot --help did not run:"
+  printf '%s\n' "$help_out" | sed 's/^/     /'; fails=$((fails + 1))
+fi
+
 DEFAULT_ONLY='[deepseek]
 
 [default]
