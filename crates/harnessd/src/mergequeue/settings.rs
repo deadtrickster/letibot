@@ -17,6 +17,9 @@
 //!                                 #   on this machine, as the children that author the
 //!                                 #   branches do) or `vm` (each reviewer in a firecode
 //!                                 #   microVM)
+//! gate_host = "lab2x1"             # decision 9's machine, when it is not this one: the gate's
+//!                                 #   steps run on a host the operator declared in
+//!                                 #   `hosts.toml` (default: empty — this machine)
 //! ```
 //!
 //! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
@@ -118,6 +121,21 @@ pub struct QueueSettings {
     pub gate_carry: Vec<String>,
     /// Where this project's reviewers run ([`Reviewers`]). `Host` unless the project says `vm`.
     pub reviewers: Reviewers,
+    /// **Where this project's GATE runs** — `[queue] gate_host`, a name from the operator's
+    /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
+    /// it says otherwise).
+    ///
+    /// The name is not checked here: whether it is a host at all is asked where it is used
+    /// ([`super::gate_host::run_on_host`]), which can name the file, the hosts the file does know
+    /// and what to do about it — the same rule [`crate::config::Config::reviewers`] follows for
+    /// the placement of a reviewer. A file that names a machine nobody declared therefore does not
+    /// stop the daemon; it blocks that project's gate with a sentence, which is the thing the
+    /// operator has to read anyway.
+    ///
+    /// **It is read by the DAEMON, not by the worker** (`Config::for_the_daemon`), because the
+    /// queue builds one gate runner for the whole daemon; a daemon seated above several
+    /// repositories reads the workspace's own file, exactly as it does for `reviewers`.
+    pub gate_host: Option<String>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -130,6 +148,7 @@ impl Default for QueueSettings {
             red_target: RedTarget::Fix,
             gate_carry: Vec::new(),
             reviewers: Reviewers::Host,
+            gate_host: None,
             path: None,
         }
     }
@@ -148,6 +167,8 @@ struct QueueTable {
     gate_carry: Vec<String>,
     #[serde(default)]
     reviewers: Option<String>,
+    #[serde(default)]
+    gate_host: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -204,6 +225,10 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
     Ok(QueueSettings {
         gate_carry,
         reviewers,
+        gate_host: q
+            .gate_host
+            .map(|h| h.trim().to_string())
+            .filter(|h| !h.is_empty()),
         target: q
             .target
             .map(|t| t.trim().to_string())
@@ -292,6 +317,26 @@ mod tests {
         let e = for_repository(&repo).unwrap_err();
         assert!(e.contains("\"firecode\""), "{e}");
         assert!(e.contains("\"host\"") && e.contains("\"vm\""), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// **`gate_host` is a machine's name or nothing** — a value that is only whitespace is the
+    /// default (this machine), not a host called `""`, and a name is passed on as written.
+    #[test]
+    fn gate_host_is_a_name_or_nothing() {
+        let (dir, repo) = file("main_model = \"local\"\n[queue]\ntarget = \"main\"\n");
+        assert_eq!(for_repository(&repo).unwrap().gate_host, None);
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\ngate_host = \"lab2x1\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_host.as_deref(),
+            Some("lab2x1")
+        );
+        std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_host = \"  \"\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().gate_host, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

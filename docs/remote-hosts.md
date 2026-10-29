@@ -1263,3 +1263,135 @@ lock. Files that are created and removed need no lock at all.
   each and with `ControlPersist=120`, that is the price this slice chose over a cross-process pool.
 * **The old socket names are not cleaned up.** A daemon built before this change left
   `ssh-<host>.sock` behind; it expires on its own `ControlPersist` and nothing reads it again.
+
+## The merge gate on a declared host (2026-10-29)
+
+The operator: *"i told you about other hosts so you actually use that capability for running gates
+and subagents fanouts"*. The fanout half was already there (`fanout`, `task { where: "host:NAME" }`);
+this is the gate half, and it exists because a night of landings ran `cargo test --workspace` on the
+box that was also serving the daemon, a dozen worktrees and every VM.
+
+### The setting
+
+```toml
+[queue]
+gate_host = "lab2x1"      # a [host.…] from ~/.config/letibot/hosts.toml; empty is this machine
+```
+
+or, on the daemon's command line, `--gate-host lab2x1` — which wins over the file, and
+`--gate-host local` puts it back here for one invocation. **Empty is the default and is today's
+behaviour byte for byte**: `LocalGate` with nothing set is `run_with_memory`, in this machine's own
+cgroup, under `[memory] gate`.
+
+The value is read once at daemon start and handed to the queue through
+`mergequeue::gate::set_gate_host`, because the queue builds **one** runner for the whole daemon
+(`QueueEnv::production`'s `Arc::new(LocalGate)`) — the same seam, and the same shape, as
+`[memory] gate`. `LocalGate`'s `run` is therefore the *dispatch*: nothing set is the local run, a
+name is `HostGate` (`mergequeue::gate_host`). The name a row carries is the host's, so the queue's
+green line reads `` `main` is green at 0f2d9550 (lab2x1 gate) ``.
+
+A daemon seated above several repositories reads the workspace's own `leticode.toml`, exactly as it
+does for `[queue] reviewers`.
+
+### What crosses the wire, and what does not
+
+**The merge stays here.** The host runs `sh -c <step>` in a copy of the landing worktree; the target
+branch moves by a compare-and-swap on this box's `refs/heads/<target>`, and nothing in the host path
+runs a `git` that writes anywhere but its own copy.
+
+Two transports, and the second is not optional:
+
+* **`rsync -a --delete`, over the host's declared key and root**, into
+  `<host root>/gate/<repo>-<hex>/tree`. A landing worktree is not only its commit: `[queue]
+  gate_carry` copies gitignored inputs into it (`images/`, `vendor/` — a firecode VM's kernel and
+  rootfs), and those are in no commit, so only a filesystem copy carries them. `--delete` so a file
+  the branch removed is gone there too; the repository's own directory and `target` are excluded
+  (the first is a *file* naming a path on this box; the second is the local build cache).
+* **A `git` bundle**, because `rsync` cannot carry a repository: a landing worktree's metadata is a
+  file pointing at `<repo>/.git/worktrees/<name>`, which means nothing on another machine — and the
+  gate's first step here is `sh scripts/check-fmt.sh main`, which runs `git diff main HEAD` and
+  `git status --porcelain`. Without objects and a ref named `main` that step fails on every branch
+  and the whole gate is red for a reason that has nothing to do with the code. So the tip and the
+  target branch go over as a bundle (`git fetch` into the host's bare `src.git`, then a worktree at
+  the tip), and the rsync'd tree lands on top: the index and `HEAD` are the commit, the working tree
+  is the landing tree.
+
+**The bundle is incremental and its own refs are the record.** The host's `refs/gate` and
+`refs/heads` are asked for their tips and passed as `--not`, so the first gate pays for the history
+and every one after it pays for the branch. What to fetch is read back off the bundle
+(`git bundle list-heads`) rather than assumed: a thin bundle whose prerequisite already covers a
+branch **drops that ref**, and asking for it is a `git fetch` that dies on *couldn't find remote
+ref* (measured on the third gate of one repository).
+
+### The warm cache
+
+`CARGO_TARGET_DIR` is `<gate dir>/target` — outside the rsync'd tree and outside the worktree, so
+neither `--delete` nor `git clean -fd` can take it. A cold gate on a host is worse than a local one
+(the whole dependency tree compiled from nothing), which is the whole reason the directory is
+per-repository and permanent.
+
+Measured on lab2x1 (32 cores, 73 GiB free, its own 1.4 GB registry cache, ~15 ms round trips over
+the daemon's `ControlMaster`), gating this repository at `f7397ad5` with
+`sh scripts/check-fmt.sh main` and `cargo test --offline -p letibot-tokencore --lib`:
+
+| run | tree sent | bundle | check-fmt | tokencore tests | in all |
+|---|---|---|---|---|---|
+| first (cold `target/`) | 32 MB | 19 MB | 1.6 s | 78 s | **~2 min** |
+| second (same tip) | no bytes changed | none | 0.6 s | 1.1 s | **~4 s** |
+
+The second run sends nothing at all: the host already has the commit, so no bundle is built, and
+rsync moves no bytes. That is what makes a host gate worth having — the first run pays for a
+machine's worth of compilation and the ones after it pay for the branch.
+
+### The deadline, and a host that cannot be reached
+
+Every call is bounded by `rpc::run_bounded` and goes through the same breaker (`rpc::before`) the
+rest of the fleet path uses, so **a host that is down is a verdict in the first second**, not a
+hang: `GateVerdict::Infra` with a sentence — *"… did not reach lab2x1: ssh exited 255, which is a
+connection or authentication failure and never a remote command's own status — Connection refused.
+Nothing was judged — the tip is UNJUDGED, not red"* — which the queue writes as `blocked`, and the
+next pass gates it again when the host is back.
+
+Each step is started **detached, under `setsid`, with a pid file**, and polled once a second: one
+round trip answers both *how is it* and *what has it written since*, so the log arrives at the same
+local path the local gate writes (`$TMPDIR/letibot-gate/…`) and the pane and the failure excerpt do
+not change. The status file is read **before** the pid, for
+`a-finishing-job-and-a-killed-job-answer-the-same-poll`'s reason. At the deadline, on the daemon's
+stop, or when the lease goes, the far side's whole process group gets `SIGTERM`, five seconds, then
+`SIGKILL` — the local gate's own discipline, one machine over.
+
+Two things are worth knowing about the exit status:
+
+* **A shell reports *my child was killed by signal n* as `128 + n`**, and a `137` read as a code
+  would make a step killed by `SIGKILL` a RED branch instead of an unjudged one. `exit_of` decodes
+  129–192 as signals, so a host step and a local step are read the same way.
+* **The row says its memory was not measured** — `[gate memory: not measured — the step ran on
+  lab2x1, where this daemon has no cgroup of its own]`. The model's copy of the evidence drops that
+  line like any other quiet one; the operator's row keeps it, because *where* a step ran is a fact
+  about the run.
+
+The one window a step can outlive its gate is a daemon killed with `SIGKILL` between two polls —
+the same window the local gate has. A far-side `timeout` is deliberately NOT used: its exit status
+would be one more number to tell apart from the step's own.
+
+### Trying it by hand
+
+```sh
+cargo run --offline -p letibot-harnessd --example gate_on_host -- \
+    lab2x1 ~/.local/share/letibot/landing/letibot-0123abcd
+```
+
+runs that tree's own `## Merge gate` on that host and prints one line per step with its outcome and
+milliseconds; a trailing list of commands replaces the steps, which is how the numbers above were
+taken. It writes nothing to the store, claims no lease and runs no queue.
+
+### What this does not do
+
+* **The host's `[memory] gate` is not applied.** There is no delegated cgroup on that machine, so a
+  step there is bounded by the host's own memory and by nothing of ours. A step killed there is
+  still `killed` and unjudged, not red.
+* **`gate_carry` is re-sent on every run** — `rsync` is incremental, so an unchanged file costs a
+  stat and not a byte, but a project that carries a gigabyte of images pays for the check each time.
+* **A gate host is a daemon-wide setting**, not a per-repository one, for the reason above: the
+  queue's runner is built once. A daemon serving several repositories where one wants a fleet box
+  and another wants the local one needs two daemons.

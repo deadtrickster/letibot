@@ -669,6 +669,21 @@ pub struct Config {
     /// reviewers here and SAYS SO, in the session's own prompt, rather than falling back silently:
     /// the state is `ReviewerPlacement::NoVm` with the reason the box gave.
     pub reviewers: Reviewers,
+    /// **Where this daemon's merge gate runs** — `[queue] gate_host` in the project's
+    /// `leticode.toml`, `--gate-host` on the command line, and [`crate::mergequeue::gate::gate_host`]
+    /// once the daemon is up.
+    ///
+    /// `None` — the default, and the value [`Config::for_this_box`] states — is **this machine**,
+    /// which is what the gate has always been and what a fixture must get: a test that builds a
+    /// `Config` must not find its gate on another box because a file on the operator's machine said
+    /// so. The daemon is the one caller that reads the file ([`Config::for_the_daemon`]), and
+    /// `--gate-host` is the way to say it for one invocation or for a daemon seated above several
+    /// repositories.
+    ///
+    /// A name is a `[host.…]` in the operator's `hosts.toml` and nothing else: `cli::run` refuses a
+    /// flag naming one that is not there, and a file that names one is refused by
+    /// `mergequeue::gate_host` when the gate runs — with a sentence, not a red branch.
+    pub gate_host: Option<String>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
     /// **What to try when the model this session is on is OUT** — `[fallback] models`
@@ -2215,6 +2230,10 @@ impl Config {
             // caller that is a live operator's box — reads the project file in `for_the_daemon`.
             // `Host` is also the operator's own ruling of 2026-10-29. See the field.
             reviewers: Reviewers::Host,
+            // **The gate runs here unless the daemon reads otherwise.** A fixture must not find
+            // its gate on another machine because a file on the operator's box said so — see the
+            // field, and `Config::for_the_daemon` for the one caller that reads it.
+            gate_host: None,
             provider: None,
             fabric: None,
             allow_bash: false,
@@ -2266,9 +2285,11 @@ impl Config {
     /// reviewer rather than the one that boots a VM nobody asked for.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
-        cfg.reviewers = crate::mergequeue::settings::for_repository(&cfg.workspace)
-            .map(|s| s.reviewers)
-            .unwrap_or_default();
+        // One read of the project's file for both answers: where its reviewers run and where its
+        // gate runs are the same file, and two calls could disagree about which file that is.
+        let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();
+        cfg.reviewers = queue.reviewers;
+        cfg.gate_host = queue.gate_host;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         // **The reviewers' own directory**, beside the landing root and for the same reason: it is
         // the daemon's, not a session's, and a fixture that serves reviews names its own.

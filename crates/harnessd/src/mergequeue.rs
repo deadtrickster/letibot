@@ -13,6 +13,9 @@
 //!   by compare-and-swap (`Store::acquire_queue_lease`), one per repository (decisions 1, 2).
 //! * **[`gate`]** — the target's own `## Merge gate`, run by a [`gate::GateRunner`] (R62's seam)
 //!   with a thirty-minute deadline in a killable process group (decision 9).
+//! * **[`gate_host`]** — the same steps on a machine the operator declared in `hosts.toml`
+//!   (`[queue] gate_host`, `--gate-host`): the tree goes over `rsync` and a git bundle, the merge
+//!   stays here.
 //! * **[`git`]** — the landing in a DEDICATED worktree (in letibot's data directory, never in
 //!   the repository's `.git`), a compare-and-swap on the target's ref, the push, and the fresh
 //!   clone a VM reviewer is booted on.
@@ -48,6 +51,7 @@ pub mod capacity;
 pub mod carry;
 pub mod desk;
 pub mod gate;
+pub mod gate_host;
 pub mod git;
 pub mod lease;
 pub mod notices;

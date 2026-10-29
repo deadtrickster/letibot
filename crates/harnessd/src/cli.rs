@@ -365,6 +365,15 @@ fn usage() -> String {
      \x20                           which asks nobody for anything and costs a guest\
      \x20                           exec per read. The project's `[queue] reviewers`\
      \x20                           says the same thing, and this flag overrides it\n\
+     \x20 --gate-host NAME         run this daemon's MERGE GATE on a machine the\
+     \x20                           operator declared in hosts.toml, instead of on\
+     \x20                           this box. The landing tree goes over that host's\
+     \x20                           own key and root and the steps run there with\
+     \x20                           their build cache; the merge itself stays here.\
+     \x20                           Unset -- the default -- is this machine. The\
+     \x20                           project's `[queue] gate_host` says the same\
+     \x20                           thing, and this flag overrides it; `--gate-host`\
+     \x20                           with no name, or `local`, puts it back here\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -990,6 +999,24 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 vm_copy = true;
                 cfg.vm_mount = false;
             }
+            // **Where the merge gate runs.** A name from the operator's `hosts.toml`, checked
+            // here for `--host`'s reason: a name nobody declared is refused by this line rather
+            // than by a gate that fails on the first branch after it. `local` (or an empty name)
+            // puts it back on this machine, which is how an operator overrides a project file
+            // for one daemon.
+            "--gate-host" => {
+                let name = next()?;
+                let name = name.trim().to_string();
+                if name.is_empty() || name == "local" || name == "here" {
+                    cfg.gate_host = None;
+                } else {
+                    let hosts = letibot_tools::remote::Hosts::load();
+                    if hosts.get(&name).is_none() {
+                        return Err(hosts.refusal(&name));
+                    }
+                    cfg.gate_host = Some(name);
+                }
+            }
             // **Where this session's TOOLS run, on another machine**
             // (`docs/remote-hosts.md`): `--host lab2x1`, the same shape as `--vm`. The
             // name must be one the operator declared, so it is resolved here — before a
@@ -1157,6 +1184,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if cfg.one_shot {
         cfg.serve_queues = false;
     }
+
+    // **Where this daemon's gate runs**, told to the queue once — the queue builds one runner for
+    // the whole daemon (`QueueEnv::production`), so this is the seam and `mergequeue::gate`
+    // reads it. `None` is this machine and is today's behaviour exactly. Said AFTER the flags so
+    // `--gate-host` is the last word over `[queue] gate_host`, which `Config::for_the_daemon`
+    // read from the project's file.
+    crate::mergequeue::gate::set_gate_host(cfg.gate_host.clone());
 
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {

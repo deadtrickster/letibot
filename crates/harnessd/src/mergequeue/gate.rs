@@ -15,9 +15,18 @@
 //! real disk ([`GATE_TMP_ROOT`], one per run) and `CARGO_BUILD_JOBS` comes from the step's own cap
 //! rather than from the core count — see [`GATE_TMPDIR`], [`GATE_TMP_ROOT`] and [`build_jobs`].
 //!
-//! **The runner is an interface** ([`GateRunner`]) with one implementation here ([`LocalGate`]);
-//! R62 runs the gate on the fleet as a second implementation of the same trait, and nothing else in
-//! the queue has to change for it.
+//! **The runner is an interface** ([`GateRunner`]) and there are two implementations of it:
+//! [`LocalGate`], which runs the steps here, and [`HostGate`] (`mergequeue::gate_host`), which
+//! runs them on a machine the operator declared in `hosts.toml` — R62's *"the gate runs on the
+//! fleet"*, and the operator's 2026-10-29 ruling that a box whose daemon, VMs and dozen
+//! worktrees are already competing should not also be the box the gate's `cargo test` runs on.
+//!
+//! **`[queue] gate_host` (or `--gate-host`) chooses between them, once, at daemon start** —
+//! [`set_gate_host`], the same shape as `[memory] gate` above, because the queue builds one
+//! runner for the whole daemon (`QueueEnv::production`) and a setting that had to be threaded
+//! through it would be a second thing the queue's own tests all had to grow a field for. Unset
+//! is today's behaviour, byte for byte: [`LocalGate::run`] with nothing set is
+//! [`run_with_memory`] and nothing else.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -128,6 +137,24 @@ pub fn gate_memory() -> Ask {
     GATE_MEMORY.get().copied().unwrap_or(Ask::Default)
 }
 
+static GATE_HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// **`[queue] gate_host` / `--gate-host`, set once at daemon start** (`cli.rs`) — the name of the
+/// declared host the gate's steps run on, or `None` for this machine.
+///
+/// Process-wide for [`set_gate_memory`]'s reason: the queue builds ONE runner for the whole
+/// daemon (`QueueEnv::production`'s `Arc::new(LocalGate)`) and nothing else in the queue knows
+/// about a host. Set once, read by every gate the daemon runs; an empty or blank name is `None`,
+/// because *`gate_host = ""`* is how a project says *here* over a value it inherited.
+pub fn set_gate_host(host: Option<String>) {
+    let _ = GATE_HOST.set(host.map(|h| h.trim().to_string()).filter(|h| !h.is_empty()));
+}
+
+/// The host the gate runs on, or `None` for this machine — [`set_gate_host`]'s value.
+pub fn gate_host() -> Option<String> {
+    GATE_HOST.get().cloned().flatten()
+}
+
 /// **Where a run's steps go, decided once per run**: a cgroup of their own (with the cap, or
 /// `None` for `uncapped`), or the daemon's own cgroup as before R76 and why.
 #[derive(Debug, Clone, PartialEq)]
@@ -222,11 +249,16 @@ impl StepEnv {
 
 /// **What a step's memory did**, for its row.
 #[derive(Debug, Clone, PartialEq)]
-enum StepMemory {
+pub(crate) enum StepMemory {
     /// Its own cgroup's counters.
     Used(MemoryUse),
     /// It ran in the daemon's cgroup, and why.
     Uncapped(String),
+    /// **It ran on a declared host** (`mergequeue::gate_host`), where this daemon makes no cgroup
+    /// and so has no peak, no cap and no count to report. A variant rather than `Uncapped`
+    /// because the sentence must not claim a cgroup it never looked at: the row says where the
+    /// step ran, and the model's copy of the evidence drops the line like any other quiet one.
+    Elsewhere(String),
     /// It never started, or the counters could not be read.
     Unknown,
 }
@@ -374,6 +406,10 @@ impl StepMemory {
             StepMemory::Uncapped(why) => {
                 format!("[gate memory: uncapped — the step ran in the daemon's own cgroup: {why}]")
             }
+            StepMemory::Elsewhere(host) => format!(
+                "[gate memory: not measured — the step ran on `{host}`, where this daemon has no \
+                 cgroup of its own]"
+            ),
             StepMemory::Unknown => match exit {
                 Some(e) => return Some(format!("[step: {}]", e.clause())),
                 None => return None,
@@ -425,23 +461,56 @@ pub struct GateControl<'a> {
     pub alive: &'a dyn Fn() -> bool,
 }
 
-/// **Who runs a gate** — the seam R62 fills with the fleet.
+/// **Who runs a gate** — R62's seam, and the fleet is now one of its two implementations.
 pub trait GateRunner: Send + Sync {
     /// Run `steps` in `worktree`, in order, stopping at the first red one.
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun;
-    /// What this runner is, for the row: `local`, or a runner's name.
+    /// What this runner is, for the row: `local`, or the host's name.
     fn name(&self) -> String {
         "local".to_string()
     }
 }
 
-/// **The gate on this machine** — decision 8: *"the gate runs here for now"*.
+/// **The daemon's gate** — decision 8: *"the gate runs here for now"*, and, since the operator's
+/// 2026-10-29 ruling, on a declared host when `[queue] gate_host` / `--gate-host` names one.
+///
+/// The queue builds this runner in exactly one place (`QueueEnv::production`), so the choice
+/// between the two machines is made *here*, at the seam the queue already has, rather than by a
+/// second constructor every fixture would have to grow. Nothing set is [`run_with_memory`] and
+/// nothing else: today's behaviour, byte for byte.
 #[derive(Debug, Default, Clone)]
 pub struct LocalGate;
 
 impl GateRunner for LocalGate {
     fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
-        run_with_memory(worktree, steps, ctl, gate_memory())
+        run_gate(gate_host().as_deref(), worktree, steps, ctl, gate_memory())
+    }
+
+    /// The name the row carries: the host's, or `local`.
+    fn name(&self) -> String {
+        gate_host().unwrap_or_else(|| "local".to_string())
+    }
+}
+
+/// **The gate on one declared host** — `hosts.toml`'s machine, reached over its own key and root
+/// (`mergequeue::gate_host`).
+///
+/// A type rather than only the setting, because it is the second implementation of
+/// [`GateRunner`] that [`LocalGate`]'s own doc has promised since R61, and because a test (or an
+/// operator with a `--gate-host` on the command line) can name a host without going through the
+/// process-wide value.
+#[derive(Debug, Clone)]
+pub struct HostGate {
+    pub host: String,
+}
+
+impl GateRunner for HostGate {
+    fn run(&self, worktree: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        super::gate_host::run_on_host(&self.host, worktree, steps, ctl)
+    }
+
+    fn name(&self) -> String {
+        self.host.clone()
     }
 }
 
@@ -465,106 +534,112 @@ pub fn run_with_memory(
         Ok(s) => s,
         Err(why) => return could_not_run(steps, why),
     };
-    let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
-    for (i, step) in steps.iter().enumerate() {
+    let mut done: Vec<Done> = Vec::with_capacity(steps.len());
+    for step in steps {
         let started = now_ms();
-        let (outcome, mem, leftover) = run_step(worktree, step, scratch.path(), cap, ctl, &place);
+        let (end, mem, leftover) = run_step(worktree, step, scratch.path(), cap, ctl, &place);
         let elapsed = now_ms().saturating_sub(started);
-        let exit = match &outcome {
-            StepEnd::Red(_, e) => Some(*e),
-            _ => None,
-        };
-        let evidence = mem.evidence(leftover, exit);
-        let with_memory = |out: String| match &evidence {
-            Some(line) if out.is_empty() => line.clone(),
-            Some(line) => format!("{out}\n{line}"),
-            None => out,
-        };
-        let (word, output, verdict) = match outcome {
-            StepEnd::Red(out, exit) => {
-                // **A step that did not pass is read once more before it is called red.**
-                // Killed at the gate's cap — or near it with no failing code — is the gate's
-                // limit, and killed by a signal before any code failed is somebody else's hand:
-                // neither judged the branch. So the row says `killed` and the verdict is the
-                // gate's own (`Infra`: the target UNJUDGED and blocked, the branch not failed),
-                // naming the cap, the peak, and the line that raises it.
-                let cause = red_cause(&out, exit, &mem);
-                let clause = match &mem {
-                    StepMemory::Used(u) => u.clause(),
-                    StepMemory::Uncapped(_) => "uncapped".to_string(),
-                    StepMemory::Unknown => "its memory could not be read".to_string(),
-                };
-                let output = with_memory(out);
-                match cause {
-                    RedCause::Code => (
-                        MergeGateOutcome::Failed,
-                        output.clone(),
-                        Some(GateVerdict::Failed(format!("`{step}` failed:\n{output}"))),
-                    ),
-                    RedCause::KilledAtCap(how) => (
-                        MergeGateOutcome::Killed,
-                        output,
-                        Some(GateVerdict::Infra(killed_at_cap_words(
-                            step, &clause, &how, leftover,
-                        ))),
-                    ),
-                    RedCause::KilledBySignal(sig) => (
-                        MergeGateOutcome::Killed,
-                        output,
-                        Some(GateVerdict::Infra(format!(
-                            "{GATE_KILLED}: `{step}` was {} before any code failed ({clause}; \
-                             no OOM kill in its cgroup, so not by the gate's cap). It judged \
-                             nothing about the code — the tip is UNJUDGED, not red. Gate it \
-                             again once whatever killed it is gone",
-                            StepExit::Signal(sig).clause()
-                        ))),
-                    ),
-                }
-            }
-            StepEnd::Ok(out) => (MergeGateOutcome::Passed, with_memory(out), None),
-            StepEnd::Deadline(out) => (
-                MergeGateOutcome::TimedOut,
-                with_memory(out),
-                Some(GateVerdict::TimedOut(format!(
-                    "`{step}` was still running at the gate's deadline and was killed with \
-                         its whole process group"
-                ))),
-            ),
-            StepEnd::Stopped(out, why) => (
-                MergeGateOutcome::Killed,
-                with_memory(out),
-                Some(GateVerdict::Stopped(format!("`{step}` was killed: {why}"))),
-            ),
-            StepEnd::Infra(why) => (
-                MergeGateOutcome::NotRun,
-                why.clone(),
-                Some(GateVerdict::Infra(format!("`{step}` could not run: {why}"))),
-            ),
-        };
-        rows.push(MergeGateStep {
+        let judged = judge(step, end, mem, leftover);
+        let last = judged.verdict.is_some();
+        done.push(Done {
             command: step.clone(),
-            outcome: word,
-            output,
             started_ms: started,
             elapsed_ms: elapsed,
+            judged,
         });
-        if let Some(v) = verdict {
-            rows.extend(steps[i + 1..].iter().map(|s| MergeGateStep {
-                command: s.clone(),
-                outcome: MergeGateOutcome::NotRun,
-                output: String::new(),
-                started_ms: 0,
-                elapsed_ms: 0,
-            }));
-            return GateRun {
-                steps: rows,
-                verdict: v,
-            };
+        if last {
+            break;
         }
     }
-    GateRun {
-        steps: rows,
-        verdict: GateVerdict::Passed,
+    assemble(steps, done)
+}
+
+/// **The one place a step's end becomes a row and a verdict** — shared by both machines, so a
+/// host gate cannot read a red step differently from a local one.
+pub(crate) fn judge(step: &str, outcome: StepEnd, mem: StepMemory, leftover: usize) -> Judged {
+    let exit = match &outcome {
+        StepEnd::Red(_, e) => Some(*e),
+        _ => None,
+    };
+    let evidence = mem.evidence(leftover, exit);
+    let with_memory = |out: String| match &evidence {
+        Some(line) if out.is_empty() => line.clone(),
+        Some(line) => format!("{out}\n{line}"),
+        None => out,
+    };
+    let (word, output, verdict) = match outcome {
+        StepEnd::Red(out, exit) => {
+            // **A step that did not pass is read once more before it is called red.**
+            // Killed at the gate's cap — or near it with no failing code — is the gate's
+            // limit, and killed by a signal before any code failed is somebody else's hand:
+            // neither judged the branch. So the row says `killed` and the verdict is the
+            // gate's own (`Infra`: the target UNJUDGED and blocked, the branch not failed),
+            // naming the cap, the peak, and the line that raises it.
+            let cause = red_cause(&out, exit, &mem);
+            let clause = match &mem {
+                StepMemory::Used(u) => u.clause(),
+                StepMemory::Uncapped(_) => "uncapped".to_string(),
+                StepMemory::Elsewhere(host) => format!("on `{host}`"),
+                StepMemory::Unknown => "its memory could not be read".to_string(),
+            };
+            // **A host gate's step is not in a cgroup this daemon made**, so the sentence must
+            // not claim a count it never took. Same words everywhere else.
+            let not_the_cap = match &mem {
+                StepMemory::Elsewhere(_) => {
+                    format!("{clause}; the gate's memory cap is not in force on that machine")
+                }
+                _ => format!("{clause}; no OOM kill in its cgroup, so not by the gate's cap"),
+            };
+            let output = with_memory(out);
+            match cause {
+                RedCause::Code => (
+                    MergeGateOutcome::Failed,
+                    output.clone(),
+                    Some(GateVerdict::Failed(format!("`{step}` failed:\n{output}"))),
+                ),
+                RedCause::KilledAtCap(how) => (
+                    MergeGateOutcome::Killed,
+                    output,
+                    Some(GateVerdict::Infra(killed_at_cap_words(
+                        step, &clause, &how, leftover,
+                    ))),
+                ),
+                RedCause::KilledBySignal(sig) => (
+                    MergeGateOutcome::Killed,
+                    output,
+                    Some(GateVerdict::Infra(format!(
+                        "{GATE_KILLED}: `{step}` was {} before any code failed ({not_the_cap}). It \
+                         judged nothing about the code — the tip is UNJUDGED, not red. Gate it \
+                         again once whatever killed it is gone",
+                        StepExit::Signal(sig).clause()
+                    ))),
+                ),
+            }
+        }
+        StepEnd::Ok(out) => (MergeGateOutcome::Passed, with_memory(out), None),
+        StepEnd::Deadline(out) => (
+            MergeGateOutcome::TimedOut,
+            with_memory(out),
+            Some(GateVerdict::TimedOut(format!(
+                "`{step}` was still running at the gate's deadline and was killed with \
+                     its whole process group"
+            ))),
+        ),
+        StepEnd::Stopped(out, why) => (
+            MergeGateOutcome::Killed,
+            with_memory(out),
+            Some(GateVerdict::Stopped(format!("`{step}` was killed: {why}"))),
+        ),
+        StepEnd::Infra(why) => (
+            MergeGateOutcome::NotRun,
+            why.clone(),
+            Some(GateVerdict::Infra(format!("`{step}` could not run: {why}"))),
+        ),
+    };
+    Judged {
+        outcome: word,
+        output,
+        verdict,
     }
 }
 
@@ -591,7 +666,73 @@ fn could_not_run(steps: &[String], why: String) -> GateRun {
     }
 }
 
-enum StepEnd {
+/// One step, decided: the row's two words and the verdict it forces, if any.
+pub(crate) struct Judged {
+    pub outcome: MergeGateOutcome,
+    pub output: String,
+    pub verdict: Option<GateVerdict>,
+}
+
+/// One step that RAN, with when it did and what came of it.
+pub(crate) struct Done {
+    pub command: String,
+    pub started_ms: u64,
+    pub elapsed_ms: u64,
+    pub judged: Judged,
+}
+
+/// **The rows and the verdict, from the steps that ran** — `done` is a prefix of `steps`, and the
+/// step that ended the run is the last of it. Every step after that one is `not_run` with no
+/// output, because a step the gate never reached is not a step that was green.
+pub(crate) fn assemble(steps: &[String], done: Vec<Done>) -> GateRun {
+    let mut rows: Vec<MergeGateStep> = Vec::with_capacity(steps.len());
+    let mut verdict = GateVerdict::Passed;
+    let mut stopped: Option<usize> = None;
+    for d in done {
+        rows.push(MergeGateStep {
+            command: d.command,
+            outcome: d.judged.outcome,
+            output: d.judged.output,
+            started_ms: d.started_ms,
+            elapsed_ms: d.elapsed_ms,
+        });
+        if let Some(v) = d.judged.verdict {
+            verdict = v;
+            stopped = Some(rows.len());
+            break;
+        }
+    }
+    if let Some(n) = stopped {
+        rows.extend(steps[n..].iter().map(|s| MergeGateStep {
+            command: s.clone(),
+            outcome: MergeGateOutcome::NotRun,
+            output: String::new(),
+            started_ms: 0,
+            elapsed_ms: 0,
+        }));
+    }
+    GateRun {
+        steps: rows,
+        verdict,
+    }
+}
+
+/// **The gate, on the machine the daemon was told to use** — `host` `None` is this machine.
+pub fn run_gate(
+    host: Option<&str>,
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+) -> GateRun {
+    match host {
+        Some(name) => super::gate_host::run_on_host(name, worktree, steps, ctl),
+        None => run_with_memory(worktree, steps, ctl, memory),
+    }
+}
+
+/// How one step ended, as the two machines report it.
+pub(crate) enum StepEnd {
     Ok(String),
     Red(String, StepExit),
     Deadline(String),
@@ -756,7 +897,7 @@ fn kill_group(pgid: i32, child: &mut std::process::Child, scope: Option<&Sibling
     let _ = child.wait();
 }
 
-fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
+pub(crate) fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join("letibot-gate");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     // **The gate's own log, in the box's temp dir and not the step's scratch**: the step's `TMPDIR`
@@ -776,7 +917,7 @@ fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(name))
 }
 
-fn read_tail(log: &Path) -> String {
+pub(crate) fn read_tail(log: &Path) -> String {
     let bytes = std::fs::read(log).unwrap_or_default();
     tail(&String::from_utf8_lossy(&bytes), EVIDENCE_BYTES)
 }
