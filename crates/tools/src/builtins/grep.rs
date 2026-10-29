@@ -435,7 +435,9 @@ pub const FILE_CEILING: u64 = 16 * 1024 * 1024;
 /// not a daemon that stops answering heads.
 pub const BYTES_BUDGET: u64 = 512 * 1024 * 1024;
 
-/// How many candidate files one [`crate::backend::ExecBackend::read_many`] asks for.
+/// How many candidate files one [`crate::backend::ExecBackend::read_many`] asks for —
+/// `grep`'s page, and [`crate::builtins::outline`]'s, because the number belongs to
+/// the seam and not to either tool.
 ///
 /// **The measurement this exists for**: a VM-placed reviewer's repo-wide `grep` was one
 /// `firecode in` per candidate file — a client fork, the guest's `socat`, a `bash -l`,
@@ -450,6 +452,10 @@ pub const READ_PAGE_FILES: usize = 64;
 /// growing at this many **declared** bytes — the same numbers the budget below adds up
 /// — but always takes its first file, so a page is never empty and no file is skipped
 /// for being the one that did not fit.
+///
+/// [`crate::builtins::outline`] uses it too, and there it is the only size bound a
+/// file has: that tool has no per-file ceiling, so one large file is still read whole
+/// (as it always was) and never 64 of them at once.
 pub const READ_PAGE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// What one rung of the ladder found, and over what.
@@ -518,11 +524,17 @@ fn search(
         let mut page: Vec<usize> = Vec::new();
         let mut page_bytes = 0u64;
         while i < files.len() && page.len() < READ_PAGE_FILES {
+            let e = files[i];
+            // The byte bound is tested before the progress line so that a page which
+            // breaks here does not print the same `scanned i of N` twice — once for the
+            // page that stopped and once for the page that starts with this file.
+            if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
+                break;
+            }
             if i > 0 && i % 500 == 0 {
                 // §8.5: progress is liveness. A walk over a large tree must produce it.
                 ctx.progress(format!("scanned {i} of {} files", files.len()));
             }
-            let e = files[i];
             if e.bytes > FILE_CEILING {
                 skipped_large += 1;
                 i += 1;
@@ -530,9 +542,6 @@ fn search(
             }
             if read_bytes >= BYTES_BUDGET {
                 unreached = files.len() - i;
-                break;
-            }
-            if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
                 break;
             }
             read_bytes += e.bytes;

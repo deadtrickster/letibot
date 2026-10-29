@@ -40,6 +40,7 @@ use crate::backend::{DirEntry, default_skip, walk};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
+use super::grep::{READ_PAGE_BYTES, READ_PAGE_FILES};
 use super::text_of;
 
 pub struct OutlineTool;
@@ -222,53 +223,91 @@ impl OutlineTool {
         let mut capped = false;
         let mut all_kinds: Vec<&'static str> = Vec::new();
 
-        for (i, e) in files.iter().enumerate() {
-            if i > 0 && i % 200 == 0 {
-                ctx.progress(format!("parsed {parsed} of {} files", files.len()));
+        // **A page at a time, not a file at a time** — the seam `grep` uses, for the
+        // same reason: over firecode one `read` is one `firecode in` (~0.5 s), so a
+        // tree-wide outline of a few hundred files was a few hundred round trips with
+        // no result until the last, and the reviewer holding the queue's slot looked
+        // hung. The page is chosen by exactly the test the one-at-a-time loop applied —
+        // the LANGUAGE, which is known before any read — so `skipped`, `parsed`,
+        // `total`, `all_kinds`, `partial` and the body are what they always were. This
+        // loop never exits early (a capped outline still parses every file, to count
+        // what it did not show), so no page boundary can change an answer.
+        let mut i = 0usize;
+        while i < files.len() {
+            let mut page: Vec<(usize, Language)> = Vec::new();
+            let mut page_bytes = 0u64;
+            while i < files.len() && page.len() < READ_PAGE_FILES {
+                let e = files[i];
+                // A page is bounded in bytes as well as in paths, because this tool has
+                // no per-file ceiling: a page always takes its first file, so one large
+                // file is read whole as it always was, and never 64 of them at once.
+                if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
+                    break;
+                }
+                if i > 0 && i % 200 == 0 {
+                    ctx.progress(format!("parsed {parsed} of {} files", files.len()));
+                }
+                let lang = match forced.map(Ok).unwrap_or_else(|| Language::of_path(&e.path)) {
+                    Ok(l) => l,
+                    Err(u) => {
+                        skipped.push(u.extension.unwrap_or_else(|| "(none)".into()));
+                        i += 1;
+                        continue;
+                    }
+                };
+                page_bytes += e.bytes;
+                page.push((i, lang));
+                i += 1;
             }
-            let lang = match forced.map(Ok).unwrap_or_else(|| Language::of_path(&e.path)) {
-                Ok(l) => l,
-                Err(u) => {
-                    skipped.push(u.extension.unwrap_or_else(|| "(none)".into()));
+            if page.is_empty() {
+                break;
+            }
+            let paths: Vec<&str> = page.iter().map(|(k, _)| files[*k].path.as_str()).collect();
+            // One call for the page where the backend can do it, and one file at a time
+            // for a page whose batch call failed — a failed page loses no definition.
+            let got = match ctx.backend.read_many(&paths) {
+                Ok(v) if v.len() == paths.len() => v,
+                _ => paths.iter().map(|p| ctx.backend.read(p)).collect(),
+            };
+            for ((slot, lang), bytes) in page.iter().zip(got) {
+                let e = files[*slot];
+                let Ok(bytes) = bytes else {
+                    continue;
+                };
+                if bytes.contains(&0) {
                     continue;
                 }
-            };
-            let Ok(bytes) = ctx.backend.read(&e.path) else {
-                continue;
-            };
-            if bytes.contains(&0) {
-                continue;
-            }
-            let (text, _) = text_of(&bytes);
-            let o = letibot_code::outline(&text, lang);
-            parsed += 1;
-            if o.partial {
-                partial.push(e.path.clone());
-            }
-            for s in &o.symbols {
-                if !all_kinds.contains(&s.kind) {
-                    all_kinds.push(s.kind);
+                let (text, _) = text_of(&bytes);
+                let o = letibot_code::outline(&text, *lang);
+                parsed += 1;
+                if o.partial {
+                    partial.push(e.path.clone());
                 }
+                for s in &o.symbols {
+                    if !all_kinds.contains(&s.kind) {
+                        all_kinds.push(s.kind);
+                    }
+                }
+                let kept = apply_filter(&o.symbols, filter);
+                total += kept.len();
+                if kept.is_empty() || capped {
+                    continue;
+                }
+                if shown >= MAX_FILES {
+                    capped = true;
+                    continue;
+                }
+                shown += 1;
+                let room = max.saturating_sub(count_rows(&body));
+                if room == 0 {
+                    capped = true;
+                    continue;
+                }
+                let (rows, cut) = render_file(&e.path, &o, &kept, room);
+                body.push_str(&rows);
+                body.push('\n');
+                capped |= cut;
             }
-            let kept = apply_filter(&o.symbols, filter);
-            total += kept.len();
-            if kept.is_empty() || capped {
-                continue;
-            }
-            if shown >= MAX_FILES {
-                capped = true;
-                continue;
-            }
-            shown += 1;
-            let room = max.saturating_sub(count_rows(&body));
-            if room == 0 {
-                capped = true;
-                continue;
-            }
-            let (rows, cut) = render_file(&e.path, &o, &kept, room);
-            body.push_str(&rows);
-            body.push('\n');
-            capped |= cut;
         }
 
         // A denominator of zero is a failed scope, never an answer about content.
@@ -633,5 +672,210 @@ mod tests {
             "{seen}"
         );
         assert!(seen.contains("good"), "what parsed is still real: {seen}");
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use letibot_transcript::ToolCall;
+
+    use crate::backend::{
+        BackendError, Command, DirEntry, ExecBackend, HostBackend, Output, tempdir::TempDir,
+    };
+    use crate::builtins::retrieval::Unavailable;
+    use crate::events::RecordingToolSink;
+    use crate::runtime::ToolRuntime;
+
+    /// Files that HAVE a grammar — the candidates a tree outline actually reads.
+    const PARSABLE: usize = 140;
+    /// Files that do not, so the `skipped` tally and the "no grammar" note are in the
+    /// answer being compared.
+    const NO_GRAMMAR: usize = 5;
+
+    fn tree(dir: &std::path::Path) {
+        for i in 0..PARSABLE {
+            std::fs::write(
+                dir.join(format!("m{i:03}.rs")),
+                format!("pub fn f{i}() -> u8 {{ {i} }}\n"),
+            )
+            .expect("fixture file");
+        }
+        std::fs::create_dir_all(dir.join("docs")).expect("docs");
+        for i in 0..NO_GRAMMAR {
+            std::fs::write(
+                dir.join("docs").join(format!("n{i}.txt")),
+                format!("note {i}\n"),
+            )
+            .expect("fixture file");
+        }
+    }
+
+    #[derive(Default)]
+    struct Counts {
+        reads: AtomicUsize,
+        batches: AtomicUsize,
+    }
+
+    /// **A backend over a real tree that counts how it was asked** — the instrument for
+    /// "one round trip per file" against "one per page". `batched` is what a substrate
+    /// whose `read` is a round trip looks like; `fail` makes the batch call itself fail,
+    /// which is the fallback's case.
+    ///
+    /// The same instrument as `grep`'s paging test, and deliberately not shared with it:
+    /// that one can also lose a single file inside a page, which is a shape this tool's
+    /// answer would hide (an unreadable file is simply not in the body).
+    struct Counting {
+        inner: HostBackend,
+        batched: bool,
+        fail: bool,
+        counts: Arc<Counts>,
+    }
+
+    impl ExecBackend for Counting {
+        fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
+            self.inner.run(cmd)
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            self.counts.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+            self.inner.write(path, bytes)
+        }
+        fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            self.inner.list(path)
+        }
+        fn stat(&self, path: &str) -> Option<DirEntry> {
+            self.inner.stat(path)
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+        fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+            None
+        }
+        fn read_many(
+            &self,
+            paths: &[&str],
+        ) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+            if !self.batched {
+                // The trait's default, spelled out: one `read` per path.
+                return Ok(paths.iter().map(|p| self.read(p)).collect());
+            }
+            self.counts.batches.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(BackendError::Io("the VM went away mid-page".into()));
+            }
+            Ok(paths.iter().map(|p| self.inner.read(p)).collect())
+        }
+    }
+
+    /// One `outline` call over the tree, and the counts it cost.
+    fn outline_over(batched: bool, fail: bool, args: &str) -> (String, usize, usize) {
+        let dir = TempDir::new();
+        tree(dir.path());
+        let counts = Arc::new(Counts::default());
+        let backend = Counting {
+            inner: HostBackend::new(dir.path()).expect("fixture root"),
+            batched,
+            fail,
+            counts: Arc::clone(&counts),
+        };
+        let registry = crate::read_only_tools(Arc::new(Unavailable)).expect("built-ins register");
+        let rt = ToolRuntime::new(registry, Box::new(backend));
+        let mut sink = RecordingToolSink::new();
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "outline".into(),
+            arguments: args.to_string(),
+        };
+        let rendered = rt.invoke("turn_1", &call, &mut sink).render();
+        (
+            rendered,
+            counts.reads.load(Ordering::SeqCst),
+            counts.batches.load(Ordering::SeqCst),
+        )
+    }
+
+    const ASK: &str = r#"{"path":"."}"#;
+
+    /// **The measurement**: a tree outline costs one round trip per FILE without the
+    /// batched read and one per PAGE with it — 140 parsable files, 64 a page.
+    ///
+    /// Both numbers are asserted: 0 page calls is a backend that ignored the seam, and
+    /// 140 reads beside 3 pages would be a paging loop that still went back for every
+    /// file. The two answers are compared too, because a count that fell by losing a
+    /// definition is not a win.
+    #[test]
+    fn a_tree_outline_is_one_call_per_page_and_not_one_per_file() {
+        let (one_at_a_time, reads, batches) = outline_over(false, false, ASK);
+        assert_eq!(
+            (reads, batches),
+            (PARSABLE, 0),
+            "one `read` per parsable file, and no page asked for"
+        );
+        assert!(
+            one_at_a_time.contains(&format!("{PARSABLE} definition(s)")),
+            "the outline found nothing to compare:\n{one_at_a_time}"
+        );
+
+        let (paged, reads, batches) = outline_over(true, false, ASK);
+        let pages = PARSABLE.div_ceil(super::READ_PAGE_FILES);
+        assert_eq!(
+            (reads, batches),
+            (0, pages),
+            "one call per page of {} files ({PARSABLE} parsable files, {pages} pages) and \
+             none per file",
+            super::READ_PAGE_FILES
+        );
+        assert_eq!(
+            paged, one_at_a_time,
+            "the paged outline and the one-at-a-time outline must render the same result"
+        );
+    }
+
+    /// **A page's batch call failing loses no definition**: the page is retried one file
+    /// at a time and the answer is the one the per-file path produced.
+    #[test]
+    fn a_failed_page_falls_back_to_one_file_at_a_time() {
+        let (reference, _, _) = outline_over(false, false, ASK);
+        let (fell_back, reads, batches) = outline_over(true, true, ASK);
+        assert_eq!(
+            fell_back, reference,
+            "the fallback lost or changed a definition"
+        );
+        assert_eq!(batches, PARSABLE.div_ceil(super::READ_PAGE_FILES));
+        assert_eq!(
+            reads, PARSABLE,
+            "every file was re-read one at a time after the page failed"
+        );
+    }
+
+    /// **How the files were read cannot be told from the answer** — the whole rendered
+    /// result is the same either way for every shape this tool has: a plain tree, a
+    /// `kind` filter that selects nothing (the abstention that names the kinds present),
+    /// a `max_symbols` cap (the truncation note), a forced `language` (which parses the
+    /// files that would otherwise be skipped), and a scope holding nothing this build can
+    /// parse (the failed-scope branch, with its tally).
+    #[test]
+    fn the_answer_does_not_depend_on_how_the_files_were_read() {
+        let shapes = [
+            ASK,
+            r#"{"path":".","kind":"struct"}"#,
+            r#"{"path":".","max_symbols":10}"#,
+            r#"{"path":".","language":"rust"}"#,
+            r#"{"path":"docs"}"#,
+        ];
+        for args in shapes {
+            let (one_at_a_time, _, _) = outline_over(false, false, args);
+            let (paged, _, _) = outline_over(true, false, args);
+            assert_eq!(
+                paged, one_at_a_time,
+                "the paged outline answered differently for {args}"
+            );
+        }
     }
 }
