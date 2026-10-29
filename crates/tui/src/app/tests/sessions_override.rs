@@ -74,13 +74,26 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
     // after `b-sessions`, so it stands above it. Nothing answers two hooks today, so nothing
     // depends on that order — a test that pins it is how the next layer to share a hook finds out
     // it has to think about it.
+    //
+    // **Read off the table, not written down**: a second hand-kept list drifts the moment another
+    // package adds a built-in, and REVERSED because `register_builtin_bytes` stacks the table
+    // newest-first. The head's stack installs the whole table (`letibot_builtins::install`), tools
+    // included: a pane is the head's to draw, and a tool is a row in a list the head may show, so a
+    // built-in that declares one is a layer here whether or not any session seats it.
+    let mut want = vec![String::from("p1")];
+    let mut built_in: Vec<String> = letibot_builtins::table()
+        .iter()
+        .map(|b| format!("b-{}", b.name))
+        .collect();
+    built_in.reverse();
+    want.extend(built_in);
     assert_eq!(
         stack
             .layers()
             .iter()
             .map(|l| l.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["p1", "b-todo", "b-sessions", "b-claude-transcript"]
+        want
     );
 
     let mut a = a_head_with_a_one_shot();
