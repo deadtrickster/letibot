@@ -491,26 +491,15 @@ pub struct Config {
     /// [`crate::mergequeue::gate::gate_host`]. `None` is this machine, which is what a fixture must
     /// get; the daemon is the one caller that reads the file.
     pub gate_host: Option<String>,
-    /// **The machines a `host` reviewer may be placed on, and what this daemon already has on
-    /// them** — one pool per daemon, shared by the queue's workers and the review pool, because the
-    /// per-host cap is a fact about this daemon's own work (`mergequeue::review::hosts`).
-    ///
-    /// **A fixture gets a pool of this machine alone**, which is the same safe end
-    /// [`Config::reviewers`] takes and for the same reason: `for_this_box` is what every test in
-    /// this tree is built from, and a test that probed — let alone placed work on — one of the
-    /// operator's machines because a constructor defaulted would be a test that runs on somebody
-    /// else's box. [`Config::for_the_daemon`] opens it to every host the operator declared.
-    ///
-    /// It rides the config rather than being built where it is used because a CHILD's `open` is the
-    /// thing that places a reviewer: the pool has to reach the spawn, and the config is what the
-    /// spawn already carries.
+    /// The daemon's one pool of reviewer machines and what it has running on them, shared by the
+    /// queue's workers and the review pool. A fixture's pool probes nothing and places nowhere.
     pub review_hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
-    /// **`--reviewers-at-once N`** — how many reviewers this daemon's queues run at once, when the
-    /// operator says so on the command line. `None` is the project's `[queue] reviewers_at_once`,
-    /// and below that the placement's own number (`mergequeue::capacity::review_limit`).
+    /// `--reviewers-at-once N`. `None` defers to the project's `[queue] reviewers_at_once`, read
+    /// per repository, and then to the placement's own number.
     pub reviewers_at_once: Option<usize>,
-    /// **`--reviewer-hosts a,b,c`** — the machines this daemon's reviewers may use, when the
-    /// operator says so on the command line. `None` is the project's `[queue] reviewer_hosts`.
+    /// Which machines a `host` reviewer may use, from `[queue] reviewer_hosts` or
+    /// `--reviewer-hosts`. `Some(["local"])` is this machine alone (D18, the default). `None` is
+    /// every declared host. A list is exactly those hosts.
     pub reviewer_hosts: Option<Vec<String>>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
@@ -1585,9 +1574,7 @@ impl Config {
             // spec's - see the fields.
             skills: Vec::new(),
             reviewer_skills: Vec::new(),
-            // **A pool of this machine alone, and no ssh** — see the field: a fixture must not
-            // place work on the operator's machines because a constructor defaulted, and the
-            // daemon opens the pool to every declared host in `for_the_daemon`.
+            // A fixture's pool is this machine alone, so no test probes or places on a real host.
             review_hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec![crate::mergequeue::review::hosts::LOCAL.to_string()]),
@@ -1643,7 +1630,7 @@ impl Config {
         cfg.reviewer_skills = queue.reviewer_skills.clone();
         cfg.gate_host = queue.gate_host.clone();
         cfg.reviewer_hosts = queue.reviewer_hosts.clone();
-        cfg.reviewers_at_once = queue.reviewers_at_once;
+        // `reviewers_at_once` is not copied: the claiming pass reads it per repository.
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
         // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
