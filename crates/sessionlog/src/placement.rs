@@ -154,19 +154,40 @@ mod tests {
     /// This is the shape the bridge refuses on: *there is a daemon here and I cannot say where it
     /// runs the tools* is a refusal, while a stale *remote* read as the present truth is a package
     /// running locally when its caller asked for a host.
+    ///
+    /// **The successor takes the name by a rename, not by a rebind at the path.** Unlinking and
+    /// rebinding asks the filesystem to hand out a fresh inode, and only tmpfs does: on ext4 the
+    /// freed inode comes straight back (measured 30 times out of 30), so a rebinding fixture passes
+    /// wherever `TMPDIR` is on tmpfs and fails wherever it is on a real disk — which is what a gate
+    /// that moves its scratch onto one exposes. Two files that exist at the same moment cannot share
+    /// an inode, so binding the successor beside the old socket and moving it onto the name makes
+    /// *a different file at the same path* the fixture's guarantee instead of the filesystem's
+    /// favour, and leaves the assertion about identity exactly as strong.
     #[test]
     fn a_record_of_a_socket_that_is_gone_is_not_an_answer() {
+        use std::os::unix::fs::FileTypeExt;
+
         let (socket, first) = a_socket("replaced");
         write(&socket, "host:lab2x1").expect("the record is written");
         assert_eq!(read(&socket).as_deref(), Some("host:lab2x1"));
-        // The daemon goes and a new one binds the same path: same name, different file.
+        let gone = socket_id(&socket).expect("the socket the record names");
+        // The daemon goes, and a new one takes the same path: same name, a different file.
+        let successor = socket.with_file_name("successor.sock");
+        let _second =
+            std::os::unix::net::UnixListener::bind(&successor).expect("a new socket binds");
         drop(first);
-        std::fs::remove_file(&socket).expect("the old socket is removed");
-        let _second = std::os::unix::net::UnixListener::bind(&socket).expect("a new socket binds");
+        std::fs::rename(&successor, &socket).expect("the new socket takes the old name");
+        assert!(
+            std::fs::metadata(&socket)
+                .expect("the new socket")
+                .file_type()
+                .is_socket(),
+            "the fixture needs a real socket at the path, not a file that took its name"
+        );
         assert_ne!(
             socket_id(&socket).expect("the new socket"),
-            (0, 0),
-            "the fixture needs a real socket to compare against"
+            gone,
+            "the fixture needs a different file at the path for this to be about identity"
         );
         assert_eq!(
             read(&socket),
