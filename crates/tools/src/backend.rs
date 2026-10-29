@@ -553,7 +553,15 @@ impl HostBackend {
     pub fn executable(root: impl AsRef<Path>) -> Result<Self, BackendError> {
         let base = Self::writable(root)?;
         let host = crate::exec::HostProcesses::new(base.root.clone())
-            .map_err(|e| BackendError::Io(e.to_string()))?;
+            .map_err(|e| BackendError::Io(e.to_string()))?
+            // **The operator's own `!` line runs under this one, and `/bin/bash` on a stock
+            // Mac is 3.2** while the rc chain it reads with `-ic` is written for bash 4 or
+            // later — the row came back as `bash: declare: -A: invalid option` before the
+            // operator's command. `crate::console_bash` picks the program and leaves the
+            // flags alone. Only this constructor: a confined view's `$HOME` is a tmpfs, so
+            // the rc there is nobody's, and a bash found outside the view is one a command
+            // inside the boundary cannot exec.
+            .with_console_shell(crate::console_bash::shell());
         Ok(HostBackend {
             processes: Some(std::sync::Arc::new(host)),
             ..base
@@ -1884,6 +1892,102 @@ mod tests {
         assert_eq!(few_find, few_loop);
         assert_eq!((cut_find, cut_loop), (true, true));
         assert_eq!(paths(&few_find), vec!["/w/a b", "/w/empty"]);
+    }
+
+    /// **The operator's own `!` line is handed to a bash that can read their rc** — the
+    /// wiring of [`crate::console_bash`] into [`HostBackend::executable`], which is the
+    /// constructor the daemon builds an *unconfined* session with (the leticode seat, and the
+    /// Mac's boundary-less fallback). It is asserted here rather than in `console_bash`'s own
+    /// tests because a choice nobody wires in is a choice about nothing, and because the
+    /// constructor is where a later edit would put `/bin/bash` back.
+    ///
+    /// MEASURED 2026-10-29 on the operator's Mac: `/bin/bash` is 3.2.57, `~/.bashrc` sources
+    /// an emacs integration written for bash 4, and `! cp …` came back as
+    ///
+    /// ```text
+    /// bash: declare: -A: invalid option
+    /// declare: usage: declare [-afFirtx] [-p] [name[=value] ...]
+    /// ```
+    ///
+    /// — the rc's own error, in the row, before the operator's command. The rc here is that
+    /// defect in two lines: `declare -A` first, then a marker, so a run that reaches the end
+    /// of it has a bash that can read the operator's rc and a run that does not has 3.2.
+    #[test]
+    fn the_operators_own_line_is_handed_to_a_bash_that_can_read_their_rc() {
+        use crate::events::RecordingToolSink;
+        // **The console's `$HOME` is the standing environment's**, which is how the daemon
+        // hands the operator's own home to their own run (`exec::console`'s note). So the rc
+        // this test writes is the rc the run reads.
+        let home = tempdir::TempDir::new();
+        std::fs::write(
+            home.path().join(".bashrc"),
+            "declare -A LETIBOT_RC=([a]=b)\nexport LETIBOT_RC_READ=yes\n",
+        )
+        .expect("the operator's rc");
+        let dir = tempdir::TempDir::new();
+        let backend = match HostBackend::executable(dir.path()) {
+            Ok(b) => b,
+            Err(e) => {
+                // No process-lifetime tree on this box: said, not turned into a pass.
+                eprintln!("the operator's own run: no process-lifetime tree here: {e}");
+                letibot_tokencore::apparatus::absent(
+                    "a process-lifetime tree (cgroup v2; process groups on macOS)",
+                );
+                return;
+            }
+        };
+        let host = backend
+            .host_processes()
+            .expect("`executable` starts processes")
+            .clone();
+        host.set_standing_env(vec![(
+            "HOME".to_string(),
+            home.path().display().to_string(),
+        )]);
+        let registry =
+            crate::runner_tools(std::sync::Arc::new(crate::builtins::retrieval::Unavailable))
+                .expect("the runner's tools register");
+        let rt = crate::runtime::ToolRuntime::new(registry, Box::new(backend));
+        let mut sink = RecordingToolSink::new();
+        let call = letibot_transcript::ToolCall {
+            id: "bang-rc".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "printf '%s %s\\n' \"$BASH\" \"${LETIBOT_RC_READ:-no}\""
+            })
+            .to_string(),
+        };
+        let theirs = rt.invoke_operator("", &call, &mut sink);
+        let said = theirs.render();
+        // **The program the run reports is the one `console_bash` chose**, which is what
+        // makes this a test of the wiring and not of `$PATH` this afternoon.
+        let chosen = crate::console_bash::shell()[0].clone();
+        assert!(
+            said.contains(&chosen),
+            "the operator's own line must run under `{chosen}`, the bash this box's rc is \
+             written for: {said}"
+        );
+        assert!(
+            said.contains("yes"),
+            "the operator's rc must be read to its last line — the line after the `declare -A` \
+             is the one that sets this marker: {said}"
+        );
+        // **The row the operator reported, as an assertion.** `declare -A` is a bash 4
+        // feature; a 3.2 refuses the option and prints its usage into the row *before* the
+        // operator's command, which is the whole defect. A box with no bash 4 anywhere cannot
+        // satisfy this, and that is absent apparatus rather than a pass.
+        if crate::console_bash::major_version(&chosen).is_some_and(|v| v >= 4) {
+            assert!(
+                !said.contains("invalid option"),
+                "the operator's rc printed its own error into the row instead of being read: \
+                 `bash: declare: -A: invalid option` is what they saw on 2026-10-29: {said}"
+            );
+        } else {
+            letibot_tokencore::apparatus::absent(
+                "a bash 4 or later for the operator's own `!` line — without one their rc \
+                 cannot be read whole, and this test can only measure the fallback",
+            );
+        }
     }
 }
 
