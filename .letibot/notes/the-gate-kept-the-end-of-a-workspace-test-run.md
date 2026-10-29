@@ -52,3 +52,13 @@ error 24)` and no `failures:` block, and that line alone is now on the row.
 `[gate excerpt: …]` lines pass `gate::for_the_model` (it drops only `[gate memory: `) and
 `setup::step_words`, so `setup::shows_code_failing` still sees cargo's `error: N target(s)
 failed:` verbatim — the setup-vs-red classifier did not move.
+
+## The footer, because a second reader keeps only the END of the row
+
+The excerpt leads with the failure, but the row is not the only reader: `notices::failing_step`
+hands the model the LAST `TAIL_LINES` (30) lines of exactly this string, and a head's card does
+the same. So `excerpt` also ENDS with one line —
+`[gate excerpt: what failed is at the TOP of this row: `worker::a_test` in `-p letibot-harnessd
+--lib`]` — and a test cuts the excerpt at 30 lines the way the notice does and asserts the test's
+name is still in it. Measured on the fixture: 4 045 bytes for a 23 KiB stream (60 of 61 targets
+green), failure at the top, ~3 KiB of tail, footer last.

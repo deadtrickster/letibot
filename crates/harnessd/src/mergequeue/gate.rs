@@ -1363,6 +1363,29 @@ impl Failures {
         !self.targets.is_empty() || !self.summary.is_empty() || !self.exhausted.is_empty()
     }
 
+    /// **The one line the excerpt ENDS with**, naming what failed — because a reader that keeps
+    /// only the end of a row is a real reader: `notices::failing_step` hands the model the last
+    /// [`super::notices::TAIL_LINES`] lines of exactly this string, and a head's card does the
+    /// same. Without it the failure would be at the top of the row and nowhere else.
+    fn pointer(&self) -> String {
+        if let Some(t) = self.targets.first() {
+            return match &t.test {
+                Some(name) => format!(
+                    "[gate excerpt: what failed is at the TOP of this row: `{name}` in `{}`]",
+                    t.target
+                ),
+                None => format!(
+                    "[gate excerpt: what failed is at the TOP of this row: `{}`]",
+                    t.target
+                ),
+            };
+        }
+        if let Some(first) = self.summary.first() {
+            return format!("[gate excerpt: what failed is at the TOP of this row: {first}]");
+        }
+        "[gate excerpt: the machine refused the step something — see the TOP of this row]".into()
+    }
+
     /// **The failure section**, at most `budget` bytes: the counts, cargo's list of failing
     /// targets, then each target's first failing test and its panic — and, from anywhere in the
     /// stream, the lines that say a resource ran out.
@@ -1437,16 +1460,17 @@ pub fn excerpt(text: &str, cap: usize) -> String {
         return tail(text, cap);
     }
     let words = f.words(cap);
-    let room = cap.saturating_sub(words.len() + 1 + MARKER_BYTES);
+    let pointer = f.pointer();
+    let room = cap.saturating_sub(words.len() + pointer.len() + 2 + MARKER_BYTES);
     if room < MIN_TAIL {
         return format!(
             "{words}\n[gate excerpt: the end of the step's output is left out — it is {} byte(s) \
-             in all — because what failed is above]",
+             in all — because what failed is above]\n{pointer}",
             text.len()
         );
     }
     format!(
-        "{words}\n{}",
+        "{words}\n{}\n{pointer}",
         end_of(
             text,
             room,
@@ -2210,8 +2234,21 @@ mod tests {
             "the cut has to be admitted:\n{ex}"
         );
         assert!(
-            ex.trim_end().ends_with("`-p letibot-harnessd --lib`"),
-            "the end of the step's output is the last thing on the row:\n{ex}"
+            ex.trim_end().ends_with(
+                "[gate excerpt: what failed is at the TOP of this row: `worker::a_test` in \
+                 `-p letibot-harnessd --lib`]"
+            ),
+            "the row ends by naming what failed, for a reader that keeps only the end:\n{ex}"
+        );
+        // The model is handed the last `TAIL_LINES` lines of exactly this string
+        // (`notices::failing_step`), so the failure has to survive THAT cut too.
+        let keep = super::super::notices::TAIL_LINES;
+        let lines: Vec<&str> = ex.lines().collect();
+        let from = lines.len().saturating_sub(keep);
+        let for_the_model = lines[from..].join("\n");
+        assert!(
+            for_the_model.contains("worker::a_test"),
+            "the notice's own cut still loses the test:\n{for_the_model}"
         );
         assert!(
             ex.len() <= EVIDENCE_BYTES + 256,
@@ -2230,6 +2267,10 @@ mod tests {
         assert!(
             ex.contains("the end of the step's output is left out"),
             "{ex}"
+        );
+        assert!(
+            ex.contains("`worker::a_test` in `-p letibot-harnessd --lib`]"),
+            "even with the end gone, the row says what failed:\n{ex}"
         );
         assert!(
             !ex.contains("byte(s) of the step's output were left out here"),
