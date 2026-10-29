@@ -11,7 +11,8 @@ purpose = "read Claude Code's own transcripts: which sessions a project has, a s
 # The declaration is the ask and the schema the model is handed; the module that answers it is the
 # one the binary already carries, and `PluginHost::production` puts it at the bottom of the stack for
 # exactly the sessions that declared a tool from it — which is also why a session that asked for
-# nothing pays no compile.
+# nothing pays no compile. A directory with this manifest and no `plugin.wasm` is a DECLARATION: it
+# is on the stack (with no sha — there are no bytes) and discovery records nothing against it.
 hooks = ["tool_claude_transcript"]
 # **One tree, named as a person wrote it down.** `read` alone is the workspace; these transcripts
 # live in a folder no repository holds, so the layer says which one it may look at — and that line

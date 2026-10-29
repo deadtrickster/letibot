@@ -1153,7 +1153,14 @@ impl PluginHost {
         let failures = stack.failures();
         out.push_str("\nfailures: ");
         if failures.is_empty() {
-            out.push_str("none — every layer that is on disk loaded.\n");
+            // A declaration-only layer (a `plugin.toml` and no `plugin.wasm` — the documented
+            // install of a built-in's tool) has no bytes and no failure to report, so the sentence
+            // says which state `sha —` above is rather than claiming every layer loaded.
+            out.push_str(
+                "none — nothing on disk failed to load. A layer with only a `plugin.toml` is a \
+                 declaration, not a failure: the module that answers it is one the host already \
+                 carries, which is why it is listed with `sha —` above.\n",
+            );
         } else {
             out.push('\n');
             for f in failures {
@@ -2687,9 +2694,36 @@ mod tests {
         // the whole point of a built-in layer.
         std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
         let host = PluginHost::production("s-tool", &workspace);
+        // **And the documented install is CLEAN.** The project wrote a `plugin.toml` and no
+        // `plugin.wasm` — that is the install (`docs/plugins-plan.md` §4.8), because the module
+        // that answers is the one the binary carries — so discovery must record nothing against
+        // this stack and the session must be told nothing. MEASURED before the fix: two failures
+        // (`plugin.wasm: No such file or directory`, twice) went out as `plugin_layer` warnings on
+        // every session in the project, for a correct install, on the code that means *this layer
+        // is exploding*. `stack.failures()` and the notices are what this test now looks at.
+        {
+            let inner = host.lock();
+            assert!(
+                inner.stack.failures().is_empty(),
+                "a manifest with no module is a declaration, not a failure: {:?}",
+                inner.stack.failures()
+            );
+        }
         // It is a tool and not a pane: nothing of its is announced to a head.
         assert!(host.panes().is_empty(), "{:?}", host.panes());
         let hub = Hub::new("s-tool");
+        host.announce(&hub);
+        assert!(
+            !hub.retained().iter().any(
+                |e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer")
+            ),
+            "a correct install says nothing on the session's log: {:?}",
+            hub.retained()
+        );
+        assert!(
+            host.take_notices().is_empty(),
+            "and nothing is queued for the model"
+        );
         let asked = host.ask(
             &hub,
             "tool_claude_transcript",

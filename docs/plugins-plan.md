@@ -480,6 +480,15 @@ exit's 800 ms window already gone when `Sessions::open_first` returned). The com
 for the whole process (`Loader::load_builtin`, `crates/harnessd/src/plugins/rano.rs`), so the
 sessions that did ask for it pay it once.
 
+**A manifest and no module is a DECLARATION, and discovery is silent about it.** The layer is on
+the stack — it is the declaration the prompt is built from, listed with `sha —` because there are
+no bytes to hash — it answers nothing itself, and the module below answers the hook. Nothing is
+recorded as a failure and no `plugin_layer` warning goes out: before this, the missing module was
+recorded twice and announced on every session in the project, so the one code that means *this
+layer is installed and exploding* fired for a correct install (`Stack::discover`,
+`crates/plugins/src/stack.rs`). A `plugin.wasm` that is there and will not load is still a
+failure; so is a `plugin.toml` that does not parse.
+
 **What a broken layer costs is a tool call, never a session.** A trap falls to the layer below
 (the stack's own rule); a layer that answers nonsense, an outcome nobody defined, a look for a
 path it may not read, or a fifth round of questions is a `failed` result that names the layer, says

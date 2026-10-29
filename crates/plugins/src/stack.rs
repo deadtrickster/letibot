@@ -17,6 +17,16 @@
 //! with its module missing — the stack view shows it broken instead of showing nothing, which is
 //! the difference between "this fix is not installed" and "this fix is installed and exploding".
 //!
+//! A layer directory with a manifest and **no `plugin.wasm` at all** is neither: it is a
+//! **declaration**, and it is not a failure. That is the documented install of a built-in's tool
+//! (`docs/plugins-plan.md` §4.8) — the manifest is what the model is offered and the module that
+//! answers it is the one the binary carries, put at the bottom of the session's stack for exactly
+//! that reason — so a correct install must not look like a broken one. The layer is listed (its
+//! `sha256` is empty: there are no bytes to hash), it answers nothing, and it is silent:
+//! [`Stack::poll_changes`] has always treated the same absent file as *a build in progress* rather
+//! than as news, and a `plugin_layer` warning on every session in the project is a false alarm
+//! that teaches a person to ignore the code that means it.
+//!
 //! # Failures during a call are the call's, not the stack's
 //!
 //! [`Stack::call`] takes `&self`, because a stack is shared: the daemon keeps one behind an
@@ -225,12 +235,26 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
     })
 }
 
+/// Whether a layer's module is on disk at all.
+///
+/// `false` for a path that is not there, and for nothing else: a `plugin.wasm` that exists and will
+/// not load is a [`Failure`], and a directory of that name is one too (`fingerprint` refuses to hash
+/// it). A dangling symlink counts as a module that is there, so the reason is recorded once instead
+/// of being taken for a layer that never meant to have one.
+fn has_module(path: &Path) -> bool {
+    !matches!(
+        std::fs::symlink_metadata(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 /// Everything about a layer that is not in the [`Layer`] itself: its module, the hooks that
 /// module exports, and the bytes it was read from.
 #[derive(Clone)]
 struct Wired {
-    /// `None` when the module could not be loaded or admitted; the reason is in the stack's
-    /// failures and the layer still appears in the stack view.
+    /// `None` when the module could not be loaded or admitted — the reason is then in the stack's
+    /// failures — and for a layer that has no module at all (a declaration, which has no reason to
+    /// give). Either way the layer still appears in the stack view.
     module: Option<Arc<dyn Module>>,
     hooks: Vec<String>,
     seen: Fingerprint,
@@ -297,12 +321,15 @@ impl Stack {
     /// directories in the same order — session, project, user; newest layer first inside each —
     /// and reads only the `plugin.toml`s.
     ///
-    /// **No dedupe here, on purpose.** The order IS the precedence, so the caller that also has
-    /// the built-in table (which this crate cannot see — `crates/builtins` depends on this crate,
-    /// not the other way) appends it and keeps the first declaration of each tool name. A layer
-    /// whose module does not load is still listed: the tool is then seated and answers *the layer
-    /// is not loaded*, which is a sentence a model can act on rather than a tool that silently is
-    /// not there.
+    /// **No dedupe here, on purpose**, and no built-in scope either. The order IS the precedence, so
+    /// the caller keeps the first declaration of each tool name — and the built-in table is *not*
+    /// read here: a tool is seated when a layer on disk declares it, never because the binary
+    /// carries it (`docs/plugins-plan.md` §4.8; `crates/harnessd/tests/wired.rs` pins the default
+    /// session's tool set for exactly that reason). A layer whose module does not load is still
+    /// listed: the tool is then seated and answers *the layer is not loaded*, which is a sentence a
+    /// model can act on rather than a tool that silently is not there. So is a layer with no module
+    /// at all — the documented install of a built-in's tool is its `plugin.toml` alone, and the
+    /// module that answers it is the one the host puts below.
     ///
     /// A `plugin.toml` that does not parse is skipped here and reported by `discover`, which is
     /// the caller that has a `Failure` list to put it in.
@@ -725,47 +752,56 @@ impl Stack {
         for (n, (path, manifest)) in found.into_iter().enumerate().rev() {
             let id = format!("{}{}", scope.prefix(), n + 1);
             let wasm = path.join(WASM);
-            let seen = match fingerprint(&wasm) {
-                Ok(seen) => seen,
-                Err(why) => {
-                    self.failures.push(Failure {
-                        layer: id.clone(),
-                        scope,
-                        hook: None,
-                        why,
-                    });
-                    Fingerprint::absent()
-                }
-            };
-            let module = match self.loader.load(&wasm, &manifest.capabilities) {
-                Ok(module) => {
-                    let hooks = module.hooks();
-                    match manifest.admit(&hooks) {
-                        Ok(()) => Some((Arc::from(module), hooks)),
-                        Err(why) => {
-                            self.failures.push(Failure {
-                                layer: id.clone(),
-                                scope,
-                                hook: None,
-                                why,
-                            });
-                            None
+            // **A manifest and no module is a declaration, not a failure** — the module doc's
+            // third case. Recording it would publish `plugin_layer` warnings on every session in
+            // the project for a *correct* install of a built-in's tool, and there is nothing to
+            // load, so the layer is wired with no module and an empty fingerprint and
+            // `poll_changes` picks a module up if one is ever written beside the manifest.
+            let (seen, module, hooks) = if !has_module(&wasm) {
+                (Fingerprint::absent(), None, Vec::new())
+            } else {
+                let seen = match fingerprint(&wasm) {
+                    Ok(seen) => seen,
+                    Err(why) => {
+                        self.failures.push(Failure {
+                            layer: id.clone(),
+                            scope,
+                            hook: None,
+                            why,
+                        });
+                        Fingerprint::absent()
+                    }
+                };
+                let module = match self.loader.load(&wasm, &manifest.capabilities) {
+                    Ok(module) => {
+                        let hooks = module.hooks();
+                        match manifest.admit(&hooks) {
+                            Ok(()) => Some((Arc::from(module), hooks)),
+                            Err(why) => {
+                                self.failures.push(Failure {
+                                    layer: id.clone(),
+                                    scope,
+                                    hook: None,
+                                    why,
+                                });
+                                None
+                            }
                         }
                     }
+                    Err(why) => {
+                        self.failures.push(Failure {
+                            layer: id.clone(),
+                            scope,
+                            hook: None,
+                            why,
+                        });
+                        None
+                    }
+                };
+                match module {
+                    Some((module, hooks)) => (seen, Some(module), hooks),
+                    None => (seen, None, Vec::new()),
                 }
-                Err(why) => {
-                    self.failures.push(Failure {
-                        layer: id.clone(),
-                        scope,
-                        hook: None,
-                        why,
-                    });
-                    None
-                }
-            };
-            let (module, hooks) = match module {
-                Some((module, hooks)) => (Some(module), hooks),
-                None => (None, Vec::new()),
             };
             self.layers.push(Layer {
                 id: id.clone(),
@@ -983,6 +1019,13 @@ mod tests {
 
     /// A layer directory whose manifest declares one tool.
     fn tool_layer(root: &Path, name: &str, tool: &str, caps: &[&str]) {
+        let dir = tool_manifest(root, name, tool, caps);
+        write_wasm(&dir, &[&format!("tool_{tool}")], Act::answer(json!({})));
+    }
+
+    /// The same directory with the manifest and **no module** — the documented install of a
+    /// built-in's tool, where the module that answers is one the host already carries.
+    fn tool_manifest(root: &Path, name: &str, tool: &str, caps: &[&str]) -> PathBuf {
         let dir = root.join(name);
         std::fs::create_dir_all(&dir).expect("a layer directory");
         let caps: Vec<String> = caps.iter().map(|c| format!("\"{c}\"")).collect();
@@ -996,7 +1039,7 @@ mod tests {
             ),
         )
         .expect("plugin.toml");
-        write_wasm(&dir, &[&format!("tool_{tool}")], Act::answer(json!({})));
+        dir
     }
 
     #[test]
@@ -1588,6 +1631,61 @@ mod tests {
             "the reason is on the stack, not in every call"
         );
         assert_eq!(s.call("notice_fired", &json!({})).answer, None);
+    }
+
+    /// **A manifest and no module is a declaration, not a failure** — the documented install of a
+    /// built-in's tool (`docs/plugins-plan.md` §4.8): a project copies the built-in's `plugin.toml`
+    /// into its own scope and the module that answers it is the one the host puts below.
+    ///
+    /// Before this, `discover` recorded two failures for that directory (the fingerprint of a file
+    /// that is not there, and the load of it) and the daemon published them as `plugin_layer`
+    /// warnings on every session in the project — a false alarm for a correct install, on the one
+    /// code that is supposed to mean *this layer is exploding*.
+    #[test]
+    fn a_manifest_with_no_module_is_a_declaration_and_not_a_failure() {
+        let t = TempDir::new("declared-only");
+        let session = t.path().join("session");
+        let dir = tool_manifest(
+            &session,
+            "from-builtin",
+            "look",
+            &["read:~/.claude/projects"],
+        );
+        let mut s = stack(&t);
+        assert!(
+            s.failures().is_empty(),
+            "a correct install must not look broken: {:?}",
+            s.failures()
+        );
+        assert_eq!(
+            s.layers().len(),
+            1,
+            "it is a layer: the model is offered its tool"
+        );
+        assert_eq!(s.layers()[0].id, "s1");
+        assert_eq!(s.layers()[0].sha256, "", "there are no bytes to hash");
+        // Nothing answers it from here — the module that does is one the host puts below.
+        assert_eq!(s.call("tool_look", &json!({})).answer, None);
+        assert!(
+            s.failures().is_empty(),
+            "and resolving it is not a failure either"
+        );
+        assert!(
+            s.poll_changes().is_empty(),
+            "a poll of the same directory is silent"
+        );
+
+        // A module written beside the manifest is a change the poll sees, so a declaration is not
+        // a layer that can never answer.
+        write_wasm(&dir, &["tool_look"], Act::answer(json!({"ok": true})));
+        let pending = s.poll_changes();
+        assert_eq!(pending.len(), 1, "the module that arrived is a change");
+        assert_eq!(pending[0].layer, "s1", "for the layer that already exists");
+        s.apply(pending.into_iter().next().unwrap()).unwrap();
+        assert_eq!(
+            answer_of(&s.call("tool_look", &json!({}))),
+            json!({"ok": true})
+        );
     }
 
     #[test]
