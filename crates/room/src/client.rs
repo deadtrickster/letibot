@@ -334,39 +334,65 @@ impl Client {
                 // blocks on this socket must not be the last owner of it, or a dropped client
                 // would hold its own connection open and the coordinator would never see the
                 // close — which is the one fact the whole liveness design rests on.
+                //
+                // **And the read comes BEFORE the upgrade, which is not a style choice.**
+                // MEASURED 2026-10-29: `weak.upgrade()` was the loop's first statement and its
+                // `Client` lived across `read_frame`, so the thread blocked on the socket was an
+                // OWNER of it. `drop(client)` then could not run `Shared::drop`, the `shutdown`
+                // that is supposed to wake this read never happened, and the coordinator's
+                // `note_gone` never ran — the claim waited out the ninety-second lease instead of
+                // being given back at once, and `tests/socket.rs`'s
+                // `a_closed_connection_gives_its_claim_back_at_once_and_says_so` failed about
+                // half the time (5.1 s, its own deadline) while passing the other half, depending
+                // on whether the drop landed in the few instructions between one frame and the
+                // next. Reading first leaves the blocked thread holding nothing but the socket.
                 loop {
-                    let Some(me) = weak.upgrade().map(Client::from_shared) else {
-                        break;
-                    };
-                    match read_frame(&mut reader) {
-                        Ok(Some(frame)) => match frame {
-                            Response::Event { event } => (me.inner.wake)(&event),
-                            Response::Bye { why } => {
-                                me.drop_connection(&why);
-                                break;
-                            }
-                            other => {
-                                let slot = me.inner.waiting.lock().expect("the waiting lock");
-                                if let Some(tx) = slot.as_ref() {
-                                    let _ = tx.send(other);
-                                }
-                            }
-                        },
-                        Ok(None) => {
-                            me.drop_connection("the room closed the connection");
-                            break;
-                        }
+                    let frame = match read_frame(&mut reader) {
+                        Ok(frame) => frame,
                         Err(e) => {
                             // A read that timed out is not a connection that closed — the socket
                             // has no read timeout after the handshake, so this is belt and braces
-                            // against one set by something else.
+                            // against one set by something else. Nothing was read, so nothing is
+                            // dispatched and the loop re-reads.
                             if matches!(
                                 e.kind(),
                                 std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                             ) {
+                                // Nothing was read, so nothing is dispatched — but a client that
+                                // is GONE is still a reason to stop: without this the loop would
+                                // re-read for ever on a socket somebody else put a timeout on,
+                                // holding no owner and doing no work.
+                                if weak.strong_count() == 0 {
+                                    break;
+                                }
                                 continue;
                             }
-                            me.drop_connection(&e.to_string());
+                            if let Some(me) = weak.upgrade().map(Client::from_shared) {
+                                me.drop_connection(&e.to_string());
+                            }
+                            break;
+                        }
+                    };
+                    // **Now the strong reference**, for as long as dispatching one frame takes.
+                    // Gone means the client was dropped while this thread was blocked, which is
+                    // the case the whole design is for: nothing is left to tell.
+                    let Some(me) = weak.upgrade().map(Client::from_shared) else {
+                        break;
+                    };
+                    match frame {
+                        Some(Response::Event { event }) => (me.inner.wake)(&event),
+                        Some(Response::Bye { why }) => {
+                            me.drop_connection(&why);
+                            break;
+                        }
+                        Some(other) => {
+                            let slot = me.inner.waiting.lock().expect("the waiting lock");
+                            if let Some(tx) = slot.as_ref() {
+                                let _ = tx.send(other);
+                            }
+                        }
+                        None => {
+                            me.drop_connection("the room closed the connection");
                             break;
                         }
                     }

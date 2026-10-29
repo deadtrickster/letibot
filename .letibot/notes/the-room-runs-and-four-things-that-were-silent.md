@@ -1,4 +1,4 @@
-<!-- abstract: MEASURED 2026-10-29 building the room's slice 2 (the coordinator runtime): `Room::answer` drops the events, so a server built on it answers and rings nothing; a client whose reader thread holds a strong `Arc` keeps its own socket open and the coordinator never sees the close; the arbiter is routed every event and must be woken by only three; and a lease file parsed with `trim` reads a leading tab as a field boundary. -->
+<!-- abstract: MEASURED 2026-10-29 building the room's slice 2 (the coordinator runtime): `Room::answer` drops the events, so a server built on it answers and rings nothing; a client whose reader thread holds a strong `Arc` keeps its own socket open and the coordinator never sees the close; the arbiter is routed every event and must be woken by only three; and a lease file parsed with `trim` reads a leading tab as a field boundary. UPDATED 2026-10-29: §2's fix was incomplete — a `Weak` upgraded BEFORE the blocking read is still an owner. -->
 
 # The room runs — and the four things that were silent until a test caught them
 
@@ -82,3 +82,32 @@ every dependent — the main checkout rebuilds), then rebuild. **A `cargo check`
 evidence about a `cargo test` build**: check needs only `.rmeta`, test links the `.rlib`, and the two
 can come from different trees. The note `two-worktrees-share-one-target-dir-and-one-out-dir.md` says
 the rule; this is the second symptom to recognise it by.
+
+## UPDATE 2026-10-29 (§2's fix was HALF a fix) — a `Weak` upgraded *before* the read is still an owner
+
+Branch `agent/answer-the-room-refusal`, running the tests the reviewer of `9a0e7426` could not:
+`crates/room/tests/socket.rs`'s `a_closed_connection_gives_its_claim_back_at_once_and_says_so`
+failed **about half the time** — 5.1 s (its own deadline), 3 of 6 runs, then 3 of 6 again on its
+own, `no abandonment after the close: [Posted …, Claimed …]`.
+
+The reader loop was:
+
+```rust
+loop {
+    let Some(me) = weak.upgrade().map(Client::from_shared) else { break };  // STRONG, held …
+    match read_frame(&mut reader) { … }                                     // … ACROSS the block
+}
+```
+
+So the thread blocked on the socket was an owner of `Shared`: `drop(client)` could not run
+`Shared::drop`, the `shutdown(Both)` that is supposed to wake that read never ran, the peer never
+saw EOF, and `note_gone` never fired — the claim waited out the ninety-second lease. It passed
+whenever the caller's drop landed in the few instructions between one frame being dispatched and the
+next `upgrade`, which is why it read as a flake rather than as the liveness bug it is.
+
+**The order is the fix**: `read_frame` first, `weak.upgrade()` after, so the blocked thread holds
+nothing but the socket. After it: 8 consecutive green runs, and the test takes 1.17 s instead of
+5.1 s — the close is immediate, which is the whole claim.
+
+The rake, generally: **a `Weak` is only a promise about the moment you upgrade it.** Any code that
+upgrades and then blocks has re-created the strong cycle the `Weak` was there to break.
