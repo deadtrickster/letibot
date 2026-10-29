@@ -427,4 +427,99 @@ mod tests {
         assert!(e.contains("held by `s-b`"), "{e}");
         assert!(e.contains("a tag is a lock"), "{e}");
     }
+
+    /// **The wake, end to end minus the harness**: a real server, two real connections, and the
+    /// bell the daemon rings.
+    ///
+    /// What this proves is the half that could be wrong: an event about `s-a` reaches `s-a`'s
+    /// connection, becomes a sentence in `wake`, and rings the bell — while a session with nothing
+    /// under the tag is not rung at all. What it does not prove is `Harness::wake` composing the
+    /// sentence into a turn, which is one `take()` (`wake::tests` covers the queue, and the
+    /// harness's own wake is where every notice source meets).
+    #[test]
+    fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-link-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+
+        let rung: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+            let rung = Arc::clone(&rung);
+            Arc::new(move |session: &str| {
+                rung.lock().unwrap().push(session.to_string());
+            })
+        };
+        let me = SessionRoom::connect("s-a", &path, bell.clone()).expect("s-a connects");
+        let other = Client::connect(
+            &path,
+            Speaker::top_level("s-b"),
+            Arc::new(|_: &letibot_room::Event| {}),
+        )
+        .expect("s-b connects");
+
+        // `s-a` posts, so it is a MEMBER of `ram` — a reader is not.
+        me.call("post", &serde_json::json!({"tag": "ram", "body": "8 GB"}))
+            .expect("a post");
+        let _ = other.request(&Request::Post {
+            id: "p2".into(),
+            tag: "ram".into(),
+            body: "2 GB".into(),
+        });
+        // And somebody else's claim under that tag is news `s-a` must be woken by.
+        let claimed = other
+            .request(&Request::Claim {
+                id: "c1".into(),
+                tag: "ram".into(),
+            })
+            .expect("a claim");
+        assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && wake::waiting("s-a") == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(
+            rung.lock().unwrap().iter().any(|s| s == "s-a"),
+            "the bell must ring for the session the event is about: {:?}",
+            rung.lock().unwrap()
+        );
+        let said = wake::take("s-a");
+        assert!(
+            !said.is_empty(),
+            "a ring with nothing behind it is not a wake"
+        );
+        assert!(
+            said.iter()
+                .any(|s| s.contains("[room]") && s.contains("s-b")),
+            "the sentence names who did it: {said:?}"
+        );
+
+        // **The arbiter is not woken by the queue's traffic.** It hears every event on its
+        // connection — that is how a question reaches it — but a `post` is not a turn.
+        let arbiter = super::super::session_id();
+        let rung_arbiter: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let bell_arbiter: Arc<dyn Fn(&str) + Send + Sync> = {
+            let n = Arc::clone(&rung_arbiter);
+            Arc::new(move |_: &str| *n.lock().unwrap() += 1)
+        };
+        let host = SessionRoom::connect(&arbiter, &path, bell_arbiter).expect("the arbiter");
+        let _ = other.request(&Request::Post {
+            id: "p3".into(),
+            tag: "ram".into(),
+            body: "1 GB".into(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert_eq!(
+            *rung_arbiter.lock().unwrap(),
+            0,
+            "a post is not a question: the arbiter is woken by a raise, not by the queue moving"
+        );
+        assert_eq!(wake::waiting(&arbiter), 0);
+        drop(host);
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
