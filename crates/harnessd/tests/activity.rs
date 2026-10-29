@@ -350,29 +350,6 @@ fn a_child_the_plan_waits_on_is_an_entry_and_one_it_does_not_is_not() {
     );
 }
 
-/// **A runner whose child has already answered** — so the watcher thread settles on its first pass
-/// and the handle really leaves the set. `collect` answers `Done` to the `watch` probe as well,
-/// which is what makes the handle a subagent rather than a job.
-struct Answers {
-    handle: String,
-}
-
-impl TaskRunner for Answers {
-    fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
-        Err("this runner starts nothing".into())
-    }
-    fn collect(&self, handle: &str, _timeout: Duration) -> TaskStatus {
-        if handle == self.handle {
-            TaskStatus::Done {
-                answer: "the fix".into(),
-                child: None,
-            }
-        } else {
-            TaskStatus::Unknown
-        }
-    }
-}
-
 /// A warning, which is the shape the merge queue's `raise` publishes — one of the events whose fold
 /// asks the activity to be re-derived.
 fn a_warning(code: &str) -> SessionEvent {
@@ -435,13 +412,15 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
     };
     let returned = done_rx.recv_timeout(Duration::from_secs(5));
     let _ = release_tx.send(());
-    let _ = holder.join();
-    let _ = publisher.join();
+    // **Assert before joining**: a thread parked in the deadlock is a thread `join` waits for for
+    // ever, and a test for a deadlock that hangs is a test that says nothing.
     returned.expect(
         "a publish must not wait on a session's settlement queue: the merge queue publishes from \
          inside its own state machine, so a publish that waits is a lock the queue holds while a \
          session's thread holds the queue",
     );
+    let _ = holder.join();
+    let _ = publisher.join();
 
     // **And the facts are still right**: the settlement is still queued, and the value the publish
     // left behind says so.
@@ -474,7 +453,11 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
         Arc::new(AtomicBool::new(false)),
     ));
     watch.hold(vec![child_settlement("s-stopping", "j9001")]);
-    assert_eq!(watch.held_count(), 1, "the held set is what makes `stop` speak");
+    assert_eq!(
+        watch.held_count(),
+        1,
+        "the held set is what makes `stop` speak"
+    );
 
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let stopper = {
@@ -485,11 +468,13 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
         })
     };
     let stopped = done_rx.recv_timeout(Duration::from_secs(5));
-    let _ = stopper.join();
+    // **Assert before joining** — the wedged thread is exactly what this test is looking for, and
+    // `join` on one never returns.
     stopped.expect(
         "`stop` published while holding its own settlement queue, and the publish asked for that \
          queue: one thread, one non-reentrant mutex, and every publisher behind it",
     );
+    let _ = stopper.join();
 
     // The held result was handed up rather than dropped, and nothing is held any more.
     assert_eq!(watch.held_count(), 0, "a stopped session holds nothing");
@@ -499,18 +484,57 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
     );
 }
 
-/// **A watcher that has gone is not work any more** — the snapshot follows the map it is built from.
+/// **A runner that answers only when the test says so** — so a watcher is really live for a while
+/// and then really ends, which is the two states the line has to tell apart.
 ///
-/// The settlement the watcher queued is `Delivery` (the model is owed the turn it wakes), and the
-/// child is no longer an entry: the handle leaves the set as the thread ends, and the line says so
-/// before anything drains the queue.
+/// `Running` at the `watch` probe is enough to make the handle a subagent (`Unknown` is what means
+/// *a job*), and the short sleep stands in for the chunk `TaskRunner::collect` blocks for — a fake
+/// that returned at once would spin this thread and leave no window to observe.
+struct AnswersWhenTold {
+    handle: String,
+    done: AtomicBool,
+}
+
+impl TaskRunner for AnswersWhenTold {
+    fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+        Err("this runner starts nothing".into())
+    }
+    fn collect(&self, handle: &str, _timeout: Duration) -> TaskStatus {
+        if handle != self.handle {
+            return TaskStatus::Unknown;
+        }
+        if self.done.load(std::sync::atomic::Ordering::SeqCst) {
+            TaskStatus::Done {
+                answer: "the fix".into(),
+                child: None,
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+            TaskStatus::Running {
+                note: None,
+                child: None,
+            }
+        }
+    }
+}
+
+/// **The line is right while a watcher lives and after it has gone** — the two states a `wait`
+/// reads differently, and the one this file's snapshot has to keep true on its own.
+///
+/// A live child the plan waits on is `Child`; once it answers, the handle leaves the set and what
+/// is left is `Delivery` — the settlement the model is owed — with no child in the list. **Nothing
+/// in this test asks for the second reading**: the watcher publishes it as it ends, which is the
+/// half that used to be missing (the settlement's own refresh ran while the handle was still in
+/// the map, so the line read `delivery, child s-kid-done` for a child that had already gone).
 #[test]
-fn the_line_drops_a_child_whose_watcher_has_gone() {
+fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
     let hub = Hub::new("s-child-gone");
-    let runner: Arc<dyn TaskRunner> = Arc::new(Answers {
+    let runner = Arc::new(AnswersWhenTold {
         handle: "s-kid-done".into(),
+        done: AtomicBool::new(false),
     });
-    let watch = watchers(&hub).with_tasks(&runner);
+    let as_runner: Arc<dyn TaskRunner> = runner.clone();
+    let watch = watchers(&hub).with_tasks(&as_runner);
     let board = Arc::new(TodoBoard::new(Vec::new()));
     hub.set_activity_source(activity::source(
         Some(watch.clone()),
@@ -528,26 +552,37 @@ fn the_line_drops_a_child_whose_watcher_has_gone() {
     )]);
 
     watch.watch("s-kid-done".into());
-    // The child answers at once, so the watcher ends; the handle leaves the set and the settlement
-    // is queued. What is left is `Delivery` and no child.
-    let ended = std::time::Instant::now() + Duration::from_secs(10);
-    while !watch.watching_now().is_empty() && std::time::Instant::now() < ended {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while watch.watching_now().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(
-        watch.watching_now().is_empty(),
-        "the watcher settled and took its handle out: {:?}",
-        watch.watching_now()
+    assert_eq!(
+        watch.watching_now(),
+        vec![("s-kid-done".to_string(), BackgroundKind::Subagent, None)],
+        "the watcher is live and the set knows it"
     );
-    assert!(watch.pending(), "the settlement it queued is still owed");
-
     hub.refresh_activity();
     assert_eq!(
         hub.activity(),
-        Activity::of(vec![Waiting::Delivery]),
+        Activity::of(vec![Waiting::Child("s-kid-done".into())]),
+        "a child the plan waits on is work: {:?}",
+        hub.activity()
+    );
+
+    // **It answers, and nobody asks the hub anything afterwards.**
+    runner.done.store(true, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let settled = Activity::of(vec![Waiting::Delivery]);
+    while hub.activity() != settled && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        hub.activity(),
+        settled,
         "a child that has gone is not work; the result it left behind is: {:?}",
         hub.activity()
     );
+    assert!(watch.watching_now().is_empty(), "and the set says so too");
 
     // Drained, the session is quiet — and that is the value a `wait` reads as *done*.
     watch.take_completions();

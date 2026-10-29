@@ -234,7 +234,13 @@ pub fn facts_of(
         }
         let rows = todos.snapshot();
         for one in watching.at_work.iter() {
-            if !awaited(&one.handle, one.slug.as_deref(), one.kind, &rows, one.wanted) {
+            if !awaited(
+                &one.handle,
+                one.slug.as_deref(),
+                one.kind,
+                &rows,
+                one.wanted,
+            ) {
                 continue;
             }
             f.at_work.push(match one.kind {
