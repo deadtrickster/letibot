@@ -4686,6 +4686,13 @@ impl Harness {
         // daemon, so the tool holds the same slot the `plugin` tool does and answers through it
         // once it is filled.
         //
+        // **A layer IN FORCE, and not the binary's own table** — a built-in's `[[tools]]` is what a
+        // project installs (a `plugin.toml` copied into `.letibot/plugins/`, no `plugin.wasm`), not
+        // a tool every session is handed. That is `declared_tools`'s decision and the reason it
+        // reads three scopes; `crates/harnessd/tests/wired.rs` is where the default set it must not
+        // move is written down, and `a_layer_in_force_seats_its_tool_and_no_layer_seats_none`
+        // beside it is the other half.
+        //
         // A tool that cannot be seated says why, once, in a `plugin_layer` warning — the class the
         // plugin host already uses for a layer whose answer was refused. Silence would be a model
         // that does not know a project offered it something.

@@ -9,6 +9,13 @@
 //! `{"v":1,"name":…,"args":{…},"feeds":{…},"looks":[],"state":null}` and the layer answers a
 //! result in the tree's own vocabulary — `ok`, `failed`, `abstained` or `refused`.
 //!
+//! **Which layers count is [`crate::plugins::declared_tools`]'s answer, and it is the three DISK
+//! scopes** — the session's, the project's, the user's. A built-in's `[[tools]]` block is the text a
+//! person installs (its `plugin.toml` copied into a scope, with no module, and the binary's own
+//! module answers below it); it is not a tool every session is handed. `crates/harnessd/tests/
+//! wired.rs` pins the default session's tool set and says why, and this rule is what keeps that set
+//! where it is.
+//!
 //! # A hook does no I/O, so a tool asks for it
 //!
 //! §1 principle 1: a plugin never touches the filesystem. A pane therefore *declares a look* and

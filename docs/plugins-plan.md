@@ -454,6 +454,32 @@ not hold. The tool then answers through the same slot the `plugin` tool holds, f
 `Sessions::open_plugins`. A session whose slot is never filled (a subagent) answers `not_run` and
 says which of the two facts is missing.
 
+**A tool is seated when a layer IN FORCE declares it, and never because the binary carries it.**
+`declared_tools` reads the three disk scopes — the session's own, the project's, the user's — and
+not the built-in table. That is the same rule `crates/harnessd/tests/wired.rs` has always asserted
+about the default session: *"the next addition is not a decision until it is written down here
+too"*, and a tool that reads `~/.claude` arriving in a session that passed no flag is exactly the
+addition that rule refuses. MEASURED 2026-10-28: the first cut appended the built-in declarations
+to every session's, and `wired`'s default-set assertion went red with `claude_transcript` in it.
+
+**Installing a built-in's tool is therefore one file.** A project (or the operator, in
+`~/.config/letibot/plugins/`, or a session, in its own plugin directory) writes the built-in's own
+`plugin.toml` into its scope with **no `plugin.wasm`**:
+
+```sh
+mkdir -p .letibot/plugins/claude-transcript
+cp plugins/builtin/claude-transcript/plugin.toml .letibot/plugins/claude-transcript/
+```
+
+The manifest is the ask and what the model is offered; the module that answers it is the one the
+binary already carries, which `PluginHost::production` puts at the bottom of the session's stack
+**for a tool the session declared, and for no other reason** — a session that asked for nothing
+installs nothing, and so pays no compile (1.97 s of CPU a session in a debug host, MEASURED
+2026-10-28, which is what made `letibot-bridge`'s `no_spin` window all compile and left the idle
+exit's 800 ms window already gone when `Sessions::open_first` returned). The compile itself is kept
+for the whole process (`Loader::load_builtin`, `crates/harnessd/src/plugins/rano.rs`), so the
+sessions that did ask for it pay it once.
+
 **What a broken layer costs is a tool call, never a session.** A trap falls to the layer below
 (the stack's own rule); a layer that answers nonsense, an outcome nobody defined, a look for a
 path it may not read, or a fifth round of questions is a `failed` result that names the layer, says
@@ -465,10 +491,13 @@ already has, a class this session's downgrade denies, or more than four tools fr
 makes it `Network`, and a layer that only reads is `Read` and never reaches the gate. `access_for`
 can only narrow, so a schema that carried the least would be the hole that note is about.
 
-**The first user is `plugins/builtin/claude_transcript/`** — Claude Code's own store
+**The first user is `plugins/builtin/claude-transcript/`** — Claude Code's own store
 (`~/.claude/projects/<project>/<uuid>.jsonl`), modelled on the tree's `transcript` tool: `sessions`,
 `search`, `read`, `outline`. It reads `~/.claude/history.jsonl` not at all, and that is the point
-of the next section.
+of the next section. Its layer is named `claude-transcript` and its tool `claude_transcript`: a
+layer is a package and this tree spells a package with hyphens (`b-sessions`, `letibot-builtin-
+claude-transcript`), while a tool is an identifier the model calls and its export is
+`tool_claude_transcript`.
 
 ### 4.8.1 `read:<path>` — one tree outside the workspace
 
@@ -1048,11 +1077,11 @@ why its work runs between the session's turns when the two share a server.
     | the table, the build script, `install` | `crates/builtins` (`build.rs` compiles `plugins/builtin/*`; `lib.rs` is `table()` and `Stack::register_builtin_bytes`) |
     | the guest's ABI half | `plugins/builtin/abi` — `rano_abi`, `rano_alloc`, the answer arena, the result block |
     | **the session list** | `plugins/builtin/sessions` — the groups, the names, the counts, the acts and so the hint line; its own native tests are `src/tests.rs` |
-    | the bytes path | `letibot_plugins::Loader::load_bytes`, `Stack::register_builtin_bytes`, and `letibot_plugins::Layer::trusted` (D17's place) |
+    | the bytes path | `letibot_plugins::Loader::load_bytes` / `Loader::load_builtin` (the same bytes, compiled once per process), `Stack::register_builtin_bytes` / `register_builtin_shared`, and `letibot_plugins::Layer::trusted` (D17's place) |
     | the head's host | `crates/tui/src/app/sessions_pane.rs` — its own stack (the session's, the project's, the user's, then the built-ins), the feed, the acts, the fold state, and the way out |
     | the C3 additions | `crates/plugin-sdk/src/pane.rs` (`Input`, `Feed`, `Act`, `Fold`, `Cell`), `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `Tree::empty`, `View::validate_for`) |
     | the example | `plugins/examples/sessions-override` — a project layer that calls below, renames a group and hides its rows |
-    | **the first plugin TOOL** | `plugins/builtin/claude_transcript` — Claude Code's own store as a tool (§4.8), and the first user of `read:<path>` (§4.8.1): `sessions`, `search`, `read`, `outline`, every answer bounded. The daemon's stack installs the built-ins that declare a tool and no others (`PluginHost::production`), because a pane belongs to the head's stack and installing one here would announce it twice |
+    | **the first plugin TOOL** | `plugins/builtin/claude-transcript` — Claude Code's own store as a tool (§4.8), and the first user of `read:<path>` (§4.8.1): `sessions`, `search`, `read`, `outline`, every answer bounded. The daemon's stack installs the built-ins that declare a tool and no others, and of those only the ones a session DECLARED a tool from (`PluginHost::production`) — a pane belongs to the head's stack and installing one here would announce it twice, and a tool nobody asked for is a tool every session pays a compile for |
 
     Four things differed from the plan as written, and each is a decision a reader should see:
 

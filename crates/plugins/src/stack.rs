@@ -392,7 +392,19 @@ impl Stack {
     /// An empty id is filled in as `b-<name>`. A layer whose manifest and exports disagree, or
     /// whose id is already taken, is refused and recorded rather than registered: ids are how
     /// `set_disabled`, `by` and the transcript name a layer, so two of them cannot be one.
-    pub fn register_builtin(&mut self, mut layer: Layer, module: Box<dyn Module>) {
+    pub fn register_builtin(&mut self, layer: Layer, module: Box<dyn Module>) {
+        self.register_builtin_shared(layer, Arc::from(module));
+    }
+
+    /// [`Stack::register_builtin`] with a module the caller already holds behind an `Arc` — the
+    /// door a built-in whose compiled module is kept for the whole process comes through
+    /// ([`Loader::load_builtin`]).
+    ///
+    /// One `Arc`, several stacks: a `Module` answers `&self`, so a session's stack, the gate's
+    /// shadow and the next session's stack may all be wired to the same compiled bytes — and
+    /// since compiling one is the expensive half of installing a built-in (1.97 s for this
+    /// binary's tool layer in a debug host, MEASURED 2026-10-28), paying it once is the point.
+    pub fn register_builtin_shared(&mut self, mut layer: Layer, module: Arc<dyn Module>) {
         layer.trusted = true;
         if layer.id.is_empty() {
             layer.id = format!("{}-{}", Scope::BuiltIn.prefix(), layer.manifest.name);
@@ -407,7 +419,6 @@ impl Stack {
             });
             return;
         }
-        let module: Arc<dyn Module> = Arc::from(module);
         let hooks = module.hooks();
         if let Err(why) = layer.manifest.admit(&hooks) {
             self.failures.push(Failure {
@@ -452,7 +463,7 @@ impl Stack {
         let parsed = Manifest::parse(manifest).map_err(|why| format!("plugin.toml: {why}"))?;
         let module = self
             .loader
-            .load_bytes(name, wasm, &parsed.capabilities)
+            .load_builtin(name, wasm, &parsed.capabilities)
             .map_err(|why| {
                 let why = format!("the module could not be loaded: {why}");
                 self.failures.push(Failure {
@@ -476,7 +487,7 @@ impl Stack {
         };
         let id = layer.id.clone();
         let before = self.failures.len();
-        self.register_builtin(layer, module);
+        self.register_builtin_shared(layer, module);
         // `register_builtin` records its own refusals; answer the one that belongs to THIS call
         // so a caller is not told *ok* about a layer that is not on the stack.
         match self.failures[before..].iter().find(|f| f.layer == id) {

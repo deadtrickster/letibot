@@ -80,7 +80,7 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
             .iter()
             .map(|l| l.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["p1", "b-todo", "b-sessions"]
+        vec!["p1", "b-todo", "b-sessions", "b-claude-transcript"]
     );
 
     let mut a = a_head_with_a_one_shot();

@@ -240,6 +240,14 @@ impl PluginHost {
     /// layers that declare a tool — and only those: installing the pane ones here as well would
     /// announce every pane twice, once from each stack.
     ///
+    /// **And only the ones this session DECLARED a tool from.** `crate::plugins::declared_tools`
+    /// is the same read the prompt was composed from, so the two cannot disagree about what this
+    /// session asked for, and a session that asked for nothing installs nothing. That is not
+    /// tidiness: MEASURED 2026-10-28, compiling this binary's tool layer costs **1.97 s** of CPU in
+    /// a debug host, and a session that seats no layer tool can never call it — the `PluginTool`
+    /// that would is what the declaration seated. Installing it anyway cost every session open two
+    /// seconds and made `letibot-bridge`'s `no_spin` window all compile.
+    ///
     /// A built-in whose module the engine refuses is recorded in the stack's own failure list and
     /// said to the model by `say_failures`, so a broken built-in is a sentence rather than a tool
     /// that silently is not there.
@@ -250,16 +258,28 @@ impl PluginHost {
             Arc::new(rano::RanoLoader),
             Arc::new(CargoBuilder),
         );
-        host.install_builtin_tools();
+        host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
         host
     }
 
-    /// **Put every built-in that declares a tool at the bottom of this stack.**
-    fn install_builtin_tools(&self) {
+    /// **Put the built-in layers a session declared a tool from at the bottom of this stack.**
+    ///
+    /// The match is on the tool's NAME: a built-in that declares `claude_transcript` is installed
+    /// for a session whose declarations include `claude_transcript`, and not otherwise. The layer
+    /// above it is what the model was offered — the built-in is the module that answers, which is
+    /// why a project's ask can be a manifest with no `plugin.wasm`.
+    fn install_builtin_tools(&self, declared: &[DeclaredTool]) {
+        if declared.is_empty() {
+            return;
+        }
         let mut inner = self.lock();
         for builtin in letibot_builtins::table() {
             let declares = Manifest::parse(builtin.manifest)
-                .map(|m| !m.tools.is_empty())
+                .map(|m| {
+                    m.tools
+                        .iter()
+                        .any(|t| declared.iter().any(|d| d.tool.name == t.name))
+                })
                 .unwrap_or(false);
             if !declares {
                 continue;
@@ -1765,36 +1785,37 @@ fn user_config_dir() -> Option<PathBuf> {
 ///
 /// Read at `Harness::open`, before any module is loaded and before the daemon has a hub to build a
 /// plugin host with — a declared tool is prompt bytes, and the prompt is composed first. So this
-/// reads `plugin.toml`s only ([`Stack::declared_tools`] does the three disk scopes) and adds the
-/// built-ins, whose manifests are `include_str!`d into the binary.
+/// reads `plugin.toml`s only ([`Stack::declared_tools`] does the three disk scopes).
+///
+/// # Why the built-in scope is NOT read here
+///
+/// **A built-in is what the binary carries; it is not what this session asked for.** MEASURED
+/// 2026-10-28 against this tree's own rule — `crates/harnessd/tests/wired.rs` pins the default
+/// session's tool set and says *"the next addition is not a decision until it is written down here
+/// too"* — appending the built-in table's declarations here seated `claude_transcript` in every
+/// session, including the one opened with no seat, no project layer and no flag. A session that
+/// passes no flag must get what it got before, and this function is the one place that decides it.
+///
+/// So a tool is seated when a layer **in force for this session** declares it — the session's own,
+/// the project's, or the user's — and that declaration is the ask: it is a file a person wrote,
+/// in a scope a person installs, and the stack resolves the hook through it to whatever answers
+/// below. For the binary's own layers that means the built-in's `plugin.toml`, copied into
+/// `<project>/.letibot/plugins/claude-transcript/`, with **no `plugin.wasm`**: the manifest is the
+/// declaration the prompt is built from and the module that answers it is the one the binary
+/// already carries (`PluginHost::production` installs it, and only for a tool this session
+/// declared — see there). The built-in's `[[tools]]` block is therefore the text a person installs
+/// and what `admit` checks the module against; it is not a tool every session is offered.
 ///
 /// **First declaration of a name wins**, which is the stack's own rule: session over project over
-/// user over built-in, newest layer on top inside each. A project layer that re-declares a
-/// built-in's tool therefore *replaces its schema and description*, and the hook is resolved
-/// through the same stack at call time — so the override can be a manifest and a module, or a
-/// manifest alone with the built-in's module still answering below it.
+/// user. A project layer that declares a built-in's tool replaces its schema and description, and
+/// the hook is resolved through the same stack at call time — so the override can be a manifest
+/// and a module, or a manifest alone with the built-in's module still answering below it.
 pub fn declared_tools(session: &str, workspace: &Path) -> Vec<DeclaredTool> {
     let mut all = Stack::declared_tools(
         session_plugins_dir(session).as_deref(),
         Some(workspace),
         user_config_dir().as_deref(),
     );
-    for builtin in letibot_builtins::table() {
-        let Ok(manifest) = Manifest::parse(builtin.manifest) else {
-            continue;
-        };
-        if manifest.tools.is_empty() {
-            continue;
-        }
-        for tool in manifest.tools.clone() {
-            all.push(DeclaredTool {
-                layer: builtin.name.to_string(),
-                scope: Scope::BuiltIn,
-                tool,
-                capabilities: manifest.capabilities.clone(),
-            });
-        }
-    }
     let mut seen = BTreeSet::new();
     all.retain(|d| seen.insert(d.tool.name.clone()));
     all
@@ -2648,11 +2669,23 @@ mod tests {
 
     #[test]
     fn the_builtin_transcript_layer_is_on_the_daemons_stack_and_answers_its_hook() {
-        // **The whole seam, with the real module**: `crates/builtins` compiled
-        // `plugins/builtin/claude_transcript` for `wasm32-unknown-unknown`, rano loads it here,
-        // `admit` compares its exports with the manifest's `[[tools]]`, and the hook runs. If any
-        // of those four is wrong this test is red before anything reaches a model.
+        // **The whole seam, with the real module**: the project installs the binary's own
+        // `plugin.toml` (that declaration is the ask — `crates/harnessd/src/plugins.rs`'s
+        // `declared_tools` seats nothing the session did not declare), `crates/builtins` compiled
+        // `plugins/builtin/claude-transcript` for `wasm32-unknown-unknown` and the host puts it at
+        // the bottom of this session's stack for that reason, rano loads it here, `admit` compares
+        // its exports with the manifest's `[[tools]]`, and the hook runs. If any of those five is
+        // wrong this test is red before anything reaches a model.
         let workspace = tempdir("builtin-tool");
+        let builtin = letibot_builtins::table()
+            .iter()
+            .find(|b| b.name == "claude-transcript")
+            .expect("the binary carries the transcript layer");
+        let layer = workspace.join(".letibot/plugins/claude-transcript");
+        std::fs::create_dir_all(&layer).expect("the layer dir");
+        // The manifest and nothing else: the module is the one the binary already carries, which is
+        // the whole point of a built-in layer.
+        std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
         let host = PluginHost::production("s-tool", &workspace);
         // It is a tool and not a pane: nothing of its is announced to a head.
         assert!(host.panes().is_empty(), "{:?}", host.panes());
@@ -2682,6 +2715,33 @@ mod tests {
             answer["looks"][0]["list"],
             json!("/nonexistent-home/.claude/projects/-nonexistent-project"),
             "{answer}"
+        );
+    }
+
+    /// **A session that declared no tool from a layer gets no built-in layer at all** — the other
+    /// half of the test above, and the half that costs CPU.
+    ///
+    /// MEASURED 2026-10-28: compiling this binary's tool layer is 1.97 s in a debug host, and the
+    /// first cut of §4.8 installed it for EVERY session — so every open paid it, `letibot-bridge`'s
+    /// `no_spin` window was entirely compile, and `letibot-harnessd`'s idle-exit test found its
+    /// 800 ms window already gone when `Sessions::open_first` returned. A session that seats no
+    /// layer tool cannot call the layer: the `PluginTool` that would is what a declaration seats.
+    ///
+    /// The assertion is `ask` answering `None` — *nothing in this stack exports the hook* — which
+    /// is the same door `Stack::call` goes through, so it is a fact about what is installed rather
+    /// than a claim about it.
+    #[test]
+    fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
+        let workspace = tempdir("builtin-none");
+        let host = PluginHost::production("s-nobody", &workspace);
+        assert!(
+            host.ask(
+                &Hub::new("s-nobody"),
+                "tool_claude_transcript",
+                &json!({"v": 1, "args": {}, "looks": [], "state": null}),
+            )
+            .is_none(),
+            "nothing asked for the tool, so no layer of the binary's is on this stack"
         );
     }
 

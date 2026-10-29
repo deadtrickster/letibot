@@ -58,6 +58,7 @@
 //!   the approval, and the host's look runner is what makes a module unable to reach past it.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -123,6 +124,29 @@ pub trait Loader: Send + Sync {
             "the loader in use cannot load `{name}` from memory — a built-in needs an engine with \
              `load_bytes`, which is the daemon's rano loader"
         ))
+    }
+
+    /// **A built-in's module, shared rather than owned** — the door a layer the binary carries
+    /// comes through when more than one session will seat it.
+    ///
+    /// `load_bytes` answers a `Box`, which is one owner and so one compile per stack: MEASURED
+    /// 2026-10-28 in a debug host, compiling the daemon's built-in tool layer costs **1.97 s**, and
+    /// every session open paid it again. A `Module` is `Send + Sync` and answers `&self`, and the
+    /// stack already keeps it behind an `Arc` (`Wired::module`) — so the same bytes may answer for
+    /// several sessions, and an engine that can say so should.
+    ///
+    /// The default is `load_bytes` and an `Arc::from`, which is correct and pays the compile every
+    /// time: only the engine that has a place to keep the compiled module overrides it. Nothing
+    /// downstream can tell the two apart, which is the point — `fuel()` is the engine's own last
+    /// call either way, so a shared module's price is *per module*, not per stack (ask it right
+    /// after the call that interests you, as `Stack::fuel` says).
+    fn load_builtin(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<std::sync::Arc<dyn Module>, String> {
+        self.load_bytes(name, bytes, caps).map(Arc::from)
     }
 }
 

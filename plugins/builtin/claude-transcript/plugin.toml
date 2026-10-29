@@ -1,5 +1,17 @@
 name = "claude-transcript"
 purpose = "read Claude Code's own transcripts: which sessions a project has, a search across them, a line range, and an outline of what was asked and concluded"
+# **This file is the install.** A built-in is on the binary's stack but is NOT a tool every session is
+# offered — a session that passed no flag must get what it got before (`crates/harnessd/tests/
+# wired.rs` is where that is written down). A project that wants it copies THIS manifest, and no
+# module, into its own scope:
+#
+#     mkdir -p .letibot/plugins/claude-transcript
+#     cp plugins/builtin/claude-transcript/plugin.toml .letibot/plugins/claude-transcript/
+#
+# The declaration is the ask and the schema the model is handed; the module that answers it is the
+# one the binary already carries, and `PluginHost::production` puts it at the bottom of the stack for
+# exactly the sessions that declared a tool from it — which is also why a session that asked for
+# nothing pays no compile.
 hooks = ["tool_claude_transcript"]
 # **One tree, named as a person wrote it down.** `read` alone is the workspace; these transcripts
 # live in a folder no repository holds, so the layer says which one it may look at — and that line
