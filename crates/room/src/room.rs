@@ -202,6 +202,61 @@ pub enum Event {
     },
 }
 
+impl Event {
+    /// The item the event is about. Every event is about one.
+    pub fn item(&self) -> u64 {
+        match self {
+            Event::Posted { item, .. }
+            | Event::Claimed { item, .. }
+            | Event::Done { item, .. }
+            | Event::Abandoned { item, .. }
+            | Event::Raised { item, .. }
+            | Event::Asked { item, .. }
+            | Event::Ruled { item, .. } => *item,
+        }
+    }
+
+    /// **The tag the event is about** — which is the audience's own name: the sessions queued under
+    /// a tag are the ones a claim or an abandonment under it concerns.
+    pub fn tag(&self) -> &str {
+        match self {
+            Event::Posted { tag, .. }
+            | Event::Claimed { tag, .. }
+            | Event::Done { tag, .. }
+            | Event::Abandoned { tag, .. }
+            | Event::Raised { tag, .. }
+            | Event::Asked { tag, .. } => tag,
+            // A ruling names the item and the decision, not the tag — the server asks the room for
+            // it (`Room::item`), because the room is the one place a tag is decided.
+            Event::Ruled { .. } => "",
+        }
+    }
+
+    /// **The sessions this event NAMES**, beyond whoever is queued under its tag: the one who did
+    /// it, and the one a ruling hands something to. A server routes to these by name even when they
+    /// have no item under the tag — a ruling that hands an item to a session is the case.
+    pub fn named(&self) -> Vec<&str> {
+        match self {
+            Event::Posted { by, .. }
+            | Event::Claimed { by, .. }
+            | Event::Done { by, .. }
+            | Event::Abandoned { by, .. }
+            | Event::Ruled { by, .. } => vec![by.as_str()],
+            Event::Raised { .. } | Event::Asked { .. } => Vec::new(),
+        }
+    }
+
+    /// The question the event is about, when it is about one.
+    pub fn question(&self) -> Option<u64> {
+        match self {
+            Event::Raised { question, .. }
+            | Event::Asked { question, .. }
+            | Event::Ruled { question, .. } => Some(*question),
+            _ => None,
+        }
+    }
+}
+
 /// **Why a verb was refused.** Every sentence names the party it is about: a refusal that says
 /// *no* without saying *who* is a refusal somebody re-asks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
