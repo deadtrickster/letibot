@@ -1154,6 +1154,10 @@ pub mod roles {
                 "task_resume",
                 "task_start",
                 "hosts",
+                // **`room`: the host's queues**, seated here because the review queue's session
+                // is a top-level session — and the box's coordinator (`s-room-<host>`) seats this
+                // role too, which is where the tie-breaker lives. A subagent never does.
+                "room",
                 "read",
                 "grep",
                 "glob",
@@ -1256,6 +1260,13 @@ pub mod roles {
                 // lines of `fleet.sh` in the session these two exist to replace.
                 "fanout",
                 "scenario",
+                // **`room`: the host's tagged queues** (the room's slice 2). Every top-level
+                // session on this box shares one room — a queue per tag, a claim that is a lease
+                // with a beat — and it is the only place two sessions that are not parent and
+                // child can talk. Seated here and NOT on `coder`: a subagent's words go through
+                // the session that spawned it, which is the operator's rule and flowy's, and the
+                // room refuses a subagent by name at its own door.
+                "room",
                 // `harness`: what this session is running inside. Read-only, and
                 // it is how a model stops asking the operator to read their own
                 // terminal aloud.
@@ -1362,7 +1373,11 @@ pub mod roles {
         // by two, to 35, for `hosts`' reason one entry above: a session that can reach many
         // machines is exactly the session that needs a verb for it, and trading away two working
         // verbs to pay for the capability would be the wrong half of the choice.
-        r.max_tools = 35;
+        // **Thirty-six since `room`**, which took its own seat for the reason the two before it
+        // did: a top-level session that cannot say *I am holding this, and here is what I am
+        // waiting on* has no way to coordinate with a sibling at all, and trading away a working
+        // verb to pay for a queue would be the wrong half of the choice.
+        r.max_tools = 36;
         r
     }
 
@@ -3302,8 +3317,10 @@ mod tests {
         // machines is a seat that guesses. **Thirty-two since `plugin` and `plugin_hooks`**
         // (P2): a pane written and loaded in the session, which is the point of the plugin plan
         // and is nothing a seat without them can do. **Thirty-four since RH8's `fanout` and
-        // `scenario`**, which took their own seats for the same reason `hosts` did.
-        assert_eq!(seat.tools.len(), 34, "{:?}", seat.tools);
+        // `scenario`**, which took their own seats for the same reason `hosts` did. **Thirty-five
+        // since `room`**, the host's tagged queues, which a top-level session needs and a subagent
+        // must not have.
+        assert_eq!(seat.tools.len(), 35, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

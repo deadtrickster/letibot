@@ -267,6 +267,15 @@ pub fn with_session_tools(
             std::sync::Arc::new(builtins::queue::NoQueue),
         )))?;
     }
+    // **The host's room** (the room's slice 2). Same shape as `queue` one arm up, and for the same
+    // reason: a seat that names `room` must resolve on every registry this function builds — a
+    // test's, a one-shot's — and the tool then says there is no coordinator behind it. The daemon
+    // replaces this with the session's own link (`Harness::open`), which is the one that can post.
+    if reg.get(builtins::room::TOOL).is_none() {
+        reg.register(Box::new(builtins::room::RoomTool::new(std::sync::Arc::new(
+            builtins::room::NoRoom,
+        ))))?;
+    }
     Ok(reg)
 }
 
