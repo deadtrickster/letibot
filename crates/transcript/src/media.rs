@@ -193,8 +193,17 @@ impl Media {
     /// is the right way round for a reason this tree has already been bitten by: a file's name is a
     /// claim and its magic number is not. A `.png` that is really a PDF, or a screenshot saved with
     /// no extension at all, both arrive here.
+    ///
+    /// **A signature is not a picture.** The bytes must also be a COMPLETE image of the type they
+    /// claim — see [`complete_image`], which is the second half of this function and the reason it
+    /// can answer `None` for a file that sniffs perfectly. MEASURED 2026-10-30: a 33-byte PNG
+    /// header and nothing else was called an image here, stored as one, and sent to a provider that
+    /// refused the whole request on every turn for ever, because the row is append-only.
     pub fn of(path: &str, bytes: &[u8]) -> Option<Media> {
         let mime = sniff_mime(path, bytes)?;
+        if !complete_image(mime, bytes) {
+            return None;
+        }
         let (width, height) = dimensions(mime, bytes);
         Some(Media {
             mime: mime.to_string(),
@@ -291,6 +300,132 @@ pub fn sniff_mime(path: &str, bytes: &[u8]) -> Option<&'static str> {
         "webp" => Some("image/webp"),
         _ => None,
     }
+}
+
+/// **Is this a COMPLETE image of the type it claims?** — judged structurally, per format, without
+/// decoding a pixel.
+///
+/// The rule this exists for, MEASURED 2026-10-30: a `read` of a 33-byte file that was a PNG
+/// signature and an `IHDR` and nothing else was called an image, stored as one, and sent to a
+/// provider that refused the WHOLE request —
+/// `.messages[1861].image[0]: You have uploaded an unsupported image. Please make sure your image is
+/// valid and has one of the following formats: webp, png, jpeg, and gif.` — on every turn, for ever.
+/// The session could not be revived by any restart, because the row is history and history does not
+/// change. A magic number says what a file is *trying* to be; this says whether there is a picture
+/// in it.
+///
+/// # What each format has to have, and why nothing is decoded
+///
+/// * **PNG** — an `IHDR` first, at least one `IDAT`, and an `IEND` that ends the chunk walk. The
+///   walk is the whole check: every chunk's length must fit in the file, so a file cut off
+///   mid-chunk is not an image either. Bytes after `IEND` are ignored, which is what a decoder does.
+/// * **JPEG** — `SOI` at the front and `EOI` at the end. A JPEG's markers are not length-prefixed
+///   the way PNG's chunks are, and a walk to `EOI` is what a decoder does anyway.
+/// * **GIF** — its header and its trailer (`0x3b`), which is where every decoder stops.
+/// * **WEBP** — a `RIFF`/`WEBP` container holding a `VP8 `/`VP8L`/`VP8X` chunk that fits in the
+///   file. `VP8X` alone is a header for the extended form; the same walk finds the image chunk
+///   beside it, and a file with neither is not a picture.
+///
+/// **Nothing here decodes**, so it cannot say whether the pixels are valid — only that the file is
+/// not truncated and not a header pretending to be a picture. That is the line the incident drew:
+/// the provider's complaint was about a file with no image in it at all, which is exactly what a
+/// structural check can refuse, and doing it here costs a walk rather than a decoder.
+///
+/// A mime outside the four is not an image this tree hands a model ([`SUPPORTED_IMAGE_MIMES`]), so
+/// it answers `false` rather than guessing.
+pub fn complete_image(mime: &str, bytes: &[u8]) -> bool {
+    match mime {
+        "image/png" => png_complete(bytes),
+        "image/jpeg" => {
+            bytes.len() >= 4 && bytes.starts_with(b"\xff\xd8") && bytes.ends_with(b"\xff\xd9")
+        }
+        "image/gif" => {
+            (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
+                && bytes.last() == Some(&0x3b)
+        }
+        "image/webp" => webp_complete(bytes),
+        _ => false,
+    }
+}
+
+/// **The same predicate for a picture a row already carries** — a `data:` reference, decoded just
+/// far enough to ask [`complete_image`].
+///
+/// This is the half that makes a fixed binary able to reopen a session a broken one wedged: the
+/// transcript is append-only, so the picture that a provider refused is still in the history, and
+/// the renderer has to be able to tell that it is not one. [`decode_base64`] is tolerant, so a
+/// reference that is itself corrupt decodes short and answers `false` — which is the right answer
+/// for bytes nobody can read.
+///
+/// The whole payload is decoded, because two of the four formats state their completeness at the
+/// END. That is O(the picture) per render, the same order as the request this is building.
+pub fn data_ref_is_image(data_ref: &str) -> bool {
+    let Some((head, payload)) = data_ref.split_once(";base64,") else {
+        return false;
+    };
+    let mime = head.trim_start_matches("data:");
+    complete_image(mime, &decode_base64(payload))
+}
+
+/// A PNG's chunk walk: `IHDR` first, an `IDAT` somewhere, and an `IEND` that fits.
+fn png_complete(bytes: &[u8]) -> bool {
+    const SIG: usize = 8;
+    if bytes.len() < SIG + 12 || !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return false;
+    }
+    let mut at = SIG;
+    let mut idat = false;
+    let mut first = true;
+    while at + 8 <= bytes.len() {
+        let len = u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
+        let kind = &bytes[at + 4..at + 8];
+        // Length, type, data and CRC all have to be IN the file: a chunk that runs past the end is
+        // a truncated picture, which is the case this whole function is about.
+        let Some(end) = at.checked_add(12).and_then(|e| e.checked_add(len)) else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        if first {
+            if kind != b"IHDR" {
+                return false;
+            }
+            first = false;
+        }
+        match kind {
+            b"IDAT" => idat = true,
+            b"IEND" => return idat,
+            _ => {}
+        }
+        at = end;
+    }
+    false
+}
+
+/// A WEBP's chunk walk: `RIFF`/`WEBP`, then the first `VP8 `/`VP8L`/`VP8X` chunk that fits.
+fn webp_complete(bytes: &[u8]) -> bool {
+    if bytes.len() < 16 || !bytes.starts_with(b"RIFF") || &bytes[8..12] != b"WEBP" {
+        return false;
+    }
+    let mut at = 12usize;
+    while at + 8 <= bytes.len() {
+        let kind = &bytes[at..at + 4];
+        let len = u32::from_le_bytes([bytes[at + 4], bytes[at + 5], bytes[at + 6], bytes[at + 7]])
+            as usize;
+        let Some(end) = at.checked_add(8).and_then(|e| e.checked_add(len)) else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        if kind == b"VP8 " || kind == b"VP8L" || kind == b"VP8X" {
+            return true;
+        }
+        // RIFF pads every chunk to an even length.
+        at = end + (len & 1);
+    }
+    false
 }
 
 /// Width and height from the header, for the two formats that carry them in a fixed place.
@@ -419,28 +554,17 @@ pub fn mark_delivered(items: &mut [crate::TranscriptItem]) {
 mod tests {
     use super::*;
 
-    /// A PNG-shaped buffer: signature, then a real IHDR carrying `w` and `h`.
-    ///
-    /// **The bytes need not decode**, and that is deliberate rather than lazy: nothing under test
-    /// decodes a PNG — `Media::of` reads the magic and the IHDR, and `data_ref` is a re-encoding of
-    /// whatever it was handed. The end-to-end proof that a *real* picture reaches the model is a
-    /// measurement against the live server, recorded in this module's header.
-    fn png_header(w: u32, h: u32) -> Vec<u8> {
-        let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
-        v.extend_from_slice(&13u32.to_be_bytes()); // IHDR length
-        v.extend_from_slice(b"IHDR");
-        v.extend_from_slice(&w.to_be_bytes());
-        v.extend_from_slice(&h.to_be_bytes());
-        v.extend_from_slice(&[8, 2, 0, 0, 0]); // depth, colour type, … — unread by this module
-        v.extend_from_slice(&[0, 0, 0, 0]); // crc — unread
-        v
+    /// A **real** PNG, `w`×`h` — the shared fixture, so this crate's tests cannot drift back into
+    /// a header that is not a picture. See [`crate::testing`] for why that matters.
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        crate::testing::png(w, h)
     }
 
     #[test]
     fn an_image_is_recognised_by_its_bytes_and_not_by_its_name() {
         // The magic number is the claim; the extension is only a fallback. A `.png` that is really
         // something else is the case this order exists for, and opencode's is the same order.
-        let png = png_header(7, 9);
+        let png = png(7, 9);
         assert_eq!(sniff_mime("picture.png", &png), Some("image/png"));
         // **Named wrongly, sniffed rightly** — the file is a PNG whatever it is called.
         assert_eq!(sniff_mime("picture.dat", &png), Some("image/png"));
@@ -460,7 +584,7 @@ mod tests {
     #[test]
     fn a_data_ref_states_its_size_without_decoding_the_picture() {
         use super::{decode_base64, encode_base64, size_of_data_ref};
-        let png = png_header(640, 480);
+        let png = png(640, 480);
         let reference = format!("data:image/png;base64,{}", encode_base64(&png));
         assert_eq!(size_of_data_ref(&reference), (Some(640), Some(480)));
         // The same bytes with no prefix at all: the mime is the only thing that came from the
@@ -508,29 +632,26 @@ mod tests {
 
     #[test]
     fn png_dimensions_come_out_of_the_header_and_jpegs_out_of_its_own_walk() {
-        let m = Media::of("a.png", &png_header(1920, 1080)).expect("a png");
-        assert_eq!((m.width, m.height), (Some(1920), Some(1080)));
+        let m = Media::of("a.png", &png(320, 200)).expect("a png");
+        assert_eq!((m.width, m.height), (Some(320), Some(200)));
         assert_eq!(m.mime, "image/png");
-        assert_eq!(m.bytes, 33, "the size is the FILE's, not the base64's");
+        assert_eq!(
+            m.bytes,
+            png(320, 200).len(),
+            "the size is the FILE's, not the base64's"
+        );
         assert!(
             m.data_ref.starts_with("data:image/png;base64,"),
             "{}",
             m.data_ref
         );
-        assert!(m.summary().contains("1920×1080"), "{}", m.summary());
+        assert!(m.summary().contains("320×200"), "{}", m.summary());
 
         // A JPEG: SOI, an APP0 segment to be walked over, then SOF0 with the size. The segment
         // lengths are the point of the walk — a parser that assumed a fixed offset would read the
-        // comment's bytes as dimensions.
-        let mut j = b"\xff\xd8\xff\xe0".to_vec();
-        j.extend_from_slice(&16u16.to_be_bytes()); // APP0 length, 14 bytes of payload follows
-        j.extend_from_slice(&[0u8; 14]);
-        j.extend_from_slice(b"\xff\xc0");
-        j.extend_from_slice(&17u16.to_be_bytes());
-        j.push(8); // precision
-        j.extend_from_slice(&600u16.to_be_bytes()); // height
-        j.extend_from_slice(&800u16.to_be_bytes()); // width
-        let m = Media::of("a.jpg", &j).expect("a jpeg");
+        // comment's bytes as dimensions. The fixture ends with EOI, because a JPEG without one is
+        // not a picture and `Media::of` now says so.
+        let m = Media::of("a.jpg", &crate::testing::jpeg(800, 600)).expect("a jpeg");
         assert_eq!((m.width, m.height), (Some(800), Some(600)));
     }
 
@@ -580,7 +701,7 @@ mod tests {
     /// all — `UserPart::Image` had no producer until 2026-09-27.
     #[test]
     fn an_image_is_not_delivered_until_something_sends_it() {
-        let m = Media::of("a.png", &png_header(2, 2)).expect("a png");
+        let m = Media::of("a.png", &png(2, 2)).expect("a png");
         assert!(!m.delivered, "a picture nothing has sent is not delivered");
 
         let mut items = vec![
@@ -622,18 +743,81 @@ mod tests {
     fn an_unparsed_header_says_unknown_rather_than_zero() {
         // R54 §5's rule, applied one layer down: *absent is not 0x0*. A GIF's size is not parsed
         // here, and a zero would read as a picture with no pixels.
-        let m = Media::of("a.gif", b"GIF89a______").expect("a gif");
+        let m = Media::of("a.gif", &crate::testing::gif(2, 2)).expect("a gif");
         assert_eq!((m.width, m.height), (None, None));
         assert!(m.summary().contains("image/gif"), "{}", m.summary());
         assert!(!m.summary().contains("0×0"), "{}", m.summary());
     }
 
+    /// **A PNG with no `IDAT` is not an image, whatever its header says.**
+    ///
+    /// MEASURED 2026-10-30: these are the bytes — 33 of them, a signature and an `IHDR` — that a
+    /// test wrote into the operator's paste directory, that `read` called an image, and that a
+    /// provider then refused on every turn for ever. The session it wedged could not be revived by
+    /// any restart, because the row is history.
     #[test]
-    fn a_truncated_png_is_still_an_image_with_an_unknown_size() {
-        // Eight bytes of signature and nothing else: the sniff succeeds — it is a PNG — and the
-        // dimensions do not, which is the honest pair of answers.
-        let m = Media::of("a.png", b"\x89PNG\r\n\x1a\n").expect("the signature is enough to sniff");
-        assert_eq!((m.width, m.height), (None, None));
-        assert_eq!(m.bytes, 8);
+    fn a_png_with_no_idat_is_not_an_image() {
+        let header = crate::testing::png_header_only(640, 480);
+        assert_eq!(header.len(), 33, "the incident's file, to the byte");
+        assert_eq!(
+            sniff_mime("shot.png", &header),
+            Some("image/png"),
+            "it still sniffs as a PNG — that is why the magic number was not enough"
+        );
+        assert!(
+            Media::of("shot.png", &header).is_none(),
+            "a header with no picture in it was called an image again"
+        );
+        // And a signature alone is the same answer, not a third one.
+        assert!(Media::of("a.png", b"\x89PNG\r\n\x1a\n").is_none());
+    }
+
+    /// **A picture cut off mid-chunk is not a picture either** — the walk refuses a chunk whose
+    /// length runs past the end, which is the truncated case a `IDAT`-and-`IEND` check alone would
+    /// miss when the truncation is what removed them.
+    #[test]
+    fn a_truncated_png_is_not_an_image() {
+        let full = png(2, 2);
+        assert!(Media::of("a.png", &full).is_some(), "the fixture is complete");
+        // Every prefix of it, up to the last byte of the IEND, is incomplete.
+        for cut in [8usize, 20, 33, 40, full.len() - 1] {
+            assert!(
+                Media::of("a.png", &full[..cut]).is_none(),
+                "a PNG cut to {cut} of {} bytes was called an image",
+                full.len()
+            );
+        }
+    }
+
+    /// **The four formats, complete and not** — one table, so a format added to
+    /// [`SUPPORTED_IMAGE_MIMES`] without a completeness rule is a test that fails rather than a
+    /// picture a provider refuses.
+    #[test]
+    fn every_supported_format_has_a_completeness_rule() {
+        use crate::testing::{gif, jpeg, png, webp};
+        let complete: [(&str, Vec<u8>); 4] = [
+            ("image/png", png(2, 2)),
+            ("image/jpeg", jpeg(2, 2)),
+            ("image/gif", gif(2, 2)),
+            ("image/webp", webp(2, 2)),
+        ];
+        for (mime, bytes) in &complete {
+            assert!(complete_image(mime, bytes), "{mime} is not recognised");
+            assert!(
+                data_ref_is_image(&crate::testing::data_ref(mime, bytes)),
+                "{mime} is not recognised through a data_ref"
+            );
+        }
+        // The same file with its tail cut: a JPEG without `EOI`, a GIF without its trailer, a WEBP
+        // whose only chunk does not fit, a PNG without its `IEND`.
+        for (mime, bytes) in &complete {
+            let cut = &bytes[..bytes.len() - 2];
+            assert!(!complete_image(mime, cut), "a truncated {mime} passed");
+        }
+        // A type this tree does not hand a model is not an image, whatever the bytes are.
+        assert!(!complete_image("image/tiff", &png(2, 2)));
+        // And a reference that is not one decodes to nothing and answers `false`.
+        assert!(!data_ref_is_image("not a reference"));
+        assert!(!data_ref_is_image("data:image/png;base64,"));
     }
 }

@@ -95,16 +95,18 @@ impl OpenAiProvider {
 
     /// The request body, for a test to look at.
     pub fn body(&self, req: &TurnRequest<'_>) -> Result<Value, BackendError> {
-        self.body_for(req, self.eyes())
+        self.body_for(req, self.eyes(), crate::messages::Withheld::nothing())
     }
 
     /// The same body, with what the model gets pictures as given rather than decided —
     /// the retry after a refusal is the one caller, and it must not have to re-ask a
-    /// question it has just answered.
+    /// question it has just answered. `withheld` is the other half of that: the pictures a
+    /// retry is trying without, which are not recorded until it answers.
     fn body_for(
         &self,
         req: &TurnRequest<'_>,
         eyes: crate::messages::Eyes<'_>,
+        withheld: crate::messages::Withheld<'_>,
     ) -> Result<Value, BackendError> {
         // **`tools` is built first because it is part of the request — NOT because it
         // decides whether the reasoning echo is required.** This comment asserted the
@@ -130,6 +132,7 @@ impl OpenAiProvider {
                 req.tail,
                 carries_tools,
                 eyes,
+                withheld,
             ),
             "stream": true,
             "stream_options": {"include_usage": true},
@@ -288,7 +291,7 @@ impl MessagesBackend for OpenAiProvider {
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
         let eyes = self.eyes();
-        let first = self.round(req, on_delta, eyes);
+        let first = self.round(req, on_delta, eyes, crate::messages::Withheld::nothing());
         // **A picture the model would not take, learned rather than guessed.** Three things
         // have to be true and all three are read off the refusal or the request, never
         // assumed: the status is a 400, the sentence names a content type (or `image_url`)
@@ -312,24 +315,112 @@ impl MessagesBackend for OpenAiProvider {
             return first;
         };
         let carried = crate::messages::carries_pictures(req.items.iter().chain(req.tail.iter()));
-        if !eyes.takes_images() || !carried || !crate::messages::text_only_refusal(why) {
+        if !eyes.takes_images() || !carried {
             return first;
         }
-        if crate::messages::mark_text_only(self.preset.name, &self.model) {
-            let said = format!(
-                "{} refused an image; images are now sent to it as placeholders (the provider \
-                 said: {why}). The request went again without them, and this daemon will not \
-                 send this model another picture.",
-                self.model
-            );
-            // The daemon's log first: a session may have no head attached, and this is the
-            // line that says why every later request carries placeholders.
-            eprintln!("  {said}");
-            if let Some(notes) = &self.notes {
-                notes(said);
+        if crate::messages::text_only_refusal(why) {
+            if crate::messages::mark_text_only(self.preset.name, &self.model) {
+                let said = format!(
+                    "{} refused an image; images are now sent to it as placeholders (the provider \
+                     said: {why}). The request went again without them, and this daemon will not \
+                     send this model another picture.",
+                    self.model
+                );
+                // The daemon's log first: a session may have no head attached, and this is the
+                // line that says why every later request carries placeholders.
+                eprintln!("  {said}");
+                if let Some(notes) = &self.notes {
+                    notes(said);
+                }
             }
+            return self.round(
+                req,
+                on_delta,
+                crate::messages::Eyes::TextOnly(&self.model),
+                crate::messages::Withheld::nothing(),
+            );
         }
-        self.round(req, on_delta, crate::messages::Eyes::TextOnly(&self.model))
+        // **The second refusal, and a different fact: the PICTURE is what it would not take.**
+        //
+        // MEASURED 2026-10-30 — `.messages[1861].image[0]: You have uploaded an unsupported
+        // image…` — on a request carrying a 33-byte PNG header `read` had called a picture. It
+        // is not `text_only_refusal`: that sentence says *these bytes are not an image*, not
+        // *this model takes text*, and answering it with [`mark_text_only`] would withhold every
+        // picture this model was ever sent, for a fault one file had. So the marks go against
+        // the pictures, the model keeps its eyes, and the retry is the same request with those
+        // pictures named instead of sent.
+        //
+        // **Nothing is recorded until the retry answers.** A second refusal proves nothing about
+        // the pictures — it may be about the context, a tool pairing, anything — and a mark that
+        // outlived it would withhold the operator's pictures for a reason that was never theirs.
+        // So the retry is given them as a PARAMETER, and only a success commits the lesson.
+        if !crate::messages::picture_refusal(why) {
+            return first;
+        }
+        let carried: Vec<String> = crate::messages::pictures(req.items.iter().chain(req.tail.iter()))
+            .into_iter()
+            .map(String::from)
+            .collect();
+        if carried.is_empty() {
+            return first;
+        }
+        let trying: Vec<(String, String)> = carried
+            .iter()
+            .map(|d| (crate::messages::picture_key(d), why.clone()))
+            .collect();
+        let second = self.round(
+            req,
+            on_delta,
+            eyes,
+            crate::messages::Withheld::trying(&trying),
+        );
+        let said = match &second {
+            Ok(_) => {
+                // **Learned.** Every picture the refused request carried is recorded against its
+                // own bytes, so no later turn — and no later `read` of the same file — earns this
+                // 400 again. The unit of the lesson is the request, because the provider's index
+                // into it (`.messages[1861]`) is not a place this tree can map back to a row: a
+                // good picture beside a bad one is withheld with it, which is the smaller loss
+                // than a session that cannot speak.
+                let mut fresh = 0;
+                for d in &carried {
+                    if crate::messages::mark_bad_picture(d, why) {
+                        fresh += 1;
+                    }
+                }
+                format!(
+                    "{} refused {} picture(s) (the provider said: {why}). The request went again \
+                     with them named instead of sent and was answered; this daemon will not send \
+                     those bytes again{}. The pictures themselves are unchanged on disk.",
+                    self.model,
+                    carried.len(),
+                    if fresh == 0 {
+                        " — they were already known"
+                    } else {
+                        ""
+                    }
+                )
+            }
+            Err(BackendError::Refused { body, .. }) => format!(
+                "{} refused a picture (the provider said: {why}), and refused the request again \
+                 with every picture in it withheld (the provider said: {body}). Nothing has been \
+                 recorded against the pictures: the second refusal may be about something else, \
+                 and the next turn will try them again.",
+                self.model
+            ),
+            Err(e) => format!(
+                "{} refused a picture (the provider said: {why}), and the retry without pictures \
+                 failed before the provider answered: {e}",
+                self.model
+            ),
+        };
+        // One notice, on both paths, and it says what actually happened rather than what was
+        // attempted. The daemon's log first: a session may have no head attached.
+        eprintln!("  {said}");
+        if let Some(notes) = &self.notes {
+            notes(said);
+        }
+        second
     }
 }
 
@@ -345,8 +436,9 @@ impl OpenAiProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
         eyes: crate::messages::Eyes<'_>,
+        withheld: crate::messages::Withheld<'_>,
     ) -> Result<Completion, BackendError> {
-        let body = self.body_for(req, eyes)?;
+        let body = self.body_for(req, eyes, withheld)?;
         // Serialised once and kept, so a refusal can say how large the request was
         // without paying for a second pass over a body that may be megabytes.
         let payload = body.to_string();

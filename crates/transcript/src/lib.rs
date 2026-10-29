@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 /// sides of the log/wire boundary need it and neither can see the other.
 pub mod media;
 pub mod sanitize;
+/// **Fixtures that are real images** — public for the reason `letibot_sessionlog::testing` is: the
+/// crates that need a picture in a test are not this one. See the module for what it replaced.
+pub mod testing;
 
 /// **Who asked for a tool call** — R24 part two, decision 1.
 ///

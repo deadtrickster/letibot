@@ -214,6 +214,23 @@ fn a_refusal_carries_the_providers_own_message() {
     }
 }
 
+/// **A real picture, as the reference a row carries.**
+///
+/// These bytes matter: `messages::picture_fate` refuses to send a reference that is not a
+/// complete image, so a fixture that is a signature and nothing else never reaches the provider
+/// at all — which is exactly what the incident's 33-byte PNG header was. See
+/// `letibot_transcript::testing`.
+fn picture_ref(w: u32, h: u32) -> String {
+    letibot_transcript::testing::data_ref(
+        "image/png",
+        &letibot_transcript::testing::png(w, h),
+    )
+}
+
+fn picture_bytes(w: u32, h: u32) -> usize {
+    letibot_transcript::testing::png(w, h).len()
+}
+
 /// **A model that refuses the picture is LEARNED, and the same request goes again
 /// without it** — the operator's rule: *"when a provider answers http 400 and the body
 /// says the content type is invalid … mark this model text-only for the rest of the
@@ -259,7 +276,7 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
             },
             UserPart::Image {
                 media_type: "image/png".into(),
-                data_ref: "data:image/png;base64,iVBORw0KGgo=".into(),
+                data_ref: picture_ref(2, 2),
             },
         ],
     }];
@@ -290,7 +307,8 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
         );
         assert!(
             seen[1].1.contains(&format!(
-                "[image 1 · image/png · 8 B — not sent: {MODEL} takes text only]"
+                "[image 1 · image/png · {} B — not sent: {MODEL} takes text only]",
+                picture_bytes(2, 2)
             )),
             "the retry said nothing about the picture it withheld: {}",
             seen[1].1
@@ -315,6 +333,250 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
     let seen = f.seen.lock().unwrap();
     assert_eq!(seen.len(), 3, "the third request was refused and retried");
     assert!(!seen[2].1.contains("image_url"), "{}", seen[2].1);
+}
+
+/// **A provider that refuses THE BYTES is learned against the picture, not against the model.**
+///
+/// MEASURED 2026-10-30, the incident this exists for: a session died and no restart could revive
+/// it, because a `read` of a 33-byte PNG header was stored as a picture and every turn sent it
+/// again —
+///
+/// ```text
+/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
+/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
+/// ```
+///
+/// That sentence is NOT `text_only_refusal`'s: it does not say *this model takes text*, it says
+/// *these bytes are not an image*, and the two facts have different remedies. So the assertions
+/// here are the ones that tell the two apart: the model is NOT marked text-only, the picture IS
+/// marked, the retry is ONE, and the next turn sends no `image_url` without earning the 400 again.
+#[test]
+fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_request_retried() {
+    const MODEL: &str = "glm-5.3-bytes-probe";
+    const REFUSAL: &str = ".messages[1861].image[0]: You have uploaded an unsupported image. \
+                           Please make sure your image is valid and has one of the following \
+                           formats: webp, png, jpeg, and gif.";
+    let f = fake_answering(|body| match body.contains("image_url") {
+        true => (
+            400,
+            format!("{{\"error\":{{\"message\":{}}}}}", json_string(REFUSAL)),
+        ),
+        false => (200, SCRIPT.to_string()),
+    });
+    let notices: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds).with_notes(
+        Arc::new(move |said: String| sink.lock().unwrap().push(said)),
+    );
+    // **These bytes are this test's own.** The mark is process-wide and keyed by the picture, so
+    // a size another test uses would make the order the two run in matter.
+    let reference = picture_ref(3, 3);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![
+            UserPart::Text {
+                text: "what does this chart say?".into(),
+            },
+            UserPart::Image {
+                media_type: "image/png".into(),
+                data_ref: reference.clone(),
+            },
+        ],
+    }];
+    let req = TurnRequest {
+        system: "be terse",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let done = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the retry answered, so the session is not wedged");
+    assert_eq!(done.text, "Hello", "the answer is the retried round's");
+
+    {
+        let seen = f.seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "exactly one retry, not a ladder");
+        assert!(
+            seen[0].1.contains("image_url"),
+            "the first request did not carry the picture: {}",
+            seen[0].1
+        );
+        assert!(
+            !seen[1].1.contains("image_url"),
+            "the retry sent the picture again: {}",
+            seen[1].1
+        );
+        // The placeholder names the reason the PROVIDER gave, not a guess of ours.
+        assert!(
+            seen[1]
+                .1
+                .contains("the provider refused these bytes: .messages[1861].image[0]"),
+            "the retry said nothing about the picture it withheld: {}",
+            seen[1].1
+        );
+        assert!(
+            seen[1].1.contains("unsupported image"),
+            "the provider's own words are not in the placeholder: {}",
+            seen[1].1
+        );
+    }
+    // **The mark is against the picture** — and the model keeps its eyes, because the model was
+    // never the problem.
+    assert!(
+        letibot_provider::messages::known_bad_picture(&reference).is_some(),
+        "the refusal was not learned against the picture"
+    );
+    assert!(
+        !letibot_provider::messages::known_text_only("glm", MODEL),
+        "a refusal of these bytes marked the MODEL text-only, which would withhold every \
+         picture it was ever sent"
+    );
+    {
+        let said = notices.lock().unwrap();
+        assert_eq!(said.len(), 1, "the operator was told {said:?}");
+        assert!(said[0].contains("refused"), "{}", said[0]);
+        assert!(said[0].contains("unsupported image"), "{}", said[0]);
+    }
+
+    // **And the next turn does not earn it again**: one connection, the picture already withheld.
+    p.complete(&req, &mut |_| StreamFlow::Continue)
+        .expect("the marked picture is withheld first time");
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "the third request was refused and retried");
+    assert!(!seen[2].1.contains("image_url"), "{}", seen[2].1);
+    assert!(
+        seen[2].1.contains("the provider refused these bytes"),
+        "the third request forgot why it has no picture: {}",
+        seen[2].1
+    );
+}
+
+/// **A 400 that carries a picture but is not about it is NOT retried and marks nothing.**
+///
+/// The guard that keeps this arm from swallowing an unrelated refusal: a context-length 400 on a
+/// request with a picture in it must surface as itself, or a session at its window would lose
+/// every picture it holds to a fault that was never theirs.
+#[test]
+fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
+    const MODEL: &str = "glm-5.3-context-probe";
+    const REFUSAL: &str = "maximum context length is 1048576 tokens";
+    let f = fake_answering(move |_| {
+        (
+            400,
+            format!("{{\"error\":{{\"message\":{}}}}}", json_string(REFUSAL)),
+        )
+    });
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds);
+    let reference = picture_ref(4, 4);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Image {
+            media_type: "image/png".into(),
+            data_ref: reference.clone(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let err = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect_err("a context refusal is not a picture refusal");
+    assert!(format!("{err}").contains(REFUSAL), "{err}");
+    assert_eq!(f.seen.lock().unwrap().len(), 1, "it was retried anyway");
+    assert!(
+        letibot_provider::messages::known_bad_picture(&reference).is_none(),
+        "an unrelated refusal was recorded against the picture"
+    );
+}
+
+/// **A retry that is ALSO refused records nothing and surfaces the provider's own words.**
+///
+/// The reason the marks are committed only on success: a second refusal may be about something
+/// else entirely, and a mark that outlived it would withhold the operator's pictures for ever for
+/// a fault that was never theirs. The words of the second refusal are what the operator sees.
+#[test]
+fn a_retry_that_is_refused_too_records_nothing_and_says_what_the_provider_said() {
+    const MODEL: &str = "glm-5.3-twice-probe";
+    let f = fake_answering(|body| match body.contains("image_url") {
+        true => (
+            400,
+            "{\"error\":{\"message\":\"You have uploaded an unsupported image\"}}".to_string(),
+        ),
+        false => (
+            400,
+            "{\"error\":{\"message\":\"insufficient balance\"}}".to_string(),
+        ),
+    });
+    let notices: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = notices.clone();
+    let creds = Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(f.url.clone()),
+    };
+    let p = OpenAiProvider::new(&letibot_provider::presets::GLM, Some(MODEL), creds).with_notes(
+        Arc::new(move |said: String| sink.lock().unwrap().push(said)),
+    );
+    let reference = picture_ref(5, 5);
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Image {
+            media_type: "image/png".into(),
+            data_ref: reference.clone(),
+        }],
+    }];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let err = p
+        .complete(&req, &mut |_| StreamFlow::Continue)
+        .expect_err("both attempts were refused");
+    let said = format!("{err}");
+    assert!(
+        said.contains("insufficient balance"),
+        "the second refusal's own words are not what surfaced: {said}"
+    );
+    assert_eq!(f.seen.lock().unwrap().len(), 2, "one retry, not a ladder");
+    assert!(
+        letibot_provider::messages::known_bad_picture(&reference).is_none(),
+        "a failed retry recorded the picture as bad anyway"
+    );
+    let said = notices.lock().unwrap();
+    assert_eq!(said.len(), 1, "the operator was told {said:?}");
+    assert!(
+        said[0].contains("Nothing has been recorded"),
+        "the notice does not say the pictures are still tried: {}",
+        said[0]
+    );
+}
+
+/// A JSON string literal for a body this test builds — the fake's answer is a JSON document and a
+/// refusal's words can hold anything.
+fn json_string(s: &str) -> String {
+    serde_json::Value::String(s.to_string()).to_string()
 }
 
 #[test]

@@ -205,6 +205,180 @@ impl Eyes<'_> {
     }
 }
 
+/// **The pictures a provider has refused the BYTES of**, keyed by the reference, for the rest of
+/// this daemon's life.
+///
+/// The sibling of [`TEXT_ONLY`] and deliberately not the same table. That one is a fact about the
+/// MODEL — `glm-5.3` takes text only, so no picture goes to it again. This one is a fact about the
+/// PICTURE: the model may see perfectly well and refuse *these bytes*, and a mark against the model
+/// would withhold every other picture in the session for a fault none of them has.
+///
+/// MEASURED 2026-10-30, the incident this exists for: a `read` of a 33-byte PNG header was sent as
+/// `image_url`, and the provider answered
+///
+/// ```text
+/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
+/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
+/// ```
+///
+/// — to that round, and to every turn after it, because the picture was in the history. The session
+/// was dead for good: a restart rebuilt the same request. The key is the picture's own bytes so a
+/// later turn — or a later `read` of the same file — recognises it without earning the 400 again.
+static BAD_PICTURES: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// The most of a provider's refusal a placeholder carries. The measured one is 151 characters and
+/// a placeholder is prompt text; a refusal that is a page long is truncated rather than pasted into
+/// every turn of the conversation.
+const REFUSAL_SAID_MAX: usize = 200;
+
+/// **The key a picture's refusal is recorded against** — a hash of the reference, so two `read`s of
+/// the same file (or the same bytes in two sessions) are one picture and one lesson.
+///
+/// FNV-1a rather than a cryptographic digest: nothing here is a security boundary, and a collision
+/// costs a good picture withheld with a bad one, which is the smaller of the two failures this
+/// table trades between. The length is folded in so a truncated reference cannot collide with a
+/// full one.
+pub fn picture_key(data_ref: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in data_ref.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}:{}", data_ref.len())
+}
+
+/// **Record that a provider refused these bytes**, with the words it refused them in. `true` when
+/// it is NEW, which is what makes the notice to the operator "once".
+///
+/// The words go in the placeholder a later request carries in the picture's place, so the model is
+/// told *why* it has no picture and the reason is the provider's rather than this tree's guess.
+pub fn mark_bad_picture(data_ref: &str, why: &str) -> bool {
+    let key = picture_key(data_ref);
+    let mut said = why.trim().replace(['\n', '\r'], " ");
+    if said.chars().count() > REFUSAL_SAID_MAX {
+        said = said.chars().take(REFUSAL_SAID_MAX).collect::<String>() + "…";
+    }
+    let mut known = BAD_PICTURES.lock().unwrap_or_else(|e| e.into_inner());
+    if known.iter().any(|(k, _)| *k == key) {
+        return false;
+    }
+    known.push((key, said));
+    true
+}
+
+/// **Why this picture is not sent**, when the daemon has already learned that it is not — the
+/// provider's own words, or `None` when it goes.
+pub fn known_bad_picture(data_ref: &str) -> Option<String> {
+    let key = picture_key(data_ref);
+    BAD_PICTURES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(k, _)| *k == key)
+        .map(|(_, why)| why.clone())
+}
+
+/// **Is this refusal about the PICTURE rather than about the model?**
+///
+/// The measured one is above, and it is not [`text_only_refusal`]'s: it does not say *this model
+/// takes text*, it says *these bytes are not an image*. The two are different facts with different
+/// remedies — one withholds every picture from a model for ever, the other withholds one picture —
+/// so they get different tables and different predicates, and a request is never retried twice.
+///
+/// The matcher is the same shape as its sibling: what the sentence NAMES, not one vendor's
+/// punctuation. It has to name an image, and it has to complain about it — `unsupported`,
+/// `invalid`, a `format`, an upload, a decode. A 400 that names an image while complaining about
+/// something else (`maximum context length`) does not match, and a 400 about the picture on a
+/// request that carried none is filtered by [`carries_pictures`] at the call site.
+pub fn picture_refusal(body: &str) -> bool {
+    let b = body.to_ascii_lowercase();
+    let names_picture = b.contains("image") || b.contains("picture") || b.contains("media");
+    if !names_picture {
+        return false;
+    }
+    const COMPLAINTS: [&str; 12] = [
+        "unsupported",
+        "invalid",
+        "not valid",
+        "not a valid",
+        "could not",
+        "cannot",
+        "unable",
+        "corrupt",
+        "malformed",
+        "format",
+        "upload",
+        "decode",
+    ];
+    COMPLAINTS.iter().any(|c| b.contains(c))
+}
+
+/// **The pictures a request carries, as the references they are** — the two carriers,
+/// [`UserPart::Image`] and a tool result's [`Media`](letibot_transcript::media::Media), in the order
+/// a retry would withhold them.
+pub fn pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            TranscriptItem::User { parts, .. } => {
+                for p in parts {
+                    if let UserPart::Image { data_ref, .. } = p {
+                        out.push(data_ref.as_str());
+                    }
+                }
+            }
+            TranscriptItem::ToolResult {
+                media: Some(m), ..
+            } => out.push(m.data_ref.as_str()),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// **The pictures a request must not send, beyond what the daemon has already learned.**
+///
+/// A retry is the only caller that fills it, and it is filled rather than recorded because a retry
+/// that ALSO fails proves nothing about the pictures: the second refusal may be about something
+/// else entirely, and a mark that outlived this daemon would withhold the pictures for a fault that
+/// was never theirs. So the marks are committed by the caller once the retry answers, and until
+/// then they are a parameter.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Withheld<'a> {
+    /// `(picture_key, the provider's words)` for pictures a retry is trying without.
+    trying: &'a [(String, String)],
+}
+
+impl<'a> Withheld<'a> {
+    /// Nothing beyond the marks the daemon already holds.
+    pub fn nothing() -> Self {
+        Withheld { trying: &[] }
+    }
+
+    /// **A retry**: these pictures, and the words that made it try.
+    pub fn trying(pairs: &'a [(String, String)]) -> Self {
+        Withheld { trying: pairs }
+    }
+
+    /// Why this picture is not sent for a reason this request knows about — `None` when it goes.
+    fn why(&self, data_ref: &str) -> Option<String> {
+        let key = picture_key(data_ref);
+        if let Some((_, why)) = self.trying.iter().find(|(k, _)| *k == key) {
+            return Some(refused_said(why));
+        }
+        known_bad_picture(data_ref).map(|why| refused_said(&why))
+    }
+}
+
+/// **Why a picture is withheld, when the reason is the bytes themselves** — the sentence a
+/// placeholder carries for a file that sniffs as an image and holds none.
+pub const NOT_A_PICTURE: &str = "these bytes are not a complete image";
+
+/// The placeholder's reason for a picture a provider refused: the provider's words, attributed.
+fn refused_said(why: &str) -> String {
+    format!("the provider refused these bytes: {why}")
+}
+
 /// **The models a provider has refused a picture for**, `provider/model`, for the rest of
 /// this daemon's life.
 ///
@@ -284,13 +458,26 @@ pub fn text_only_refusal(body: &str) -> bool {
 /// the request's items and its tail are two lists one walk reads (`items.iter().chain(
 /// tail.iter())`), and collecting them to ask would copy the conversation.
 pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> bool {
-    items.into_iter().any(|item| match item {
-        TranscriptItem::User { parts, .. } => {
-            parts.iter().any(|p| matches!(p, UserPart::Image { .. }))
-        }
-        TranscriptItem::ToolResult { media, .. } => media.is_some(),
-        _ => false,
-    })
+    !pictures(items).is_empty()
+}
+
+/// **What one picture becomes** — sent, or the reason it is not.
+///
+/// The two carriers ask this and get one answer, which is the point: a picture a head attached and
+/// a picture `read` returned are the same bytes on the wire, and the three reasons not to send one
+/// apply to both.
+///
+/// The order of the three is the order of their scope. A model that takes text only is not sent ANY
+/// picture, so its reason is the model's whatever the bytes are; then the bytes themselves, which no
+/// model can use; then what a provider said about this particular picture.
+fn picture_fate(data_ref: &str, eyes: Eyes<'_>, withheld: Withheld<'_>) -> Option<String> {
+    if !eyes.takes_images() {
+        return Some(eyes.why_not().unwrap_or_default());
+    }
+    if !letibot_transcript::media::data_ref_is_image(data_ref) {
+        return Some(NOT_A_PICTURE.to_string());
+    }
+    withheld.why(data_ref)
 }
 
 /// **One picture, said as one text part**, for a model that will not be given it.
@@ -304,12 +491,11 @@ pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>)
 /// The size is the DECODED size, because base64 is 4/3 of it and the ratio is an encoding
 /// detail rather than a fact about the picture (the same rule [`letibot_transcript::media`]
 /// states for `Media::bytes`).
-fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, eyes: Eyes<'_>) -> String {
+fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, why: &str) -> String {
     let size = match bytes {
         Some(n) => size_said(n),
         None => "size unknown".to_string(),
     };
-    let why = eyes.why_not().unwrap_or_default();
     format!("[image {nth} · {mime} · {size} — not sent: {why}]")
 }
 
@@ -351,8 +537,9 @@ pub fn convert(
     items: &[TranscriptItem],
     echo_reasoning: bool,
     eyes: Eyes<'_>,
+    withheld: Withheld<'_>,
 ) -> Vec<Value> {
-    convert_with_tail(system, items, &[], echo_reasoning, eyes)
+    convert_with_tail(system, items, &[], echo_reasoning, eyes, withheld)
 }
 
 /// **The same conversion, with items the request carries and the transcript does
@@ -370,6 +557,7 @@ pub fn convert_with_tail(
     tail: &[TranscriptItem],
     echo_reasoning: bool,
     eyes: Eyes<'_>,
+    withheld: Withheld<'_>,
 ) -> Vec<Value> {
     let mut out = Vec::with_capacity(items.len() + tail.len() + 1);
     let leads_with_system = matches!(items.first(), Some(TranscriptItem::System { .. }));
@@ -437,20 +625,24 @@ pub fn convert_with_tail(
                             data_ref,
                         } => {
                             images += 1;
-                            if eyes.takes_images() {
-                                content.push(
+                            // **A picture that will not be sent is NAMED instead** — and the
+                            // reason comes from [`picture_fate`], which is the same answer the
+                            // tool-result arm below gets. Three reasons, in order of scope: the
+                            // model takes text only, the bytes are not a complete image, or a
+                            // provider refused these bytes.
+                            match picture_fate(data_ref, eyes, withheld) {
+                                None => content.push(
                                     json!({"type": "image_url", "image_url": {"url": data_ref}}),
-                                );
-                            } else {
-                                content.push(json!({
+                                ),
+                                Some(why) => content.push(json!({
                                     "type": "text",
                                     "text": not_sent_said(
                                         images,
                                         media_type,
                                         data_ref_bytes(data_ref),
-                                        eyes,
+                                        &why,
                                     ),
-                                }));
+                                })),
                             }
                         }
                         UserPart::FileRef { path, .. } => {
@@ -562,22 +754,24 @@ pub fn convert_with_tail(
                 // string, and a `content` array where a string was is a re-prefill of every cached
                 // turn after it.
                 if let Some(m) = media {
-                    if eyes.takes_images() {
-                        out.push(json!({
+                    // **The same predicate as a head's own picture**, and it is what lets a fixed
+                    // binary reopen a session a broken one wedged: the row carrying the bytes that
+                    // 400'd is history, so the renderer is where it has to stop being sent.
+                    match picture_fate(&m.data_ref, eyes, withheld) {
+                        None => out.push(json!({
                             "role": "user",
                             "content": [
                                 {"type": "text", "text": "Attached media from tool result:"},
                                 {"type": "image_url", "image_url": {"url": m.data_ref}},
                             ]
-                        }));
-                    } else {
-                        out.push(json!({
+                        })),
+                        Some(why) => out.push(json!({
                             "role": "user",
                             "content": format!(
                                 "Attached media from tool result: {}",
-                                not_sent_said(1, &m.mime, Some(m.bytes), eyes)
+                                not_sent_said(1, &m.mime, Some(m.bytes), &why)
                             ),
-                        }));
+                        })),
                     }
                 }
             }
@@ -826,7 +1020,27 @@ mod tests {
     /// model's eyes are an input to that shape rather than the subject of most of these
     /// tests; the two that are about it call `super::convert` with their own [`Eyes`].
     fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
-        super::convert(system, items, echo_reasoning, Eyes::Sees)
+        super::convert(
+            system,
+            items,
+            echo_reasoning,
+            Eyes::Sees,
+            Withheld::nothing(),
+        )
+    }
+
+    /// **A real picture, as the reference a row carries.**
+    ///
+    /// The bytes matter now: a reference that is a signature and nothing else is not an image, and
+    /// a request carrying one is rendered as a placeholder whatever the model's eyes are — see
+    /// [`super::picture_fate`]. Every test here that expects an `image_url` needs a picture, which
+    /// is the point: the fixture that used to stand in for one, `iVBORw0KGgo=`, was the incident's
+    /// file.
+    fn picture_ref() -> String {
+        letibot_transcript::testing::data_ref(
+            "image/png",
+            &letibot_transcript::testing::png(2, 2),
+        )
     }
 
     /// **The request's tail is the LAST message, and it is not in the transcript.**
@@ -851,7 +1065,14 @@ mod tests {
                 text: "[standing-notes offer] `.letibot/notes/x.md` looks relevant".into(),
             }],
         }];
-        let msgs = convert_with_tail("be terse", &items, &tail, true, Eyes::Sees);
+        let msgs = convert_with_tail(
+            "be terse",
+            &items,
+            &tail,
+            true,
+            Eyes::Sees,
+            Withheld::nothing(),
+        );
         assert_eq!(msgs.len(), 3, "system, the prompt, the offer");
         let last = msgs.last().expect("messages");
         assert_eq!(last["role"], "user");
@@ -1024,7 +1245,7 @@ mod tests {
     /// user message whose text is opencode's own prompt.
     #[test]
     fn a_tool_result_with_an_image_puts_the_image_on_the_wire() {
-        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let uri = picture_ref();
         // **The row that proposed it**, because `pair_tool_calls` drops an orphan tool result by
         // design — the fixture needs the shape the wire actually has.
         let proposed = TranscriptItem::Assistant {
@@ -1050,7 +1271,7 @@ mod tests {
                     bytes: 11,
                     width: Some(2),
                     height: Some(2),
-                    data_ref: uri.into(),
+                    data_ref: uri.clone(),
                     delivered: false,
                 }),
             },
@@ -1114,7 +1335,7 @@ mod tests {
     /// *"not sent to this provider"*.
     #[test]
     fn a_user_row_carrying_an_image_sends_the_image_not_a_sentence_about_it() {
-        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let uri = picture_ref();
         let items = vec![TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Operator,
             parts: vec![
@@ -1123,7 +1344,7 @@ mod tests {
                 },
                 UserPart::Image {
                     media_type: "image/png".into(),
-                    data_ref: uri.into(),
+                    data_ref: uri.clone(),
                 },
             ],
         }];
@@ -1151,7 +1372,7 @@ mod tests {
     /// chart a person attached into prose about a chart, silently.
     #[test]
     fn an_unknown_model_is_sent_the_picture() {
-        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let uri = picture_ref();
         let proposed = TranscriptItem::Assistant {
             text: String::new(),
             tool_calls: vec![letibot_transcript::ToolCall {
@@ -1170,7 +1391,7 @@ mod tests {
                     },
                     UserPart::Image {
                         media_type: "image/png".into(),
-                        data_ref: uri.into(),
+                        data_ref: uri.clone(),
                     },
                 ],
             },
@@ -1187,12 +1408,18 @@ mod tests {
                     bytes: 11,
                     width: Some(2),
                     height: Some(2),
-                    data_ref: uri.into(),
+                    data_ref: uri.clone(),
                     delivered: false,
                 }),
             },
         ];
-        let m = super::convert("be terse", &items, false, Eyes::Unknown("some-new-model"));
+        let m = super::convert(
+            "be terse",
+            &items,
+            false,
+            Eyes::Unknown("some-new-model"),
+            Withheld::nothing(),
+        );
         // Both carriers: the operator's own part, and the picture a call read.
         let urls = m
             .iter()
@@ -1246,7 +1473,7 @@ mod tests {
             speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Image {
                 media_type: "image/png".into(),
-                data_ref: "data:image/png;base64,iVBORw0KGgo=".into(),
+                data_ref: picture_ref(),
             }],
         }];
         assert!(super::carries_pictures(picture.iter()));
@@ -1267,7 +1494,7 @@ mod tests {
     /// prefix, so the same part must produce the same sentence on every request.
     #[test]
     fn a_text_only_model_gets_a_placeholder_and_plain_string_content() {
-        let uri = "data:image/png;base64,iVBORw0KGgo=";
+        let uri = picture_ref();
         let items = vec![TranscriptItem::User {
             speaker: letibot_transcript::Speaker::Operator,
             parts: vec![
@@ -1280,7 +1507,13 @@ mod tests {
                 },
             ],
         }];
-        let m = super::convert("be terse", &items, false, Eyes::TextOnly("glm-5.3"));
+        let m = super::convert(
+            "be terse",
+            &items,
+            false,
+            Eyes::TextOnly("glm-5.3"),
+            Withheld::nothing(),
+        );
         let user = m
             .iter()
             .find(|x| x["role"] == "user")
@@ -1290,9 +1523,13 @@ mod tests {
         let content = user["content"]
             .as_str()
             .unwrap_or_else(|| panic!("an all-text message came out as {user}"));
+        let size = letibot_transcript::testing::png(2, 2).len();
         assert_eq!(
             content,
-            "what is this?\n\n[image 1 · image/png · 8 B — not sent: glm-5.3 takes text only]",
+            format!(
+                "what is this?\n\n[image 1 · image/png · {size} B — not sent: glm-5.3 takes \
+                 text only]"
+            ),
             "{content}"
         );
         assert!(
@@ -1302,7 +1539,13 @@ mod tests {
         // And the same bytes twice: the prefix has to be stable per model.
         assert_eq!(
             m,
-            super::convert("be terse", &items, false, Eyes::TextOnly("glm-5.3"))
+            super::convert(
+                "be terse",
+                &items,
+                false,
+                Eyes::TextOnly("glm-5.3"),
+                Withheld::nothing(),
+            )
         );
     }
 
@@ -1333,12 +1576,18 @@ mod tests {
                     bytes: 131_072,
                     width: Some(2),
                     height: Some(2),
-                    data_ref: "data:image/png;base64,iVBORw0KGgo=".into(),
+                    data_ref: picture_ref(),
                     delivered: false,
                 }),
             },
         ];
-        let m = super::convert("be terse", &items, false, Eyes::TextOnly("glm-5.3"));
+        let m = super::convert(
+            "be terse",
+            &items,
+            false,
+            Eyes::TextOnly("glm-5.3"),
+            Withheld::nothing(),
+        );
         let att = m
             .iter()
             .find(|x| x["role"] == "user")
@@ -1353,6 +1602,184 @@ mod tests {
             !m.iter().any(|x| x.to_string().contains("image_url")),
             "an image_url reached a text-only model: {m:?}"
         );
+    }
+
+    /// **A picture in the STORE that is not a picture is named, not sent** — the user-row carrier.
+    ///
+    /// The incident, as a rendering: the bytes are the 33-byte PNG header that a test wrote into the
+    /// operator's paste directory and `read` called an image. A fixed binary must be able to reopen
+    /// the session a broken one wedged, and the row is append-only — so this is the only place the
+    /// mistake can be undone.
+    #[test]
+    fn a_user_rows_incomplete_picture_is_named_and_not_sent() {
+        let bad = letibot_transcript::testing::data_ref(
+            "image/png",
+            &letibot_transcript::testing::png_header_only(640, 480),
+        );
+        let items = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![
+                UserPart::Text {
+                    text: "what is this?".into(),
+                },
+                UserPart::Image {
+                    media_type: "image/png".into(),
+                    data_ref: bad,
+                },
+            ],
+        }];
+        let m = convert("be terse", &items, false);
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("image_url")),
+            "an incomplete picture reached the wire: {m:?}"
+        );
+        assert!(
+            m.iter().any(|x| x.to_string().contains(&format!(
+                "[image 1 · image/png · 33 B — not sent: {}]",
+                super::NOT_A_PICTURE
+            ))),
+            "the model was not told why it has no picture: {m:?}"
+        );
+    }
+
+    /// **And the same for a tool result's media** — the arm that actually 400'd, fourteen times in
+    /// the measured history.
+    #[test]
+    fn a_tool_results_incomplete_picture_is_named_and_not_sent() {
+        let proposed = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let items = vec![
+            proposed,
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "shot.png — image image/png 640×480 · 0 KiB".into(),
+                edit: None,
+                origin: None,
+                media: Some(letibot_transcript::media::Media {
+                    mime: "image/png".into(),
+                    bytes: 33,
+                    width: Some(640),
+                    height: Some(480),
+                    data_ref: letibot_transcript::testing::data_ref(
+                        "image/png",
+                        &letibot_transcript::testing::png_header_only(640, 480),
+                    ),
+                    delivered: false,
+                }),
+            },
+        ];
+        let m = convert("be terse", &items, false);
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("image_url")),
+            "an incomplete picture reached the wire: {m:?}"
+        );
+        assert!(
+            m.iter().any(|x| x.to_string().contains(&format!(
+                "Attached media from tool result: [image 1 · image/png · 33 B — not sent: {}]",
+                super::NOT_A_PICTURE
+            ))),
+            "the model was not told why it has no picture: {m:?}"
+        );
+    }
+
+    /// **A retry withholds what it is TRYING without, and records nothing** — the parameter is not
+    /// a mark.
+    ///
+    /// The whole reason [`super::Withheld`] is a parameter: a retry that fails proves nothing about
+    /// the pictures, so the lesson is only committed by the caller once the retry answers.
+    #[test]
+    fn a_retry_withholds_a_picture_it_is_only_trying_and_records_nothing() {
+        let uri = letibot_transcript::testing::data_ref(
+            "image/png",
+            &letibot_transcript::testing::png(6, 6),
+        );
+        let items = vec![TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Image {
+                media_type: "image/png".into(),
+                data_ref: uri.clone(),
+            }],
+        }];
+        let trying = vec![(
+            super::picture_key(&uri),
+            "these bytes are not an image".to_string(),
+        )];
+        let m = super::convert(
+            "be terse",
+            &items,
+            false,
+            Eyes::Sees,
+            super::Withheld::trying(&trying),
+        );
+        assert!(
+            !m.iter().any(|x| x.to_string().contains("image_url")),
+            "the picture was sent again: {m:?}"
+        );
+        assert!(
+            m.iter().any(|x| x.to_string().contains(
+                "— not sent: the provider refused these bytes: these bytes are not an image]"
+            )),
+            "the placeholder does not name the reason: {m:?}"
+        );
+        assert!(
+            super::known_bad_picture(&uri).is_none(),
+            "a picture that was only TRIED is marked for the rest of the daemon"
+        );
+        // The same request without the trial sends it, which is what "nothing was recorded" means.
+        assert!(
+            convert("be terse", &items, false)
+                .iter()
+                .any(|x| x.to_string().contains("image_url")),
+            "the picture stopped going out although nothing was recorded"
+        );
+    }
+
+    /// **The refusal that is about the BYTES, and the ones that are not.**
+    ///
+    /// The measured sentence is the incident's, and it is deliberately not
+    /// [`super::text_only_refusal`]'s: answering it with a text-only mark would withhold every
+    /// picture the model was ever sent, for a fault one file had.
+    #[test]
+    fn a_refusal_about_the_bytes_is_not_a_refusal_about_the_model() {
+        const MEASURED: &str = ".messages[1861].image[0]: You have uploaded an unsupported image. \
+                                Please make sure your image is valid and has one of the following \
+                                formats: webp, png, jpeg, and gif.";
+        for said in [
+            MEASURED,
+            "Invalid image: could not decode",
+            "the picture is corrupt",
+            "media format unsupported",
+            "Unable to decode image data",
+        ] {
+            assert!(super::picture_refusal(said), "not recognised: {said}");
+        }
+        assert!(
+            !super::text_only_refusal(MEASURED),
+            "the bytes refusal is being read as a text-only refusal"
+        );
+        for said in [
+            // A model that takes text only says a different thing, and `complete` asks that
+            // predicate FIRST — so the overlap on the word `image_url` resolves the right way.
+            "messages.content.type is invalid, allowed values: ['text']",
+            "Authentication Fails",
+            "maximum context length is 1048576 tokens",
+            "An assistant message with 'tool_calls' must be followed by tool messages",
+            "insufficient balance",
+        ] {
+            assert!(
+                !super::picture_refusal(said),
+                "wrongly recognised as a picture refusal: {said}"
+            );
+        }
     }
 
     #[test]
@@ -1375,7 +1802,13 @@ mod pairing_tests {
 
     /// [`super::convert`] for a model that SEES — see the sibling module's helper.
     fn convert(system: &str, items: &[TranscriptItem], echo_reasoning: bool) -> Vec<Value> {
-        super::convert(system, items, echo_reasoning, Eyes::Sees)
+        super::convert(
+            system,
+            items,
+            echo_reasoning,
+            Eyes::Sees,
+            Withheld::nothing(),
+        )
     }
 
     fn user(t: &str) -> TranscriptItem {
