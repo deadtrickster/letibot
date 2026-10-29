@@ -1227,9 +1227,11 @@ pub struct MergeGateStep {
     pub command: String,
     /// What became of it, out of [`MergeGateOutcome`]'s closed set.
     pub outcome: MergeGateOutcome,
-    /// **The tail of what the step wrote**, with the bytes dropped from the front counted —
-    /// see `mergequeue::tail`, which is where the truncation and its admission come from. Empty
-    /// on a step that never ran, which is what `not_run` says rather than an empty output.
+    /// **What the step wrote, bounded** — see `mergequeue::gate::excerpt`, which is where the
+    /// truncation and its admission come from: a failing test step leads with the failing target,
+    /// the first failing test of each and its panic (taken from the whole stream), and then as
+    /// much of the end as the cap allows. Empty on a step that never ran, which is what `not_run`
+    /// says rather than an empty output.
     pub output: String,
     /// When the step started, Unix ms. `0` on a step that never ran.
     pub started_ms: u64,

@@ -88,7 +88,9 @@ pub const GATE_BUILD_JOBS: &str = "CARGO_BUILD_JOBS";
 /// linker and for the test run that follows in the same step.
 pub const GATE_JOB_MEMORY: u64 = 2 << 30;
 
-/// How much of a step's output the row keeps — the end, which is where a failure says why.
+/// How much of a step's output the row keeps — **what failed, then the end**, because a failure
+/// says which test and why at the TOP of its own block and a workspace run then prints every
+/// other target after it. See [`excerpt`].
 pub const EVIDENCE_BYTES: usize = 4_096;
 
 /// **The marker of an INSTALL step** — run after the push, never before it (decision 7). The
@@ -990,7 +992,7 @@ fn run_step(
     let end = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let text = read_tail(&log);
+                let text = read_excerpt(&log);
                 break if scope.is_some() && !joined.exists() {
                     // The wrapper could not put itself in the cgroup, so the step never ran.
                     StepEnd::Infra(format!(
@@ -1010,18 +1012,18 @@ fn run_step(
         }
         if Instant::now() >= ctl.deadline {
             kill(&mut child);
-            break StepEnd::Deadline(read_tail(&log));
+            break StepEnd::Deadline(read_excerpt(&log));
         }
         if ctl.stop.load(Ordering::Relaxed) {
             kill(&mut child);
-            break StepEnd::Stopped(read_tail(&log), "the daemon is stopping".into());
+            break StepEnd::Stopped(read_excerpt(&log), "the daemon is stopping".into());
         }
         if last_beat.elapsed() >= Duration::from_secs(5) {
             last_beat = Instant::now();
             if !(ctl.alive)() {
                 kill(&mut child);
                 break StepEnd::Stopped(
-                    read_tail(&log),
+                    read_excerpt(&log),
                     "this daemon lost the repository's lease, so it may not land".into(),
                 );
             }
@@ -1089,13 +1091,14 @@ pub(crate) fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(name))
 }
 
-pub(crate) fn read_tail(log: &Path) -> String {
+pub(crate) fn read_excerpt(log: &Path) -> String {
     let bytes = std::fs::read(log).unwrap_or_default();
-    tail(&String::from_utf8_lossy(&bytes), EVIDENCE_BYTES)
+    excerpt(&String::from_utf8_lossy(&bytes), EVIDENCE_BYTES)
 }
 
-/// The end of `text`, at most `cap` bytes, saying how much was dropped from the front.
-pub fn tail(text: &str, cap: usize) -> String {
+/// The end of `text`, at most `cap` bytes, saying what was left out — `what` names the bytes the
+/// reader is missing.
+fn end_of(text: &str, cap: usize, what: &str) -> String {
     if text.len() <= cap {
         return text.to_string();
     }
@@ -1103,9 +1106,352 @@ pub fn tail(text: &str, cap: usize) -> String {
     while start < text.len() && !text.is_char_boundary(start) {
         start += 1;
     }
+    format!("… [{start} byte(s) {what}]\n{}", &text[start..])
+}
+
+/// The end of `text`, at most `cap` bytes, saying how much was dropped from the front.
+pub fn tail(text: &str, cap: usize) -> String {
+    end_of(text, cap, "dropped from the front")
+}
+
+/// **The most of a step's evidence the failure section may take**, so a tail survives beside it.
+/// The section is clipped to this even when the cap would allow more: what follows a failure is
+/// still worth reading when the failure was a build error.
+const FAILURE_BYTES: usize = 2_400;
+
+/// How many failing targets the section describes in full; the rest are counted.
+const FAILING_TARGETS: usize = 4;
+
+/// How many lines of a panic follow its `panicked at` line — the assertion, the io error.
+const PANIC_LINES: usize = 2;
+
+/// The width a quoted line is clipped to, so one long assertion cannot fill the section.
+const QUOTED_WIDTH: usize = 240;
+
+/// **The room reserved for the line that says the end follows** — [`end_of`]'s marker.
+const MARKER_BYTES: usize = 128;
+
+/// **The least tail worth keeping** — below this the end is left out and the section says so,
+/// rather than the reader getting a marker and three lines.
+const MIN_TAIL: usize = 320;
+
+/// **The words that say the MACHINE refused the step something** — a `fork` with no descriptor
+/// left, an allocation the box could not make, a disk with no room. MEASURED 2026-10-29: the
+/// failure the operator suspected hid behind `error: 1 target failed: -p letibot-harnessd --lib`
+/// was a `fork` at the 256-descriptor ceiling, which reaches the output as `Too many open files`
+/// (or, from `std::io::Error`'s own Display, `Too many open files (os error 24)`).
+const EXHAUSTED: [&str; 5] = [
+    "Too many open files",
+    "os error 24",
+    "Cannot allocate memory",
+    "No space left on device",
+    "Resource temporarily unavailable",
+];
+
+/// **What one failing target's output said** — the first test that failed in it and why.
+#[derive(Debug, PartialEq)]
+struct FailingTarget {
+    /// Cargo's own clause for the target: `-p letibot-harnessd --lib`, or the descriptor libtest
+    /// printed when cargo never named it (`unittests src/lib.rs`).
+    target: String,
+    /// The first test that failed in it.
+    test: Option<String>,
+    /// The first lines of the panic: its `panicked at` line and what it said.
+    panic: Vec<String>,
+    /// How many tests failed in it, as far as the output names them.
+    failed: usize,
+}
+
+/// **What a step's WHOLE output says about the code** — the counts, cargo's own list of failing
+/// targets, and the first failure of each. Read from all of the stream, which is the point: the
+/// end of a `cargo test --workspace --no-fail-fast` run is every OTHER target's `running 0 tests`
+/// blocks, so the end says nothing about what failed.
+#[derive(Debug, Default, PartialEq)]
+struct Failures {
+    /// Targets libtest started — one `running N tests` line each.
+    targets_ran: usize,
+    targets_passed: usize,
+    targets_failed: usize,
+    tests_passed: u64,
+    tests_failed: u64,
+    /// Cargo's verdict verbatim: `error: N target(s) failed:` and the names under it.
+    summary: Vec<String>,
+    /// One per failing target, in the order the targets' output ended.
+    targets: Vec<FailingTarget>,
+    /// Lines from anywhere in the stream that say the machine refused the step something.
+    exhausted: Vec<String>,
+}
+
+/// `s` cut to `width` bytes at a character boundary, saying it was cut.
+fn clip(s: &str, width: usize) -> String {
+    if s.len() <= width {
+        return s.to_string();
+    }
+    let mut end = width;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{} …", &s[..end])
+}
+
+/// The number immediately before `what` in `s` — `782` for `… 782 passed; 1 failed; …`.
+fn number_before(s: &str, what: &str) -> u64 {
+    s.find(what)
+        .and_then(|i| s[..i].split(|c: char| !c.is_ascii_digit()).next_back())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Cargo's own verdict on failing test targets: `error: 2 targets failed:`.
+fn targets_failed_head(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("error: ") else {
+        return false;
+    };
+    let Some((n, rest)) = rest.split_once(' ') else {
+        return false;
+    };
+    n.parse::<usize>().is_ok() && (rest == "target failed:" || rest == "targets failed:")
+}
+
+/// `error: test failed, to rerun pass `-p letibot-harnessd --lib`` → the clause in backticks.
+/// Cargo writes it once per failing target, AFTER that target's output, so it is the boundary
+/// that says whose failures the lines before it are.
+fn rerun_clause(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("error: test failed, to rerun pass ")?;
+    Some(rest.trim().trim_matches('`').to_string())
+}
+
+/// `test worker::a_test ... FAILED` → `worker::a_test`.
+fn test_failed_name(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("test ")?.strip_suffix(" ... FAILED")?;
+    Some(rest.to_string())
+}
+
+/// `---- worker::a_test stdout ----` → `worker::a_test` (libtest's header for a failing test's
+/// own output).
+fn block_name(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("---- ")?.strip_suffix(" stdout ----")?;
+    Some(rest.to_string())
+}
+
+/// `running 12 tests` — one per target libtest started, so the count says how much of a run the
+/// output is talking about. A workspace run whose every target prints `running 0 tests` is
+/// otherwise indistinguishable from a run that did nothing.
+fn running_count(s: &str) -> Option<usize> {
+    let rest = s.strip_prefix("running ")?;
+    let n = rest.split(' ').next()?.parse::<usize>().ok()?;
+    rest.contains(" test").then_some(n)
+}
+
+/// `     Running unittests src/lib.rs (target/debug/deps/x-1)` → `unittests src/lib.rs`.
+fn running_descriptor(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("Running ")?;
+    Some(match rest.rsplit_once(" (") {
+        Some((what, _)) => what.to_string(),
+        None => rest.to_string(),
+    })
+}
+
+/// **One failing target, read out of its own segment of the output** — the first test it named
+/// and the first panic it printed. `clause` is cargo's name for it, empty when nothing named it.
+fn failing_target(seg: &[&str], clause: &str) -> Option<FailingTarget> {
+    let mut names: Vec<String> = Vec::new();
+    let mut panic: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < seg.len() {
+        let s = seg[i].trim();
+        if let Some(name) = test_failed_name(s).or_else(|| block_name(s)) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        } else if panic.is_empty() && s.contains("panicked at") {
+            panic.push(clip(s, QUOTED_WIDTH));
+            // The panic's own message follows it: the assertion, the io error, the sentence.
+            let mut j = i + 1;
+            while j < seg.len() && panic.len() <= PANIC_LINES {
+                let said = seg[j].trim();
+                if said.is_empty() {
+                    break;
+                }
+                panic.push(clip(said, QUOTED_WIDTH));
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+    if names.is_empty() && panic.is_empty() {
+        return None;
+    }
+    let target = if clause.is_empty() {
+        seg.iter()
+            .rev()
+            .find_map(|l| running_descriptor(l.trim()))
+            .unwrap_or_else(|| "the step's own output".to_string())
+    } else {
+        clause.to_string()
+    };
+    Some(FailingTarget {
+        target,
+        test: names.first().cloned(),
+        panic,
+        failed: names.len(),
+    })
+}
+
+/// **Read a step's whole output once**, for what it says about the code.
+fn failures(text: &str) -> Failures {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut f = Failures::default();
+    let mut from = 0usize;
+    for (i, raw) in lines.iter().enumerate() {
+        let s = raw.trim();
+        if let Some(clause) = rerun_clause(s) {
+            if let Some(t) = failing_target(&lines[from..i], &clause) {
+                f.targets.push(t);
+            }
+            from = i + 1;
+            continue;
+        }
+        if targets_failed_head(s) {
+            f.summary.push(s.to_string());
+            // The names under it, indented — `` `-p letibot-harnessd --lib` ``.
+            let mut j = i + 1;
+            while j < lines.len()
+                && !lines[j].trim().is_empty()
+                && lines[j].starts_with(char::is_whitespace)
+            {
+                f.summary.push(lines[j].trim().to_string());
+                j += 1;
+            }
+            continue;
+        }
+        if s.starts_with("test result: ") {
+            if s.starts_with("test result: ok.") {
+                f.targets_passed += 1;
+            } else if s.starts_with("test result: FAILED.") {
+                f.targets_failed += 1;
+            }
+            f.tests_passed += number_before(s, " passed;");
+            f.tests_failed += number_before(s, " failed;");
+        } else if running_count(s).is_some() {
+            f.targets_ran += 1;
+        }
+    }
+    // A runner that is not cargo (`bin/firecode test`, a script) has no `to rerun pass` boundary:
+    // the whole output is the one segment, and the first failure in it is the one to lead with.
+    if f.targets.is_empty() && (f.targets_failed > 0 || super::setup::shows_code_failing(text)) {
+        if let Some(t) = failing_target(&lines, "") {
+            f.targets.push(t);
+        }
+    }
+    for line in text.lines() {
+        let l = line.trim();
+        if f.exhausted.len() < 3
+            && !f.exhausted.iter().any(|e| e == l)
+            && EXHAUSTED.iter().any(|w| l.contains(w))
+        {
+            f.exhausted.push(clip(l, QUOTED_WIDTH));
+        }
+    }
+    f
+}
+
+impl Failures {
+    /// Whether this output says anything worth leading with — a named failure, or a machine that
+    /// refused the step something wherever it said so.
+    fn says_something(&self) -> bool {
+        !self.targets.is_empty() || !self.summary.is_empty() || !self.exhausted.is_empty()
+    }
+
+    /// **The failure section**, at most `budget` bytes: the counts, cargo's list of failing
+    /// targets, then each target's first failing test and its panic — and, from anywhere in the
+    /// stream, the lines that say a resource ran out.
+    fn words(&self, budget: usize) -> String {
+        let mut out = String::new();
+        out.push_str(&format!(
+            "[gate excerpt: {} target(s) ran — {} passed, {} failed; {} test(s) passed, {} failed. \
+             What follows is taken from the whole of the step's output, not only its end]\n",
+            self.targets_ran,
+            self.targets_passed,
+            self.targets_failed,
+            self.tests_passed,
+            self.tests_failed
+        ));
+        if !self.summary.is_empty() {
+            out.push_str(&self.summary.join("\n"));
+            out.push('\n');
+        }
+        for t in self.targets.iter().take(FAILING_TARGETS) {
+            let mut head = format!("[gate excerpt: failing target `{}`", t.target);
+            match &t.test {
+                Some(name) => head.push_str(&format!(" — first failing test `{name}`")),
+                None => head.push_str(" — it named no failing test"),
+            }
+            if t.failed > 1 {
+                head.push_str(&format!(" ({} tests failed in it)", t.failed));
+            }
+            head.push_str("]\n");
+            out.push_str(&head);
+            for line in &t.panic {
+                out.push_str(&format!("    {line}\n"));
+            }
+        }
+        if self.targets.len() > FAILING_TARGETS {
+            out.push_str(&format!(
+                "[gate excerpt: and {} more failing target(s), named above]\n",
+                self.targets.len() - FAILING_TARGETS
+            ));
+        }
+        for line in &self.exhausted {
+            out.push_str(&format!(
+                "[gate excerpt: the step's whole output also says: {line}]\n"
+            ));
+        }
+        let budget = budget.min(FAILURE_BYTES);
+        if out.len() > budget {
+            out = format!(
+                "{}\n[gate excerpt: the failure section itself was cut here]",
+                clip(&out, budget)
+            );
+        }
+        out
+    }
+}
+
+/// **What a failed step leaves on its row** — the failure first, then as much of the end as the
+/// cap allows.
+///
+/// MEASURED 2026-10-29, twice: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast`
+/// went red on `main` at `8e30d902` and on another branch, and both rows said only
+/// `error: 1 target failed: -p letibot-harnessd --lib`. The failing test's name and panic were
+/// hundreds of lines above the last 4 KiB, behind the workspace's other targets printing
+/// `running 0 tests` — so the gate could not say which test, and the same command by hand passed
+/// both times. The failure is now extracted from the WHOLE stream ([`failures`]), the tail is what
+/// gets cut, and when even the tail has to go the section says so.
+pub fn excerpt(text: &str, cap: usize) -> String {
+    if text.len() <= cap {
+        return text.to_string();
+    }
+    let f = failures(text);
+    if !f.says_something() {
+        return tail(text, cap);
+    }
+    let words = f.words(cap);
+    let room = cap.saturating_sub(words.len() + 1 + MARKER_BYTES);
+    if room < MIN_TAIL {
+        return format!(
+            "{words}\n[gate excerpt: the end of the step's output is left out — it is {} byte(s) \
+             in all — because what failed is above]",
+            text.len()
+        );
+    }
     format!(
-        "… [{start} byte(s) dropped from the front]\n{}",
-        &text[start..]
+        "{words}\n{}",
+        end_of(
+            text,
+            room,
+            "of the step's output were left out here; its end follows"
+        )
     )
 }
 
@@ -1779,6 +2125,229 @@ mod tests {
             "uncapped is no number: the gate sets nothing, so the step sees whatever its caller \
              had — an empty answer when the box had nothing"
         );
+        let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    /// **A failing workspace run, as `cargo test --workspace --no-fail-fast` writes one**: the
+    /// failing target's block, then sixty other targets each reporting `running 0 tests`. The
+    /// failure is at the top; the end of the stream is the other targets and cargo's one-line
+    /// summary — which is all the row kept before this, and why a red gate could not say which
+    /// test (MEASURED 2026-10-29, `main` at `8e30d902` and a branch).
+    fn a_failing_workspace_run() -> String {
+        let mut out = String::new();
+        for i in 0..300 {
+            out.push_str(&format!("test scene::tests::case_{i:03} ... ok\n"));
+        }
+        out.push_str(
+            "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             \n\
+             running 301 tests\n\
+             test worker::a_test ... FAILED\n\
+             \n\
+             failures:\n\
+             \n\
+             ---- worker::a_test stdout ----\n\
+             thread 'worker::a_test' panicked at crates/harnessd/src/worker.rs:12:5:\n\
+             the worker never started\n\
+             \n\
+             failures:\n    worker::a_test\n\
+             \n\
+             test result: FAILED. 300 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; \
+             finished in 14.59s\n\
+             \n\
+             error: test failed, to rerun pass `-p letibot-harnessd --lib`\n",
+        );
+        for j in 0..60 {
+            out.push_str(&format!(
+                "     Running unittests src/bin/tool_{j}.rs (target/debug/deps/tool_{j}-abcdef)\n\
+                 \n\
+                 running 0 tests\n\
+                 \n\
+                 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
+                 finished in 0.00s\n\
+                 \n"
+            ));
+        }
+        out.push_str("error: 1 target failed:\n    `-p letibot-harnessd --lib`\n");
+        out
+    }
+
+    /// **The failing test's name and its panic survive, though they are hundreds of lines above
+    /// the end** — and the counts say the run happened, so `running 0 tests` blocks cannot be
+    /// mistaken for a step that did nothing.
+    #[test]
+    fn a_failure_hundreds_of_lines_before_the_end_is_what_the_excerpt_keeps() {
+        let text = a_failing_workspace_run();
+        let at = text.find("worker::a_test").unwrap();
+        assert!(
+            text.len() - at > EVIDENCE_BYTES,
+            "the failure must sit outside the last {EVIDENCE_BYTES} byte(s), which is what the \
+             old excerpt kept — it is {} byte(s) from the end",
+            text.len() - at
+        );
+        assert!(
+            !tail(&text, EVIDENCE_BYTES).contains("worker::a_test"),
+            "the old excerpt could not name the test, and this test is the regression"
+        );
+
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        for want in [
+            // The target, by cargo's own name for it.
+            "`-p letibot-harnessd --lib`",
+            "error: 1 target failed:",
+            // The first failing test and why.
+            "first failing test `worker::a_test`",
+            "panicked at crates/harnessd/src/worker.rs:12:5",
+            "the worker never started",
+            // The counts: 1 + 60 targets, 60 of them green, and 300 + 1 tests.
+            "61 target(s) ran — 60 passed, 1 failed; 300 test(s) passed, 1 failed",
+        ] {
+            assert!(ex.contains(want), "{want:?} is not in the excerpt:\n{ex}");
+        }
+        // The tail is present too — it fits beside the failure — and says what it left out.
+        assert!(
+            ex.contains("byte(s) of the step's output were left out here; its end follows"),
+            "the cut has to be admitted:\n{ex}"
+        );
+        assert!(
+            ex.trim_end().ends_with("`-p letibot-harnessd --lib`"),
+            "the end of the step's output is the last thing on the row:\n{ex}"
+        );
+        assert!(
+            ex.len() <= EVIDENCE_BYTES + 256,
+            "the excerpt is {} byte(s), over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
+            ex.len()
+        );
+    }
+
+    /// **When the failure and the end cannot both fit, the failure stays and the end is left out
+    /// in as many words** — never a silent truncation back to the tail.
+    #[test]
+    fn a_failure_too_big_for_the_cap_keeps_the_failure_and_says_the_end_is_gone() {
+        let text = a_failing_workspace_run();
+        let ex = excerpt(&text, 600);
+        assert!(ex.contains("first failing test `worker::a_test`"), "{ex}");
+        assert!(
+            ex.contains("the end of the step's output is left out"),
+            "{ex}"
+        );
+        assert!(
+            !ex.contains("byte(s) of the step's output were left out here"),
+            "{ex}"
+        );
+    }
+
+    /// **A `fork` that ran out of descriptors is named wherever it was printed.** This is the
+    /// failure the operator suspects hid behind tonight's `error: 1 target failed:` row: a daemon
+    /// holding 253 of 256 descriptors makes `fork` fail, and the sentence that says so is one
+    /// line of a step's output — 9 KiB above the end here.
+    #[test]
+    fn a_machine_that_ran_out_of_descriptors_is_named_wherever_it_was_printed() {
+        // Cargo could not even start the test binary: no `failures:` block, no failing test.
+        let mut text = String::from(
+            "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             error: failed to run `target/debug/deps/letibot_harnessd-1234`: Too many open files \
+             (os error 24)\n",
+        );
+        for j in 0..80 {
+            text.push_str(&format!(
+                "     Running unittests src/bin/tool_{j}.rs (target/debug/deps/tool_{j}-abcdef)\n\
+                 \n\
+                 running 0 tests\n\
+                 \n\
+                 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
+                 finished in 0.00s\n\
+                 \n"
+            ));
+        }
+        text.push_str("error: 1 target failed:\n    `-p letibot-harnessd --lib`\n");
+        assert!(
+            text.len() - text.find("Too many open files").unwrap() > EVIDENCE_BYTES,
+            "the sentence has to be outside the last {EVIDENCE_BYTES} byte(s)"
+        );
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        assert!(
+            ex.contains("the step's whole output also says: error: failed to run"),
+            "{ex}"
+        );
+        assert!(ex.contains("Too many open files (os error 24)"), "{ex}");
+        assert!(ex.contains("`-p letibot-harnessd --lib`"), "{ex}");
+
+        // And the same words inside a failing test's panic are kept as the panic.
+        let mut text = a_failing_workspace_run().replace(
+            "the worker never started",
+            "clone the socket: Os { code: 24, kind: TooManyOpenFiles, message: \"Too many open \
+             files\" }",
+        );
+        text.push_str("(a tail)\n");
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        assert!(ex.contains("TooManyOpenFiles"), "{ex}");
+    }
+
+    /// **End to end on a real step**: the failure is hundreds of lines above the end and the row
+    /// still names the test, the target and the counts.
+    #[test]
+    fn a_failed_step_keeps_the_failure_that_was_hundreds_of_lines_above_its_end() {
+        let wt = std::env::temp_dir().join(format!("letibot-gate-excerpt-{}", std::process::id()));
+        std::fs::create_dir_all(&wt).unwrap();
+        let stop = AtomicBool::new(false);
+        let alive = || true;
+        let ctl = GateControl {
+            deadline: Instant::now() + Duration::from_secs(120),
+            budget: Duration::from_secs(120),
+            stop: &stop,
+            alive: &alive,
+        };
+        let step = r#"
+i=0
+while [ $i -lt 300 ]; do echo "test scene::tests::case_$i ... ok"; i=$((i+1)); done
+echo "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)"
+echo
+echo "running 301 tests"
+echo "test worker::a_test ... FAILED"
+echo
+echo "failures:"
+echo
+echo "---- worker::a_test stdout ----"
+echo "thread 'worker::a_test' panicked at crates/harnessd/src/worker.rs:12:5:"
+echo "the worker never started"
+echo
+echo "failures:"
+echo "    worker::a_test"
+echo
+echo "test result: FAILED. 300 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out; finished in 14.59s"
+echo
+echo 'error: test failed, to rerun pass `-p letibot-harnessd --lib`'
+j=0
+while [ $j -lt 60 ]; do
+  echo "     Running unittests src/bin/tool_$j.rs (target/debug/deps/tool_$j-abcdef)"
+  echo
+  echo "running 0 tests"
+  echo
+  echo "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  echo
+  j=$((j+1))
+done
+echo "error: 1 target failed:"
+echo '    `-p letibot-harnessd --lib`'
+exit 101
+"#
+        .to_string();
+        let run = run_with_memory(&wt, &[step], &ctl, Ask::Uncapped);
+        let GateVerdict::Failed(why) = &run.verdict else {
+            panic!("{run:#?}");
+        };
+        let out = &run.steps[0].output;
+        for want in [
+            "first failing test `worker::a_test`",
+            "`-p letibot-harnessd --lib`",
+            "the worker never started",
+            "61 target(s) ran — 60 passed, 1 failed; 300 test(s) passed, 1 failed",
+        ] {
+            assert!(out.contains(want), "{want:?} is not on the row:\n{out}");
+            assert!(why.contains(want), "{want:?} is not in the verdict:\n{why}");
+        }
+        assert!(out.len() <= EVIDENCE_BYTES + 256, "{}", out.len());
         let _ = std::fs::remove_dir_all(&wt);
     }
 }
