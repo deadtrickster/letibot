@@ -98,8 +98,15 @@ impl List {
     }
 }
 
-/// **The head's stack for this pane**, built once and kept: discovering layers reads the disk, and
-/// a list drawn every frame cannot afford it.
+/// **The head's stack for its panes**, built once and kept: discovering layers reads the disk,
+/// and a list drawn every frame cannot afford it.
+///
+/// **One stack, every hook.** The session list and the queue pane ask *different* hooks of the
+/// same layers (`pane_sessions`, `pane_queue`), and they must: a layer the person approved for
+/// one pane is a layer that is in force, and a second `Stack` would be a second answer to that
+/// question — plus a second compile of every built-in module. So the host is keyed by HOOK
+/// where a hook is not `pane_sessions`: the cache, the fold-free state and the declared acts are
+/// all per hook, because two panes sharing one `state` would hand each other's answers back.
 pub(crate) struct Host {
     stack: Stack,
     /// **The last answer, by the input that asked for it.** The list is drawn once per frame and
@@ -107,9 +114,10 @@ pub(crate) struct Host {
     /// distinct input is the difference between a pane that costs microseconds and one that costs
     /// a compile.
     cache: Mutex<Cached>,
-    /// What the layer answered with last time, handed back to it (§1, principle 5: state belongs
-    /// to the host).
-    state: Mutex<Option<Value>>,
+    /// What each hook's layer answered with last time, handed back to it (§1, principle 5: state
+    /// belongs to the host). Keyed by hook, so the queue pane's answer and the session list's
+    /// cannot overwrite each other.
+    state: Mutex<std::collections::BTreeMap<String, Value>>,
     /// **The last failure a layer met, until somebody is told.** Fail down LOUDLY
     /// (`docs/plugins-plan.md` §1, principle 4): the list the person sees may be the built-in's or
     /// the head's own, and either way the reason their layer is not drawing it is news.
@@ -120,7 +128,9 @@ pub(crate) struct Host {
 
 #[derive(Default)]
 struct Cached {
-    input: String,
+    /// `"<hook>\n<the input's JSON>"` — the hook is part of the key because one host answers two
+    /// panes, and two panes' inputs can be byte-identical while their answers are not.
+    key: String,
     answer: Option<Value>,
 }
 
@@ -180,7 +190,7 @@ impl Host {
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
-            state: Mutex::new(None),
+            state: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(None),
             workspace,
         }
@@ -209,36 +219,46 @@ impl Host {
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
-            state: Mutex::new(None),
+            state: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(problem),
             workspace: workspace.to_path_buf(),
         }
     }
 
-    /// **The layer this pane would ask.** A head with a `sessions` layer that does not read the
-    /// sessions feed is not this pane's: it may answer, but it would be drawing a list from data it
+    /// **The layer a pane's hook would ask.** A head with a `queue` layer that does not read the
+    /// queue feed is not that pane's: it may answer, but it would be drawing rows from data it
     /// never asked for.
-    fn reader(&self) -> Option<&letibot_plugins::Layer> {
+    ///
+    /// The feed is the declaration the manifest carries, so this is one predicate over both:
+    /// the hook the pane is asked by and the feed it says it reads.
+    pub(crate) fn reader(&self, hook: &str, feed: Feed) -> Option<&letibot_plugins::Layer> {
         self.stack.layers().iter().find(|l| {
             !l.disabled
                 && l.manifest.contract == letibot_plugins::CONTRACT
-                && l.manifest.hooks.iter().any(|h| h == HOOK)
-                && l.manifest.feeds.contains(&Feed::Sessions)
+                && l.manifest.hooks.iter().any(|h| h == hook)
+                && l.manifest.feeds.contains(&feed)
         })
     }
 
-    /// The acts the answering layer declared — what a view may ask the head to perform.
-    fn declared(&self) -> Vec<String> {
-        self.reader()
+    /// The acts the layer answering `hook` declared — what a view may ask the head to perform.
+    pub(crate) fn declared(&self, hook: &str, feed: Feed) -> Vec<String> {
+        self.reader(hook, feed)
             .map(|l| l.manifest.actions.clone())
             .unwrap_or_default()
     }
 
-    /// **Ask the pane**, one call per distinct input.
-    fn ask(&self, input: &Input) -> Answered {
-        let text = serde_json::to_string(input).unwrap_or_default();
+    /// **Ask `hook`**, one call per distinct (hook, input).
+    ///
+    /// The failure sentence names the pane the caller is drawing, because one host now answers
+    /// two: *a plugin layer could not draw the session list* is the right sentence for the picker
+    /// and the wrong one for a queue, and a person reading it is being told where to look.
+    pub(crate) fn ask(&self, hook: &str, pane: &str, input: &Input) -> Answered {
+        let key = format!(
+            "{hook}\n{}",
+            serde_json::to_string(input).unwrap_or_default()
+        );
         if let Ok(cache) = self.cache.lock()
-            && cache.input == text
+            && cache.key == key
         {
             return Answered {
                 view: cache
@@ -248,7 +268,7 @@ impl Host {
             };
         }
         let value = serde_json::to_value(input).unwrap_or(Value::Null);
-        let resolved = self.stack.call(HOOK, &value);
+        let resolved = self.stack.call(hook, &value);
         // **Fail down, loudly** (§1, principle 4): a layer that traps is skipped by the stack and
         // the one below answers; the sentence is kept for the person whose layer it was.
         let why = resolved.failures.first().map(|f| f.to_string());
@@ -257,16 +277,36 @@ impl Host {
             .as_ref()
             .and_then(|a| serde_json::from_value::<pv::View>(a.clone()).ok());
         if let Ok(mut cache) = self.cache.lock() {
-            cache.input = text;
+            cache.key = key;
             cache.answer = resolved.answer.clone();
         }
         if let (Some(said), Ok(mut slot)) = (why.as_ref(), self.problem.lock()) {
             *slot = Some(format!(
-                "a plugin layer could not draw the session list, so it is drawn from below it: \
-                 {said}"
+                "a plugin layer could not draw {pane}, so it is drawn from below it: {said}"
             ));
         }
         Answered { view }
+    }
+
+    /// **The state a hook's layer answered with last time** — per hook, because two panes share
+    /// this host and handing one pane's `state` back to the other would be handing it an answer to
+    /// a question it never asked.
+    pub(crate) fn state_of(&self, hook: &str) -> Option<Value> {
+        self.state.lock().ok().and_then(|s| s.get(hook).cloned())
+    }
+
+    /// Remember what a hook's layer answered with, for its next call.
+    pub(crate) fn remember(&self, hook: &str, state: Option<Value>) {
+        if let Ok(mut slot) = self.state.lock() {
+            match state {
+                Some(v) => {
+                    slot.insert(hook.to_string(), v);
+                }
+                None => {
+                    slot.remove(hook);
+                }
+            }
+        }
     }
 }
 
@@ -350,15 +390,13 @@ impl App {
     pub(crate) fn sessions_list(&self, w: usize) -> Option<List> {
         let slot = self.plugin_host();
         let host = slot.as_ref()?;
-        host.reader()?;
-        let declared = host.declared();
-        let state = host.state.lock().ok().and_then(|s| s.clone());
+        host.reader(HOOK, Feed::Sessions)?;
+        let declared = host.declared(HOOK, Feed::Sessions);
+        let state = host.state_of(HOOK);
         let input = self.sessions_input(state);
-        let answered = host.ask(&input);
-        if let Some(answer) = answered.view.as_ref()
-            && let Ok(mut slot) = host.state.lock()
-        {
-            *slot = answer.state.clone();
+        let answered = host.ask(HOOK, "the session list", &input);
+        if let Some(answer) = answered.view.as_ref() {
+            host.remember(HOOK, answer.state.clone());
         }
         let view = answered.view?;
         // The host's rules, and the acts the layer declared (C3).
@@ -469,6 +507,10 @@ impl App {
             None => None,
             Some(RowAct::Switch { .. }) => Some("switches"),
             Some(RowAct::Event { .. }) => Some("acts on it"),
+            // **A queue verb is not this list's to perform.** The queue pane's keys are the ones
+            // that act on an entry, and a session list row carrying `approve` is a layer reaching
+            // for a key this pane does not have — said, not silently done.
+            Some(RowAct::Verb { .. }) => Some("asks for a queue verb, which this list has no key for"),
             Some(RowAct::Fold { .. }) => match row.open {
                 Some(Fold::Open) => Some("folds it away"),
                 Some(Fold::Closed) => Some("unfolds it"),
@@ -492,6 +534,18 @@ impl App {
                     item: id.to_string(),
                     action: event.clone(),
                 });
+                self.redraw = true;
+                None
+            }
+            // **Said rather than done**: the queue's verbs belong to the queue's pane, whose
+            // cursor names the entry its keys act on. A session list has no such cursor, so a
+            // row here naming an entry is a row asking for a key that is not on this screen.
+            RowAct::Verb { verb, .. } => {
+                let said = format!(
+                    "`{id}` asks for `{verb}`, which is the queue pane's verb — the session list \
+                     has no key for it. Nothing was sent."
+                );
+                self.say(&said);
                 self.redraw = true;
                 None
             }
@@ -646,6 +700,8 @@ fn enter_action(act: &RowAct, open: Option<Fold>) -> Option<TreeAction> {
     let words = match act {
         RowAct::Switch { .. } => "switches",
         RowAct::Event { .. } => "acts on it",
+        // A row asking for a queue verb draws no Enter key in this list — see `list_says`.
+        RowAct::Verb { .. } => return None,
         RowAct::Fold { .. } => match open {
             Some(Fold::Open) => "folds it away",
             Some(Fold::Closed) => "unfolds it",
@@ -792,7 +848,9 @@ mod tests {
             "nothing failed to load: {:?}",
             host.stack.failures()
         );
-        let layer = host.reader().expect("the built-in sessions layer is found");
+        let layer = host
+            .reader(HOOK, Feed::Sessions)
+            .expect("the built-in sessions layer is found");
         assert_eq!(layer.id, "b-sessions");
         let input = Input {
             v: letibot_plugin::pane::V,
@@ -804,7 +862,7 @@ mod tests {
             .collect(),
             ..Input::default()
         };
-        let answered = host.ask(&input);
+        let answered = host.ask(HOOK, "the session list", &input);
         assert_eq!(
             host.take_problem(),
             None,

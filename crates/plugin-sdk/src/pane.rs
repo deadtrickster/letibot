@@ -23,10 +23,10 @@
 //! map from the manifest and not from the answer. That is the whole of the sandbox on this side:
 //! the declarations are what a reviewer reads, and what a host can honestly promise.
 //!
-//! Only `sessions` is fed today (`plugins/builtin/sessions` is its first reader). `monitors`,
-//! `jobs`, `todos` and `git` are named here — one more feed each, no format change — because the
-//! next panes want them and a vocabulary that grows one word at a time grows faster than one that
-//! has to be designed twice.
+//! `sessions` and `queue` are fed today (`plugins/builtin/sessions` and `plugins/builtin/queue`
+//! are their readers). `monitors`, `jobs`, `todos` and `git` are named here — one more feed each,
+//! no format change — because the next panes want them and a vocabulary that grows one word at a
+//! time grows faster than one that has to be designed twice.
 //!
 //! # Acts
 //!
@@ -65,16 +65,22 @@ pub enum Feed {
     Todos,
     /// The repository the session stands in — branch, ahead/behind, what changed. Planned.
     Git,
+    /// **The merge queue, in the words a person reads it in** — the reviews and the landings
+    /// with their state, their reason and their age, the target branches' health, the leases
+    /// with their heartbeats, the last moves, and the repositories that are no queue's. Fed
+    /// today, by `plugins/builtin/queue`.
+    Queue,
 }
 
 impl Feed {
     /// Every feed this contract names, in the order a document lists them.
-    pub const ALL: [Feed; 5] = [
+    pub const ALL: [Feed; 6] = [
         Feed::Sessions,
         Feed::Monitors,
         Feed::Jobs,
         Feed::Todos,
         Feed::Git,
+        Feed::Queue,
     ];
 
     /// The wire's spelling — the same word in `plugin.toml` and in `Input::feeds`.
@@ -85,6 +91,7 @@ impl Feed {
             Feed::Jobs => "jobs",
             Feed::Todos => "todos",
             Feed::Git => "git",
+            Feed::Queue => "queue",
         }
     }
 
@@ -119,7 +126,7 @@ impl<'de> serde::Deserialize<'de> for Feed {
 
 /// **A key on a row, performed by the host.**
 ///
-/// One of the three and never two: an act that says two things is a key whose meaning nobody can
+/// One of the four and never two: an act that says two things is a key whose meaning nobody can
 /// state, and the host refuses it rather than picking (`Row::refusals`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -137,6 +144,18 @@ pub enum Act {
     },
     /// Call the pane again with `{"item": <the row's id>, "action": <this word>}`.
     Event { event: String },
+    /// **One of the person's verbs, on ONE row** — `{"verb":"approve","id":"r-1f2…"}`.
+    ///
+    /// The queue pane's keys (`a` approve, `v` veto, `r` restart, `d` rm) act on the entry the
+    /// row NAMES, not on whatever the host's own cursor happened to be over. That is the whole
+    /// point: before this variant a row could draw an entry and the keys would act on another,
+    /// so a plugin row could not say *which* entry it meant.
+    ///
+    /// **The verb word is what the manifest gates.** A layer that answers a row carrying
+    /// `approve` must declare `actions = ["approve", …]`, and `View::validate_for` refuses the
+    /// view otherwise; the head also refuses to perform a verb the answering layer did not
+    /// declare, so a letter whose word is absent from the manifest sends nothing.
+    Verb { verb: String, id: String },
 }
 
 impl Act {
@@ -154,12 +173,33 @@ impl Act {
         Act::Event { event: word.into() }
     }
 
-    /// Which verb this is, as a manifest declares it — `switch`, `fold`, `event`.
-    pub fn verb(&self) -> &'static str {
+    /// **A verb on one entry** — see [`Act::Verb`].
+    pub fn verb_on(verb: impl Into<String>, id: impl Into<String>) -> Act {
+        Act::Verb {
+            verb: verb.into(),
+            id: id.into(),
+        }
+    }
+
+    /// Which verb this is, as a manifest declares it — `switch`, `fold`, `event`, or the queue
+    /// verb's own word (`approve`, `veto`, `restart`, `rm`, …).
+    ///
+    /// The last arm is why this answers a borrowed word rather than a `'static` one: a queue
+    /// verb's name is the plugin's, and the allowlist a reviewer reads is the list of those names.
+    pub fn verb(&self) -> &str {
         match self {
             Act::Switch { .. } => "switch",
             Act::Fold { .. } => "fold",
             Act::Event { .. } => "event",
+            Act::Verb { verb, .. } => verb,
+        }
+    }
+
+    /// **The entry this act names**, when it names one — what the queue pane's verb keys act on.
+    pub fn entry(&self) -> Option<&str> {
+        match self {
+            Act::Verb { id, .. } => Some(id),
+            _ => None,
         }
     }
 }
@@ -369,9 +409,11 @@ mod tests {
         assert!(why.contains("watchers"), "{why}");
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
         // Every feed the plan names is here, so a later pane adds no mechanism.
-        for name in ["sessions", "monitors", "jobs", "todos", "git"] {
+        for name in ["sessions", "monitors", "jobs", "todos", "git", "queue"] {
             assert!(Feed::parse(name).is_ok(), "{name}");
         }
+        assert_eq!(Feed::parse("queue"), Ok(Feed::Queue));
+        assert_eq!(Feed::Queue.name(), "queue");
     }
 
     #[test]
@@ -410,6 +452,32 @@ mod tests {
         assert_eq!(Act::switch("s-1").verb(), "switch");
         assert_eq!(Act::fold().verb(), "fold");
         assert_eq!(Act::event("open").verb(), "event");
+    }
+
+    /// **A verb act names the entry it is about, and the word the manifest gates is the verb's.**
+    ///
+    /// The id is the whole reason the variant exists: a row of a queue pane draws ONE entry and
+    /// the person's `a`/`v`/`r`/`d` must act on that one, whatever the host's own cursor is over.
+    #[test]
+    fn a_verb_act_carries_its_entry_and_its_own_word() {
+        let one: Act = serde_json::from_value(json!({"verb": "approve", "id": "r-1f2"}))
+            .expect("a verb act");
+        assert_eq!(one, Act::verb_on("approve", "r-1f2"));
+        assert_eq!(one.verb(), "approve", "the manifest's word is the verb's");
+        assert_eq!(one.entry(), Some("r-1f2"), "and the entry is the id");
+        assert_eq!(
+            serde_json::to_value(&one).unwrap(),
+            json!({"verb": "approve", "id": "r-1f2"})
+        );
+        // An act that names no entry answers none — `fold` and `switch` are not verbs on a row.
+        assert_eq!(Act::fold().entry(), None);
+        assert_eq!(Act::switch("s-1").entry(), None);
+        assert_eq!(Act::event("open").entry(), None);
+        // A verb act without an id is not a verb act, and no other variant claims it either.
+        assert_eq!(
+            serde_json::from_value::<Act>(json!({"verb": "approve"})).ok(),
+            None
+        );
     }
 
     #[test]
