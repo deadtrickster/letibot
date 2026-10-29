@@ -64,6 +64,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
 use crate::exec::{Boundary, ConfinePlan, Confinement, ExecError, HostProcesses};
@@ -150,12 +151,18 @@ pub fn down_all() {
         .into_iter()
         .map(|(bin, project)| {
             std::thread::spawn(move || {
-                let _ = std::process::Command::new(&bin)
-                    .arg("down")
-                    .arg("--project")
-                    .arg(&project)
-                    .stdin(Stdio::null())
-                    .output();
+                // Bounded: this runs at the daemon's last act, and a `down` whose client never
+                // answers would hold the stop for ever — which is the whole reason they are run
+                // at once.
+                let _ = crate::rpc::run_bounded(
+                    &bin,
+                    &[
+                        "down".to_string(),
+                        "--project".to_string(),
+                        project.display().to_string(),
+                    ],
+                    CLIENT_TIMEOUT,
+                );
             })
         })
         .collect();
@@ -174,16 +181,20 @@ pub struct Probe {
 /// **Ask `bin` what it can do.** The verbs are read off its own `layer` usage line, which
 /// names every subcommand it has — no version number to keep in step with.
 pub fn probe(bin: &Path) -> Probe {
-    let usage = std::process::Command::new(bin)
-        .args(["layer", "--help"])
-        .stdin(Stdio::null())
-        .output()
-        .map(|o| {
+    // Bounded ([`CLIENT_TIMEOUT`]): a client call asked once at start, and the banner it feeds
+    // must not be what holds a daemon's startup.
+    let usage = match crate::rpc::run_bounded(
+        bin,
+        &["layer".to_string(), "--help".to_string()],
+        CLIENT_TIMEOUT,
+    ) {
+        crate::rpc::Ended::Answered(o) => {
             let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
             t.push_str(&String::from_utf8_lossy(&o.stderr));
             t
-        })
-        .unwrap_or_default();
+        }
+        _ => String::new(),
+    };
     Probe {
         inherit: usage.contains("inherit"),
     }
@@ -214,12 +225,18 @@ impl Drop for Unwind<'_> {
             return;
         }
         if self.vm {
-            let _ = std::process::Command::new(self.bin)
-                .arg("down")
-                .arg("--project")
-                .arg(self.project)
-                .stdin(Stdio::null())
-                .output();
+            // Bounded, because this is an undo and an undo that never returns is a placement that
+            // never fails: a client waiting on a reply that is not coming is exactly the shape
+            // [`CLIENT_TIMEOUT`] exists for.
+            let _ = crate::rpc::run_bounded(
+                self.bin,
+                &[
+                    "down".to_string(),
+                    "--project".to_string(),
+                    self.project.display().to_string(),
+                ],
+                CLIENT_TIMEOUT,
+            );
         }
         if self.remove {
             let _ = std::fs::remove_dir_all(self.project);
@@ -311,6 +328,11 @@ pub struct FirecodeBackend {
     /// The run of an already-running VM this backend joined instead of booting one, when it did.
     /// Joined is not owned: the VM is brought down by whoever started it.
     joined: Option<String>,
+    /// **The wall clock on one control command in the guest** — [`GUEST_TIMEOUT`]. A field only so
+    /// a test that measures the deadline can set it to a second instead of waiting out the
+    /// constant (the same reason [`crate::remote::Ssh::with_bound`] exists); production never
+    /// changes it.
+    guest_timeout: Duration,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -361,13 +383,21 @@ pub fn project_for(source: &Path, session_id: &str) -> PathBuf {
 /// of firecode (`info --json`, whose `mount` says how a run holds its project), so a VM holding a
 /// COPY of the folder is never mistaken for one holding the folder.
 fn running_rw(bin: &Path, folder: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin)
-        .args(["info", "--json", "--project"])
-        .arg(folder)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    // Bounded ([`CLIENT_TIMEOUT`]): `info` is a client call, and a placement cannot wait for ever
+    // on one.
+    let out = match crate::rpc::run_bounded(
+        bin,
+        &[
+            "info".to_string(),
+            "--json".to_string(),
+            "--project".to_string(),
+            folder.display().to_string(),
+        ],
+        CLIENT_TIMEOUT,
+    ) {
+        crate::rpc::Ended::Answered(out) => out,
+        _ => return None,
+    };
     if !out.status.success() {
         return None;
     }
@@ -580,46 +610,74 @@ impl FirecodeBackend {
         //
         // Mounted, there is nothing to inherit onto: the worktree's VM inherits its main
         // checkout's layer itself, read-only, as firecode does for any worktree.
-        let inherit = if mounted {
+        //
+        // **Bounded like every other client call** ([`LAYER_TIMEOUT`]): this one is a client too,
+        // and a client waiting on a reply that is not coming would hold the placement for ever.
+        let layers = if mounted {
             None
         } else {
-            Some(
-                std::process::Command::new(&bin)
-                    .arg("layer")
-                    .arg("inherit")
-                    .arg(&spec.source)
-                    .arg("--project")
-                    .arg(&project)
-                    .stdin(Stdio::null())
-                    .output()
-                    .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?,
-            )
+            let args = vec![
+                "layer".to_string(),
+                "inherit".to_string(),
+                spec.source.display().to_string(),
+                "--project".to_string(),
+                project.display().to_string(),
+            ];
+            match crate::rpc::run_bounded(&bin, &args, LAYER_TIMEOUT) {
+                crate::rpc::Ended::Answered(out) if out.status.success() => None,
+                crate::rpc::Ended::Answered(out) => {
+                    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+                    let why = if said.contains("usage:") && !said.contains("inherit") {
+                        "this firecode has no `layer inherit`".to_string()
+                    } else {
+                        format!("`layer inherit` refused: {}", said.trim())
+                    };
+                    Some(format!(
+                        "no layer inheritance ({why}); the guest builds on base-image toolchains"
+                    ))
+                }
+                crate::rpc::Ended::TimedOut => Some(format!(
+                    "no layer inheritance (`layer inherit` did not answer within {} s, and was \
+                     killed with everything it had started); the guest builds on base-image \
+                     toolchains",
+                    LAYER_TIMEOUT.as_secs()
+                )),
+                crate::rpc::Ended::Unstartable(why) => Some(format!(
+                    "no layer inheritance ({why}); the guest builds on base-image toolchains"
+                )),
+            }
         };
-        let layers = inherit.filter(|i| !i.status.success()).map(|inherit| {
-            let said = String::from_utf8_lossy(&inherit.stderr);
-            let why = if said.contains("usage:") && !said.contains("inherit") {
-                "this firecode has no `layer inherit`".to_string()
-            } else {
-                format!("`layer inherit` refused: {}", said.trim())
-            };
-            format!("no layer inheritance ({why}); the guest builds on base-image toolchains")
-        });
 
-        let mut up = std::process::Command::new(&bin);
-        up.arg("up")
-            .arg("--project")
-            .arg(&project)
-            .args(&spec.up_args);
+        let mut args = vec![
+            "up".to_string(),
+            "--project".to_string(),
+            project.display().to_string(),
+        ];
+        args.extend(spec.up_args.iter().cloned());
         if spec.mount_rw {
-            up.arg("--mount-rw");
+            args.push("--mount-rw".to_string());
         }
         if let Some(check) = &spec.verify {
-            up.arg("--verify").arg(check);
+            args.push("--verify".to_string());
+            args.push(check.clone());
         }
-        let up = up
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| BackendError::Io(format!("running {}: {e}", bin.display())))?;
+        let up = match crate::rpc::run_bounded(&bin, &args, UP_TIMEOUT) {
+            crate::rpc::Ended::Answered(out) => out,
+            crate::rpc::Ended::TimedOut => {
+                // **A boot nobody can see the end of is not a VM to hand to a session.** The run
+                // may exist, so the unwind below is told to bring one down — bounded since
+                // [`CLIENT_TIMEOUT`] is what `down` is given — and the copy goes with it.
+                unwind.vm = true;
+                return Err(BackendError::Io(format!(
+                    "`firecode up` did not answer within {} s: it was killed together with \
+                     everything it had started, the VM it may have booted is being brought down, \
+                     and the copy of {} it was booted on is removed. Nothing was placed",
+                    UP_TIMEOUT.as_secs(),
+                    spec.source.display()
+                )));
+            }
+            crate::rpc::Ended::Unstartable(why) => return Err(BackendError::Io(why)),
+        };
         if !up.status.success() {
             return Err(BackendError::Io(format!(
                 "firecode up refused ({}): {}",
@@ -665,6 +723,7 @@ impl FirecodeBackend {
             mounted,
             mount_rw: spec.mount_rw,
             joined: None,
+            guest_timeout: GUEST_TIMEOUT,
         };
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
@@ -719,6 +778,7 @@ impl FirecodeBackend {
             mounted: false,
             mount_rw: false,
             joined: None,
+            guest_timeout: GUEST_TIMEOUT,
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -754,6 +814,15 @@ impl FirecodeBackend {
         &self.run
     }
 
+    /// **The deadline this backend gives one control command in the guest**, as a test may set
+    /// it — production never calls this, which is why the default is the constant rather than a
+    /// field a caller has to fill in (the same shape as [`crate::remote::Ssh::with_bound`]).
+    #[cfg(test)]
+    fn with_guest_timeout(mut self, within: Duration) -> Self {
+        self.guest_timeout = within;
+        self
+    }
+
     /// The sibling directory the guest's tree landed in after `down`, when known.
     pub fn landed(&self) -> Option<PathBuf> {
         self.landed
@@ -769,22 +838,58 @@ impl FirecodeBackend {
     }
 
     fn guest_in(&self, cwd: &Path, command: &str) -> Result<(Vec<u8>, i32), BackendError> {
-        let out = std::process::Command::new(&self.bin)
-            .arg("in")
-            .arg("--project")
-            .arg(&self.project)
-            .arg("--cwd")
-            .arg(cwd)
-            .arg(command)
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| BackendError::Io(format!("firecode in: {e}")))?;
-        let code = out.status.code().unwrap_or(-1);
-        let mut bytes = out.stdout;
-        if !out.stderr.is_empty() {
-            bytes.extend_from_slice(&out.stderr);
+        self.guest_within(cwd, command, self.guest_timeout)
+    }
+
+    /// **One command in the guest, under a wall clock — and the clock is the whole point.**
+    ///
+    /// `firecode in` is a client that waits for the guest's reply with **no deadline of its own**:
+    /// `scripts/vsock-exec.py` sets `sock.settimeout(None)` once the handshake is done and then
+    /// blocks in `recv`, and `firecode in` takes no `--timeout` (its argument loop reads `--cwd`
+    /// and `--project` only, `cmd_in` in the CLI). So a reply lost on the vsock is
+    /// indistinguishable from a slow command, and a bare `Command::output()` waits for ever.
+    ///
+    /// MEASURED 2026-10-29, and it is what stopped the review queue: a reviewer's `base64` read of
+    /// one 40-line file held its turn for **eleven minutes**, `firecode in` at 0.0% CPU with its
+    /// `vsock-exec.py` child, while the same command in the same VM answered in 0.5 s. The only
+    /// thing that ever reaped it was the queue's forty-minute deadline, which then counted the
+    /// review as an attempt and re-seated it — so one lost reply cost forty minutes and an
+    /// attempt.
+    ///
+    /// [`crate::rpc::run_bounded`] is the runner, and it is the one the tree already gives every
+    /// local process the client starts for its own purposes: the child leads its own **process
+    /// group**, both streams are drained on threads (a pipe holds a buffer's worth and no more, so
+    /// a child that fills one would otherwise block this wait for ever), and at the deadline the
+    /// **group** is killed and reaped. The group matters here: `vsock-exec.py` is a child of the
+    /// client, and killing only the client would leave the ghost the next call queues behind.
+    fn guest_within(
+        &self,
+        cwd: &Path,
+        command: &str,
+        within: Duration,
+    ) -> Result<(Vec<u8>, i32), BackendError> {
+        let args = vec![
+            "in".to_string(),
+            "--project".to_string(),
+            self.project.display().to_string(),
+            "--cwd".to_string(),
+            cwd.display().to_string(),
+            command.to_string(),
+        ];
+        match crate::rpc::run_bounded(&self.bin, &args, within) {
+            crate::rpc::Ended::Answered(out) => {
+                let code = out.status.code().unwrap_or(-1);
+                let mut bytes = out.stdout;
+                if !out.stderr.is_empty() {
+                    bytes.extend_from_slice(&out.stderr);
+                }
+                Ok((bytes, code))
+            }
+            crate::rpc::Ended::TimedOut => Err(BackendError::Io(guest_lost_its_reply(cwd, within))),
+            crate::rpc::Ended::Unstartable(why) => {
+                Err(BackendError::Io(format!("firecode in: {why}")))
+            }
         }
-        Ok((bytes, code))
     }
 
     /// A path as the guest sees it: absolute stays, relative is under the copy.
@@ -885,12 +990,20 @@ impl FirecodeBackend {
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(_, p)| *p != self.project);
         let before = siblings(&self.project);
-        let _ = std::process::Command::new(&self.bin)
-            .arg("down")
-            .arg("--project")
-            .arg(&self.project)
-            .stdin(Stdio::null())
-            .output();
+        // **Bounded** ([`CLIENT_TIMEOUT`]): `down` is a client waiting on a reply, and a teardown
+        // that never returns holds the daemon's worker — the same defect `firecode in` had. A
+        // `down` killed at its deadline changes nothing about the answer below, which is
+        // firecode's own copy-out record; it only means the VM may still be up, which the next
+        // `up` for this project finds.
+        let _ = crate::rpc::run_bounded(
+            &self.bin,
+            &[
+                "down".to_string(),
+                "--project".to_string(),
+                self.project.display().to_string(),
+            ],
+            CLIENT_TIMEOUT,
+        );
         // **firecode's own record decides, for as long as it says the copy-out is running.**
         // FIRECODE-NOTES item 1: the copy-out is asynchronous, and a fixed 10 s wait reported
         // a run's work as missing while it was still being delivered — it appeared two minutes
@@ -974,7 +1087,14 @@ impl ExecBackend for FirecodeBackend {
             .map(|(k, v)| format!("{}={} ", shell_quote(k), shell_quote(v)))
             .collect::<String>();
         let cwd = self.guest_path(&cmd.cwd);
-        let (bytes, exit) = self.guest_in(&cwd, &format!("{env_prefix}{joined}"))?;
+        // A command the model asked for keeps its own deadline ([`GUEST_COMMAND_TIMEOUT`], the
+        // `bash` tool's ceiling): this bound is a backstop for a lost reply, not a second opinion
+        // about how long a build takes.
+        let (bytes, exit) = self.guest_within(
+            &cwd,
+            &format!("{env_prefix}{joined}"),
+            GUEST_COMMAND_TIMEOUT,
+        )?;
         Ok(Output {
             stdout: bytes,
             stderr: Vec::new(),
@@ -1043,15 +1163,35 @@ impl ExecBackend for FirecodeBackend {
         }
         // `--project`, always: without it `cp` asks which VM the moment a second one is up -
         // another child, the operator's own - and the write fails with "2 VMs are running".
-        let cp = std::process::Command::new(&self.bin)
-            .arg("cp")
-            .arg("--project")
-            .arg(&self.project)
-            .arg(&staged)
-            .arg(format!("vm:{dir}/"))
-            .stdin(Stdio::null())
-            .output()
-            .map_err(|e| BackendError::Io(format!("firecode cp: {e}")))?;
+        // Bounded like every other client call: a `cp` whose reply is lost is a write nobody can
+        // tell the state of, and waiting for it for ever is the shape this file no longer has.
+        let cp = match crate::rpc::run_bounded(
+            &self.bin,
+            &[
+                "cp".to_string(),
+                "--project".to_string(),
+                self.project.display().to_string(),
+                staged.display().to_string(),
+                format!("vm:{dir}/"),
+            ],
+            CLIENT_TIMEOUT,
+        ) {
+            crate::rpc::Ended::Answered(out) => out,
+            crate::rpc::Ended::TimedOut => {
+                let _ = std::fs::remove_file(&staged);
+                return Err(BackendError::Io(format!(
+                    "`firecode cp` of {path} into the VM did not answer within {} s: it was killed \
+                     together with everything it had started. The file may have arrived and may \
+                     not have; nothing was renamed into place, so the path in the VM is either as \
+                     it was or missing — read it before writing it again",
+                    CLIENT_TIMEOUT.as_secs()
+                )));
+            }
+            crate::rpc::Ended::Unstartable(why) => {
+                let _ = std::fs::remove_file(&staged);
+                return Err(BackendError::Io(format!("firecode cp: {why}")));
+            }
+        };
         let _ = std::fs::remove_file(&staged);
         if !cp.status.success() {
             return Err(BackendError::Io(format!(
@@ -1352,6 +1492,61 @@ const COPY_OUT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
 /// The wait for a firecode that keeps no copy-out record: the sibling, or the run's record.
 const LEGACY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// **How long one control command in the guest gets before `firecode in` is killed.**
+///
+/// A file read is milliseconds and a `mkdir`/`mv` less, so this is not a budget for work: it is
+/// the point past which the only remaining explanation is that the reply was lost. Measured
+/// 2026-10-29 — see [`FirecodeBackend::guest_within`] — a reviewer's `base64` read of one 40-line
+/// file held its turn for eleven minutes while the same command in the same VM answered in 0.5 s.
+///
+/// **`firecode in` has no `--timeout` of its own**, so this is the only bound there is: `cmd_in`
+/// parses `--cwd` and `--project` and hands the rest to `scripts/vsock-exec.py`, which sets
+/// `sock.settimeout(None)` after the handshake and blocks in `recv` for ever. 120 s is also the
+/// number firecode's own MCP wrapper gives `in` (`firecode-spawn.py`: `_firecode(["in", …],
+/// timeout=120)`), so a guest command that answers to firecode's own tools answers to this.
+pub const GUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// **How long a command the model asked for gets** — ten minutes, which is `bash`'s own ceiling
+/// for a foreground call (`MAX_TIMEOUT_MS`). This is a backstop for a lost reply, not a second and
+/// tighter deadline on real work: a `cargo test` in the guest is minutes, and cutting it short
+/// here would be this file deciding how long a build takes — the one thing it does not know. A
+/// command that needs longer than ten minutes is one to run with `background: true`.
+pub const GUEST_COMMAND_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// The wall clock on a client verb that is not a boot and not a command in the guest — `info`,
+/// `down`, `cp`. Each is a local client waiting on a reply, and each one that never answers is a
+/// placement or a teardown held for ever; 120 s is room for a `cp` of a whole file over vsock and
+/// nothing like long enough to matter when the reply is gone.
+const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The wall clock on `layer inherit`, which may carry a toolchain layer across: five minutes, and
+/// a timeout is not fatal — a copy with no inherited layer still boots on its base image, and
+/// [`ExecBackend::describe`] says so.
+const LAYER_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The wall clock on `firecode up`: it installs a layer and boots a kernel, which is minutes when
+/// the layer is cold. Ten, and a timeout is a failed placement rather than a slow one — the copy
+/// goes with it, because a boot nobody can see the end of is not a VM to hand to a session.
+const UP_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// **What a guest call that lost its reply says** — the words a reviewer can act on.
+///
+/// A hang says nothing and cannot be retried, so this says three things: what happened, that the
+/// outcome is unknown, and which retry is safe. It never quotes the command: a write's command
+/// carries the file's bytes, base64 or not, and a `read`'s carries a path that may be long.
+fn guest_lost_its_reply(cwd: &Path, within: Duration) -> String {
+    format!(
+        "the guest did not answer within {} s, so `firecode in` was killed together with \
+         everything it had started — nothing of it is running in the VM now. The command may have \
+         run and may not have: a reply lost on the vsock looks exactly like this, and it is not a \
+         refusal. Retrying is safe for a read (`read`, `list`, `glob`, `grep`); a command that \
+         changes something may already have changed it, so look at the state before running it \
+         again. (in {})",
+        within.as_secs(),
+        cwd.display()
+    )
+}
+
 /// Inline writes up to this many bytes ride in the command; larger go through `cp`.
 const INLINE_WRITE_BYTES: usize = 48 * 1024;
 
@@ -1453,14 +1648,20 @@ fn parent_of(path: &str) -> &str {
 }
 
 fn run_id(bin: &Path, project: &Path) -> Option<String> {
-    let out = std::process::Command::new(bin)
-        .arg("info")
-        .arg("--project")
-        .arg(project)
-        .arg("--json")
-        .stdin(Stdio::null())
-        .output()
-        .ok()?;
+    // Bounded ([`CLIENT_TIMEOUT`]): a client call that never answers must not hold a placement.
+    let out = match crate::rpc::run_bounded(
+        bin,
+        &[
+            "info".to_string(),
+            "--project".to_string(),
+            project.display().to_string(),
+            "--json".to_string(),
+        ],
+        CLIENT_TIMEOUT,
+    ) {
+        crate::rpc::Ended::Answered(out) => out,
+        _ => return None,
+    };
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
     v.get("run")
         .or_else(|| v.get("FIRECODE_RUN"))
@@ -2251,6 +2452,111 @@ mod tests {
         }
         assert_eq!(encode_base64(b"foobar"), "Zm9vYmFy");
         assert_eq!(encode_base64(b"fo"), "Zm8=");
+    }
+
+    /// **Is this pid gone?** — polled, because a killed process answers `kill -0` for as long as
+    /// it takes its new reaper to collect it: the `sleep`'s parent is the client the kernel killed
+    /// at the same moment, so the pid survives as a zombie for a moment after the kill. Ten
+    /// seconds is far more than a reaper needs and still fails loudly rather than passing on a
+    /// ghost.
+    fn wait_gone(pid: i32, within: Duration) -> bool {
+        let began = std::time::Instant::now();
+        loop {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                return true;
+            }
+            if began.elapsed() >= within {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// **A guest call that loses its reply fails in seconds and leaves nothing running.**
+    ///
+    /// The defect, measured 2026-10-29: a reviewer's `base64` read of one 40-line file held its
+    /// turn for eleven minutes, because `firecode in` waits for the guest's reply with no deadline
+    /// of its own (`vsock-exec.py` sets `sock.settimeout(None)` and blocks in `recv`, and `in`
+    /// takes no `--timeout`) — so a reply lost on the vsock was indistinguishable from a slow
+    /// command. The only thing that ever reaped it was the review queue's forty-minute deadline,
+    /// which counted the review as an attempt and re-seated it: one lost reply, forty minutes and
+    /// an attempt.
+    ///
+    /// The stub answers `true` — the door `up` proves with it — and for anything else starts a
+    /// `sleep` and hangs: a guest that never answers. Three things are asserted, and the third is
+    /// the one a fix that killed only the direct child would fail: the call returns `Err` at the
+    /// deadline, the sentence names the timeout, and **both** the client and the `sleep` it
+    /// started are gone.
+    #[test]
+    fn a_guest_call_that_loses_its_reply_fails_in_seconds_and_leaves_nothing_running() {
+        let root = tmp("lost-reply");
+        let src = root.join("src");
+        file(&src.join("a.txt"), 10);
+        let pids = root.join("in.pids");
+        let arms = format!(
+            "{HAPPY}\n\
+             in) for a do last=$a; done\n\
+                 case \"$last\" in true) exit 0 ;; esac\n\
+                 sleep 30 & echo \"$! $$\" > '{p}'; wait ;;\n\
+             down) mkdir -p \"$ROOT/runs/r1\"; echo none > \"$ROOT/runs/r1/copy_out\" ;;",
+            p = pids.display()
+        );
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin))
+            .expect("the VM is placed")
+            .with_guest_timeout(Duration::from_secs(1));
+
+        let began = std::time::Instant::now();
+        let e = b
+            .read("a.txt")
+            .expect_err("a guest that never answers answered");
+        let took = began.elapsed();
+        let said = format!("{e}");
+
+        assert!(said.contains("did not answer within 1 s"), "{said}");
+        assert!(
+            took >= Duration::from_millis(900),
+            "the call came back in {took:?}, before its 1 s deadline: it failed for some other \
+             reason — {said}"
+        );
+        assert!(
+            took < Duration::from_secs(15),
+            "the call waited {took:?} on a 1 s deadline: {said}"
+        );
+        assert!(
+            said.contains("Retrying is safe for a read"),
+            "the sentence does not say what a reviewer may do next: {said}"
+        );
+
+        // **Nothing survives it.** The client is the direct child; the `sleep` is its own child and
+        // shares its process group, which is what the group kill takes. A client-only kill leaves
+        // the ghost the reviewer's next call queues behind.
+        let recorded = std::fs::read_to_string(&pids).expect("the stub never ran");
+        let seen: Vec<i32> = recorded
+            .split_whitespace()
+            .map(|p| p.parse().expect("a pid"))
+            .collect();
+        assert_eq!(
+            seen.len(),
+            2,
+            "the stub recorded {recorded:?}, not the sleep and the client"
+        );
+        for pid in seen {
+            assert!(
+                wait_gone(pid, Duration::from_secs(10)),
+                "pid {pid} outlived the deadline: {said}"
+            );
+        }
+        drop(b);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
