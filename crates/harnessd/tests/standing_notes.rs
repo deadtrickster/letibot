@@ -46,6 +46,18 @@ impl Drop for TempDir {
     }
 }
 
+/// **A box with no instruction file of its own.** The box scope is pointed at
+/// scratch paths that do not exist, so the machine the suite runs on cannot
+/// answer for a fixture — the operator's own instruction file exists on the box
+/// this was written on, and a result that depended on it would be a result about
+/// one person's home directory.
+fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDirs {
+    letibot_harnessd::leticode_config::BoxDirs {
+        config: scratch.join("box-config"),
+        home: scratch.join("box-home"),
+    }
+}
+
 /// A session over a workspace with a nonce in its `AGENTS.md`, composed the
 /// way `Sessions` composes one: `seat_prompt` set, so the harness composes the
 /// prompt at open for its seated tools, notes included.
@@ -198,7 +210,7 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     // And the reader — the same `section` the prompt is composed with — picks
     // it up, verbatim, under its path.
     let vocab = letibot_tokencore::Vocab::bytes([], []);
-    let s = standing_notes::section(ws.path(), global.path(), &vocab)
+    let s = standing_notes::section(ws.path(), global.path(), &no_box(global.path()), &vocab)
         .expect("the reader sees the note");
     assert!(
         s.contains(".letibot/notes/qwen-tail.md"),
@@ -217,7 +229,8 @@ fn a_note_the_tool_writes_is_one_the_reader_injects() {
     // directions of the verb set, not just on the happy path.
     let r = call(r#"{"action":"append","name":"qwen-tail","text":"re-measured: still true"}"#);
     assert!(r.is_grounded(), "{}", r.render());
-    let s = standing_notes::section(ws.path(), global.path(), &vocab).unwrap();
+    let s =
+        standing_notes::section(ws.path(), global.path(), &no_box(global.path()), &vocab).unwrap();
     assert!(
         s.contains("re-measured: still true"),
         "the appended text is what the reader reads: {s}"

@@ -229,6 +229,7 @@ impl Offers {
         &mut self,
         workspace: &Path,
         global: &Path,
+        box_dirs: &leticode_config::BoxDirs,
         system: &str,
         items: &[TranscriptItem],
     ) -> bool {
@@ -237,7 +238,7 @@ impl Offers {
         if text.trim().is_empty() {
             return false;
         }
-        let files = standing_notes::gather(workspace, global);
+        let files = standing_notes::gather(workspace, global, box_dirs);
         if files.is_empty() {
             return false;
         }

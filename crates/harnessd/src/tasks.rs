@@ -3,7 +3,8 @@
 //!
 //! # It is a file, not a socket
 //!
-//! The dashboard is a *view* and the daemon is the *record* (`docs/leticode.md`).
+//! The dashboard is a *view* and the daemon is the *record* (the leticode design
+//! notes under `docs/`).
 //! The record here is a small JSON file the daemon rewrites on every subagent
 //! spawn and finish, which a head polling it can read without owning a socket or
 //! speaking the session protocol. The alternative — a query over the socket — would

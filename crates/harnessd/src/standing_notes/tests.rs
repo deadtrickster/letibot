@@ -16,6 +16,12 @@
 //! the order `gather` states; the budget's edge exact; `replace` and `carried`
 //! byte-for-byte around the section; and the envelope's authorship split and
 //! historical caveat.
+//!
+//! **And the seat's instruction files**, which this module does not name: the
+//! workspace's file first of all, the canonical name when a project wrote that
+//! one, the box's after the workspace's, the walk-up that finds a file above the
+//! session — and the one that keeps the runtime a runtime, a walk over the three
+//! crates that must hold no copy of either name.
 
 use super::*;
 
@@ -46,6 +52,18 @@ fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(p).expect("parent");
     }
     std::fs::write(path, text).expect("fixture");
+}
+
+/// **A box with no instruction file of its own.** Every fixture here points the
+/// box scope at scratch dirs that hold nothing, so the box the suite RUNS on
+/// cannot answer for it — the operator's own instruction file exists on the
+/// machine this was written on, and a suite whose result depended on that would
+/// be a suite about one person's home directory.
+fn no_box() -> crate::leticode_config::BoxDirs {
+    crate::leticode_config::BoxDirs {
+        config: dir("box-config"),
+        home: dir("box-home"),
+    }
 }
 
 /// A file's mtime, **stated rather than waited for**. "Newest first" is a rule
@@ -82,7 +100,7 @@ fn under_the_budget_the_files_are_injected_verbatim() {
         &ws.join("AGENTS.md"),
         "# Rules\n\nBuild with `cargo test -p`, never `--workspace`.\n",
     );
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains(BEGIN) && s.contains(END), "{s}");
     assert!(
         s.contains(&format!("### {}/AGENTS.md", ws.display())),
@@ -110,7 +128,7 @@ fn over_the_budget_it_is_an_index_with_line_references() {
     );
     write(&ws.join("AGENTS.md"), &file);
     assert!(file.len() > NOTES_BUDGET_TOKENS, "the fixture must exceed");
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains(", indexed:"), "the file says it is indexed: {s}");
     assert!(s.contains("headings and line ranges only"), "{s}");
     // The deep body is absent — that is the whole point of the rule.
@@ -140,7 +158,7 @@ fn a_small_note_is_whole_beside_a_large_one() {
         &ws.join(".letibot/notes/small.md"),
         "the small note's one line\n",
     );
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains(", indexed:"), "the large file is indexed: {s}");
     assert!(
         s.contains("the small note's one line"),
@@ -159,7 +177,7 @@ fn a_small_note_is_whole_beside_a_large_one() {
         &ws2.join(".letibot/notes/big.md"),
         &format!("# Big\n\n{body}\n"),
     );
-    let s2 = section(&ws2, &dir("none"), &vocab()).expect("a section");
+    let s2 = section(&ws2, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(
         s2.contains("Short and to the point."),
         "AGENTS.md is whole: {s2}"
@@ -191,7 +209,7 @@ fn a_headingless_note_is_indexed_by_its_paragraphs() {
          {filler}\n"
     );
     write(&ws.join(".letibot/notes/pin.md"), &note);
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains("pin.md") && s.contains(", indexed:"), "{s}");
     assert!(
         !s.contains("(no headings"),
@@ -238,7 +256,7 @@ fn the_abstract_never_ends_inside_a_path() {
             over_budget()
         ),
     );
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(
         s.contains("abstract (derived): See merge_review.attempts, .5 of the rows."),
         "the sentence ends at the sentence, not at the path: {s}"
@@ -264,7 +282,7 @@ fn an_authors_abstract_leads_the_index() {
             over_budget()
         ),
     );
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(
         s.contains("  abstract: the rano pin is absent on this box"),
         "the author's own line leads: {s}"
@@ -285,12 +303,12 @@ fn an_authors_abstract_leads_the_index() {
 fn a_missing_source_contributes_nothing() {
     let empty = dir("empty");
     assert!(
-        section(&empty, &dir("none"), &vocab()).is_none(),
+        section(&empty, &dir("none"), &no_box(), &vocab()).is_none(),
         "no sources is no section"
     );
     let ws = dir("one");
     write(&ws.join("AGENTS.md"), "only file\n");
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert_eq!(s.matches("### ").count(), 1, "one file, one heading: {s}");
     assert!(
         !s.contains("notes]"),
@@ -323,7 +341,7 @@ fn the_sources_keep_the_order_the_rule_states() {
     ] {
         set_mtime(path, secs);
     }
-    let s = section(&ws, &global, &vocab()).expect("a section");
+    let s = section(&ws, &global, &no_box(), &vocab()).expect("a section");
     let pos = |needle: &str| s.find(needle).expect(needle);
     assert!(
         pos("agents\n") < pos("global new\n")
@@ -345,8 +363,8 @@ fn the_sources_keep_the_order_the_rule_states() {
 fn the_same_files_assemble_to_the_same_section() {
     let ws = dir("same");
     write(&ws.join("AGENTS.md"), "# One\n\ntext\n");
-    let a = section(&ws, &dir("none"), &vocab());
-    let b = section(&ws, &dir("none"), &vocab());
+    let a = section(&ws, &dir("none"), &no_box(), &vocab());
+    let b = section(&ws, &dir("none"), &no_box(), &vocab());
     assert_eq!(a, b);
     let _ = std::fs::remove_dir_all(&ws);
 }
@@ -364,10 +382,10 @@ fn the_budget_edge_is_exact() {
     let overhead = format!("### {}\n", path.display()).len();
     let file = "a".repeat(NOTES_BUDGET_TOKENS - overhead);
     write(&path, &file);
-    let s = section(&ws, &dir("none"), &vocab()).unwrap();
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     assert!(s.contains(&file), "exactly at the budget: verbatim");
     write(&path, &format!("{file}a"));
-    let over = section(&ws, &dir("none"), &vocab()).unwrap();
+    let over = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     assert!(over.contains(", indexed:"), "one token over: {over}");
     assert!(
         !over.contains(&format!("{file}a")),
@@ -381,12 +399,12 @@ fn the_budget_edge_is_exact() {
 fn replace_swaps_only_the_section() {
     let ws = dir("replace");
     write(&ws.join("AGENTS.md"), "first\n");
-    let one = section(&ws, &dir("none"), &vocab()).unwrap();
+    let one = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     // A composed prompt as `with_fabric` leaves it: sections, notes, then a
     // fabric block appended after.
     let composed = format!("sections\n\n{one}\n\nfabric block");
     write(&ws.join("AGENTS.md"), "second\n");
-    let two = section(&ws, &dir("none"), &vocab()).unwrap();
+    let two = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     let swapped = replace(&composed, Some(&two));
     assert!(swapped.contains("second"), "{swapped}");
     assert!(!swapped.contains("first"), "{swapped}");
@@ -414,7 +432,7 @@ fn replace_swaps_only_the_section() {
 fn carried_reads_the_section_off_a_composed_prompt() {
     let ws = dir("carried");
     write(&ws.join("AGENTS.md"), "text\n");
-    let s = section(&ws, &dir("none"), &vocab()).unwrap();
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     assert_eq!(carried(&format!("before\n\n{s}\nafter")), Some(s.as_str()));
     assert_eq!(carried("no section here"), None);
     let _ = std::fs::remove_dir_all(&ws);
@@ -442,7 +460,7 @@ fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
         &ws.join(".letibot/notes/session-find.md"),
         "a session wrote this\n",
     );
-    let s = section(&ws, &dir("none"), &vocab()).unwrap();
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).unwrap();
     assert!(
         s.contains("the operator's standing material"),
         "whose AGENTS.md and box-wide notes are: {s}"
@@ -494,7 +512,7 @@ fn the_panes_rows_are_the_indexes_own_fields() {
         &ws.join(".letibot/notes/small.md"),
         "<!-- abstract: the author's own line -->\n\nthe small note's prose\n",
     );
-    let rows = rows(&ws, &dir("none"), &vocab());
+    let rows = rows(&ws, &dir("none"), &no_box(), &vocab());
     assert_eq!(
         rows.len(),
         3,
@@ -547,7 +565,7 @@ fn the_panes_rows_are_the_indexes_own_fields() {
     // **And the rows and the section are ONE walk.** The form each file was given above is
     // the form the prompt carries it in — the pane cannot disagree with what the model was
     // handed, which is the whole reason `plan` exists.
-    let s = section(&ws, &dir("none"), &vocab()).expect("a section");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains("First sentence of the big note."), "{s}");
     assert!(!s.contains(&body), "the big note is indexed, not injected");
     assert!(
@@ -562,6 +580,160 @@ fn the_panes_rows_are_the_indexes_own_fields() {
 #[test]
 fn no_corpus_is_no_rows() {
     let ws = dir("rows-empty");
-    assert!(rows(&ws, &dir("none"), &vocab()).is_empty());
+    assert!(rows(&ws, &dir("none"), &no_box(), &vocab()).is_empty());
     let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **The seat's instruction file is a source, and it sits with `AGENTS.md` rather
+/// than behind the notes.**
+///
+/// This is the whole of what the runtime does with it: ask the config layer for
+/// paths, read them, and put them where a rule has to be — first, because a rule
+/// that arrives as an index is a rule the model has to fetch before it can follow
+/// it.
+#[test]
+fn the_seats_instruction_file_is_read_first() {
+    let ws = dir("seat-file");
+    let global = dir("seat-file-global");
+    write(&ws.join("AGENTS.md"), "the project's own rules\n");
+    let seat = ws.join(crate::leticode_config::INSTRUCTION_FILE);
+    write(&seat, "how a leticode works here\n");
+    write(&global.join("box-note.md"), "a box-wide note\n");
+    let s = section(&ws, &global, &no_box(), &vocab()).expect("a section");
+    let pos = |needle: &str| s.find(needle).expect(needle);
+    assert!(
+        s.contains(&format!("### {}", seat.display())),
+        "the path is the heading, as it is for every other source: {s}"
+    );
+    assert!(s.contains("how a leticode works here"), "{s}");
+    assert!(
+        pos("the project's own rules") < pos("how a leticode works here")
+            && pos("how a leticode works here") < pos("a box-wide note"),
+        "AGENTS.md, then the seat's file, then the notes: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&global);
+}
+
+/// **The canonical name answers when the seat's own is not there** — a project
+/// written for another tool still reaches this one, which is the whole point of
+/// asking the config layer instead of naming a file here.
+#[test]
+fn the_canonical_instruction_file_answers_when_the_seat_has_none() {
+    let ws = dir("canonical-file");
+    let file = ws.join(crate::leticode_config::CANONICAL_INSTRUCTION_FILE);
+    write(&file, "written for another tool\n");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
+    assert!(s.contains(&format!("### {}", file.display())), "{s}");
+    assert!(s.contains("written for another tool"), "{s}");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **A file above the workspace is found** — a session started in a subdirectory
+/// reads the project's instructions, which is the walk-up a `.env` has.
+#[test]
+fn an_instruction_file_above_the_workspace_is_found() {
+    let root = dir("above");
+    write(
+        &root.join(crate::leticode_config::INSTRUCTION_FILE),
+        "the project root's words\n",
+    );
+    let deep = root.join("crates").join("harnessd");
+    std::fs::create_dir_all(&deep).expect("the workspace");
+    let s = section(&deep, &dir("none"), &no_box(), &vocab()).expect("a section");
+    assert!(s.contains("the project root's words"), "{s}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// **The box's file is read too, after the workspace's** — the config dir the
+/// seat already uses. The preference between the two names, and the canonical
+/// fallback under the box's home, are the config layer's own tests.
+#[test]
+fn the_boxs_instruction_file_is_read_after_the_workspaces() {
+    let ws = dir("box-file-ws");
+    write(&ws.join("AGENTS.md"), "the project's own rules\n");
+    write(
+        &ws.join(crate::leticode_config::INSTRUCTION_FILE),
+        "how a leticode works in this project\n",
+    );
+    let box_dirs = no_box();
+    write(
+        &box_dirs
+            .config
+            .join(crate::leticode_config::INSTRUCTION_FILE),
+        "how a leticode works on this box\n",
+    );
+    let s = section(&ws, &dir("none"), &box_dirs, &vocab()).expect("a section");
+    let pos = |needle: &str| s.find(needle).expect(needle);
+    assert!(s.contains("how a leticode works on this box"), "{s}");
+    assert!(
+        pos("the project's own rules") < pos("how a leticode works in this project")
+            && pos("how a leticode works in this project")
+                < pos("how a leticode works on this box"),
+        "the more specific statement comes first: {s}"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **A box with neither name adds nothing** — not a heading, not an error, which
+/// is what makes asking on every session open safe.
+#[test]
+fn a_box_with_no_instruction_file_adds_nothing() {
+    let ws = dir("box-none");
+    write(&ws.join("AGENTS.md"), "only file\n");
+    let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
+    assert_eq!(s.matches("### ").count(), 1, "one file, one heading: {s}");
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+/// **The names are the seat's, and this crate holds no copy of either.**
+///
+/// The operator's rule — *"leticode can support claude.md. but not letibot"* —
+/// asserted rather than described: no file under `harnessd`, `tokencore` or
+/// `tools` spells either name, so a runtime that grew one back fails here rather
+/// than in a review. The names come from the config layer's own constants, which
+/// is why this cannot pass by agreeing with itself, and this file is skipped
+/// because a test that greps for a string must contain it.
+#[test]
+fn the_runtime_names_neither_instruction_file() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crates directory")
+        .to_path_buf();
+    let names = [
+        crate::leticode_config::INSTRUCTION_FILE,
+        crate::leticode_config::CANONICAL_INSTRUCTION_FILE,
+    ];
+    let me = Path::new(file!());
+    let mut hits: Vec<String> = Vec::new();
+    for krate in ["harnessd", "tokencore", "tools"] {
+        let mut stack = vec![crates.join(krate)];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.ends_with(me) {
+                    continue;
+                }
+                let Ok(bytes) = std::fs::read(&path) else {
+                    continue;
+                };
+                for name in names {
+                    if bytes.windows(name.len()).any(|w| w == name.as_bytes()) {
+                        hits.push(format!("{}: {name}", path.display()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "these names belong to the seat's config layer and to no file in the runtime: {hits:?}"
+    );
 }

@@ -5419,6 +5419,7 @@ impl Harness {
         let standing = crate::standing_notes::section(
             &cfg.workspace,
             &crate::standing_notes::global_dir(),
+            &crate::leticode_config::BoxDirs::for_this_box(),
             parts.vocab.as_ref(),
         );
         // **And the base prompt is composed HERE when the session asked for it**
@@ -9494,6 +9495,9 @@ impl Harness {
     fn install_notes_source(&self) {
         let workspace = self.cfg.workspace.clone();
         let global = crate::standing_notes::global_dir();
+        // **The box's instruction directories, resolved once**: the pane re-reads the
+        // corpus on every open and the answer cannot change while the daemon runs.
+        let box_dirs = crate::leticode_config::BoxDirs::for_this_box();
         // **The vocabulary the section itself is measured with**, and a field of its own
         // rather than the engine's — see `Harness::note_vocab`, which tracks the engine
         // wherever it moves so the pane cannot measure with the vocabulary the session
@@ -9501,7 +9505,9 @@ impl Harness {
         let vocab = self.note_vocab.clone();
         self.session_registry.set_notes_source(
             &self.cfg.session_id,
-            std::sync::Arc::new(move || crate::standing_notes::rows(&workspace, &global, &vocab)),
+            std::sync::Arc::new(move || {
+                crate::standing_notes::rows(&workspace, &global, &box_dirs, &vocab)
+            }),
         );
     }
 
@@ -12465,6 +12471,7 @@ impl Harness {
         let notes = crate::standing_notes::section(
             &self.cfg.workspace,
             &crate::standing_notes::global_dir(),
+            &crate::leticode_config::BoxDirs::for_this_box(),
             self.engine.vocab(),
         );
         let system = crate::standing_notes::replace(&self.cfg.system, notes.as_deref());
@@ -14151,6 +14158,7 @@ impl Harness {
                 offers.compose(
                     &self.cfg.workspace,
                     &crate::standing_notes::global_dir(),
+                    &crate::leticode_config::BoxDirs::for_this_box(),
                     &self.prefix.system,
                     &self.session.items,
                 );

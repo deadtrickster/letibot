@@ -46,6 +46,10 @@ letibot-plugins.workspace = true
 # the daemon, so the `builtin` scope of every stack is the table this crate holds — and a head or
 # a test reads the same table rather than a second copy of it.
 letibot-builtins.workspace = true
+# **The seat's config layer, which is NOT part of the runtime.** `leticode.toml`'s
+# levels live there, and so do the two names a leticode's instruction file may have —
+# which is why this crate asks for a list of paths and holds no copy of a name.
+leticode-config.workspace = true
 # **The hook contracts, for the daemon's side of the wire** (`crates/plugin-sdk`): the four kinds'
 # typed inputs and answers, which the listener below builds and parses rather than spelling them
 # as JSON here. The same crate is what a guest plugin links, so a renamed field breaks both.

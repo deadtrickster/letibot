@@ -6,6 +6,18 @@ serenedash-style dashboard over the pieces that are new.
 
 ## Done
 
+- **The seat's instruction files, and the seat's config layer as a crate.**
+  `crates/leticode-config` now holds `leticode.toml` (the model levels) *and*
+  the answer to "which markdown does a leticode read before it starts": the
+  nearest `leticode.md` at or above the workspace — or the canonical `CLAUDE.md`
+  in the same directory when a project wrote that one instead — then the box's,
+  from `~/.config/letibot/leticode.md` or `~/.claude/CLAUDE.md`. Neither present
+  is an answer, not an error. The names are spelled there and nowhere in
+  `letibot-harnessd`, which asks for paths and reads them
+  (`standing_notes::gather`, folded into the first source — the operator's own
+  instructions — so a rule still arrives whole, ahead of every note). The
+  operator's rule: *"leticode can support claude.md. but not letibot"*, *"i want
+  letibot stay a framework, a runtime"*.
 - `crates/tools/src/permission.rs` — verbatim opencode permission model
   (`Action`, `Rule`, `evaluate`, wildcard, `config_to_ruleset`), wired into
   `AdjudicatedGate` before the mode, with an `allow_always` reply feeding

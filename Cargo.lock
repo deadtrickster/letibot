@@ -1039,6 +1039,7 @@ dependencies = [
  "letibot-turn",
  "letibot-webfetch",
  "letibot-websearch",
+ "leticode-config",
  "libc",
  "rano",
  "serde",
@@ -1241,6 +1242,17 @@ dependencies = [
  "serde",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "leticode-config"
+version = "0.5.1"
+dependencies = [
+ "letibot-provider",
+ "letibot-tools",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]

@@ -45,6 +45,12 @@ members = [
     # crate is the table a stack reads its `builtin` scope from. Next to the stack because it is
     # the stack's bottom layer, one level further in.
     "crates/builtins",
+    # **The seat's config layer, outside the runtime** (`crates/leticode-config`): the
+    # `leticode.toml` levels, and the two names a seat's instruction file may have.
+    # It is a crate rather than a module of the daemon because *which file a leticode
+    # reads is a leticode decision* — the operator's ruling is "i want letibot stay a
+    # framework, a runtime" — so the daemon asks and does not know.
+    "crates/leticode-config",
     "crates/harnessd",
     "crates/opencode",
     # **Reading — and writing — a Claude Code transcript** (Package H): the `cc-`
@@ -152,6 +158,8 @@ letibot-code = { path = "crates/code" }
 letibot-plugins = { path = "crates/plugins" }
 letibot-plugin = { path = "crates/plugin-sdk" }
 letibot-builtins = { path = "crates/builtins" }
+# The seat's config layer: `leticode.toml` and the instruction files a leticode reads.
+leticode-config = { path = "crates/leticode-config" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
 letibot-claude = { path = "crates/claude" }

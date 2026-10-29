@@ -110,7 +110,13 @@ pub mod httphead;
 pub mod instruments;
 pub mod jobwatch;
 pub mod leases;
-pub mod leticode_config;
+// **The seat's config layer, re-exported rather than re-implemented.** It used to be a
+// module of this crate; it is a crate of its own now (`crates/leticode-config`) because
+// which file a leticode reads is a leticode decision and not a runtime one. This binding
+// is what keeps every `crate::leticode_config::…` path below unchanged — the move was a
+// move, not a rename — while the two names it answers to live in one place outside the
+// daemon.
+pub use leticode_config;
 pub mod m1;
 pub mod memwatch;
 pub mod mergequeue;

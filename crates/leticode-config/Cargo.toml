@@ -1,0 +1,30 @@
+[package]
+name = "leticode-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# **The seat's config layer, and the reason it is a crate rather than a module of
+# the daemon.** `leticode.toml` decides which models answer; [`instructions`]
+# decides which markdown a leticode reads before it starts. Both are decisions
+# about a SEAT, not about the runtime that serves one — the operator's ruling is
+# *"i want letibot stay a framework, a runtime"* — so they live here, outside
+# `letibot-harnessd`, and the daemon asks rather than knows. The two file names
+# this crate answers to are spelled nowhere else in the tree.
+#
+# No `rano`, no `libc`, no TLS: a config layer that needed a native build to say
+# where a markdown file is would be a layering mistake.
+[dependencies]
+# `keys::config_file` is the one function that knows where the config dir is
+# (`$XDG_CONFIG_HOME`, else `$HOME/.config`); a second spelling here is how
+# `providers.toml` and `leticode.toml` come to be read from two directories.
+letibot-provider.workspace = true
+# `exec::memory`'s `Amount` and `MemoryPolicy`, for `[memory]`.
+letibot-tools.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+# The one TOML the tree parses with a real parser, for the reason the workspace
+# manifest gives: a file that will not parse is reported with its own line.
+toml.workspace = true

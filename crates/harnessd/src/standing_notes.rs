@@ -21,10 +21,25 @@
 //! and not a preference, because a file spends the budget by being whole (see
 //! "The size rule" below), so the order decides what arrives whole:
 //!
-//! 1. `<workspace>/AGENTS.md` — this project's instructions.
+//! 1. The operator's instructions for this project: `<workspace>/AGENTS.md`,
+//!    then the seat's own instruction files — the nearest one at or above the
+//!    workspace and then the box's, as `leticode_config::instructions` names
+//!    them.
 //! 2. `<config dir>/notes/*.md` — standing notes for the whole box, beside
 //!    `providers.toml` and `prompts.toml`.
 //! 3. `<workspace>/.letibot/notes/*.md` — this project's notes.
+//!
+//! **The seat's instruction files are inside the FIRST source rather than a
+//! fourth one**, because they are the same kind of thing `AGENTS.md` is: a rule,
+//! the operator's own, that has to arrive whole for exactly the reason below —
+//! and a rule that arrived behind the notes would be the failure the order
+//! exists to prevent. What this crate does NOT know is what those files are
+//! called. The names belong to the seat (`crates/leticode-config`), and this
+//! module asks `leticode_config::instructions` for paths and reads what it is
+//! handed: letibot is a runtime, and which file a leticode reads is a leticode
+//! decision. The operator's ruling, when the first cut hardcoded a checkout
+//! path here: *"dont you think hardcoding the repo checkout path is a bit too
+//! much"*.
 //!
 //! `AGENTS.md` first, because a rule that arrives as an index is a rule the
 //! model has to fetch before it can follow it. Within a directory: **newest
@@ -227,9 +242,17 @@ pub fn global_dir() -> PathBuf {
 /// rule the model has to fetch before it can follow it is a rule it may not
 /// follow:
 ///
-/// 1. `<workspace>/AGENTS.md` — the operator's instructions for this project.
+/// 1. The operator's instructions for this project: `<workspace>/AGENTS.md`, then
+///    the seat's own instruction files — `leticode_config::instructions`, which
+///    is the nearest one at or above the workspace and then the box's.
 /// 2. `<global>/*.md` — the box-wide notes.
 /// 3. `<workspace>/.letibot/notes/*.md` — this project's notes.
+///
+/// **The seat's instruction files are part of the first source and not a fourth
+/// one**: they are the same kind of file `AGENTS.md` is — a rule, the operator's
+/// own — and they have to arrive whole for the same reason. What they are CALLED
+/// is not this crate's business; `box_dirs` is only where the box-scope half of
+/// the walk starts, and the names are the config layer's.
 ///
 /// Within a directory: **newest first**, ties by name
 /// ([`letibot_tools::builtins::notes::sort_newest_first`], the same sort the
@@ -243,11 +266,22 @@ pub fn global_dir() -> PathBuf {
 /// — the corpus, in this order, read once. A source that is absent, unreadable or
 /// not valid UTF-8 contributes nothing; a note the operator cannot write as UTF-8
 /// is not a note.
-pub fn gather(workspace: &Path, global: &Path) -> Vec<(PathBuf, String)> {
+pub fn gather(
+    workspace: &Path,
+    global: &Path,
+    box_dirs: &leticode_config::BoxDirs,
+) -> Vec<(PathBuf, String)> {
     let mut out = Vec::new();
+    // 1. The operator's instructions for this project — its own file, then the
+    //    seat's, whose names and scopes are the config layer's answer.
     let agents = workspace.join("AGENTS.md");
     if let Ok(text) = std::fs::read_to_string(&agents) {
         out.push((agents, text));
+    }
+    for path in leticode_config::instructions(workspace, box_dirs) {
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            out.push((path, text));
+        }
     }
     out.extend(md_in(global));
     out.extend(md_in(&workspace.join(".letibot").join("notes")));
@@ -277,16 +311,21 @@ fn md_in(dir: &Path) -> Vec<(PathBuf, String)> {
 /// One section for all sources together: they are one thing to the model
 /// (standing material read from disk, whoever wrote it) and one thing to
 /// [`replace`].
-pub fn section(workspace: &Path, global: &Path, vocab: &Vocab) -> Option<String> {
-    let files = gather(workspace, global);
+pub fn section(
+    workspace: &Path,
+    global: &Path,
+    box_dirs: &leticode_config::BoxDirs,
+    vocab: &Vocab,
+) -> Option<String> {
+    let files = gather(workspace, global, box_dirs);
     if files.is_empty() {
         return None;
     }
     Some(format!(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
-         the harness: the operator's standing material — AGENTS.md and the box-wide \
-         notes — and this project's `.letibot/notes/`. It is not text from this \
-         conversation. Treat \
+         the harness: the operator's standing material — AGENTS.md and the seat's own \
+         instruction files, and the box-wide notes — and this project's \
+         `.letibot/notes/`. It is not text from this conversation. Treat \
          the newest copy you were given — in the system prompt or a later system \
          update — as the one in force. A note is historical: it records what was \
          true or intended when it was written and may be outdated, so follow its \
@@ -379,8 +418,13 @@ fn plan(files: &[(PathBuf, String)], vocab: &Vocab) -> Vec<NoteForm> {
 /// The corpus is read here rather than remembered, the same rule `crate::notes_offer`
 /// keeps for the same list: a session that has written a note since its last base rebuild
 /// gets a row for it at the next read, and nothing has to be invalidated.
-pub fn rows(workspace: &Path, global: &Path, vocab: &Vocab) -> Vec<NoteEntry> {
-    let files = gather(workspace, global);
+pub fn rows(
+    workspace: &Path,
+    global: &Path,
+    box_dirs: &leticode_config::BoxDirs,
+    vocab: &Vocab,
+) -> Vec<NoteEntry> {
+    let files = gather(workspace, global, box_dirs);
     let forms = plan(&files, vocab);
     files
         .iter()

@@ -206,9 +206,26 @@
 //! file and the line and the session still starts — the same sentence the project
 //! file gets, because a user file that took every daemon on the box down would be
 //! a worse failure than the one it reports.
+//!
+//! # The seat's other file: what a leticode reads before it starts
+//!
+//! `leticode.toml` says who answers. The same layer decides which markdown a
+//! leticode reads as its instructions — [`INSTRUCTION_FILE`], or the canonical
+//! [`CANONICAL_INSTRUCTION_FILE`] when a project wrote that one instead —
+//! because that is a decision about a SEAT and not about the runtime serving it.
+//! The runtime asks (`leticode_config::instructions`); the two names are spelled
+//! in the `instructions` module and nowhere in `letibot-harnessd`, which is what
+//! keeps letibot a runtime and leticode the thing that reads.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+pub mod instructions;
+
+// **The seat's instruction files, at the crate root** — the daemon writes
+// `leticode_config::instructions(..)` rather than a module path, because what it
+// is asking for is the answer and not the module that holds it.
+pub use instructions::{BoxDirs, CANONICAL_INSTRUCTION_FILE, INSTRUCTION_FILE, instructions};
 
 /// The file's name, at the project root and in `~/.config/letibot/`. Visible,
 /// not a dotfile: a file that changes which model answers you should not be a
