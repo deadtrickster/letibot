@@ -71,16 +71,17 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
     // The project's layer is on top, the built-ins below it — and **the built-ins are in the order
     // `crates/builtins` installed them, newest on top**, which is the stack's own rule for a scope
     // (`docs/plugins-plan.md` §2.1) applied to a table the binary carries: `b-todo` was installed
-    // after `b-sessions`, so it stands above it. Nothing answers two hooks today, so nothing
-    // depends on that order — a test that pins it is how the next layer to share a hook finds out
-    // it has to think about it.
+    // after `b-sessions`, so it stands above it, and `b-irc` (the nick list, whose hook is
+    // `pane_nicks`) is the newest and stands at the bottom of the reversed table. Nothing answers
+    // two hooks today, so nothing depends on that order — a test that pins it is how the next layer
+    // to share a hook finds out it has to think about it.
     assert_eq!(
         stack
             .layers()
             .iter()
             .map(|l| l.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["p1", "b-todo", "b-sessions"]
+        vec!["p1", "b-todo", "b-sessions", "b-irc"]
     );
 
     let mut a = a_head_with_a_one_shot();

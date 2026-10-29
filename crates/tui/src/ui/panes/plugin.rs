@@ -193,6 +193,16 @@ impl Target<'_> {
         }
     }
 
+    /// **The act Enter performs on this stop, when it is the HOST's** — C3's `enter`: `switch` to a
+    /// session, `fold` a row, or call the pane again. Only a `Row` has one; a `Line`, a markdown
+    /// item and a finding carry their keys as `actions` and Enter reads their detail.
+    pub(crate) fn enter(&self) -> Option<&pv::Act> {
+        match self {
+            Target::Row(r) => r.enter.as_ref(),
+            Target::Line(_) | Target::Markdown(_) | Target::Finding(_) => None,
+        }
+    }
+
     /// The markdown Enter reads, if the row has any.
     pub(crate) fn detail(&self) -> &str {
         match self {

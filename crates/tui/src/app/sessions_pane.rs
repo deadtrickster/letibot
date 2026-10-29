@@ -450,6 +450,10 @@ impl App {
                     "workspace": s.wiring.workspace,
                     "waits_on": s.waits_on_operator,
                     "nags_paused": s.nags_paused.is_some(),
+                    // **When it last moved**, so a pane can say *is that one stuck?* — the one fact
+                    // a row of a session list is read for. Off the daemon's own brief, which reads
+                    // the store's row (`SessionBrief::moved_ms`).
+                    "moved_ms": s.moved_ms,
                 })
             })
             .collect();
@@ -459,6 +463,11 @@ impl App {
             // **The one home the head shortens against** — the same value its own list uses, so
             // a plugin's rows and the head's rows cannot disagree about what `~` means.
             "home": self.home,
+            // **The host's clock** — a guest compiled for wasm has no `SystemTime`, so an age is
+            // the host's fact and the layer's arithmetic (`docs/plugins-plan.md` §4.9). The
+            // daemon's own feed carries the same field, and this one so that the two feeds are one
+            // shape rather than two.
+            "now": letibot_sessionlog::registry::now_ms(),
         })
     }
 

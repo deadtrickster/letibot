@@ -96,11 +96,7 @@ fn ids(view: &Value) -> Vec<Option<String>> {
 fn sessions(view: &Value) -> Vec<Value> {
     rows(view)
         .into_iter()
-        .filter(|r| {
-            r["id"]
-                .as_str()
-                .is_some_and(|id| !id.starts_with('·'))
-        })
+        .filter(|r| r["id"].as_str().is_some_and(|id| !id.starts_with('·')))
         .collect()
 }
 
@@ -139,7 +135,10 @@ fn three_sessions_in_three_states_are_a_channel() {
     let f = feed_of(
         vec![
             // You: a head is attached, and a turn is running.
-            with(s("s-a", "the habr article"), json!({"heads": 2, "running": true})),
+            with(
+                s("s-a", "the habr article"),
+                json!({"heads": 2, "running": true}),
+            ),
             // Somebody else's, working, and nothing is attached to it.
             with(
                 s("s-b", "the rust rewrite"),
@@ -249,7 +248,10 @@ fn the_session_you_are_in_is_marked() {
 fn the_column_is_the_width_it_chose_and_not_the_rect() {
     let f = feed_of(
         vec![
-            with(s("s-a", "the habr article"), json!({"heads": 1, "running": true})),
+            with(
+                s("s-a", "the habr article"),
+                json!({"heads": 1, "running": true}),
+            ),
             with(s("s-b", "the rust rewrite"), json!({"running": true})),
             with(s("s-c", "stroppy notes"), json!({"live": false})),
         ],
@@ -286,7 +288,10 @@ fn the_column_is_the_width_it_chose_and_not_the_rect() {
 #[test]
 fn a_wide_name_still_ends_the_fact_at_the_columns_edge() {
     let f = feed_of(
-        vec![with(s("s-a", "日本語のタイトルはとても長いです"), json!({"heads": 1}))],
+        vec![with(
+            s("s-a", "日本語のタイトルはとても長いです"),
+            json!({"heads": 1}),
+        )],
         "s-a",
     );
     let view = call(&f, &Value::Null, 100);
@@ -309,10 +314,7 @@ fn the_order_is_pinned_until_the_roster_changes() {
     );
     let first = call(&quiet, &Value::Null, 100);
     assert_eq!(
-        ids(&first)
-            .into_iter()
-            .flatten()
-            .collect::<Vec<String>>(),
+        ids(&first).into_iter().flatten().collect::<Vec<String>>(),
         vec!["s-a", "s-b", "s-c"],
         "you first, then the idle ones by recency"
     );
@@ -382,7 +384,10 @@ fn hiding_leaves_a_strip_that_says_how_to_come_back() {
     let said = cell(&strip[0], 0);
     assert!(said.contains("2 here"), "{said}");
     assert!(said.contains("1 working"), "{said}");
-    assert!(said.contains("h shows"), "the way back is on the strip: {said}");
+    assert!(
+        said.contains("h shows"),
+        "the way back is on the strip: {said}"
+    );
     let letters: Vec<&str> = strip[0]["actions"]
         .as_array()
         .expect("actions")
@@ -532,7 +537,9 @@ fn a_working_session_outside_the_scope_keeps_a_place() {
     let drawn = rows(&view);
     let texts: Vec<String> = drawn.iter().map(|r| cell(r, 0).to_string()).collect();
     assert!(
-        texts.iter().any(|t| t.starts_with("· 2 elsewhere · 1 working")),
+        texts
+            .iter()
+            .any(|t| t.starts_with("· 2 elsewhere · 1 working")),
         "the divider says how many were left out and how many of those work: {texts:?}"
     );
     assert_eq!(
@@ -578,8 +585,16 @@ fn a_running_session_that_has_gone_quiet_is_drawn_as_news() {
         Some("attention"),
         "twenty minutes into a turn with no row is the operator's decision"
     );
-    assert_eq!(role(&by_id("s-b"), 2), Some("pending"), "thirty seconds is not");
-    assert_eq!(role(&by_id("s-c"), 2), Some("faint"), "an idle age is a fact");
+    assert_eq!(
+        role(&by_id("s-b"), 2),
+        Some("pending"),
+        "thirty seconds is not"
+    );
+    assert_eq!(
+        role(&by_id("s-c"), 2),
+        Some("faint"),
+        "an idle age is a fact"
+    );
 }
 
 /// **A host that hands no feed gets a screen that says so** — an empty nick list and a broken host
@@ -611,7 +626,10 @@ fn a_session_waiting_on_you_is_marked_in_its_name() {
     let listed = sessions(&view);
     let name = cell(&listed[0], 1).trim_end();
     assert_eq!(name, "needs an answer!", "the `!` is the mark");
-    assert!(view["legend"]["!"].is_string(), "and the legend says what it means");
+    assert!(
+        view["legend"]["!"].is_string(),
+        "and the legend says what it means"
+    );
 }
 
 /// **A list with nothing in it is still a row** — an `empty` sentence would leave the pane with no
@@ -638,4 +656,72 @@ fn an_empty_feed_is_a_row_so_the_keys_stay_reachable() {
     );
     // The header is still there, and it counts nothing rather than claiming a complete list.
     assert_eq!(cell(&rows[0], 0), "#all · 0 here · 0 working");
+}
+
+/// **At the minimum width the list is still a list** — the mark and the fact never go, the name is
+/// cut, and nothing runs past the column's edge. This is the drawing itself, asserted, because a
+/// column that degrades into a broken grid is the one thing a narrow pane cannot afford.
+#[test]
+fn the_minimum_width_keeps_the_mark_and_the_fact_and_cuts_the_name() {
+    let f = feed_of(
+        vec![
+            with(
+                s("s-a", "the habr article"),
+                json!({"heads": 1, "running": true, "moved_ms": NOW - 30_000}),
+            ),
+            with(
+                s("s-b", "the rust rewrite"),
+                json!({"moved_ms": NOW - 3 * 60_000}),
+            ),
+        ],
+        "s-a",
+    );
+    let view = call(&f, &json!({"w": MIN_W}), 100);
+    let drawn: Vec<String> = rows(&view).iter().map(drawn).collect();
+    assert_eq!(
+        drawn,
+        vec![
+            "  #letibot 2/2 1+".to_string(),
+            "  » the habr ar… now".to_string(),
+            "    the rust rew… 3m".to_string(),
+        ],
+        "the column at its narrowest: {drawn:#?}"
+    );
+    for row in &drawn {
+        assert!(cells(row) <= MIN_W, "nothing runs past the column: {row:?}");
+    }
+}
+
+/// **The divider is fitted too**: a scope that hides sessions says how many, and at the minimum it
+/// keeps that count rather than a sentence cut in the middle of a word.
+#[test]
+fn the_divider_keeps_the_count_when_the_words_do_not_fit() {
+    let f = feed_of(
+        vec![
+            with(
+                s("s-a", "here"),
+                json!({"workspace": "/p/letibot", "heads": 1}),
+            ),
+            with(
+                s("s-b", "elsewhere, working"),
+                json!({"workspace": "/p/other", "running": true}),
+            ),
+            with(s("s-c", "elsewhere"), json!({"workspace": "/p/other"})),
+            with(s("s-d", "elsewhere"), json!({"workspace": "/p/other"})),
+        ],
+        "s-a",
+    );
+    let wide = call(&f, &Value::Null, 100);
+    assert!(
+        rows(&wide)
+            .iter()
+            .any(|r| cell(r, 0) == "· 3 elsewhere · 1 working"),
+        "the whole sentence at a comfortable width"
+    );
+    let narrow = call(&f, &json!({"w": MIN_W}), 100);
+    assert!(
+        rows(&narrow).iter().any(|r| cell(r, 0) == "· 3 elsewhere"),
+        "and the count that matters at the minimum: {:?}",
+        rows(&narrow).iter().map(|r| cell(r, 0)).collect::<Vec<_>>()
+    );
 }

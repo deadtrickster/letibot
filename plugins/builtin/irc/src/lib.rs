@@ -149,7 +149,8 @@ impl State {
     /// decided: a set that is the same set keeps its order even though a member started working
     /// since — a row that moves under the cursor is a row the person has to find again.
     fn roster(&mut self, wanted: Vec<String>) -> Vec<String> {
-        let same = self.order.len() == wanted.len() && wanted.iter().all(|id| self.order.contains(id));
+        let same =
+            self.order.len() == wanted.len() && wanted.iter().all(|id| self.order.contains(id));
         if !same {
             self.order = wanted;
         }
@@ -317,7 +318,11 @@ struct Counts {
 /// many of the shown ones are working.
 fn counts(feed: &Feed, st: &State) -> Counts {
     let here = here_of(feed);
-    let top: Vec<&Session> = feed.sessions.iter().filter(|s| s.parent.is_none()).collect();
+    let top: Vec<&Session> = feed
+        .sessions
+        .iter()
+        .filter(|s| s.parent.is_none())
+        .collect();
     let shown: Vec<&&Session> = top.iter().filter(|s| keeps(s, st.scope(), here)).collect();
     Counts {
         shown: shown.len(),
@@ -330,7 +335,11 @@ fn counts(feed: &Feed, st: &State) -> Counts {
 fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     let width = st.width(rect);
     let here = here_of(feed);
-    let top: Vec<&Session> = feed.sessions.iter().filter(|s| s.parent.is_none()).collect();
+    let top: Vec<&Session> = feed
+        .sessions
+        .iter()
+        .filter(|s| s.parent.is_none())
+        .collect();
     let scope = st.scope();
     let inside: Vec<&Session> = top
         .iter()
@@ -382,13 +391,16 @@ fn list(feed: &Feed, st: &mut State, rect: usize) -> Value {
     }
     let elsewhere = top.len() - shown;
     if !outside.is_empty() {
-        rows.push(json!({"cells": [Cell::role(
-            format!(
-                "· {elsewhere} elsewhere · {} working",
-                outside.len()
-            ),
-            Role::Faint,
-        )]}));
+        // **The divider is fitted like every other line**: at the minimum width it keeps the count
+        // that matters — how many sessions the scope hid — and gives up the word *working*, which
+        // the header already counts.
+        let long = format!("· {elsewhere} elsewhere · {} working", outside.len());
+        let said = if cells(&long) <= width {
+            long
+        } else {
+            fit(&format!("· {elsewhere} elsewhere"), width)
+        };
+        rows.push(json!({"cells": [Cell::role(said, Role::Faint)]}));
         for id in &order {
             if let Some(s) = outside.iter().find(|s| &s.id == id) {
                 rows.push(session_row(s, width, &feed.here, feed.now, &feed.home));
@@ -484,7 +496,10 @@ fn header(scope: Scope, here: Option<&Session>, c: &Counts, width: usize) -> Str
     let long = if c.shown == c.total {
         format!("{channel} · {} here · {} working", c.shown, c.working)
     } else {
-        format!("{channel} · {} of {} · {} working", c.shown, c.total, c.working)
+        format!(
+            "{channel} · {} of {} · {} working",
+            c.shown, c.total, c.working
+        )
     };
     if cells(&long) <= width {
         return long;

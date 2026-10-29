@@ -612,3 +612,64 @@ fn a_trees_rows_are_its_stops_and_their_detail_and_actions_work() {
     let detail = a.screen(110, 40).join("\n");
     assert!(detail.contains("step b's words"), "{detail}");
 }
+
+/// **A row's `enter` is the host's act, and this head performs it** — C3's `switch`.
+///
+/// The nick list (`plugins/builtin/irc`) is a list whose rows exist to be switched to: every row
+/// carries `enter: {"switch": <session>}`, declared in that layer's manifest. This head opened
+/// every row's DETAIL instead, so the gesture the layer asked for did nothing but read the row's
+/// own prose — a plugin that promises *enter goes there* and a host that answers *here is what
+/// that row says*.
+#[test]
+fn a_rows_enter_act_switches_and_the_pane_leaves_with_it() {
+    const NICKS: &str = "irc/nicks";
+    let mut a = app();
+    a.apply(hello(
+        "s1",
+        vec![
+            brief("s1", "where i am", false),
+            brief("s2", "somewhere else", false),
+        ],
+        Hub::new("s1").snapshot(),
+    ));
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::PluginPane {
+            pane: NICKS.into(),
+            view: serde_json::json!({
+                "panels": [{"id": "nicks", "summary": [{"tree": {"rows": [
+                    {"id": "s1", "cells": ["» where i am"], "enter": {"switch": "s1"}},
+                    {"id": "s2", "cells": ["  somewhere else"], "enter": {"switch": "s2"}}
+                ]}}]}]
+            }),
+        },
+    )));
+    a.command(&format!("pane {NICKS}"));
+    a.screen(100, 30);
+    a.key(Key::Down);
+    // The second row's act is the host's: the head switches, and the pane leaves with the switch —
+    // a full-screen pane left open over the conversation you just arrived in is the wrong screen.
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s2".into())));
+    assert!(a.plugin_open.is_none(), "the pane closed with the switch");
+    assert!(
+        a.queued
+            .iter()
+            .any(|q| matches!(q, Action::PaneClose { pane } if pane == NICKS)),
+        "and the daemon was told to stop refreshing it"
+    );
+}
+
+/// **A row with no act still opens its detail** — the behaviour every existing pane has, and the
+/// reason the act is checked first rather than instead.
+#[test]
+fn a_row_with_no_enter_act_still_opens_its_detail() {
+    let mut a = tree_opened();
+    a.screen(110, 40);
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(
+        a.focused_surface(),
+        Some(Surface::PluginDetail),
+        "the row read whole, as it always did"
+    );
+}
