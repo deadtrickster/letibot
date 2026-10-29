@@ -13,6 +13,10 @@
 //! gate_carry = ["images", "vendor"] # gitignored inputs the gate needs, COPIED from the
 //!                                 #   operator's checkout into the landing tree before every
 //!                                 #   gate run (default: none)
+//! reviewers = "host"              # where this project's reviewers run: `host` (the default —
+//!                                 #   on this machine, as the children that author the
+//!                                 #   branches do) or `vm` (each reviewer in a firecode
+//!                                 #   microVM)
 //! ```
 //!
 //! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
@@ -50,6 +54,54 @@ impl RedTarget {
     }
 }
 
+/// **Where a project's reviewers run** — `[queue] reviewers`, and the one thing a project can
+/// say about the review queue's own children.
+///
+/// The key is named for WHAT it chooses (which of the queue's children, and where they run)
+/// rather than for the machinery: `vm` happens to be a firecode microVM, and a name like
+/// `gatekeeper_vm` would make the mechanism the subject of a decision that is really about how
+/// much a reviewer is trusted with.
+///
+/// **`Host` is the default, and it is the operator's ruling of 2026-10-29** after watching a
+/// night of reviews: a VM-placed reviewer paid a guest exec per file read (one `firecode in`
+/// per `grep` candidate), lost a request between `socat`'s `OK` and the guest's first read, and
+/// took 30–60 minutes holding one of two slots — to isolate a reader less than the subagent that
+/// WROTE the branch, which already runs on this machine with the operator's credentials. `Vm`
+/// stays for a project that wants the isolation anyway; see
+/// `crate::sessions::gatekeeper::ReviewerPlacement` for what the choice costs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Reviewers {
+    /// **On this machine** — a reviewer is a `gatekeeper`-seated child on the host, in a
+    /// checkout of the head it judges. The default.
+    #[default]
+    Host,
+    /// **In a firecode microVM** — the VM is the boundary, so the reviewer's `bash` asks nobody.
+    Vm,
+}
+
+impl Reviewers {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Reviewers::Host => "host",
+            Reviewers::Vm => "vm",
+        }
+    }
+
+    /// The two words, and nothing else — a value this build does not know is refused by name,
+    /// with both of them in the sentence, rather than defaulted.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s.trim() {
+            "host" => Ok(Reviewers::Host),
+            "vm" => Ok(Reviewers::Vm),
+            other => Err(format!(
+                "reviewers = \"{other}\" — the words are \"host\" (a reviewer runs on this \
+                 machine, in a checkout of the head it judges — the default) and \"vm\" (each \
+                 reviewer is booted in a firecode microVM)"
+            )),
+        }
+    }
+}
+
 /// **One project's queue settings**, with where they came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueueSettings {
@@ -64,6 +116,8 @@ pub struct QueueSettings {
     /// into the landing tree before every gate run. Empty by default. Each entry has passed
     /// [`super::carry::validate`].
     pub gate_carry: Vec<String>,
+    /// Where this project's reviewers run ([`Reviewers`]). `Host` unless the project says `vm`.
+    pub reviewers: Reviewers,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -75,6 +129,7 @@ impl Default for QueueSettings {
             merge_via_session: false,
             red_target: RedTarget::Fix,
             gate_carry: Vec::new(),
+            reviewers: Reviewers::Host,
             path: None,
         }
     }
@@ -91,6 +146,8 @@ struct QueueTable {
     red_target: Option<String>,
     #[serde(default)]
     gate_carry: Vec<String>,
+    #[serde(default)]
+    reviewers: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -135,6 +192,10 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             ));
         }
     };
+    let reviewers = match q.reviewers.as_deref().map(str::trim) {
+        None => Reviewers::Host,
+        Some(w) => Reviewers::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
+    };
     let mut gate_carry = Vec::new();
     for entry in &q.gate_carry {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -142,6 +203,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
     }
     Ok(QueueSettings {
         gate_carry,
+        reviewers,
         target: q
             .target
             .map(|t| t.trim().to_string())
@@ -210,6 +272,26 @@ mod tests {
         .unwrap();
         let e = for_repository(&repo).unwrap_err();
         assert!(e.contains("target_branch"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// **`reviewers` says where this project's reviewers run, and `host` is what a project that
+    /// says nothing gets** — the operator's ruling of 2026-10-29. A word this build does not
+    /// know is refused BY NAME with both of them in the sentence, like every other key here.
+    #[test]
+    fn reviewers_defaults_to_host_and_a_word_this_build_does_not_know_is_refused() {
+        let (dir, repo) = file("main_model = \"local\"\n[queue]\ntarget = \"main\"\n");
+        assert_eq!(for_repository(&repo).unwrap().reviewers, Reviewers::Host);
+        std::fs::write(dir.join("leticode.toml"), "[queue]\nreviewers = \"vm\"\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().reviewers, Reviewers::Vm);
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\nreviewers = \"firecode\"\n",
+        )
+        .unwrap();
+        let e = for_repository(&repo).unwrap_err();
+        assert!(e.contains("\"firecode\""), "{e}");
+        assert!(e.contains("\"host\"") && e.contains("\"vm\""), "{e}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -3439,7 +3439,7 @@ impl<'a> Sessions<'a> {
         // two facts — and a box that cannot boot a VM is a STATE this session can read
         // (`ReviewerPlacement::NoVm`, with the box's own reason in it), not a fallback nobody can see.
         let prompt = gatekeeper::prompt(&gatekeeper::reviewer_placement(
-            self.base.gatekeeper_vm,
+            self.base.reviewers == crate::config::Reviewers::Vm,
             letibot_tools::firecode::firecode_available(),
         ));
         if self.registry.get(&queue).is_none() {

@@ -62,6 +62,42 @@ Until the backend below existed, `where: firecode` was refused by name and the
 subagent was **not** run on the host in its place — running here and calling
 it a VM is the boundary claim this design exists not to make.
 
+### The one child whose placement is not the caller's word: a reviewer
+
+A `task` call says where its child runs. A **reviewer** has no caller — the review queue's own clock
+starts it — so its placement is a project setting, `[queue] reviewers` in `leticode.toml` (and
+`--reviewers` on the daemon's command line, which overrides it):
+
+```toml
+[queue]
+reviewers = "host"   # the default — or "vm"
+```
+
+**`host` is the default, and the reason is measured rather than aesthetic.** A VM-placed reviewer
+paid a guest exec per file read: `grep` did one `backend.read` per candidate, which over the
+firecode backend is one `firecode in` each, so a repository-scale search was hundreds of round
+trips and minutes of a held queue slot; one exec lost its request between `socat`'s `OK` and the
+guest's first read, and both ends waited for ever. A review therefore took 30–60 minutes and held
+one of two slots. And the symmetry is hard to argue with: the subagents that AUTHOR these branches
+already run on the host — `task_start`'s children do `cargo test` in the operator's own tree with
+the operator's credentials — so placing only the reader in a VM buys isolation its author never had.
+
+**Either way the reviewer gets a tree of its own, at the head it judges**: `start_reviewer` makes
+one detached clone of the entry's repository at the row's `head_sha`
+(`<tmp>/letibot-review-clones/review-<row id>`), a VM is booted on it, and a host reviewer *works
+in* it — its session workspace and the `cwd` its prompt names are that checkout, so `read`, `grep`,
+`glob` and `bash` all see the branch under review and never the tree the operator has open.
+
+**What `host` gives up, in one paragraph.** A reviewer on this machine is a `gatekeeper`-seated
+child with `bash`, and nothing but the seat and the permission cards stands between it and the box:
+it can run anything the operator can, read the operator's credentials and the whole filesystem, and
+a branch under review may carry a test that does something destructive — run it and the damage is
+done on the operator's own machine. The seat is read-only and its `bash` calls are permission
+cards that go to the review queue's head (a card nobody answers times out and the review fails),
+but that is a boundary on the operator's ATTENTION, not a sandbox: it decides who is asked, not
+what a command may do once allowed. A project that wants the boundary itself says
+`reviewers = "vm"` and pays the guest exec per read.
+
 ### `--vm`: the session's folder, mounted read-write
 
 On a Mac a session placed with `--vm` (`--where firecode`) boots its VM on its workspace folder

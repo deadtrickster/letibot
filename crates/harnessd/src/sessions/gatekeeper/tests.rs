@@ -274,12 +274,26 @@ impl Fixture {
         let ws = dir.path.join("ws");
         std::fs::create_dir_all(&ws).expect("the workspace");
         let ws = std::fs::canonicalize(&ws).expect("the workspace canonicalizes");
+        // **The workspace is a git repository, because a reviewer's tree is made FROM one.**
+        // `mergequeue::review::start_reviewer` clones the row's repository at its `head_sha` for
+        // both placements (a reviewer judges a checkout of the head, never the tree the operator
+        // has out), so a fixture with no repository would measure *a reviewer that could not
+        // start* — the raise, not the review.
+        crate::mergequeue::serve::tests::sh(&ws, &["init", "-q", "-b", "main"]);
+        crate::mergequeue::serve::tests::sh(&ws, &["config", "user.email", "q@test"]);
+        crate::mergequeue::serve::tests::sh(&ws, &["config", "user.name", "queue test"]);
+        std::fs::write(ws.join("a.txt"), "one\n").expect("a file");
+        crate::mergequeue::serve::tests::sh(&ws, &["add", "."]);
+        crate::mergequeue::serve::tests::sh(&ws, &["commit", "-q", "-m", "base"]);
         let db = dir.path.join("sessions.db");
         let mut cfg = Config::for_this_box(&ws);
         cfg.vocab_gguf = Some(gguf);
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
         cfg.http_retries = 0;
+        // **A directory of the fixture's own** for the reviewers' clones — `sweep_clones` refuses
+        // any other name, and a fixture must never write into (or sweep) the box's own.
+        cfg.review_clones = Some(dir.path.join(crate::mergequeue::review::CLONES_DIR));
         let registry = Registry::new();
         registry
             .create(&cfg.session_id, "", Sessions::wiring(&cfg))
@@ -335,11 +349,34 @@ impl Fixture {
         Store::open(&self.db).expect("the store reopens")
     }
 
-    /// A review row in this daemon's repository (its workspace), lease held by this daemon.
-    fn entry(&self, id: &str, brief: &str) {
+    /// A review row in this daemon's repository (its workspace), lease held by this daemon — and
+    /// the HEAD it names, because the row's head is a real commit on a real branch.
+    fn entry(&self, id: &str, brief: &str) -> String {
+        let (_wt, base, head) =
+            crate::mergequeue::serve::tests::branch(&self.ws, id, &format!("{id}.txt"));
         let s = self.store();
         hold(&s, &self.ws, &me());
-        entry(&s, &self.ws, id, brief);
+        s.enqueue_review(
+            &NewReview {
+                id: id.into(),
+                repository: self.ws.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: format!("s-{id}"),
+                branch: format!("agent/{id}"),
+                worktree: None,
+                base_sha: base,
+                head_sha: head.clone(),
+                brief: brief.into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            (crate::config::now_ns() / 1_000_000) as u64,
+        )
+        .expect("the review row");
+        head
     }
 
     fn board(&self, sessions: &Sessions<'_>) -> Vec<TodoItem> {
@@ -452,11 +489,11 @@ fn a_reviewer_is_placed_where_the_box_can_place_one() {
         Placement::Host,
         "and what the spawn carries is this machine — the only placement left"
     );
-    // **And a session that states no VM is not overridden by a box that could boot one.**
+    // **And a project that says `host` is not overridden by a box that could boot one.**
     assert_eq!(
         reviewer_placement(false, Ok(PathBuf::from("/usr/bin/firecode"))),
         ReviewerPlacement::Host,
-        "the veto is the session's, and a box that could boot a VM does not undo it"
+        "the choice is the project's, and a box that could boot a VM does not undo it"
     );
 }
 
@@ -494,23 +531,31 @@ fn the_session_is_told_where_its_reviewers_run() {
         Ok(PathBuf::from("/usr/bin/firecode")),
     ));
     assert!(
-        host.contains("`gatekeeper_vm = false`"),
-        "and a session that vetoed the VM is told the veto is why, not the box: {host}"
+        host.contains("`[queue] reviewers` says `host`")
+            && host.contains("in a CHECKOUT OF THE HEAD THEY JUDGE"),
+        "and a project that says `host` is told the choice is why, not the box — and told which \
+         tree its reviewers read: {host}"
+    );
+    assert!(
+        host.contains("What that gives up, said plainly")
+            && host.contains("it can run anything the operator can"),
+        "and the cost of the default is stated where the session reads it, not left to be \
+         discovered: {host}"
     );
 }
 
-/// **A session that states no VM reads it in its own prompt** — the arm a test can put a real
-/// session in on ANY box, because `gatekeeper_vm = false` is the answer whatever
-/// `firecode_available()` says. The other two arms are the pure function's, above.
+/// **A session that says `host` reads it in its own prompt** — the arm a test can put a real
+/// session in on ANY box, because `host` is the default whatever `firecode_available()` says. The
+/// other two arms are the pure function's, above.
 ///
 /// **The fixture says nothing to get this.** It is built the ordinary way
-/// (`Config::for_this_box`), which states no VM — so this is also the assertion that a session a
+/// (`Config::for_this_box`), which says `host` — so this is also the assertion that a session a
 /// test opens cannot boot a microVM over its workspace by forgetting a line. A test that means
 /// to exercise the VM arm asks for one by name (`Config::allow_vm_reviewers`), and the VM arm's
 /// own words are asserted on the pure function above, where the box is an argument rather than a
 /// `$FIRECODE_BIN` race.
 #[test]
-fn a_session_that_states_no_vm_is_told_its_reviewers_run_here() {
+fn a_session_that_says_host_is_told_its_reviewers_run_here() {
     let Some(f) = Fixture::new("prompt-host") else {
         return;
     };
@@ -520,8 +565,8 @@ fn a_session_that_states_no_vm_is_told_its_reviewers_run_here() {
 
     assert!(
         said.contains("Where your reviewers run: **on this machine**")
-            && said.contains("`gatekeeper_vm = false`"),
-        "the queue's session reads where its reviewers run, and the veto is named as the \
+            && said.contains("`[queue] reviewers` says `host`"),
+        "the queue's session reads where its reviewers run, and the choice is named as the \
              reason rather than the box: {said}"
     );
 }
@@ -642,7 +687,7 @@ fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
         return;
     };
     let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-    f.entry("m-one", "make the reader keep the last record");
+    let head = f.entry("m-one", "make the reader keep the last record");
     let mut sessions = f.opened(&parts);
     assert_eq!(sessions.fill_gatekeeper_board(), 1);
     assert_eq!(f.board(&sessions)[0].status, TodoStatus::Pending);
@@ -666,7 +711,7 @@ fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
         "{prompt}"
     );
     assert!(
-        prompt.contains("git diff base...head-m-one"),
+        prompt.contains(&format!("...{head}")),
         "the reviewer reads the HEAD the claim bound, not the branch as it is: {prompt}"
     );
     let row = f.store().review_row("m-one").unwrap().unwrap();

@@ -10811,7 +10811,7 @@ impl Harness {
         };
         let me = crate::mergequeue::lease::this_daemon().owner.clone();
         let placement = crate::sessions::gatekeeper::reviewer_placement(
-            self.cfg.gatekeeper_vm,
+            self.cfg.reviewers == crate::config::Reviewers::Vm,
             letibot_tools::firecode::firecode_available(),
         );
         let registry = self.session_registry.clone();
@@ -10843,7 +10843,9 @@ impl Harness {
             },
             deliver: &deliver,
             settings: &crate::mergequeue::settings::for_repository,
-            clones: std::env::temp_dir().join("letibot-review-clones"),
+            clones: self.cfg.review_clones.clone().unwrap_or_else(|| {
+                std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
+            }),
             slots: &|| crate::vm_reap::slot_holders(store, self.session_registry.instance()),
         };
         let served = match crate::mergequeue::review::serve(&pool) {

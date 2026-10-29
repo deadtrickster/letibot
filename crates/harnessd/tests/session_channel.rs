@@ -51,7 +51,7 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -95,7 +95,20 @@ const REFUSAL: &str = "the change never touches the file the brief names";
 /// **A review row, claimed by this daemon's queue** — what the review queue's session serves: an
 /// entry `waiting` put up for review, moved to `reviewing` with this process's lease identity as
 /// its owner, the way the queue's own thread claims one (`mergequeue::serve`).
-fn a_claimed_review(store: &Store, id: &str, branch: &str, base_sha: &str, worktree: String) {
+///
+/// **The row names a REAL repository and a REAL head** (`a_repository`): a reviewer is given a
+/// checkout of the head it judges, so a row naming a made-up path would measure *a reviewer that
+/// could not start* rather than the channel this file is about.
+#[allow(clippy::too_many_arguments)]
+fn a_claimed_review(
+    store: &Store,
+    id: &str,
+    repo: &Path,
+    branch: &str,
+    base_sha: &str,
+    head_sha: &str,
+    worktree: String,
+) {
     let me = letibot_harnessd::mergequeue::lease::this_daemon()
         .owner
         .clone();
@@ -103,14 +116,14 @@ fn a_claimed_review(store: &Store, id: &str, branch: &str, base_sha: &str, workt
         .enqueue_review(
             &NewReview {
                 id: id.to_string(),
-                repository: "/the/repository".into(),
+                repository: repo.display().to_string(),
                 target: "main".into(),
                 kind: ReviewKind::Branch,
                 session_id: id.to_string(),
                 branch: branch.to_string(),
                 worktree: Some(worktree),
                 base_sha: base_sha.to_string(),
-                head_sha: "1".repeat(40),
+                head_sha: head_sha.to_string(),
                 brief: "do the work the brief names".into(),
                 priority: MergePriority::Subagent,
                 fixes: None,
@@ -131,6 +144,45 @@ fn a_claimed_review(store: &Store, id: &str, branch: &str, base_sha: &str, workt
             )
             .expect("the claim")
     );
+}
+
+/// **A repository with `branch` on it, at a real commit** — what a review row's `repository`,
+/// `base_sha` and `head_sha` must name: `mergequeue::review::start_reviewer` clones the row's
+/// repository at `head_sha`, so a fixture whose head is a made-up string never starts a reviewer.
+/// Returns the repository, the base (where `main` stays) and the branch's head.
+fn a_repository(under: &Path, branch: &str) -> (PathBuf, String, String) {
+    let repo = under.join("the-repository");
+    std::fs::create_dir_all(&repo).expect("the repository");
+    let git = |args: &[&str]| -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "q@test"]);
+    git(&["config", "user.name", "queue test"]);
+    std::fs::write(repo.join("a.txt"), "one\n").expect("a file");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "base"]);
+    let base = git(&["rev-parse", "main"]);
+    std::fs::write(repo.join("b.txt"), "two\n").expect("a file");
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "the work"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    // The branch the row is about, at the head — and `main` put back where it was, so the branch
+    // and the target are two different commits (which is what a review is).
+    git(&["branch", branch, &head]);
+    git(&["reset", "--hard", &base]);
+    (repo, base, head)
 }
 
 /// How long the driver waits for something a correct build produces in milliseconds —
@@ -166,6 +218,13 @@ fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
         .ok()
         .map(std::path::PathBuf::from)
         .or_else(letibot_tokencore::apparatus::present_gguf);
+    // **The reviewers' clones go in this fixture's own directory.** A review's tree is a clone of
+    // the row's repository (`mergequeue::review::start_reviewer`), and the sweep that removes the
+    // ones nobody is on refuses any directory not named `CLONES_DIR` — so a test that forgot this
+    // line would write into the box's own directory and could sweep it.
+    cfg.review_clones = store
+        .parent()
+        .map(|d| d.join(letibot_harnessd::mergequeue::review::CLONES_DIR));
     cfg
 }
 
@@ -1193,7 +1252,7 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     );
 
     // **The reviewer stays on this machine, and this test says nothing to get that.** A config
-    // built the ordinary way — `config` above is `Config::for_this_box` — states no VM, so a
+    // built the ordinary way — `config` above is `Config::for_this_box` — says `host`, so a
     // reviewer spawned here is a HOST child. The line that used to stand here (`gatekeeper_vm =
     // false`) is gone because the constructor now carries it for every fixture in the tree: a VM
     // over this fixture's `/tmp` workspace would measure and copy it and boot firecracker, and what
@@ -1210,9 +1269,17 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
 
     // **The review row, claimed by this daemon's queue**: its id and its session ARE the child.
     let branch = "agent/the-work".to_string();
-    let base_sha = "0".repeat(40);
+    let (repo, base_sha, head_sha) = a_repository(dir.path(), &branch);
     let store = Store::open(&path).expect("the store");
-    a_claimed_review(&store, &child_id, &branch, &base_sha, dir.relative());
+    a_claimed_review(
+        &store,
+        &child_id,
+        &repo,
+        &branch,
+        &base_sha,
+        &head_sha,
+        dir.relative(),
+    );
 
     // **The daemon's own pass.** One call starts the gatekeeper; the next writes its verdict
     // and sends the complaints, so this drives it until the child has heard them.
@@ -1329,7 +1396,7 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
         .expect("the enqueuer's hub is in the registry");
 
     let branch = "agent/the-lost-work".to_string();
-    let base_sha = "0".repeat(40);
+    let (repo, base_sha, head_sha) = a_repository(dir.path(), &branch);
     let store = Store::open(&path).expect("the store");
     // **The child's ROW, and no hub for it.** A session that finished and closed leaves the row —
     // the store's own column doc says a session that is deleted does not un-merge a branch — while
@@ -1348,7 +1415,15 @@ fn a_refusal_whose_child_is_gone_reaches_the_session_that_enqueued_it() {
             parent_session_id: Some(peer_id.to_string()),
         })
         .expect("the lost child's row");
-    a_claimed_review(&store, lost, &branch, &base_sha, dir.relative());
+    a_claimed_review(
+        &store,
+        lost,
+        &repo,
+        &branch,
+        &base_sha,
+        &head_sha,
+        dir.relative(),
+    );
 
     // **The daemon's own pass**, driven until the ENQUEUER has the complaints. Nobody drains the
     // peer's queue here — the message itself is the fact, and it is on the peer's own queue.

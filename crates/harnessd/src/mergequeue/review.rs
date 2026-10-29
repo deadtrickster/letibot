@@ -30,7 +30,9 @@ use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
     Approval, MergePriority, Move, NewReview, ReviewKind, ReviewRow, ReviewState, Store, StoreError,
 };
-use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus, WorktreeSpec};
+use letibot_tools::builtins::task::{
+    TaskRunner, TaskSpec, TaskStatus, WorktreePlacement, WorktreeSpec,
+};
 use letibot_tools::builtins::verdict::ReviewDesk;
 use letibot_tools::gatekeeper::{Decision, ReviewRequest};
 
@@ -260,6 +262,8 @@ impl Pool<'_> {
 /// **One pass of the reviewers' host** — start, collect, kill. See the module docs.
 pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     let mut out = Served::default();
+    // **The trees no row is on any more, before anything is started** — see [`sweep_clones`].
+    sweep_clones(p);
     let rows = p.store.review_rows(None)?;
 
     // ---- Start a reviewer for every row this daemon claimed and nobody is on.
@@ -403,7 +407,89 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     Ok(out)
 }
 
+/// **The directory a review's clone lives in**, under the temp dir — one per review, named
+/// `review-<row id>` ([`start_reviewer`]).
+///
+/// A `const` because two places spell it: the daemon builds [`Pool::clones`] from it
+/// (`Harness::serve_reviews`), and [`sweep_clones`] refuses to touch any directory not called
+/// this — which is the guard that keeps a fixture from pointing a sweep at a real directory.
+pub const CLONES_DIR: &str = "letibot-review-clones";
+
+/// **The per-review trees nobody is on any more** — [`start_reviewer`] makes one clone per review
+/// under [`Pool::clones`] (`review-<row id>`), for BOTH placements, and nothing used to remove one:
+/// MEASURED on the operator's box 2026-10-29, **eleven clones, 530 MB, the oldest four days old**.
+/// The firecode copy that *is* removed (`FirecodeBackend::remove_copy`) is firecode's own project
+/// directory, not this clone.
+///
+/// **Why a sweep and not a teardown at the verdict.** A review ends in three places — a verdict
+/// ([`verdict`]), a failed attempt ([`Pool::attempt_failed`]), and a WITHDRAWAL by a person or a
+/// deadline, which lives in `mergequeue::serve` — and the two that leak most (a withdrawal, and
+/// everything a daemon that died left behind) are exactly the ones a per-point removal in this
+/// file could not reach. So the rule is the one Package K's resource sweep uses, one directory
+/// over: a clone is removed once its row is no longer `waiting` or `reviewing`. Package K's sweep
+/// reclaims terminal rows' WORKTREES in the queue's pass; this reclaims reviewer CLONES in the
+/// review pass, because neither can see the other's directory.
+///
+/// **Every row on the store, not this daemon's** — the store is shared by every daemon on the box
+/// and `clones` is one global directory, so a sweep scoped to `p.me` would delete a live clone of
+/// another daemon's review.
+///
+/// **Three refusals, each of which is a real way this could destroy something:**
+/// * a directory that is not named [`CLONES_DIR`] is never swept — that refuses `std::env::temp_dir()`
+///   itself (which three fixtures used to pass), a parent of it, and any directory a test or a
+///   future caller might be pointed at;
+/// * only a DIRECTORY named `review-<id>` is removed, and only when `<id>` is not live; a file, or
+///   a name that does not parse, is left alone;
+/// * a store that will not answer is not evidence that a tree is nobody's.
+fn sweep_clones(p: &Pool) {
+    if p.clones.file_name().is_none_or(|n| n != CLONES_DIR) {
+        return;
+    }
+    let Ok(rows) = p.store.review_rows(None) else {
+        return;
+    };
+    let live: std::collections::HashSet<&str> = rows
+        .iter()
+        .filter(|r| matches!(r.state, ReviewState::Waiting | ReviewState::Reviewing))
+        .map(|r| r.id.as_str())
+        .collect();
+    let Ok(entries) = std::fs::read_dir(&p.clones) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(id) = name.strip_prefix("review-") else {
+            continue;
+        };
+        if live.contains(id) || !e.path().is_dir() {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(e.path());
+    }
+}
+
 /// Start one reviewer: where it runs, on what tree, with which prompt.
+///
+/// **Both placements get a tree of their own, and it is made here, once** — a detached clone of the
+/// entry's repository at the head the row names (`git::clone_branch`, decision 3). What differs is
+/// what is done with it: a VM is booted ON the clone (`TaskSpec::vm_source`, so the guest's whole
+/// world is the branch), and a host reviewer WORKS IN it (`TaskSpec::worktree`, which is the
+/// field that makes a child's workspace something other than its parent's — see
+/// `Harness::run_to_completion`). The `cwd` the review prompt names is that same path, so the
+/// reviewer's `read`, `grep`, `glob` and `bash` all look at `head_sha`.
+///
+/// **The host arm used to hand the reviewer `r.repository`** — the operator's own checkout, on
+/// whatever branch they had out — and its workspace was the DAEMON's, so a review judged a tree
+/// nobody had asked it about. MEASURED as a defect by the operator on 2026-10-29: *"a reviewer that
+/// judges the wrong tree is worse than a slow one"*.
+///
+/// **Two consequences of `spec.worktree` that are deliberate and not defects.** A child with a
+/// worktree gets `CARGO_TARGET_DIR` from `worktree_build_env`, which for a clone is the clone's OWN
+/// `target/` (its `.git` is its own) — so a reviewer that builds builds hermetically. And it gets a
+/// [`deliverable`](crate::harness::deliverable): if the reviewer leaves files in its tree, its
+/// completion says so. Nothing can be lost that way — the clone is thrown away — and suppressing
+/// the check would need a field on `TaskSpec` that says *a tree the child may not commit into*,
+/// which is a change to the spawn and not to this decision.
 fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), String> {
     let repo = PathBuf::from(&r.repository);
     let mut spec = TaskSpec {
@@ -411,20 +497,34 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), St
         placement: p.placement.placement(),
         ..Default::default()
     };
+    // **The branch the row is about** — the target itself for a red tip, the child's branch for a
+    // review — and the head as the queue read it when it claimed the row.
+    let what = if r.kind == ReviewKind::Target {
+        r.target.clone()
+    } else {
+        r.branch.clone()
+    };
+    let dir = p.clones.join(format!("review-{}", r.id));
+    git::clone_branch(&repo, &what, &r.head_sha, &dir)?;
     let cwd = match p.placement {
         ReviewerPlacement::Vm => {
-            // **A fresh clone of the branch** (decision 3), not the workspace.
-            let dir = p.clones.join(format!("review-{}", r.id));
-            let what = if r.kind == ReviewKind::Target {
-                r.target.clone()
-            } else {
-                r.branch.clone()
-            };
-            git::clone_branch(&repo, &what, &r.head_sha, &dir)?;
+            // A VM is booted on the clone; inside it there is no absolute path to name.
             spec.vm_source = Some(dir);
             String::new()
         }
-        ReviewerPlacement::Host | ReviewerPlacement::NoVm { .. } => r.repository.clone(),
+        ReviewerPlacement::Host | ReviewerPlacement::NoVm { .. } => {
+            // **A host reviewer works in the checkout**, so the child's workspace and the `cwd`
+            // its prompt names are one path — the branch at the head it judges, and never the
+            // operator's tree.
+            let at = dir.display().to_string();
+            spec.worktree = Some(WorktreePlacement {
+                path: at.clone(),
+                branch: what,
+                base_sha: r.base_sha.clone(),
+                main_tree: false,
+            });
+            at
+        }
     };
     let req = ReviewRequest {
         brief: r.brief.clone(),
