@@ -227,7 +227,7 @@ The runtime is in, and it is one mode plus one crate's second half:
 | the socket and the daemon | `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving `letibot_room::Server` — accept loop, one read loop per connection, `Hello` at the door, the room behind **one** `Mutex` |
 | the coordinator's own lease | `letibot_room::lease` — a **file**, `<data dir>/room-<host key>.lease`, with `host/pid/<ns>` for an owner, a ten-second beat, the merge queue's ninety-second TTL, a stale takeover that says whether the beat stopped or the pid is gone, and a refusal that names the live holder |
 | the clock and the pass | the server's own clock thread: `sweep(now)` every five seconds, the lease's beat on the same thread (one process, one clock), and `note_gone` on every connection close |
-| the tie-breaker session | the coordinator's own session, `s-room-<host key>`, opened with **no store**, seated `orchestrator`, prompted with `open_questions` — a sentence with the decision in it plus the typed facts — and answering through `rule` |
+| the tie-breaker session | the coordinator's own session, `s-room-<host key>`, opened with **no store**, seated `orchestrator` — which names `room` (see *Which seats carry `room`*) — prompted with `open_questions`, a sentence with the decision in it plus the typed facts, and answering through `rule` |
 | the session-side tool | `room` (`crates/tools/src/builtins/room.rs`): post, claim, claim_item, beat, waiting, done, abandon, dispute, rule, queue, holding, reminders, questions |
 | the beat on the session's behalf | `Harness::begin_turn_clock` starts it, `Harness::end_turn_clock` stops it, and `letibot_room::client::Client::start_beating` re-reads what the session holds on every tick |
 | the wake | a `Response::Event` on the connection's reader thread becomes a sentence in `crate::room::wake`, rings the worker's bell, and `Harness::wake` composes it as a `room` notice |
@@ -236,6 +236,36 @@ The names are all derived from the host — the socket, the lease and the sessio
 (`s-room-<host key>`) — so two boxes never collide and `letibot --session host` always resolves.
 The lease is a **file and not a row**: the room keeps no store, so a coordinator that opened
 `sessions.db` to hold its own lock would be the first half of putting the queue in it too.
+
+### Which seats carry `room`, and why the coordinator's own has to
+
+**Two seats, and they are the two a person's own session runs on:**
+
+| seat | role | carries `room` | why |
+|---|---|---|---|
+| `orchestrator` (the default; `letibot`, `letibot --read-only`) | `roles::m1_orchestrator()` | **yes** | the default top-level seat, and **the coordinator's own** (`s-room-<host key>`) — the arbiter rules through this tool |
+| `leticode` (`leticode`, `letibot --role leticode`) | `roles::leticode()` | **yes** | the working top-level seat |
+| `planner`, `researcher` | their roles | no | a plan mode and a seat with no retrieval backend; neither holds work a tag would be locked for |
+| `coder`, `runner` | `m2_coder`, `m2_runner` | no | a subagent's seat — its words go through the session that spawned it |
+| `gatekeeper` | `roles::gatekeeper()` | no | the review queue's session and its reviewers: the reviewers are children, and the room refuses a subagent at its door |
+| `notes_keeper` | `roles::notes_keeper()` | no | a hidden child, and read-only |
+
+**A session on any other seat does not see the tool at all.** `Registry::resolve_role` keeps only
+the tools a role NAMES, so a seat that does not name `room` has it dropped from the session's
+registry even though `Harness::open` registered it — and a model that calls it anyway is answered
+by the runtime's unknown-tool miss: *"no tool called `room` is available here"* plus the list of
+the tools it does have. That is deliberate: a tool in the prompt that always refuses is prefix
+bytes and a wrong verb taught to a model that cannot use either.
+
+**This is the defect the first cut shipped, and the reason it is written down here.** The name was
+put into §8.4's `roles::orchestrator()` — a table **no seat resolves** — while the live seat is
+`roles::m1_orchestrator()`. The coordinator's session therefore had a `room`-less registry, and the
+tie-breaker was woken, handed *"Answer with the `room` tool: verb `rule`"*, and had no such tool:
+every raised item froze for ever, silently, which is the one outcome the no-model refusal above
+exists to prevent. `crates/harnessd/tests/room_coordinator.rs` is the test that now says otherwise
+— it boots a coordinator on a socket of its own, opens the arbiter's session through
+`Harness::open`, asserts the seat resolves a registry holding `room`, and then rules on a raised
+item **through the tool**, which is the call the prompt tells the model to make.
 
 **The wake, exactly.** A session is woken by a `Response::Event` about it — posted, claimed, done,
 abandoned, raised, asked, ruled — and by nothing else. A beat is not an event. The connection is

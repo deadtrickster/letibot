@@ -25,7 +25,10 @@
 //! that is doing long work *without a turn running* (a `monitor` it is waiting on) may want to say
 //! so. It is **not** how a claim stays alive: the daemon beats for the session while its turn
 //! runs, which is the fact the lease is measuring. [`RoomLink::beats_on_my_behalf`] is how the
-//! prompt's own paragraph says which of the two is happening.
+//! model is told which of the two is happening, and the paragraph it composes is the tool's own
+//! DESCRIPTION ([`RoomTool::schema`]) — the bytes the model reads before it chooses a tool, not a
+//! line in some prompt composed elsewhere. A `NoRoom` says there that nothing beats, which is the
+//! truth on a box with no coordinator; the real link says the daemon does.
 
 use std::sync::Arc;
 
@@ -45,9 +48,10 @@ pub const TOOL: &str = "room";
 pub trait RoomLink: Send + Sync {
     fn call(&self, verb: &str, args: &Value) -> Result<String, String>;
 
-    /// **Whether this session's daemon beats while its turn runs.** The prompt's paragraph says
-    /// which it is, because a model that believes it must beat will spend a tool call on it, and
-    /// one that believes the daemon does will not — and only one of those beliefs can be true.
+    /// **Whether this session's daemon beats while its turn runs.** [`RoomTool::schema`] says
+    /// which of the two it is, in the tool's own description — the bytes a model reads before it
+    /// chooses a tool. A model that believes it must beat will spend a tool call on it, and one
+    /// that believes the daemon does will not — and only one of those beliefs can be true.
     fn beats_on_my_behalf(&self) -> bool {
         true
     }
@@ -84,17 +88,31 @@ impl RoomTool {
 
 impl Tool for RoomTool {
     fn schema(&self) -> ToolSchema {
+        // **The beat paragraph is composed from the LINK, not written here.** The two answers are
+        // different facts and only one of them can be true of a session: the daemon beats while
+        // the turn runs (a real [`SessionRoom`] behind the tool), or nothing does (a [`NoRoom`],
+        // which is every registry this crate builds and every box with no coordinator). A model
+        // told the wrong one either spends a call on a beat that is already happening or loses a
+        // claim it believed somebody was keeping alive.
+        let beat = if self.link.beats_on_my_behalf() {
+            "Your daemon beats for you while your turn runs, so a claim is not lost while you work; \
+             one whose beat stops is taken back."
+        } else {
+            "Nothing beats on your behalf in this session — there is no room behind this tool — so \
+             a claim is kept alive only by the `beat` calls you make yourself."
+        };
         ToolSchema::new(
             TOOL,
-            "The host's room: a queue per TAG shared by every top-level session on this machine, for \
-             coordinating scarce things (RAM, a port, the staging database) and for saying what \
-             you are working on. A tag is a LOCK — one live claim per tag, and anybody else is \
-             refused with the holder's name — so two jobs that may run at once need two tags, and \
-             urgent work gets its own tag rather than a priority number. `post` a need, `claim` a \
-             tag's head, `beat` what you hold, `waiting` what you are waiting on, `done`, \
-             `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the arbiter's verb \
-             — to answer with `retry`, `hand` or `drop`. Your daemon beats for you while your turn \
-             runs, so a claim is not lost while you work; one whose beat stops is taken back.",
+            format!(
+                "The host's room: a queue per TAG shared by every top-level session on this machine, \
+                 for coordinating scarce things (RAM, a port, the staging database) and for saying \
+                 what you are working on. A tag is a LOCK — one live claim per tag, and anybody \
+                 else is refused with the holder's name — so two jobs that may run at once need two \
+                 tags, and urgent work gets its own tag rather than a priority number. `post` a \
+                 need, `claim` a tag's head, `beat` what you hold, `waiting` what you are waiting \
+                 on, `done`, `abandon`, `dispute`, `queue`, `holding`, `questions`, and `rule` — the \
+                 arbiter's verb — to answer with `retry`, `hand` or `drop`. {beat}"
+            ),
             json!({
                 "type": "object",
                 "properties": {
@@ -308,8 +326,34 @@ mod tests {
         let s = tool.schema();
         assert_eq!(s.name, TOOL);
         assert_eq!(crate::schema::lint_description(&s.description), vec![]);
-        assert!(s.description.len() < 800, "{} bytes", s.description.len());
+        assert!(s.description.len() < 900, "{} bytes", s.description.len());
         assert_eq!(s.access, Access::Session);
+    }
+
+    /// **The beat paragraph is the link's, and the two links say opposite things.**
+    ///
+    /// `beats_on_my_behalf` had no caller when this tool landed, so the doc's claim that *"the
+    /// prompt's own paragraph says which of the two is happening"* was untrue — the description
+    /// said the daemon beats, on every registry including the ones with no room behind them. This
+    /// pins the wiring: the sentence a model reads is chosen by the answer, and both answers are
+    /// reachable (`NoRoom` here, the daemon's own `SessionRoom` in `letibot-harnessd`).
+    #[test]
+    fn the_description_says_whether_the_daemon_beats_on_my_behalf() {
+        let none = RoomTool::new(Arc::new(NoRoom)).schema().description;
+        assert!(
+            none.contains("Nothing beats on your behalf"),
+            "a registry with no room must not promise a beat: {none}"
+        );
+        assert!(!none.contains("Your daemon beats for you"), "{none}");
+
+        let real = RoomTool::new(Recorder::new(Ok("posted #1")) as Arc<dyn RoomLink>)
+            .schema()
+            .description;
+        assert!(
+            real.contains("Your daemon beats for you while your turn runs"),
+            "a real link is the daemon beating, and the model has to be told: {real}"
+        );
+        assert!(!real.contains("Nothing beats on your behalf"), "{real}");
     }
 
     #[test]

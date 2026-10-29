@@ -28,6 +28,16 @@
 //! in it. Its workspace is a directory of its own under the data directory, so nothing it does is
 //! about anybody's project.
 //!
+//! **The seat is load-bearing twice over, and the second half is the one that was missed.**
+//! `orchestrator` is what opens with no adjudicator — and it is also the list of tools the arbiter
+//! can call. `Seat::Orchestrator` resolves `roles::m1_orchestrator()` (`harness.rs`'s
+//! `base_role_for_seat`), and a role that does not NAME `room` has the tool dropped from the
+//! session's registry by `Registry::resolve_role` no matter what `Harness::open` registered. The
+//! tie-breaker would then be woken by this file, handed the prompt below, and have no such tool:
+//! a raised item frozen for ever, which is exactly what [`configure`]'s no-model refusal says it
+//! exists to prevent. `roles::m1_orchestrator()` names `room` for this reason, and
+//! `crates/harnessd/tests/room_coordinator.rs` is the test that says so against a real socket.
+//!
 //! # The tie-breaker, and what wakes it
 //!
 //! The session's own connection to the room is what makes it able to rule: it is the arbiter
@@ -99,7 +109,19 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     // **The seat that opens with nobody attached.** `orchestrator` is the one seat with no gated
     // tool: `leticode` would be refused at open for an adjudicator nobody is there to answer, which
     // is the same reasoning `sessions::gatekeeper::SEAT` writes down.
+    //
+    // **And it is the seat that decides whether the arbiter can rule at all.**
+    // `Seat::Orchestrator` resolves `roles::m1_orchestrator()`, and `Registry::resolve_role` keeps
+    // ONLY the tools a role names — so `room` has to be named there, not merely registered by
+    // `Harness::open`. It is (see that role's doc); this line is where the two meet.
     cfg.seat = Seat::Orchestrator;
+    // **And this daemon's own session joins its own room.** `room_link` is `true` on the daemon's
+    // path already (`Config::for_the_daemon`), and it is set here as well because this function is
+    // what makes a daemon a coordinator: a `--room` daemon whose sessions could not join the room
+    // would be a coordinator whose arbiter holds a `NoRoom` tool, and the refusal would arrive one
+    // layer too late to be understood. Set HERE rather than inherited, so a fixture that calls
+    // `configure` on a `for_this_box` config measures the coordinator and not the constructor.
+    cfg.room_link = true;
     // **No bash, no queue, no project.**
     cfg.allow_bash = false;
     cfg.serve_queues = false;
@@ -335,6 +357,13 @@ mod tests {
         assert!(!cfg.allow_bash);
         assert!(!cfg.serve_queues);
         assert_eq!(cfg.seat, Seat::Orchestrator);
+        // **And the arbiter's own session can reach the room it arbitrates.** Without this the
+        // seat names `room` and the tool behind it is a `NoRoom`: the tie-breaker is woken, told
+        // to call a tool it cannot use, and a raised item stays frozen.
+        assert!(
+            cfg.room_link,
+            "a coordinator's own session must join the room: the arbiter rules through it"
+        );
         assert!(cfg.workspace.is_dir());
         let _ = std::fs::remove_dir_all(&dir);
     }

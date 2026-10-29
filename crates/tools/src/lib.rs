@@ -401,7 +401,11 @@ mod tests {
         // assertion below counts. What the registry still has to satisfy is that a role naming a
         // tool resolves at all, and that is what resolving it here proves.
         let seated = reg.resolve_role(&roles::m1_orchestrator()).unwrap();
-        assert_eq!(seated.len(), 7);
+        // **Eight since the room.** `room` is the coordinator's own tool and the default seat's,
+        // and it resolves here because `with_session_tools` registers a `NoRoom` behind it — the
+        // rule this whole test is about: a role that names a tool must resolve on any registry
+        // this function builds, and the tool then says what is not behind it.
+        assert_eq!(seated.len(), 8, "{:?}", seated.names());
         assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }
 
