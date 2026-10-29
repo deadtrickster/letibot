@@ -1331,17 +1331,24 @@ neither `--delete` nor `git clean -fd` can take it. A cold gate on a host is wor
 per-repository and permanent.
 
 Measured on lab2x1 (32 cores, 73 GiB free, its own 1.4 GB registry cache, ~15 ms round trips over
-the daemon's `ControlMaster`), gating this repository at `f7397ad5` with
-`sh scripts/check-fmt.sh main` and `cargo test --offline -p letibot-tokencore --lib`:
+the daemon's `ControlMaster`), gating this repository at `f7397ad5`:
 
-| run | tree sent | bundle | check-fmt | tokencore tests | in all |
-|---|---|---|---|---|---|
-| first (cold `target/`) | 32 MB | 19 MB | 1.6 s | 78 s | **~2 min** |
-| second (same tip) | no bytes changed | none | 0.6 s | 1.1 s | **~4 s** |
+| what | cost |
+|---|---|
+| **the first gate of a repository on a host, nothing there** | **2.1 s** before the first step: 33 MB of tree over `rsync`, a 19 MB bundle, the bare store and the worktree (the step itself was 146 ms) |
+| **every gate after it, same tip** | **0.8 s** — no bundle is built (the host already has the commit) and `rsync` moves no bytes |
+| `cargo build --offline --bins -p letibot-harnessd`, cold `target/` | 32.2 s |
+| the same step, warm | 1.3 s |
+| `sh scripts/check-fmt.sh main` | 0.15 s |
+| `cargo test --offline -p letibot-tokencore --lib` (139 tests) | 7.7 s warm, 11.8 s cold |
 
-The second run sends nothing at all: the host already has the commit, so no bundle is built, and
-rsync moves no bytes. That is what makes a host gate worth having — the first run pays for a
-machine's worth of compilation and the ones after it pay for the branch.
+Two things to read off that. **The transport is not the cost** — a second and a half for a whole
+repository the first time, and nothing after it — so what a cold host gate really costs is
+COMPILATION, which is what the warm cache is for (a workspace `cargo test` cold on that box is
+minutes; the numbers above are the shape of it, taken on one crate and on the daemon's own build).
+And **the poll is a second**: a step that finishes in 146 ms reports as ~0.8 s in all, because the
+gate learns it finished at the next poll — the same order as the local gate's 100 ms, one machine
+further away.
 
 ### The deadline, and a host that cannot be reached
 

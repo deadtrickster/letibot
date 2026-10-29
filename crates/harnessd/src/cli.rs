@@ -365,15 +365,15 @@ fn usage() -> String {
      \x20                           which asks nobody for anything and costs a guest\
      \x20                           exec per read. The project's `[queue] reviewers`\
      \x20                           says the same thing, and this flag overrides it\n\
-     \x20 --gate-host NAME         run this daemon's MERGE GATE on a machine the\
-     \x20                           operator declared in hosts.toml, instead of on\
-     \x20                           this box. The landing tree goes over that host's\
-     \x20                           own key and root and the steps run there with\
-     \x20                           their build cache; the merge itself stays here.\
-     \x20                           Unset -- the default -- is this machine. The\
-     \x20                           project's `[queue] gate_host` says the same\
-     \x20                           thing, and this flag overrides it; `--gate-host`\
-     \x20                           with no name, or `local`, puts it back here\
+     \x20 --gate-host NAME         run this daemon's MERGE GATE on a machine the\n\
+     \x20                           operator declared in hosts.toml, instead of on\n\
+     \x20                           this box. The landing tree goes over that host's\n\
+     \x20                           own key and root and the steps run there with\n\
+     \x20                           their build cache; the merge itself stays here.\n\
+     \x20                           Unset -- the default -- is this machine. The\n\
+     \x20                           project's `[queue] gate_host` says the same\n\
+     \x20                           thing, and this flag overrides it; `--gate-host`\n\
+     \x20                           with no name, or `local`, puts it back here\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
