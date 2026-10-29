@@ -112,6 +112,18 @@ if [ -z "$bins" ]; then
     exit 1
 fi
 
+# **The names in that list that are REPOSITORY SCRIPTS, not build products.** `install.sh`
+# declares them separately (`LAUNCHERS="letibot leticode"`) and copies them out of `scripts/`,
+# because they are sh scripts beside the binaries — `leticode` is `scripts/leticode`, which execs
+# `letibot`. This step installs what the gate BUILT, so a launcher is not its business.
+#
+# MEASURED 2026-10-29, the first landing whose push succeeded (so the first time this step ran at
+# all): every earlier landing failed its push and the queue skipped the install, and this step
+# then died on the last name — `leticode is not an executable file — the build step did not
+# produce leticode in target/release` — after copying the four real binaries. The landing itself
+# was fine and pushed; only the install was lost, which is the defect this script exists against.
+launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$tree/install.sh" | head -1)
+
 # **The two the launcher execs are not optional**, whatever the list says: a `BINARIES=` that
 # had lost one would install a directory the launcher cannot start, silently.
 for name in harnessd letibot-tui; do
@@ -127,9 +139,22 @@ done
 
 mkdir -p "$dest"
 installed=""
+skipped=""
 for name in $bins; do
     src=$built/$name
     if [ ! -x "$src" ]; then
+        # **A launcher is not a build product**: `install.sh` copies it out of `scripts/`, and the
+        # launcher's own resolution (`scripts/letibot`) never looks for it beside `harnessd`. Said
+        # once per name rather than passed over, so a `BINARIES=` that gained a script nobody
+        # listed in `LAUNCHERS` still fails below instead of vanishing.
+        case " $launchers " in
+            *" $name "*)
+                echo "install-gate-build: $name is a repository script (install.sh's LAUNCHERS)," \
+                     "not a build product — left to \`scripts/$name\`" >&2
+                skipped="$skipped $name"
+                continue
+                ;;
+        esac
         echo "install-gate-build: $src is not an executable file — the build step did not" >&2
         echo "  produce \`$name\` in $built." >&2
         exit 1
@@ -143,6 +168,9 @@ for name in $bins; do
 done
 
 echo "install-gate-build: proved    $built"
+if [ -n "$skipped" ]; then
+    echo "install-gate-build: launchers $skipped are scripts in the tree, not build products"
+fi
 echo "install-gate-build: built from $tree at $(git -C "$tree" rev-parse --short HEAD)"
 
 # **Run the two the launcher execs, from where they now are.** `--version` needs no socket, no
