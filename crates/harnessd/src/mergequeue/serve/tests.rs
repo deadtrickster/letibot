@@ -3182,6 +3182,11 @@ fn withdraw(w: &World, id: &str) {
 fn a_withdrawn_row_gives_back_its_tree_and_branch_and_keeps_its_record() {
     let w = World::new("release-withdrawn");
     let (wt, base, head) = branch(&w.repo, "gone", "gone.txt");
+    // A build cache inside the tree, which is what makes one of these weigh 32 GB on this box —
+    // excluded from git, so it is not the tree's work, and it goes with the tree.
+    std::fs::write(w.repo.join(".git/info/exclude"), "target/\n").unwrap();
+    std::fs::create_dir_all(wt.join("target/debug")).unwrap();
+    std::fs::write(wt.join("target/debug/blob"), vec![b'x'; 4096]).unwrap();
     // Landed by hand: everything the branch carries is on `main`, and nothing retired anything.
     sh(&w.repo, &["merge", "--ff-only", "agent/gone"]);
     w.enqueue("gone", &wt, &base, &head);
@@ -3198,7 +3203,11 @@ fn a_withdrawn_row_gives_back_its_tree_and_branch_and_keeps_its_record() {
         r.worktree.is_some(),
         "the row still says where the tree was"
     );
-    assert!(!wt.exists(), "the tree is gone: {}", wt.display());
+    assert!(
+        !wt.exists(),
+        "the tree is gone, and the build cache inside it: {}",
+        wt.display()
+    );
     assert_eq!(
         git::branch_head(&w.repo, "agent/gone"),
         None,
