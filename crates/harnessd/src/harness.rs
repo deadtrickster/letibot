@@ -1033,6 +1033,12 @@ pub struct HubSteering {
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
     todos: Option<Arc<TodoBoard>>,
+    /// **This session's own parent, if it has one** — the one fact
+    /// [`message_from_a_session`] needs to word a message correctly, and the reason it is here
+    /// rather than read from the hub: a message says *"your parent session"* only when the
+    /// sender IS this session's parent, and the between-turns door reads the same field off the
+    /// harness's config. Two doors, one answer — see the `Message` arm.
+    parent: Option<String>,
 }
 
 impl HubSteering {
@@ -1047,6 +1053,7 @@ impl HubSteering {
             subagents: None,
             held: Default::default(),
             todos: None,
+            parent: None,
         }
     }
 }
@@ -1926,16 +1933,37 @@ impl SteeringSource for HubSteering {
                     // the next round boundary rather than as an interruption: a child told to
                     // change course should finish the call it is in and change, not abandon it.
                     //
-                    // **And the words are [`parent_message_text`]'s**, which is the same text
-                    // the between-turns door hands the child (`serve_child`'s
-                    // `ChildCommand::Hear`): a child that could tell which door its parent's
-                    // correction came through would be reading the machinery instead of the
-                    // message.
-                    let said = parent_message_text(&from, &text);
+                    // **And the words are [`message_from_a_session`]'s**, which is the same text
+                    // the between-turns door hands the session (`serve_child`'s
+                    // `ChildCommand::Hear`): a session that could tell which door the words came
+                    // through would be reading the machinery instead of the message.
+                    //
+                    // # Which door writes the ROW, and why the row is the injection
+                    //
+                    // MEASURED 2026-10-29 (`message_between_turns`'s
+                    // `a_message_to_a_running_child_lands_in_that_turn`, extended with a
+                    // `transcript_item` read): this arm writes NO row, and the child's
+                    // transcript gets one anyway — because the row and the injection are the
+                    // same thing. The steering message below is handed to the engine, the
+                    // engine's `Pending::take_items` turns it into a `User` item with
+                    // `Speaker::Agent`, and `Session::append_items` appends that item through
+                    // the same writer every other row goes through (`reconcile` + `persist` in
+                    // `Harness::run_rounds`). The model reads that row; a head draws that row;
+                    // the store holds that row. A second row written here would be a COPY of
+                    // the injection, and the child would read its parent's sentence twice.
+                    //
+                    // What that leaves is one window, and it is the reason
+                    // `SteeringMessage::from_a_session` exists: the item is appended at a
+                    // **step boundary**, and a round that fails after taking this message
+                    // hands it back (`SteeringSource::give_back`) without a boundary ever
+                    // arriving. `Harness::run_rounds` closes that window — a message still
+                    // carried when the turn is over is written into the transcript there, in
+                    // these same words, so the row exists whether or not a turn ever read it.
+                    let said = message_from_a_session(&from, &text, self.parent.as_deref());
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
                     }
-                    Some(SteeringMessage::normal(said))
+                    Some(SteeringMessage::from_a_session(said, from))
                 }
                 // **The operator answered a row's question while the turn runs** — R79: an
                 // operator's words are immediate, so the answer is applied to the board HERE and
@@ -11869,16 +11897,17 @@ impl Harness {
     /// and this is the turn that reads it.
     ///
     /// **Why this is not [`Harness::submit`]**: the speaker. The words are recorded as the
-    /// parent's — [`parent_message_text`], naming which parent — so they cannot authorise the
+    /// sender's — [`message_from_a_session`], naming which session — so they cannot authorise the
     /// act they race, cannot coalesce with the operator's own text, and cannot be taken back.
-    /// That is the same rule the mid-turn door follows, and the same text: a child cannot tell
-    /// which state it was in when its parent spoke.
+    /// That is the same rule the mid-turn door follows, and the same text: a session cannot tell
+    /// which state it was in when the other end spoke.
     pub fn submit_a_parents_message(
         &mut self,
         from: &str,
         text: &str,
     ) -> Result<Reply, HarnessError> {
-        self.submit_spoken_as_a_normal_session(Speaker::Agent, &parent_message_text(from, text))
+        let said = message_from_a_session(from, text, self.cfg.parent_session_id.as_deref());
+        self.submit_spoken_as_a_normal_session(Speaker::Agent, &said)
     }
 
     /// **The turn and its tail, with the speaker given** — the body both doors above share, and
@@ -11951,7 +11980,8 @@ impl Harness {
     /// [`Harness::submit_a_parents_message`] speaks, without the tail around them, for a caller
     /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
     pub fn parents_message_turn(&mut self, from: &str, text: &str) -> Result<Reply, HarnessError> {
-        self.submit_spoken(Speaker::Agent, &parent_message_text(from, text))
+        let said = message_from_a_session(from, text, self.cfg.parent_session_id.as_deref());
+        self.submit_spoken(Speaker::Agent, &said)
     }
 
     /// **One body, two questions.** `should_compact`/`at_the_wall` are the
@@ -13766,9 +13796,12 @@ impl Harness {
     ///
     /// * **an interrupt is spent** — the turn it was pressed against has ended, and one
     ///   left behind would stop the NEXT turn at its first token;
-    /// * **everything else stays**, for the next turn's greedy poll: the operator's words,
-    ///   a parent's correction, an answer the board already took, results already marked
-    ///   delivered. A failed turn read none of it, and the operator is told so.
+    /// * **another session's message is WRITTEN INTO THE TRANSCRIPT** — see
+    ///   [`Self::keep_the_words_it_never_read`], and `HubSteering`'s `Message` arm for why the
+    ///   row and the injection are one item on every other path;
+    /// * **everything else stays**, for the next turn's greedy poll: the operator's words, an
+    ///   answer the board already took, results already marked delivered. A failed turn read
+    ///   none of it, and the operator is told so.
     fn run_rounds(&mut self) -> Result<Reply, HarnessError> {
         // **The clock starts here for a door that appends no rows of its own** — the operator's
         // `!` line is already two rows on the log when `run_after_operator_shell` asks for its
@@ -13777,11 +13810,44 @@ impl Harness {
         // why a door that finds nothing to say must not have started it at all.
         self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let out = self.rounds();
-        let left = {
+        let (unread, left) = {
             let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());
             held.retain(|m| !m.urgent);
-            held.len()
+            // **A session's message comes out of the carried set, because it is about to be a
+            // row.** It is not re-offered by any source of its own, so leaving it here is the
+            // one way a parent's words could be read twice (the next turn's greedy poll would
+            // append the item a second time). See `SteeringMessage::from_session`.
+            let mut unread: Vec<SteeringMessage> = Vec::new();
+            held.retain(|m| match m.from_session.is_some() {
+                true => {
+                    unread.push(m.clone());
+                    false
+                }
+                false => true,
+            });
+            (unread, held.len())
         };
+        for m in &unread {
+            if let Err(e) = self.keep_the_words_it_never_read(&m.text) {
+                // Not fatal: the words are still on this session's log (the door recorded
+                // them), and the turn's own outcome is what the caller is waiting for. Said,
+                // because a row that was not written is a row a later reader will not find —
+                // and **put back**, so the next turn's greedy poll carries them as the
+                // injection they would have been rather than losing them to a store that was
+                // busy at the wrong moment.
+                self.handed_back
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push_back(m.clone());
+                self.warn(
+                    "message_not_stored",
+                    format!(
+                        "a message from another session was not written into this session's \
+                         transcript: {e}. It is on this log, and it rides the next turn instead."
+                    ),
+                );
+            }
+        }
         if left > 0 {
             self.hub.publish(SessionEvent::Warning {
                 code: "steering_carried".into(),
@@ -13793,6 +13859,56 @@ impl Harness {
             });
         }
         out
+    }
+
+    /// **A message this turn never read, made a row anyway** — the one path on which a parent's
+    /// words could reach a child's queue and leave no record of themselves.
+    ///
+    /// The ordinary path needs nothing: the engine appends the steering item at a step boundary
+    /// and `run_rounds` persists it with the round's own rows (see `HubSteering`'s `Message`
+    /// arm for the whole of that argument). This is the other path — a round that failed after
+    /// the greedy poll had taken the message, which hands it back
+    /// ([`letibot_turn::steering::SteeringSource::give_back`]) with no boundary ever arriving.
+    /// The carried set survives a turn and would carry it into the next one, and that is enough
+    /// for the operator's own prompt (a head is waiting on it, and the echo says `queued`). It
+    /// is NOT enough for a session's message, for two reasons measured here:
+    ///
+    /// * **a child may never run another turn.** A parked child whose parent spoke while a
+    ///   round was failing would hold the words in memory for ever — no row, no queue entry, and
+    ///   nothing in the store for a later reader (the operator's own report: four
+    ///   `task_message`s, *"of the child's 278 transcript rows, not one contains the parent's
+    ///   words"*);
+    /// * **the row is what makes the exchange visible at all.** A head attached to the child,
+    ///   and the child's own conversation view, read the transcript and nothing else — so words
+    ///   that exist only in a steering slot are words nobody can see.
+    ///
+    /// So the words are appended as the very item the injection would have been — same text,
+    /// same `Speaker::Agent`, one `Text` part — and the next turn reads them as the history they
+    /// now are. The trail is not told again: the door recorded the utterance when it took it
+    /// (`HubSteering`'s `Message` arm), and a second `say` would be a second turn's worth of
+    /// authority over one sentence.
+    fn keep_the_words_it_never_read(&mut self, said: &str) -> Result<(), HarnessError> {
+        let item = TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![UserPart::Text {
+                text: said.to_string(),
+            }],
+        };
+        let mut sink = CapturingSink::new(self.hub.clone());
+        self.session
+            .append_items(&self.engine, std::slice::from_ref(&item), &mut sink)?;
+        self.reconcile(&mut sink, std::slice::from_ref(&item));
+        self.persist()?;
+        self.hub.publish(SessionEvent::Warning {
+            code: "message_carried".into(),
+            detail: format!(
+                "a message from another session reached this turn while it ran and the turn \
+                 ended before the model read it; it is in the transcript now, so the next turn \
+                 reads it there: {said}"
+            ),
+            compaction: None,
+        });
+        Ok(())
     }
 
     fn rounds(&mut self) -> Result<Reply, HarnessError> {
@@ -15202,6 +15318,10 @@ impl Harness {
             held: self.handed_back.clone(),
             // **And the board, so the operator's answer lands mid-turn.** See the `AnswerTodo` arm.
             todos: Some(self.todos.clone()),
+            // **And this session's own parent**, so a message's sentence says which way the edge
+            // runs — the same field `submit_a_parents_message` reads, so the two doors word it
+            // identically.
+            parent: self.cfg.parent_session_id.clone(),
         }
     }
 
@@ -18221,21 +18341,39 @@ impl Drop for AnswerOnce<'_> {
     }
 }
 
-/// **A parent's correction, in the words the child hears** — one function, because two doors
-/// deliver it and a child that could tell which door it came through would be reading the
-/// machinery instead of the message.
+/// **A message from another session, in the words the receiver reads** — one function, because
+/// two doors deliver it and a session that could tell which door the words came through would be
+/// reading the machinery instead of the message.
 ///
-/// The two doors are the two states a child can be in: a **running** turn takes it at its next
-/// round boundary ([`HubSteering`]'s `Message` arm, as a `SteeringMessage::normal`), and a child
-/// **between turns** has a turn started for it (`serve_child`'s [`ChildCommand::Hear`]). Same
-/// text, same `Speaker::Agent` row, same trail line.
+/// The two doors are the two states a session can be in: a **running** turn takes it at its next
+/// round boundary ([`HubSteering`]'s `Message` arm, as a `SteeringMessage`), and a session
+/// **between turns** has a turn started for it (`serve_child`'s [`ChildCommand::Hear`], or the
+/// worker's own `Message` arm for a session it holds). Same text, same `Speaker::Agent` row, same
+/// trail line.
 ///
-/// **The parent is NAMED, and nothing else can name it.** `AuthorisationTrail::say` takes a
-/// speaker KIND, not an identity, so *which* parent spoke survives nowhere else — and the
-/// operator's whole point was addressability: a correction from a named parent is actionable in
-/// a way the same sentence from nowhere is not.
-pub fn parent_message_text(from: &str, text: &str) -> String {
-    format!("message from your parent session `{from}`: {text}")
+/// # The sender is named, and the sentence says which way the edge runs
+///
+/// **The sender is NAMED, and nothing else can name it.** `AuthorisationTrail::say` takes a
+/// speaker KIND, not an identity, so *which* session spoke survives nowhere else — and the
+/// operator's whole point was addressability: a message from a named session is actionable in a
+/// way the same sentence from nowhere is not.
+///
+/// **`mine` is the RECEIVER's own `parent_session_id`**, and it is the one fact that makes the
+/// sentence true in both directions. Until 2026-10 the edge ran one way — a parent correcting a
+/// child — so the sentence was written for that case and said *"your parent session"* of
+/// whatever id it was handed. The upward edge (`task_message {"task": "parent"}`) makes the
+/// same door carry a child's words to its parent, and there the old wording would have said
+/// *"message from your parent session `s-…-sub-…`"* about the reader's own CHILD: a false
+/// sentence about the tree, in the one place a reader is told who is speaking. So the relation
+/// is claimed only when it holds, and a message from anywhere else — a child, a peer, the
+/// session hosting a review — names its sender and claims nothing.
+pub fn message_from_a_session(from: &str, text: &str, mine: Option<&str>) -> String {
+    match mine {
+        Some(parent) if parent == from => {
+            format!("message from your parent session `{from}`: {text}")
+        }
+        _ => format!("message from session `{from}`: {text}"),
+    }
 }
 
 /// **What a child does with a command that reached its queue between turns.**
@@ -18829,7 +18967,7 @@ fn serve_child_with(
             // enqueue"*). The words are recorded as the parent's (`Speaker::Agent`), naming which
             // parent, so they can neither authorise an act nor be read as something the operator
             // typed; the mid-turn door (`HubSteering::try_next`) speaks the same text through
-            // [`parent_message_text`], so a child cannot tell which state it was in.
+            // [`message_from_a_session`], so a session cannot tell which state it was in.
             ChildCommand::Hear => {
                 let (from, text) = match &kind {
                     letibot_sessionlog::CommandKind::Message { from, text } => {
@@ -20726,6 +20864,23 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .iter()
             .map(|(h, _)| h.clone())
             .collect()
+    }
+
+    /// **The session that started this one, if any** — the upward edge of the tree
+    /// [`Self::children`] is the downward edge of, and the answer to
+    /// `task_message {"task": "parent"}`.
+    ///
+    /// One field, because the runner is built per session and `base` IS that session's config:
+    /// a child's runner carries `parent_session_id = Some(parent)`, a root's carries `None`. No
+    /// registry lookup and no store read — the tree's own record of the edge is the config the
+    /// child was opened with, which is also what the store's `session.parent_session_id` column
+    /// was written from.
+    ///
+    /// **`None` is not "unknown"**, it is *this session is the top of its tree*: a root has
+    /// nobody above it, and the tool refuses the handle by name there rather than sending a
+    /// message to itself.
+    fn parent(&self) -> Option<String> {
+        self.base.parent_session_id.clone()
     }
 
     /// **Every child a handle or a name may resolve to**: the tree's slots, with each one's name

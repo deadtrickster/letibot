@@ -761,12 +761,12 @@ mod tests {
     /// **The TUI's review-card fixtures are what the queue writes** — one per shape a review's
     /// outcome reaches a session or a hub in: the row parked for a person ([`parked`], four
     /// shapes), the refusal and the veto said to the branch's session as a parent's message
-    /// (`parent_message_text`, the words the session's row holds), the review handed to the
-    /// project, and the hub warnings the review queue raises. `review_card` in the TUI parses
-    /// these to draw each as one line — the operator, of the pasted wall of text: *"same story
-    /// about reviews - … one line + popup"*. A reworded notice fails here before it falls back
-    /// on a screen. Re-bless with `LETIBOT_BLESS_REVIEW_CARD=1`, and teach `review_card` the new
-    /// shape if it moved a part it keys on (the opening, the branch, the verdict's words).
+    /// ([`crate::harness::message_from_a_session`], the words the session's row holds), the review
+    /// handed to the project, and the hub warnings the review queue raises. `review_card` in the TUI
+    /// parses these to draw each as one line — the operator, of the pasted wall of text: *"same
+    /// story about reviews - … one line + popup"*. A reworded notice fails here before it falls
+    /// back on a screen. Re-bless with `LETIBOT_BLESS_REVIEW_CARD=1`, and teach `review_card` the
+    /// new shape if it moved a part it keys on (the opening, the branch, the verdict's words).
     #[test]
     fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
         use crate::sessions::gatekeeper;
@@ -776,7 +776,7 @@ mod tests {
         // `message from your parent session `s-gatekeeper-…`` — and one key is enough to pin it.
         let host = gatekeeper::session_for_fixture();
         let r = groupingsets();
-        let as_message = |text: String| crate::harness::parent_message_text(&host, &text);
+        let as_message = |text: String| crate::harness::message_from_a_session(&host, &text, None);
 
         let blocked = ReviewRow {
             state: ReviewState::Blocked,

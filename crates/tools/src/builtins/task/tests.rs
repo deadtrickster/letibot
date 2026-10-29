@@ -1660,3 +1660,130 @@ fn a_remote_placement_needs_a_host_the_operator_declared() {
     );
     assert!(empty.contains("needs a name"), "{empty}");
 }
+
+/// **`parent` is a HANDLE, not a name** — the reserved word a child answers its parent with.
+///
+/// Three facts, and each is a way this could be got wrong:
+///
+/// * a session that has a parent reaches it by the word, and what the runner is asked to say is
+///   addressed to the parent's ID — the model never carries a thirty-character id;
+/// * a session at the top of its tree is REFUSED by name, because there is nobody above it. The
+///   alternative — resolving `parent` to nothing and letting the refusal come from `send` — would
+///   say *"no session `parent` is live"*, which is a sentence about a session rather than about
+///   the tree;
+/// * **a child actually called `parent` does not shadow it.** The word is read before
+///   [`resolve_child`]'s handles and slugs, so a child whose slug is `parent` is not reachable by
+///   it: `parent` means the session that started this one, and nothing else.
+#[test]
+fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    /// A runner with one child whose SLUG is `parent`, and a parent of its own.
+    struct Named(Option<String>, std::sync::Mutex<Vec<(String, String)>>);
+
+    impl TaskRunner for Named {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            Ok("sub-1".into())
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn children(&self) -> Vec<ChildName> {
+            vec![ChildName {
+                handle: "sub-a-child-called-parent".into(),
+                slug: Some(PARENT_HANDLE.into()),
+                own: true,
+            }]
+        }
+        fn parent(&self) -> Option<String> {
+            self.0.clone()
+        }
+        fn send(&self, handle: &str, text: &str) -> Result<String, String> {
+            self.1
+                .lock()
+                .unwrap()
+                .push((handle.to_string(), text.to_string()));
+            Ok(format!("`{handle}` was told"))
+        }
+    }
+
+    let d = crate::backend::tempdir::TempDir::new();
+    let call = |runner: Arc<Named>, args: &str| {
+        let mut reg = Registry::new();
+        reg.register(Box::new(TaskMessageTool::new(runner.clone())))
+            .unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let mut sink = crate::NullToolSink;
+        rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c1".into(),
+                name: "task_message".into(),
+                arguments: args.into(),
+            },
+            &mut sink,
+        )
+    };
+
+    // A child of a session: the word resolves to the parent's id, not to the child named `parent`.
+    let child = Arc::new(Named(
+        Some("s-the-father".into()),
+        std::sync::Mutex::new(Vec::new()),
+    ));
+    let said = call(child.clone(), r#"{"task": "parent", "text": "it is done"}"#);
+    assert!(
+        matches!(said.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?} — {}",
+        said.outcome,
+        said.payload
+    );
+    assert_eq!(
+        child.1.lock().unwrap().as_slice(),
+        [("s-the-father".to_string(), "it is done".to_string())],
+        "`parent` addressed the parent's id, and the child called `parent` was not touched"
+    );
+
+    // A session at the top of its tree: refused, and the sentence is about the tree.
+    let root = Arc::new(Named(None, std::sync::Mutex::new(Vec::new())));
+    let refused = call(root.clone(), r#"{"task": "parent", "text": "hello"}"#);
+    match &refused.outcome {
+        // `Invocation::failed(reason, payload)` — the reason is the tool's one-line refusal and
+        // the payload is the sentence the model reads, so both are checked where they live.
+        letibot_transcript::ToolOutcome::Failed { reason } => assert!(
+            reason.contains("no parent to speak to"),
+            "the refusal names the tree: {reason}"
+        ),
+        other => panic!("a root was not refused: {other:?} — {}", refused.payload),
+    }
+    assert!(
+        refused.payload.contains("nothing started this one"),
+        "{}",
+        refused.payload
+    );
+    assert!(
+        root.1.lock().unwrap().is_empty(),
+        "nothing was sent from a session with no parent"
+    );
+
+    // And any other handle still goes through the ordinary resolution: the slug `parent` is
+    // reachable by its HANDLE, which is what a name that is reserved must not take away.
+    let by_handle = call(
+        child.clone(),
+        r#"{"task": "sub-a-child-called-parent", "text": "and you"}"#,
+    );
+    assert!(
+        matches!(by_handle.outcome, letibot_transcript::ToolOutcome::Ok),
+        "{:?} — {}",
+        by_handle.outcome,
+        by_handle.payload
+    );
+    assert_eq!(
+        child.1.lock().unwrap().last().cloned(),
+        Some((
+            "sub-a-child-called-parent".to_string(),
+            "and you".to_string()
+        ))
+    );
+}

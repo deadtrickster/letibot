@@ -69,6 +69,7 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::{CommandKind, DAEMON_SUBMITTER, Hub, QueuedCommand};
 use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_tokencore::Vocab;
+use letibot_tokencore::store::Store;
 use letibot_tools::NullToolSink;
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
@@ -371,6 +372,41 @@ fn warnings(hub: &Hub) -> Vec<(String, String)> {
         .collect()
 }
 
+/// **Every user row in a session's STORE**, as (speaker, text).
+///
+/// The other half of [`user_rows`], and the half the operator's own measurement read: the hub's
+/// retained log is this process's view, and the store is what a later reader — a resume, another
+/// daemon, a `transcript_item` query — sees.
+fn stored_user_rows(path: &Path, session: &str) -> Vec<(Speaker, String)> {
+    let store = Store::open(path).expect("the store opens");
+    let Some(transcript) = store
+        .current_transcript_id(session)
+        .expect("the transcript id")
+    else {
+        return Vec::new();
+    };
+    store
+        .load_transcript(&transcript)
+        .expect("the transcript loads")
+        .items
+        .iter()
+        .filter_map(|(item, _, _)| match item {
+            TranscriptItem::User { speaker, parts } => Some((
+                *speaker,
+                parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        UserPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Wait until `what` answers, or panic with the session's whole log — the log IS the
 /// diagnosis for a timing failure, and a bare timeout would hide it.
 fn wait_for(hub: &Hub, what: impl Fn(&Hub) -> Option<String>) -> String {
@@ -416,6 +452,14 @@ struct Inner {
     bodies: Vec<String>,
     /// How many requests may be answered. A request waits until this passes its index.
     released: usize,
+    /// **Which request is answered in halves and then dropped** — `None` for an ordinary stub.
+    /// The request's script is split so the second half never carries its terminating frame, and
+    /// the socket is closed without the chunked body's `0\r\n\r\n`: the client sees a generation
+    /// that started and then died, which is the state a message absorbed mid-generation is lost
+    /// from.
+    cut_at: Option<usize>,
+    /// Set by [`Stub::cut`]: the half-answered request may send its second half and go.
+    cutting: bool,
 }
 
 impl Stub {
@@ -428,10 +472,26 @@ impl Stub {
 
     /// The same, and nothing is answered until [`Stub::release`] says so.
     fn held(scripts: Vec<Vec<Frame>>, requests: usize) -> Stub {
+        Stub::with_a_cut(scripts, requests, None)
+    }
+
+    /// **One request is answered in halves and then dropped** — see [`Inner::cut_at`]. Everything
+    /// else is [`Stub::answering`], so the test only has to say *which* request dies and when.
+    fn cutting(scripts: Vec<Vec<Frame>>, requests: usize, cut_at: usize) -> Stub {
+        let stub = Stub::with_a_cut(scripts, requests, Some(cut_at));
+        stub.release(requests);
+        stub
+    }
+
+    /// The body both constructors share: `cut_at` decides whether one request is dropped.
+    fn with_a_cut(scripts: Vec<Vec<Frame>>, requests: usize, cut_at: Option<usize>) -> Stub {
         let listener = TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
         let addr = listener.local_addr().unwrap();
         let shared = Arc::new(Gate {
-            inner: Mutex::new(Inner::default()),
+            inner: Mutex::new(Inner {
+                cut_at,
+                ..Inner::default()
+            }),
             cv: Condvar::new(),
         });
         let mine = shared.clone();
@@ -453,15 +513,21 @@ impl Stub {
                     let _ = write_props(stream);
                     continue;
                 }
-                {
+                let cut = {
                     let mut g = mine.inner.lock().unwrap();
                     g.bodies.push(body);
                     mine.cv.notify_all();
                     while g.released <= i {
                         g = mine.cv.wait(g).unwrap();
                     }
+                    g.cut_at == Some(i)
+                };
+                let frames = &scripts[i % scripts.len()];
+                if cut {
+                    let _ = write_frames_then_drop(stream, frames, &mine);
+                } else {
+                    let _ = write_frames(stream, frames);
                 }
-                let _ = write_frames(stream, &scripts[i % scripts.len()]);
                 i += 1;
             }
         });
@@ -502,6 +568,15 @@ impl Stub {
         self.shared.cv.notify_all();
     }
 
+    /// **Let the half-answered request send its second half and drop the connection.** Called
+    /// after the message has been put on the recipient's queue, so the token that carries the
+    /// second half is the one whose steering poll absorbs it.
+    fn cut(&self) {
+        let mut g = self.shared.inner.lock().unwrap();
+        g.cutting = true;
+        self.shared.cv.notify_all();
+    }
+
     /// **What the model was handed for request `n`** — the token ids, detokenized with the
     /// vocabulary the child tokenized with.
     fn prompt_of(&self, n: usize, vocab: &Vocab) -> String {
@@ -523,12 +598,59 @@ impl Stub {
 impl Drop for Stub {
     fn drop(&mut self) {
         // Release anything still held, then detach: a test that failed early must not leave
-        // a thread parked on the gate for the rest of the suite.
+        // a thread parked on the gate for the rest of the suite. The cut gate is opened for
+        // the same reason — a thread parked waiting for a half-answer would never see the
+        // listener drop.
+        self.cut();
         self.release(usize::MAX);
         if let Some(h) = self.handle.take() {
             drop(h);
         }
     }
+}
+
+/// **Answer with the first frame, wait, then send the rest and drop the socket** — the shape of a
+/// generation that dies mid-stream.
+///
+/// Two details make it the state the test needs rather than merely a failure:
+///
+/// * **the second half carries no `Final` frame**, so the client never sees the generation end —
+///   it sees the connection go. A script that reached its `Final` would be a round that SUCCEEDED,
+///   and the message would be appended at the step boundary like any other;
+/// * **the body is written without the chunked terminator**, so the reader's end is an error and
+///   not an empty success.
+fn write_frames_then_drop(
+    mut stream: TcpStream,
+    frames: &[Frame],
+    gate: &Arc<Gate>,
+) -> std::io::Result<()> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+          Transfer-Encoding: chunked\r\n\r\n",
+    )?;
+    // The first frame alone: enough for the client to be inside the stream, not enough to be a
+    // generation. `sse_body` frames each event and appends `0\r\n\r\n`; that terminator is the
+    // one thing this must not send, so it is stripped from both halves.
+    let first = canned::sse_body(&frames[..1]);
+    stream.write_all(&first[..first.len() - 5])?;
+    stream.flush()?;
+    // The test speaks now, and then says go.
+    {
+        let mut g = gate.inner.lock().unwrap();
+        while !g.cutting {
+            g = gate.cv.wait(g).unwrap();
+        }
+    }
+    // Everything but the last two frames — the end-of-turn token and the `Final` — so the client
+    // absorbs what is here, sees a token boundary to poll its steering queue at, and then loses
+    // the connection.
+    let rest = &frames[1..frames.len().saturating_sub(2).max(1)];
+    let body = canned::sse_body(rest);
+    stream.write_all(&body[..body.len() - 5])?;
+    stream.flush()?;
+    // Dropping the socket is the failure: a chunked body that never ends.
+    drop(stream);
+    Ok(())
 }
 
 /// Drain one request — headers plus the body `Content-Length` names — so the client's write
@@ -933,6 +1055,23 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
     // would have needed a third request, which this stub cannot serve.
     let rows = heard(&child, MESSAGE);
     assert_eq!(rows.len(), 1, "heard once, in the turn: {rows:#?}");
+    // EXPERIMENT: the exact words, and the store.
+    let said =
+        letibot_harnessd::harness::message_from_a_session(parent_id, MESSAGE, Some(parent_id));
+    assert_eq!(
+        rows[0], said,
+        "the row is `message_from_a_session`'s own bytes, not a paraphrase of them"
+    );
+    let stored = stored_user_rows(&path, &handle);
+    eprintln!("--- stored user rows of {handle} ---\n{stored:#?}");
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|(s, t)| *s == Speaker::Agent && t.contains(MESSAGE))
+            .count(),
+        1,
+        "the child's STORE holds the parent's words once: {stored:#?}"
+    );
     assert!(
         warnings(&child).is_empty(),
         "no `message_idle` and no failed turn: {:#?}",
@@ -1230,8 +1369,14 @@ fn the_workers_arm_gives_a_childs_message_back_to_its_reader() {
 /// `Sessions` rather than a `Parent`, so they need their own guard: without it an assertion
 /// that fired early would leave a child thread inside libllama when `exit()` runs the ELF
 /// finalizers, which is the SIGSEGV this whole file exists for.
+///
+/// **The sessions live in a `RefCell`**, because the guard has to hold them for the whole test
+/// and one test also has to MUTATE them (`Sessions::dispatch` is `&mut self`, and the daemon's
+/// own door is what delivers a message to a session it holds). A borrow the guard took for the
+/// test's length would make that door unreachable; the cell keeps one owner and hands out the
+/// borrow each caller needs for exactly as long as it needs it.
 struct DrainOnDrop<'s, 'p> {
-    sessions: &'s Sessions<'p>,
+    sessions: &'s std::cell::RefCell<Sessions<'p>>,
     registry: &'s Registry,
     stub: &'s Stub,
 }
@@ -1242,7 +1387,7 @@ impl Drop for DrainOnDrop<'_, '_> {
         self.registry.close();
         self.stub.release(usize::MAX);
         let gave_up = matches!(
-            self.sessions.drain_subagents(PATIENCE),
+            self.sessions.borrow().drain_subagents(PATIENCE),
             SubagentExit::GaveUp { .. }
         );
         if gave_up && !std::thread::panicking() {
@@ -1287,8 +1432,9 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     registry
         .create(id, "the root", wiring(&cfg))
         .expect("the session is created");
-    let sessions =
-        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let sessions = std::cell::RefCell::new(
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens"),
+    );
     let _drained = DrainOnDrop {
         sessions: &sessions,
         registry: &registry,
@@ -1302,6 +1448,7 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
         arguments: serde_json::json!({"prompt": "hold a turn open"}).to_string(),
     };
     let handle = match sessions
+        .borrow()
         .harness_of(id)
         .expect("the root is open")
         .runtime_handle()
@@ -1321,10 +1468,10 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
 
     let bound = Duration::from_millis(300);
     let began = Instant::now();
-    let said = sessions
-        .drain_subagents(bound)
-        .sentence()
-        .expect("a child inside one model call cannot be waited for, and the caller must be told");
+    let said =
+        sessions.borrow().drain_subagents(bound).sentence().expect(
+            "a child inside one model call cannot be waited for, and the caller must be told",
+        );
     assert!(
         said.contains(id),
         "the session that could not be waited for: {said}"
@@ -1348,7 +1495,7 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     // read as a give-up.
     stub.release(usize::MAX);
     let began = Instant::now();
-    let done = sessions.drain_subagents(PATIENCE);
+    let done = sessions.borrow().drain_subagents(PATIENCE);
     assert!(
         matches!(done, SubagentExit::Waited { .. }),
         "a child that can leave is a clean wait, not a give-up: {done:?}"
@@ -1384,14 +1531,18 @@ fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
     registry
         .create(id, "the root", wiring(&cfg))
         .expect("the session is created");
-    let sessions =
-        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let sessions = std::cell::RefCell::new(
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens"),
+    );
     registry.close();
 
     // The bound is the daemon's own number, so this measures the call the daemon makes.
     let began = Instant::now();
     assert_eq!(
-        sessions.drain_subagents(Duration::from_secs(5)).sentence(),
+        sessions
+            .borrow()
+            .drain_subagents(Duration::from_secs(5))
+            .sentence(),
         None,
         "a session with no children is a clean exit, not a give-up"
     );
@@ -1399,5 +1550,313 @@ fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
         began.elapsed() < Duration::from_secs(1),
         "an empty tree cost {:?} of the exit's grace, which is a hang wearing a bound",
         began.elapsed()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Chat: the other direction, and the turn that ended before it could read
+// ---------------------------------------------------------------------------
+
+/// What the child says back, and the two messages the parent sends after the task — different
+/// sentences so a test can say WHICH message a row came from.
+const FROM_THE_CHILD: &str = "the parser half is done; the emitter is next";
+const FIRST: &str = "start on the emitter now";
+const AND_THEN: &str = "and report when it is done";
+
+/// **The child's own `task_message` call**, in the Qwen dialect's markup — two parameters, as
+/// `question_row.rs` and `session_channel.rs` spell their multi-argument calls.
+fn task_message_call(to: &str, text: &str) -> String {
+    format!(
+        "\n<function=task_message>\n<parameter=task>\n{to}\n</parameter>\n\
+         <parameter=text>\n{text}\n</parameter>\n</function>\n"
+    )
+}
+
+/// **A child can answer the session that started it, by the reserved handle `parent`.**
+///
+/// The operator's ask — *"i definitely would want parents and children to be able to chat"* — and
+/// the half that did not exist. `task_message` has always taken any live session's id, so the door
+/// was there; what a child did not have was the ADDRESS. `Config::parent_session_id` is on its row
+/// in the store and in no disclosure, so a model that wanted to answer its parent had to be handed
+/// a thirty-character id by the operator or guess it. `PARENT_HANDLE` is that id's replacement,
+/// resolved by the runner that owns the tree.
+///
+/// What is proved here is the whole chain and nothing less: a REAL child (spawned through its
+/// parent's own `task` runtime, on its own thread, its own hub), a REAL model turn that calls
+/// `task_message {"task": "parent"}`, the message arriving on the PARENT's queue as a
+/// `CommandKind::Message` whose `from` is the child, the daemon's own dispatch arm delivering it
+/// (`Sessions::dispatch`, which is the worker's door), and the parent's transcript gaining one
+/// `Speaker::Agent` row with the child's words — the same shape a parent's message to a child has,
+/// so a reader can tell the two apart only by the name inside the words.
+#[test]
+fn a_child_answers_its_parent_by_the_reserved_handle() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-child-answers");
+    let path = dir.path().join("sessions.db");
+    let parent_id = "s-the-father";
+
+    let parts = parts_for(&config(parent_id, Endpoint::new("127.0.0.1", 1), &path));
+    // The child's two rounds (the call, then its answer), and then the parent's turn when the
+    // message is dispatched to it. In that order, because the stub serves its scripts in order.
+    let child_calls = a_tool_call_turn(
+        &parts.vocab,
+        &task_message_call(letibot_tools::builtins::task::PARENT_HANDLE, FROM_THE_CHILD),
+        30,
+    );
+    let child_answers = a_plain_answer_turn(&parts.vocab, "sent", "told them", 30);
+    let parent_hears = a_plain_answer_turn(&parts.vocab, "hearing", "good", 30);
+    let stub = Arc::new(Stub::answering(
+        vec![child_calls, child_answers, parent_hears],
+        3,
+    ));
+
+    let cfg = config(parent_id, stub.endpoint.clone(), &path);
+    let registry = Registry::new();
+    registry
+        .create(parent_id, "the father", wiring(&cfg))
+        .expect("the session is created");
+    let sessions = std::cell::RefCell::new(
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens"),
+    );
+    let _drained = DrainOnDrop {
+        sessions: &sessions,
+        registry: &registry,
+        stub: &stub,
+    };
+    let parent_hub = registry.get(parent_id).expect("the parent's hub");
+
+    // **Through the parent's own runtime**, which is the production door a turn uses.
+    let call = ToolCall {
+        id: "call_task".into(),
+        name: "task".into(),
+        arguments: serde_json::json!({"prompt": "do the parser half"}).to_string(),
+    };
+    let child = match sessions
+        .borrow()
+        .harness_of(parent_id)
+        .expect("the parent is open")
+        .runtime_handle()
+        .invoke("t1", &call, &mut NullToolSink)
+        .outcome
+    {
+        letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle,
+        other => panic!("`task` did not start a child: {other:?}"),
+    };
+
+    // **The child's words reach the parent's queue** — and the sender is the child, which is the
+    // half that fails before the reserved handle existed: `task_message {"task": "parent"}`
+    // answered *"no session `parent` is live in this daemon"*.
+    let began = Instant::now();
+    let cmd: QueuedCommand = loop {
+        if let Some(c) = parent_hub.try_command() {
+            break c;
+        }
+        if began.elapsed() > PATIENCE {
+            panic!(
+                "the child's message never reached the parent's queue — the child's own log: \
+                 {:#?}",
+                registry.get(&child).map(|h| h
+                    .retained()
+                    .iter()
+                    .map(|e| e.event.clone())
+                    .collect::<Vec<_>>())
+            );
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    match &cmd.kind {
+        CommandKind::Message { from, text } => {
+            assert_eq!(from, &child, "the sender is the child, by its own id");
+            assert_eq!(text, FROM_THE_CHILD, "and the words are the child's own");
+        }
+        other => panic!("the child sent something other than a message: {other:?}"),
+    }
+
+    // **The daemon's own arm** — the worker's `Message` door, exactly as the loop calls it.
+    match sessions.borrow_mut().dispatch(parent_id, &cmd) {
+        Outcome::Replied(_) => {}
+        Outcome::Failed(why) => panic!("the turn the child's message makes failed: {why}"),
+        // `Outcome` has no `Debug` (it carries a `Reply`), so every other arm is named.
+        Outcome::HandedOn => panic!("the worker handed the child's message to another reader"),
+        Outcome::Ignored => panic!("the worker ignored the child's message"),
+        Outcome::Compacted(_) => panic!("the worker compacted instead of running the message"),
+    }
+
+    // **The parent's transcript holds it once, as an agent's row naming the child.**
+    let rows = heard(&parent_hub, FROM_THE_CHILD);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the parent heard the child exactly once: {rows:#?}"
+    );
+    let said = letibot_harnessd::harness::message_from_a_session(&child, FROM_THE_CHILD, None);
+    assert_eq!(
+        rows[0], said,
+        "the row is the shared sentence's own bytes — `message from session `<child>`` — and NOT \
+         `your parent session`, which would be a false sentence about the tree"
+    );
+    assert!(
+        !user_rows(&parent_hub)
+            .iter()
+            .any(|(s, t)| *s == Speaker::Operator && t.contains(FROM_THE_CHILD)),
+        "the child's words must not be recorded as something the operator typed"
+    );
+    // **And the store**, which is what a later reader — a resume, a head tomorrow — sees.
+    let stored = stored_user_rows(&path, parent_id);
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|(s, t)| *s == Speaker::Agent && t.contains(FROM_THE_CHILD))
+            .count(),
+        1,
+        "the parent's store holds the child's words once: {stored:#?}"
+    );
+}
+
+/// **A message the turn ended before reading is written into the transcript anyway** — the window
+/// that made a parent's words invisible.
+///
+/// The ordinary path needs nothing from `run_rounds`: the engine appends the steering item at a
+/// step boundary, through the same writer every row goes through. This is the other path, and it
+/// is the one the operator's report fits: the message is absorbed at a TOKEN boundary inside the
+/// generation, and the generation then fails, so no step boundary arrives and
+/// `SteeringSource::give_back` hands the words to the turn's carried set instead. Before this,
+/// they lived only in memory until the next turn — and a child whose next turn never came (parked,
+/// or its daemon stopped) left no row at all, which is *"of the child's 278 transcript rows, not
+/// one contains the parent's words"*.
+///
+/// The model here answers the first round, starts the second and then **drops the connection**,
+/// which is the cheapest way to reach that state honestly: the first chunk is a real delta (so the
+/// child is in the stream), the parent speaks, the second chunk makes the child poll its steering
+/// queue, and then the socket closes.
+///
+/// **The doomed turn is the child's SECOND**, and that is not a detail: a child whose FIRST turn
+/// fails leaves its thread ([`HarnessTaskRunner::run_to_completion`] returns) and nothing after it
+/// could be observed. A turn a parent's message started runs in `serve_child`'s loop, which goes on
+/// after a failure — which is what lets the last third of this test ask whether the next turn says
+/// the same words again.
+#[test]
+fn a_message_the_turn_never_read_is_a_row_anyway() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-message-carried");
+    let path = dir.path().join("sessions.db");
+    let parent_id = "s-parent-whose-turn-died";
+
+    std::fs::write(dir.path().join("note.txt"), "the plan, in one line\n")
+        .expect("the file to read is written");
+    let target = format!("{}/note.txt", dir.relative());
+
+    let parts = parts_for(&config(parent_id, Endpoint::new("127.0.0.1", 1), &path));
+    // Request by request, because the middle one is the one that dies:
+    //
+    //   0, 1  the task's own turn: a tool call, then its answer — the child then parks.
+    //   2, 3  the turn FIRST starts: a tool call, then the round that is half-answered and dropped.
+    //   4     the turn AND_THEN starts, which is what proves the carried message is not written
+    //         a second time.
+    let call = a_tool_call_turn(&parts.vocab, &read_call(&target), 30);
+    let done = a_plain_answer_turn(&parts.vocab, "planning", TO_THE_TASK, 30);
+    let call_again = a_tool_call_turn(&parts.vocab, &read_call(&target), 30);
+    let doomed = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PARENT, 30);
+    let after = a_plain_answer_turn(&parts.vocab, "hearing", TO_THE_PARENT, 30);
+    let stub = Arc::new(Stub::cutting(
+        vec![call, done, call_again, doomed, after],
+        5,
+        3,
+    ));
+
+    let cfg = config(parent_id, stub.endpoint.clone(), &path);
+    let parent = a_parent(parent_id, &parts, &cfg, stub.clone());
+    let handle = parent.spawn("read the note, then answer");
+    let child = parent.hub_of(&handle);
+
+    // The task's own turn, and the child parked after it.
+    parent.wait_until_parked(&handle);
+    assert!(
+        !child.status().running,
+        "the fixture must stand in the state this test is about"
+    );
+
+    // **The turn that will die.** It is started by a message like any other turn, and the stub
+    // answers its first round with a tool call so the turn has a boundary at all.
+    parent
+        .message(&handle, FIRST)
+        .expect("a message to a between-turns child starts a turn");
+    assert!(
+        stub.wait_for_requests(4),
+        "the child never reached the round that is meant to die"
+    );
+    // **The child is inside the generation now** — the first chunk is on the wire and it is
+    // waiting for the rest. This is the window a message can be absorbed in and lost from.
+    let said = parent
+        .message(&handle, MESSAGE)
+        .expect("a message to a running child is accepted");
+    assert!(
+        said.contains("turn is running") && said.contains("round boundary"),
+        "the answer must say this was the RUNNING delivery: {said}"
+    );
+    // One more chunk, so the child polls its queue and takes the message; then the socket closes.
+    stub.cut();
+
+    // **The row exists**, with the parent's own words, as the agent's — and it is the injection's
+    // item, not a copy of it: one `User` row with one `Text` part.
+    let found = wait_for(&child, |hub| heard(hub, MESSAGE).first().cloned());
+    assert!(
+        found.contains(&format!("message from your parent session `{parent_id}`")),
+        "the parent is named in the row the child holds: {found}"
+    );
+    assert_eq!(
+        heard(&child, MESSAGE).len(),
+        1,
+        "one row, not two: {:#?}",
+        heard(&child, MESSAGE)
+    );
+    // **Which door wrote it, said on the log** — `message_carried` is the sentence
+    // `keep_the_words_it_never_read` publishes, and nothing else does. Without this the assertions
+    // above would also pass on a build where the engine's step boundary had appended the item, so
+    // they would not be testing the window at all.
+    assert!(
+        warnings(&child)
+            .iter()
+            .any(|(code, detail)| code == "message_carried" && detail.contains(MESSAGE)),
+        "the row was written by the carried-set drain, not by a step boundary: {:#?}",
+        warnings(&child)
+    );
+    // **And it is in the store**, which is what a resume replays — so a later reader sees the
+    // parent spoke, and sees it once.
+    let stored = stored_user_rows(&path, &handle);
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|(s, t)| *s == Speaker::Agent && t.contains(MESSAGE))
+            .count(),
+        1,
+        "the child's store holds the parent's words once: {stored:#?}"
+    );
+
+    // **And the next turn does not say it again.** The carried set is emptied by the append, so
+    // the greedy poll of the turn that follows cannot find it — the one way this row could have
+    // been written twice.
+    parent
+        .message(&handle, AND_THEN)
+        .expect("a second message starts a turn of its own");
+    let answered = wait_for(&child, |hub| {
+        answers(hub).into_iter().find(|a| a.contains(TO_THE_PARENT))
+    });
+    assert!(answered.contains(TO_THE_PARENT), "{answered}");
+    assert_eq!(
+        heard(&child, MESSAGE).len(),
+        1,
+        "the message the failed turn carried is not written a second time: {:#?}",
+        heard(&child, MESSAGE)
+    );
+    assert_eq!(
+        heard(&child, AND_THEN).len(),
+        1,
+        "and the second message is one row: {:#?}",
+        heard(&child, AND_THEN)
     );
 }

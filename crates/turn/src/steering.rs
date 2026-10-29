@@ -50,6 +50,20 @@ pub struct SteeringMessage {
     /// KiB]`), and the bytes ride beside them. A `SteeringMessage` with none is byte-for-byte
     /// the message it always was — one `Text` part and no envelope.
     pub extra: Vec<UserPart>,
+    /// **The session that said it, when it was another session** — a parent's correction to a
+    /// child, or any peer's message (`CommandKind::Message`). `None` for everything else: the
+    /// operator's own words, the harness's injections, a fired monitor.
+    ///
+    /// It is here for ONE reader, and that reader is not the engine: the words already name the
+    /// sender ([`crate::steering::SteeringMessage::to_item`] puts them in the row and
+    /// `parent_message_text` in `harnessd` writes them), so the model never needs this. What
+    /// needs it is the session AFTER the turn, in `Harness::run_rounds`: a message a round took
+    /// out of the queue and then handed back is a message the turn did not read, and a
+    /// session's words must be in the transcript whatever the turn came to. A harness notice
+    /// handed back is re-offered by its own source and must not be written twice; a session's
+    /// message has no such source, so it is told apart HERE — at the one moment the two are
+    /// still distinguishable, which is before the item is an ordinary `User` row.
+    pub from_session: Option<String>,
 }
 
 impl SteeringMessage {
@@ -59,6 +73,24 @@ impl SteeringMessage {
             urgent: false,
             from_operator: false,
             extra: Vec::new(),
+            from_session: None,
+        }
+    }
+
+    /// **Another session's words** — a parent's correction to a child, a peer's message. See
+    /// [`SteeringMessage::from_session`] for why the sender is carried rather than re-derived
+    /// from the text.
+    ///
+    /// Not the operator's, deliberately: an agent's utterance can neither authorise the act it
+    /// races nor be taken back, which is the whole of the difference between this and
+    /// [`SteeringMessage::operator`].
+    pub fn from_a_session(text: impl Into<String>, from: impl Into<String>) -> Self {
+        SteeringMessage {
+            text: text.into(),
+            urgent: false,
+            from_operator: false,
+            extra: Vec::new(),
+            from_session: Some(from.into()),
         }
     }
 
@@ -69,6 +101,7 @@ impl SteeringMessage {
             urgent: false,
             from_operator: true,
             extra: Vec::new(),
+            from_session: None,
         }
     }
 
@@ -80,6 +113,7 @@ impl SteeringMessage {
             urgent: false,
             from_operator: true,
             extra,
+            from_session: None,
         }
     }
 
@@ -89,6 +123,7 @@ impl SteeringMessage {
             urgent: true,
             from_operator: false,
             extra: Vec::new(),
+            from_session: None,
         }
     }
 

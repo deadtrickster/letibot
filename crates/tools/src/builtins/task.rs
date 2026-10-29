@@ -909,6 +909,25 @@ pub trait TaskRunner: Send + Sync {
             .and_then(|c| c.slug)
     }
 
+    /// **The session that started this one** — the address a child speaks to its parent by,
+    /// under the reserved handle [`PARENT_HANDLE`].
+    ///
+    /// The upward edge of the same tree [`Self::children`] is the downward one of, and it was
+    /// missing for a plain reason: a child holds the delegation trio, and `task_message` takes
+    /// **any live session's id**, so the channel was there — but nothing handed the child the
+    /// one id it cannot guess. `Config::parent_session_id` is on the session's own row and in no
+    /// disclosure, so a model that wanted to answer its parent had to be told the id by the
+    /// operator, or guess.
+    ///
+    /// **Why an id here rather than a name in the prompt.** The handle is resolved at the
+    /// runner, which is the half that owns the tree, so the child never carries an id that a
+    /// resume could stale and the model never has to copy a 30-character string. `None` is the
+    /// honest answer for a session at the top of its tree, and [`TaskMessageTool`] refuses the
+    /// handle by name there rather than inventing an addressee.
+    fn parent(&self) -> Option<String> {
+        None
+    }
+
     /// `slug · handle` for one child, or the handle — [`subagent_label`] over [`Self::slug_of`].
     fn label_of(&self, handle: &str) -> String {
         subagent_label(self.slug_of(handle).as_deref(), handle)
@@ -992,6 +1011,10 @@ pub trait TaskRunner: Send + Sync {
     /// are not doing up"* — so one session sending another session a message is the ordinary
     /// case, and the refusal is for a session that does not exist rather than for one that is
     /// not this session's child.
+    ///
+    /// **And one handle is not a session's id at all**: `parent`, resolved through [`Self::parent`]
+    /// before any child is looked up, so a child can answer the session that started it without
+    /// being told a 30-character id. See [`PARENT_HANDLE`].
     fn send(&self, handle: &str, _text: &str) -> Result<String, String> {
         Err(format!(
             "this session's runner cannot message `{handle}`: a subagent is reached through \
@@ -1986,7 +2009,51 @@ fn running_said(label: &str, status: &TaskStatus) -> String {
     format!("`{label}` is {}", doing_word(status))
 }
 
-/// `task_message` — say something to a session, running or not.
+/// **The one handle a session may address its parent by** — `parent`.
+///
+/// The operator's ask was *"i definitely would want parents and children to be able to chat"*,
+/// and the downward half already worked: a parent holds the handle `task` returned. The upward
+/// half did not, and the missing piece was not a door — `task_message` takes **any live
+/// session's id**, and a child is a session like any other — it was the ADDRESS. A child is told
+/// nothing about the session that started it: `Config::parent_session_id` is on its row in the
+/// store and in no disclosure, so a model that wanted to answer its parent had to be handed the
+/// id by the operator or guess it.
+///
+/// **Reserved, not resolved as a name.** It is read before [`resolve_child`] — before slugs,
+/// before handles — so a session whose id or slug is literally `parent` can never be reached by
+/// it: the word means one thing, and a model that says `parent` is answered by the tree rather
+/// than by whichever child happened to take that name. That is why this is a constant and not a
+/// convention.
+///
+/// **What it is not.** Not a widening of `task_message`'s reach (the door already took any live
+/// session) and not an authority: a child's message is recorded as the child's, so it can
+/// neither authorise an act on the parent nor be read as the operator's words. The parent sees it
+/// in its transcript as an agent's row naming the child, exactly as the child sees its parent's.
+pub const PARENT_HANDLE: &str = "parent";
+
+/// **The session a `task`-shaped handle names**, with [`PARENT_HANDLE`] answered first.
+///
+/// The order is the whole of the rule: `parent` is reserved, so it is answered by
+/// [`TaskRunner::parent`] and by nothing else, and only a handle that is not that word goes on to
+/// [`resolve_child`]'s handles-and-slugs resolution.
+fn addressed(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
+    if asked.trim() != PARENT_HANDLE {
+        return resolve_child(runner, asked);
+    }
+    match runner.parent() {
+        Some(id) => Ok(id),
+        None => Err(Invocation::failed(
+            "this session has no parent to speak to",
+            format!(
+                "`{PARENT_HANDLE}` is the session that started this one, and nothing started \
+                 this one: a session at the top of its tree is addressed by its own id. Nothing \
+                 was sent."
+            ),
+        )),
+    }
+}
+
+/// **`task_message` — say something to a session, running or not.**
 ///
 /// The third thing a parent does to work it handed off: `task` starts a child,
 /// `task_result` reads it, `job_kill` stops it, and this **steers** it. Sibling by shape and
@@ -1999,6 +2066,13 @@ fn running_said(label: &str, status: &TaskStatus) -> String {
 /// a message, laterally, and the handle may name **any live session**: a subagent this one
 /// started, or a peer (the session a review is hosted by, the session that queued the work).
 /// That is the same door and the same act; only the wording of the refusal was child-shaped.
+///
+/// **Both directions are the same act.** A parent addresses a child by the handle `task`
+/// returned; a child addresses the session that started it by [`PARENT_HANDLE`], which is
+/// resolved through [`TaskRunner::parent`] and never through a name lookup. The recipient's
+/// transcript gains an agent's row naming the sender either way, so a reader can tell *down*
+/// from *up* only by the name in the words — which is the shape the operator asked for:
+/// *"normal messages, like mine but attributed to agents and rendered slightly differently"*.
 pub struct TaskMessageTool {
     runner: Arc<dyn TaskRunner>,
 }
@@ -2014,16 +2088,16 @@ impl Tool for TaskMessageTool {
         ToolSchema::new(
             "task_message",
             "Say something to a session — a live correction. Give \
-             `task` (the handle `task` returned, or the id of any live session) and `text` \
-             (what to say). It is not a second prompt: the session hears it as your message \
-             and carries on. A session whose turn is running hears it at its next round \
-             boundary; a session that has answered and is waiting is woken and runs a turn \
-             for it. Refused by name if no session of that id is live. Read a subagent with \
-             `task_result`; stop one with `job_kill`.",
+             `task` (the handle `task` returned, the id of any live session, or `parent` for the \
+             session that started this one) and `text` (what to say). It is not a second \
+             prompt: the session hears it as your message and carries on. A session whose turn \
+             is running hears it at its next round boundary; a session that has answered and is \
+             waiting is woken and runs a turn for it. Refused by name if no session of that id \
+             is live. Read a subagent with `task_result`; stop one with `job_kill`.",
             json!({
                 "type": "object",
                 "properties": {
-                    "task": {"type": "string", "description": "The handle `task` returned (or the child's slug), or the id of a live session to address."},
+                    "task": {"type": "string", "description": "The handle `task` returned (or the child's slug), the id of a live session to address, or `parent` — the session that started this one."},
                     "text": {"type": "string", "description": "What to say to the session. It keeps working; this steers what it does next."}
                 },
                 "required": ["task", "text"]
@@ -2055,7 +2129,7 @@ impl Tool for TaskMessageTool {
                 "an empty message is not a correction. Nothing was sent.",
             );
         }
-        let handle = match resolve_child(self.runner.as_ref(), handle) {
+        let handle = match addressed(self.runner.as_ref(), handle) {
             Ok(h) => h,
             Err(refused) => return refused,
         };

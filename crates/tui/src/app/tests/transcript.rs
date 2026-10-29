@@ -7827,3 +7827,80 @@ fn a_fork_drops_the_rows_of_the_transcript_it_replaced_and_no_others() {
         );
     }
 }
+
+/// **A parent's message is drawn as the session's own grey block, not as the operator's words.**
+///
+/// The operator's shape for the whole feature, verbatim: *"so normal messages, like mine but
+/// attributed to agents and rendered slightly differently — still grey session thing."* So the
+/// assertion is about the TREATMENT and not only about the text: a row the harness wrote is
+/// `RowClass::Other` (the session block every notice already uses), the operator's is
+/// `RowClass::Speech`, and the words are the same either way.
+///
+/// This is what makes the pair readable in both directions: a parent's message to a child and a
+/// child's answer to its parent are both `Speaker::Agent` rows, so a reader tells them apart by the
+/// name inside the words — never by two different renderings.
+#[test]
+fn a_parents_message_is_drawn_as_the_sessions_own_block() {
+    use crate::ui::transcript::item::RowClass;
+
+    let said = "message from your parent session `s-the-father`: stop and report what you have";
+    let as_a_session = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text { text: said.into() }],
+    };
+    let (class, lines) = item_rendered(false, as_a_session);
+    assert_eq!(
+        class,
+        RowClass::Other,
+        "a parent's message is the session's own row, drawn in the grey class"
+    );
+    let drawn = lines.join("\n");
+    // **The head already has a one-line card for this sentence** (`notice_card::parent_message`),
+    // which is the existing treatment of a parent's words: the sender's name, then the gist, and
+    // the whole sentence one click away. What matters here is that it is the AGENT arm that drew
+    // it — the grey session class — and that the sender is named in the line.
+    assert!(
+        drawn.contains("parent s-the-father"),
+        "the row names the session that said it: {drawn}"
+    );
+    assert!(
+        drawn.contains("stop and report what you have"),
+        "and carries the parent's words: {drawn}"
+    );
+    assert!(
+        !drawn.contains("message from your parent session"),
+        "the envelope is the card's own; the drawn line is the name and the words: {drawn}"
+    );
+
+    // **The same words as the operator's** are `Speech` — which is the whole of what makes the
+    // two rows tellable apart, so it is asserted rather than assumed.
+    let as_the_operator = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![UserPart::Text { text: said.into() }],
+    };
+    let (class, _) = item_rendered(false, as_the_operator);
+    assert_eq!(
+        class,
+        RowClass::Speech,
+        "the operator's own words are the only rows in the speech class"
+    );
+
+    // And the child's answer to its parent takes the same TREATMENT, because it is the same shape:
+    // an agent's row in the grey class. It has no card of its own (the head's one-line card is
+    // written for `message from your parent session`, which is a parent speaking), so it draws as
+    // the plain session block with the sender named in the words — which is exactly how a reader
+    // tells *down* from *up*: by the name, never by two different renderings.
+    let answer = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Agent,
+        parts: vec![UserPart::Text {
+            text: "message from session `s-the-father-sub-1793`: the parser half is done".into(),
+        }],
+    };
+    let (class, lines) = item_rendered(false, answer);
+    assert_eq!(class, RowClass::Other, "an answer is the same kind of row");
+    let drawn = lines.join("\n");
+    assert!(
+        drawn.contains("s-the-father-sub-1793") && drawn.contains("the parser half is done"),
+        "with the child's name and its words in it: {drawn}"
+    );
+}

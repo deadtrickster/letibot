@@ -84,7 +84,7 @@ pub(crate) fn session_notice(text: &str) -> Card {
     const READERS: &[fn(&str) -> Option<Card>] = &[
         length_cap,
         todo_check,
-        parent_message,
+        message_from_a_session,
         intent_check,
         context_check,
         merge_queue,
@@ -108,6 +108,10 @@ fn opens_notice(group: &str) -> bool {
     const OPENINGS: &[&str] = &[
         "Tool call ",
         "message from your parent session `",
+        // **And the other direction** — a child answering, a peer, the session hosting a review.
+        // Without it the row still drew (as the generic notice card) but its words were clipped
+        // and its sender was not named.
+        "message from session `",
         "The merge queue ",
         "The harness is watching what your tool calls return",
         "Your previous turn was stopped at the context wall",
@@ -256,17 +260,33 @@ fn todo_check(text: &str) -> Option<Card> {
     Some(card("todo", Role::Attention, parts, title))
 }
 
-/// `message from your parent session `ID`: …` — what a parent wrote to its child.
-fn parent_message(text: &str) -> Option<Card> {
-    let rest = text.strip_prefix("message from your parent session `")?;
+/// `message from your parent session `ID`: …` — a parent wrote to its child — and
+/// `message from session `ID`: …` — any other session did (a child answering its parent, a peer,
+/// the session hosting a review).
+///
+/// **Two openings, one card, because the two are one act.** The sender is named either way and the
+/// words are the same words; what differs is the relation, and the lead is where that is said: a
+/// parent is `parent <id>` (the tree's own word for the edge) and everything else is `agent <id>`
+/// (a session speaking in its own right). MEASURED 2026-10-29, the day the upward edge landed: a
+/// child's answer drew as `session · notice · message from session `s-…`…` — the generic card, its
+/// words clipped — while its parent's message drew as a one-line card. Both directions are chat, so
+/// both get the same line.
+fn message_from_a_session(text: &str) -> Option<Card> {
+    let (lead_word, rest) = text
+        .strip_prefix("message from your parent session `")
+        .map(|r| ("parent", r))
+        .or_else(|| {
+            text.strip_prefix("message from session `")
+                .map(|r| ("agent", r))
+        })?;
     let (id, said) = rest.split_once("`: ")?;
-    let lead = format!("parent {id}");
+    let lead = format!("{lead_word} {id}");
     let g = gist(said);
     Some(card(
         &lead,
         Role::Pending,
         vec![g],
-        format!("message from parent {id}"),
+        format!("message from {lead_word} {id}"),
     ))
 }
 

@@ -100,6 +100,9 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         subagents: None,
         held: Default::default(),
         todos: None,
+        // These fixtures are about deliveries, not about the tree: a session with no parent
+        // words a message `message from session `<id>`` — see `message_from_a_session`.
+        parent: None,
     }
 }
 

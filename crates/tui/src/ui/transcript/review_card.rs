@@ -218,12 +218,27 @@ fn warning_card(detail: &str) -> Option<Card> {
     warning_review(detail).map(|r| r.card())
 }
 
-/// **A parent's message, unwrapped** — `parent_message_text`'s `message from your parent
-/// session `X`: ` — the door a refusal and a veto reach the branch's session through.
+/// **A message between sessions, unwrapped** — the two openings `harnessd`'s
+/// `message_from_a_session` writes, `message from your parent session `X`: ` and
+/// `message from session `X`: ` — the door a refusal and a veto reach the branch's session
+/// through.
+///
+/// **Two openings because the sentence says which way the edge runs** (2026-10-29): the first is a
+/// parent speaking to its child, the second is any other session — a child answering, a peer, the
+/// session hosting a review, which is the one a refusal comes from. A card that knew only the first
+/// would draw every refusal with its envelope on.
 fn unwrap_message(text: &str) -> &str {
-    text.strip_prefix("message from your parent session `")
-        .and_then(|r| r.split_once("`: "))
-        .map_or(text, |(_, body)| body)
+    [
+        "message from your parent session `",
+        "message from session `",
+    ]
+    .into_iter()
+    .find_map(|open| {
+        text.strip_prefix(open)
+            .and_then(|r| r.split_once("`: "))
+            .map(|(_, body)| body)
+    })
+    .unwrap_or(text)
 }
 
 /// **A branch's name, up to its closing backtick** — `(name, the rest)`; `None` for an empty

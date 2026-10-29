@@ -425,6 +425,17 @@ pub const TABLE: &[(&str, Class)] = &[
     // operator's (install the helper, read why the probe refused, or accept the asks), and a
     // head that does not draw it leaves the operator guessing at a card printer.
     ("boundary_absent", Class::Failure),
+    // **A message between sessions that the turn did not read, and the two halves of what that
+    // leaves.** `message_carried` is the sibling of `steering_carried` for the one kind of
+    // steering that has no source to re-offer it: another session's words, which reach a
+    // running turn at a step boundary and — when the round fails after taking them — are
+    // written into the transcript instead of riding the next turn. A Failure for the same
+    // reason its sibling is: the model did not read them in the turn they were meant for.
+    // `message_not_stored` is the durable half going missing, `context_not_stored`'s shape: the
+    // words are on the session's log and not in its transcript, so a later reader — a resume,
+    // another daemon, a head that attaches tomorrow — will not find them.
+    ("message_carried", Class::Failure),
+    ("message_not_stored", Class::Failure),
     // **A file the operator chipped into a prompt was not there when it was sent** — protocol 50,
     // `harnessd::attachments`. A Failure and not a routine hiccup: the message went out, the
     // model read a sentence naming a file it was never given, and the answer is about something
@@ -1273,10 +1284,14 @@ mod the_register_census {
         //   · **164, not 163**: `boundary_absent` (Failure) — R98's macOS half: a session that
         //     asked for a boundary and got an unconfined shell, because the boundary is what D16
         //     admits a command inside of.
-        assert_eq!(TABLE.len(), 164, "the table's size");
+        //   · **166, not 164**: the parent/child chat's two — `message_carried` and
+        //     `message_not_stored` (Failures): another session's words that the turn did not
+        //     read (written into the transcript instead), and the same words failing to land in
+        //     the transcript at all.
+        assert_eq!(TABLE.len(), 166, "the table's size");
         assert_eq!(count(Class::Routine), 64);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 87);
+        assert_eq!(count(Class::Failure), 89);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

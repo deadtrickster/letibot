@@ -442,6 +442,18 @@ fn render_one(item: letibot_transcript::TranscriptItem) -> String {
 /// assertion over the text; with colour it emits its own, so the assertion narrows
 /// to the sequences it never writes.
 fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<String> {
+    item_rendered(colour, item).1
+}
+
+/// **The row's class and its lines** — [`item_rows`] with the class kept.
+///
+/// The class is the thing a reader sees as the treatment rather than as the text (the operator's
+/// words are `Speech`, a session's own are `Other`), so a test that asserts only the lines cannot
+/// tell a parent's message from a prompt that happened to say the same words.
+fn item_rendered(
+    colour: bool,
+    item: letibot_transcript::TranscriptItem,
+) -> (crate::ui::transcript::item::RowClass, Vec<String>) {
     use letibot_transcript::ToolEditExcerpt;
     let cfg = RenderConfig {
         width: 120,
@@ -498,7 +510,7 @@ fn item_rows(colour: bool, item: letibot_transcript::TranscriptItem) -> Vec<Stri
         payload_newest: None,
         replied_to: None,
     };
-    item_lines(&it, &ctx).1
+    item_lines(&it, &ctx)
 }
 
 fn item_kind_is_edit(i: &letibot_transcript::TranscriptItem) -> bool {
