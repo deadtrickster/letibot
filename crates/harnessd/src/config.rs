@@ -709,8 +709,10 @@ pub struct Config {
     /// **Where a review's own checkout is made** — `<temp>/letibot-review-clones` on the daemon
     /// (`Harness::serve_reviews`), and a fixture's own directory when it drives reviews.
     ///
-    /// One clone per review, `review-<row id>`, made by `mergequeue::review::start_reviewer` for
-    /// both placements; `mergequeue::review::sweep_clones` removes the ones no row is on any more.
+    /// One tree per ATTEMPT, `review-<row id>-<pid>-<n>`, made by
+    /// `mergequeue::git::clone_branch` for both placements and named per attempt so a re-seat of a
+    /// row can never touch the tree its previous reviewer is reading;
+    /// `mergequeue::review::sweep_clones` reclaims the ones whose row is no longer live.
     ///
     /// `None` — every fixture that does not serve reviews — is the daemon's own path, and the
     /// field exists for [`Config::landing_root`]'s reason exactly: a test that serves a review must

@@ -362,7 +362,8 @@ The operator's remedy is a `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) 
 /// this session's workspace, which for the review queue is the daemon's workspace and not always
 /// the repository (on the operator's box it is a folder of repositories, 72.8 GiB against a VM's
 /// 8 GiB ceiling, measured 2026-10-10). `mergequeue::review::start_reviewer` makes ONE clone per
-/// review — `git::clone_branch(repo, branch, head_sha, <clones>/review-<row id>)` — and the two
+/// ATTEMPT — `git::clone_branch(repo, branch, head_sha, <clones>/review-<row id>)` returns
+/// `<clones>/review-<row id>-<pid>-<n>`, a path of its own — and the two
 /// arms differ only in what is done with it: a VM is booted on it (`TaskSpec::vm_source`), and a
 /// host reviewer WORKS in it (`TaskSpec::worktree`, so its workspace and the `cwd` its prompt
 /// names are both that checkout). The clone is detached at the sha, so a reviewer reads the head

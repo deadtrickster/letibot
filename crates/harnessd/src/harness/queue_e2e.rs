@@ -1002,6 +1002,10 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         .unwrap()
     );
     let desk = letibot_tools::builtins::verdict::ReviewDesk::new();
+    // **A real directory, because `verdict` asks whether the tree a reviewer was given is still
+    // there** — a fixture naming `""` would be asserting a verdict about a tree that does not
+    // exist, which is now a WAIT.
+    let judged_tree = std::env::temp_dir();
     desk.opened(
         "s-gk",
         "s-gk-sub-1",
@@ -1011,7 +1015,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
             branch: format!("agent/{id}"),
             base_sha: "base".into(),
             head_sha: "head".into(),
-            cwd: String::new(),
+            cwd: judged_tree.display().to_string(),
         },
     );
     desk.submit(

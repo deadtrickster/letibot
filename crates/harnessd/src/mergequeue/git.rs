@@ -554,14 +554,68 @@ fn gh_authenticated() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// **A fresh clone of the branch for a reviewer** (decision 3) — the branch alone, at `head`,
-/// in `dir`: what a VM is booted on instead of the workspace (72.8 GiB, refused by the 8 GiB
-/// ceiling, 8 of 21 reviews on 2026-10-11). History comes with it, so `git diff base...head`
-/// works inside.
-pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(dir);
+/// **A fresh clone of the branch for a reviewer** (decision 3) — the branch alone, at `head`: what a
+/// VM is booted on instead of the workspace (72.8 GiB, refused by the 8 GiB ceiling, 8 of 21
+/// reviews on 2026-10-11). History comes with it, so `git diff base...head` works inside.
+///
+/// # ONE TREE PER ATTEMPT, and the name is made by a rename
+///
+/// `stem` is the row's own stem (`<clones>/review-<row id>`); the tree this call makes is
+/// `stem-<pid>-<n>`, and the path is RETURNED, because the caller — and nobody else — must know
+/// which tree this attempt was given. The clone is written to `.<name>.tmp` beside it and renamed
+/// on when git has finished, so a reader sees either no tree at that name or a complete one.
+///
+/// **Nothing is ever removed here.** This function used to `remove_dir_all` whatever stood at
+/// `review-<id>`, and that is what cost the operator four reviews on 2026-10-29: a row is re-seated
+/// (a deadline a second late, a `queue restart`, a daemon re-reading the row) while its previous
+/// reviewer is still alive, the re-seat clones to the same path, and the live reviewer is left
+/// reading a directory that is gone — `bash` answering *the process did not start: No such file or
+/// directory*, `read`/`glob` reporting a workspace with **0 entries**, and a `cannot_decide` about a
+/// branch the reviewer never saw. One path per row is one path two reviewers can share; a path per
+/// ATTEMPT is one no re-seat can touch.
+///
+/// **The token is `<pid>-<n>` and not the reviewer's handle**, because the handle does not exist
+/// yet: a child's working directory is decided before it is spawned (`TaskSpec::worktree`), so the
+/// tree has to exist first. The pid is the daemon that made it, which is the one fact about a tree
+/// another process can check; `n` is a counter, so two attempts in one daemon never collide either.
+///
+/// **The first failure this fixes is the clone itself.** MEASURED 2026-10-29, from the queue's own
+/// words — a reviewer that could not start:
+///
+/// ```text
+/// git clone of `agent/a-one-line-citation-is-filled`:
+///   fatal: could not open '…/letibot-review-clones/review-s-…-sub-1793298319066201000/.git/objects/pack/tmp_pack_cgbKfF'
+///          for reading: No such file or directory
+///   fatal: fetch-pack: invalid index-pack output
+/// ```
+///
+/// — a clone whose own directory was removed under it, because a second attempt at the same row
+/// removed it before cloning into it.
+pub fn clone_branch(repo: &Path, branch: &str, head: &str, stem: &Path) -> Result<PathBuf, String> {
+    let parent = stem.parent().unwrap_or(Path::new(""));
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("the reviewers' clone directory `{}`: {e}", parent.display()))?;
     }
+    let (dir, tmp) = attempt_beside(stem)?;
+    // A daemon killed mid-clone leaves one of these behind, and a reused pid would collide with it.
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = clone_into(repo, branch, head, &tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&tmp, &dir) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "installing the reviewer's clone at `{}`: {e}",
+            dir.display()
+        ));
+    }
+    Ok(dir)
+}
+
+/// The clone itself, into a path nobody else knows about — [`clone_branch`]'s first half.
+fn clone_into(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
     let out = Command::new("git")
         .args([
             "clone",
@@ -583,6 +637,28 @@ pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result
         ));
     }
     git(dir, &["checkout", "--quiet", "--detach", head]).map(|_| ())
+}
+
+/// **The two names one attempt uses, neither of which any other attempt can be writing** —
+/// `<stem>-<pid>-<n>` for the tree and `.<stem>-<pid>-<n>.tmp` for the clone being made. Both in
+/// `stem`'s own directory, so the rename between them is one filesystem's business and can never
+/// fail with `EXDEV`, whatever the caller's root is mounted as.
+fn attempt_beside(stem: &Path) -> Result<(PathBuf, PathBuf), String> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let leaf = stem
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| format!("`{}` names no directory to clone into", stem.display()))?;
+    for _ in 0..8 {
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!("{leaf}-{}-{n}", std::process::id());
+        let dir = stem.with_file_name(&name);
+        // A pid reused from a killed daemon can already have this name; the next counter is free.
+        if !dir.exists() {
+            return Ok((dir, stem.with_file_name(format!(".{name}.tmp"))));
+        }
+    }
+    Err(format!("every name beside `{}` is taken", stem.display()))
 }
 
 /// **A file the daemon itself wrote into a workspace** — `.letibot/<name>.jsonl`, the logs older
