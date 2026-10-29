@@ -43,6 +43,11 @@ members = [
     "crates/builtins",
     "crates/harnessd",
     "crates/opencode",
+    # **Reading — and writing — a Claude Code transcript** (Package H): the `cc-`
+    # namespace beside `oc-`. The reader turns Claude Code's JSONL into this head's rows;
+    # the writer turns this head's rows back into a transcript `claude --resume` opens, so
+    # a conversation can leave in the direction it arrived.
+    "crates/claude",
     # Another head, and the one that is a program rather than a screen: the Claude Code
     # bridge (docs/claude-code-bridge.md) reaches the daemon over the same socket the TUI
     # does, and holds a session rather than running one.
@@ -144,4 +149,5 @@ letibot-plugin = { path = "crates/plugin-sdk" }
 letibot-builtins = { path = "crates/builtins" }
 letibot-harnessd = { path = "crates/harnessd", default-features = false }
 letibot-opencode = { path = "crates/opencode" }
+letibot-claude = { path = "crates/claude" }
 letibot-bridge = { path = "crates/bridge" }

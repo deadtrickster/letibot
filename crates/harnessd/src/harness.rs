@@ -3529,6 +3529,23 @@ impl Harness {
             cfg.workspace = PathBuf::from(dir);
         }
 
+        // **And the same for a Claude Code transcript** (Package H), with one difference that
+        // is a fact about the source: a transcript records a `cwd` per line, and that
+        // directory may have been deleted since (a pruned worktree does it), so a root that is
+        // **not there** is not a seat. opencode's `directory` is a live column of its database;
+        // a Claude Code transcript's `cwd` is a memory, and a session seated at a memory fails
+        // on its first tool call instead of at startup, where the failure is legible.
+        if stored.is_none()
+            && let Some(cc_id) = cfg.session_id.strip_prefix("cc-").map(str::to_string)
+            && let Some(dir) = letibot_claude::default_projects_dir()
+            && let Ok(src) = letibot_claude::Source::open(&dir)
+            && let Ok(cwd) = src.directory(&cc_id)
+            && !cwd.is_empty()
+            && std::path::Path::new(&cwd).is_dir()
+        {
+            cfg.workspace = PathBuf::from(cwd);
+        }
+
         // **The mode is a session property, resolved after the workspace is final.**
         //
         // D13. The workspace was just settled (either the daemon's start directory or
@@ -6266,6 +6283,15 @@ impl Harness {
         {
             h.import_opencode(&oc_id);
         }
+        // **And a `cc-` session reads a Claude Code transcript in** (Package H). The rule is
+        // the same one and it lives in one place — `letibot_claude::import_target` — so a
+        // resumed session imports nothing and a re-run of the same `--session cc-<uuid>`
+        // finds the stored conversation instead of appending a second copy of it.
+        if let Some(cc_id) = letibot_claude::import_target(h.resumed.is_some(), &h.cfg.session_id)
+            .map(str::to_string)
+        {
+            h.import_claude(&cc_id);
+        }
         Ok(h)
     }
 
@@ -6378,6 +6404,116 @@ impl Harness {
                 // The last tick clears the head's line; the summary is the durable
                 // residue, and it carries the spend rule 2 is about.
                 self.filling(WHAT, "parts", total, total);
+                self.import_note("imported_summary", report.summary());
+            }
+        }
+    }
+
+    /// **Read a Claude Code conversation into this session (Package H).**
+    ///
+    /// The reading is `letibot-claude`'s; this is the half that turns its rows into **this**
+    /// session's rows and keeps the screen live while it does — the same split, the same
+    /// rules and the same refusal to fail the session as [`Harness::import_opencode`] beside
+    /// it. A missing transcript directory, or an id no transcript has, is a sentence on the
+    /// log and the head stays up: by the time it is read the head is already a working head
+    /// with a screen.
+    ///
+    /// # The counter is BYTES here, and that is the source's shape
+    ///
+    /// opencode counts parts because its database can count them before the first row. A
+    /// transcript is a 111 MB file on this box, and counting its lines first would be a whole
+    /// second pass over it; its length is known from `stat` before anything is read. So the
+    /// bar is bytes consumed against bytes on disk — a fact about the file rather than a
+    /// rendering of the wait.
+    fn import_claude(&mut self, cc_id: &str) {
+        let Some(dir) = letibot_claude::default_projects_dir() else {
+            self.import_note(
+                "import_no_db",
+                "no $HOME, so no Claude Code transcript directory to read. The session stays up \
+                 and empty."
+                    .into(),
+            );
+            return;
+        };
+        let source = match letibot_claude::Source::open(&dir) {
+            Ok(s) => s,
+            Err(e) => {
+                self.import_note(
+                    "import_no_db",
+                    format!(
+                        "{e}\n\nThe session stays up: prompt it like any other and it runs on \
+                         this head's own model."
+                    ),
+                );
+                return;
+            }
+        };
+        let tree = match source.tree(cc_id) {
+            Ok(t) => t,
+            Err(e) => {
+                self.import_note(
+                    "import_no_session",
+                    format!("{e}\n\nThe session stays up and empty."),
+                );
+                return;
+            }
+        };
+
+        // **Rule 1, said where a reader will see it** — the uuid, the directory, the branch,
+        // the model and the Claude Code version. Another agent's rows under another vendor's
+        // model; a reader who cannot tell whose they are cannot weigh them.
+        self.import_note("imported", tree.root.origin());
+        let total = tree.root.bytes;
+        const WHAT: &str = "importing a Claude Code conversation";
+        self.filling(WHAT, "bytes", 0, total);
+
+        let mut failure: Option<String> = None;
+        let mut since_persist = 0u64;
+        let report = source.read(cc_id, &mut |ev| match ev {
+            letibot_claude::Event::Progress { bytes, .. } => {
+                // Throttled to about one tick a megabyte: a live bar, and not thousands of
+                // publishes for a read that takes a second.
+                if bytes / (1 << 20) != (bytes.saturating_sub(64 * 1024)) / (1 << 20) {
+                    self.filling(WHAT, "bytes", bytes, total);
+                }
+            }
+            letibot_claude::Event::Row(r) => {
+                if failure.is_some() {
+                    return;
+                }
+                if let Err(e) = self.append_imported(&[r.item]) {
+                    failure = Some(e.to_string());
+                    return;
+                }
+                since_persist += 1;
+                if since_persist >= 512 {
+                    since_persist = 0;
+                    if let Err(e) = self.persist() {
+                        failure = Some(e.to_string());
+                    }
+                }
+            }
+            letibot_claude::Event::Scrap(s) => self.import_note("import_scrap", s.said),
+        });
+
+        match (failure, report) {
+            (Some(e), _) => self.import_note(
+                "import_failed",
+                format!(
+                    "the import stopped part-way: {e}. What arrived is on the screen and in \
+                     the store; the rest did not."
+                ),
+            ),
+            (None, Err(e)) => self.import_note(
+                "import_failed",
+                format!(
+                    "reading the Claude Code transcript stopped part-way: {e}. What arrived is \
+                     on the screen and in the store; the rest did not."
+                ),
+            ),
+            (None, Ok(report)) => {
+                let _ = self.persist();
+                self.filling(WHAT, "bytes", total, total);
                 self.import_note("imported_summary", report.summary());
             }
         }

@@ -964,6 +964,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-claude"
+version = "0.5.1"
+dependencies = [
+ "letibot-transcript",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-code"
 version = "0.5.1"
 dependencies = [
@@ -1012,6 +1020,7 @@ version = "0.5.1"
 dependencies = [
  "letibot-backend",
  "letibot-builtins",
+ "letibot-claude",
  "letibot-code",
  "letibot-dialect",
  "letibot-dialect-glm",

@@ -361,6 +361,17 @@ already up, then attaches the TUI head to it.
   letibot --sessions          what is on disk, grouped: your conversations first, then the
                               harness's own work (subagents, the review queue, packages,
                               one-shots) one line each with a count
+  letibot --list-claude       what Claude Code has on this box: the id `--session cc-<id>`
+                              takes, its model, its directory and its first line. Reading
+                              one in makes it an ordinary session, so --continue works on it
+  letibot --handover ID DIR   write a session out as a transcript `claude --resume <path>`
+                              opens, plus a Markdown copy a person can read
+  letibot --note FILE TEXT    append one line to a Claude Code transcript, after a backup
+  letibot --note-continued ID FILE [DIR]
+                              the same, with the line composed: "session continued in letibot
+                              from … to …, detail at DIR/session.md, git branch @ sha" — the
+                              shape chosen over a full transcript, and it writes that handover
+  letibot --revert FILE BAK   put that transcript back from the backup, byte for byte
   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
                               one the plain start opens IS this fresh session)
   letibot --rename ID TITLE   name a stored session
@@ -468,6 +479,7 @@ for a in "$@"; do
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
     --rename|--delete|--mode|--force|--vm|--vm-arg|--host|--provider|--model|\
     --migrate|--reattach|--to|--copy-keys|\
+    --list-claude|--claude-sessions|--handover|--note|--note-continued|--revert|--tsv|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
     --*) die "unknown flag: $a
          ('letibot --help' lists the flags; a bare prompt needs no flag)" ;;
@@ -1548,6 +1560,33 @@ daemon_stale_line() {
 case "${1:-}" in
   --sessions|--list)
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions ;;
+  # **What Claude Code has on this box** (Package H): the ids `letibot --session cc-<id>`
+  # takes, so a person can find a uuid without opening the JSONL. No store, no socket.
+  --list-claude|--claude-sessions)
+    shift
+    exec "${NOGPU[@]}" "$BIN/harnessd" --list-claude "$@" ;;
+  # **The return trip**, and the one write this launcher offers into a file another program
+  # owns. `--handover SESSION DIR` writes a transcript `claude --resume <path>` opens;
+  # `--note TRANSCRIPT TEXT` appends one line after taking a proven backup;
+  # `--revert TRANSCRIPT BACKUP` puts it back, byte for byte.
+  --handover)
+    [ $# -ge 3 ] || die "--handover SESSION DIR"
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --handover "$2" "$3" ;;
+  --note)
+    [ $# -ge 3 ] || die "--note TRANSCRIPT TEXT"
+    exec "${NOGPU[@]}" "$BIN/harnessd" --note "$2" "$3" ;;
+  --note-continued)
+    [ $# -ge 3 ] || die "--note-continued SESSION TRANSCRIPT [DIR]"
+    # No empty trailing argument: an empty DIR is a path that is not there, not "the
+    # default", and the daemon would try to write into it.
+    if [ $# -ge 4 ]; then
+      exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --note-continued "$2" "$3" "$4"
+    else
+      exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --note-continued "$2" "$3"
+    fi ;;
+  --revert)
+    [ $# -ge 3 ] || die "--revert TRANSCRIPT BACKUP"
+    exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3" ;;
   --rename)
     [ $# -ge 2 ] || die "--rename ID [TITLE]  (an empty title clears the name)"
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}" ;;

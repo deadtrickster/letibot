@@ -36,6 +36,8 @@ letibot-websearch.workspace = true
 letibot-webfetch.workspace = true
 # R6: reading an opencode conversation into this session's rows.
 letibot-opencode.workspace = true
+# Package H: the same for a Claude Code transcript — reading it in, and writing one out.
+letibot-claude.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
 # **The plugin layers and the panes they answer** (W4 of `docs/plugins-slice1.md`): the stack,
 # the recorder, the shadow gate and the pane `View`, all in crates with no wasm engine in them.

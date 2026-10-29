@@ -469,7 +469,15 @@ fn usage() -> String {
      \x20                           the plain five-column data form, unchanged\n\
      \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
      \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
-     \x20 --delete ID               remove a session that has no rows"
+     \x20 --delete ID               remove a session that has no rows\n\
+     \n\
+     claude code, both directions (no socket, no model):\n\
+     \x20 --list-claude [--tsv]     what Claude Code has on this box: the id `--session\n\
+     \x20                           cc-<id>` takes, the model, and the first thing said\n\
+     \x20 --handover SESSION DIR    write that session out as a transcript\n\
+     \x20                           `claude --resume <path>` opens, plus a Markdown copy\n\
+     \x20 --note TRANSCRIPT TEXT    append one line to a transcript, with a backup first\n\
+     \x20 --revert TRANSCRIPT BAK   put a transcript back from that backup, byte for byte"
         .into()
 }
 
@@ -697,6 +705,46 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--list-sessions" => query = Some(Query::List),
+            // **What Claude Code has on this box** (Package H) — the ids `--session cc-<id>`
+            // takes, with the model, the directory and the first thing that was said. Beside
+            // `--list-sessions` because it answers the same question about a different store,
+            // and it needs no store of ours at all, so it is answered before one is opened.
+            "--list-claude" => query = Some(Query::ListClaude),
+            // **The return trip**: this session's conversation as a transcript
+            // `claude --resume <path>` opens, plus a Markdown copy a person can read.
+            "--handover" => {
+                let session = next()?;
+                let to = PathBuf::from(next()?);
+                query = Some(Query::Handover { session, to });
+            }
+            // **The lighter shape the operator chose**: one line on the ORIGINAL transcript
+            // saying the session was continued here, plus the Markdown handover for the
+            // fallback. The line's own words are composed, not typed — see
+            // `note_continued`.
+            "--note-continued" => {
+                let session = next()?;
+                let transcript = PathBuf::from(next()?);
+                let dir = it.next().map(PathBuf::from);
+                query = Some(Query::NoteContinued {
+                    session,
+                    transcript,
+                    dir,
+                });
+            }
+            // **One line on the end of a transcript Claude Code owns.** A backup first, and no
+            // write at all when a backup could not be made or proven — see
+            // `letibot_claude::handover::append_note`.
+            "--note" => {
+                let transcript = PathBuf::from(next()?);
+                let text = next()?;
+                query = Some(Query::Note { transcript, text });
+            }
+            // **Put a transcript back, byte for byte**, from a backup this binary made.
+            "--revert" => {
+                let transcript = PathBuf::from(next()?);
+                let backup = PathBuf::from(next()?);
+                query = Some(Query::Revert { transcript, backup });
+            }
             "--latest-session" => query = Some(Query::Latest),
             "--tsv" => tsv = true,
             "--rename" => {
@@ -2153,6 +2201,267 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
+/// **What Claude Code has on this box**, one line per transcript — the id `--session
+/// cc-<id>` takes, when it was last written, how big it is, the model that answered, and the
+/// first thing that was said.
+///
+/// `--tsv` is the plain six-column data form, like `--list-sessions --tsv`: a script that
+/// wants to pick a transcript should not have to parse a table.
+fn list_claude(tsv: bool) -> Result<i32, String> {
+    let Some(dir) = letibot_claude::default_projects_dir() else {
+        return Err("no $HOME, so no Claude Code transcript directory to list".into());
+    };
+    list_claude_in(&dir, tsv)
+}
+
+/// The listing itself, against a named directory — so a test can point it at a fixture
+/// instead of at the operator's transcripts, and so the sentence a box without a
+/// `~/.claude/projects` gets is the same one a caller with a wrong path gets.
+fn list_claude_in(dir: &std::path::Path, tsv: bool) -> Result<i32, String> {
+    let src = letibot_claude::Source::open(dir).map_err(|e| e.to_string())?;
+    let list = src.sessions().map_err(|e| e.to_string())?;
+    if list.is_empty() {
+        println!("no Claude Code transcripts under {}", dir.display());
+        return Ok(0);
+    }
+    for s in &list {
+        println!("{}", if tsv { s.tsv() } else { s.line() });
+    }
+    if !tsv {
+        println!(
+            "\n{} transcript(s) under {}. `letibot --session cc-<id>` reads one in and makes \
+             it an ordinary session — resumable, promptable, and continued by `--continue` \
+             from then on.",
+            list.len(),
+            dir.display()
+        );
+    }
+    Ok(0)
+}
+
+/// **Write this session's conversation out as a Claude Code transcript** and a Markdown
+/// copy, into `to`.
+///
+/// Two files, and they promise different things: the `.jsonl` is what
+/// `claude --resume <absolute path>` opens, and the `.md` is what survives a Claude release
+/// changing the line format. **Not into `~/.claude/projects`**: by absolute path a resume
+/// needs the file nowhere in particular, and writing into another tool's directory is a
+/// thing to do only when there is no other way.
+fn handover(
+    store: letibot_tokencore::store::Store,
+    session: &str,
+    to: &std::path::Path,
+) -> Result<i32, String> {
+    let row = store
+        .session(session)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("the store has no session `{session}`"))?;
+    let transcript_id = store
+        .current_transcript_id(session)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!("session `{session}` has no transcript to hand over — it has no rows yet")
+        })?;
+    let loaded = store
+        .load_transcript(&transcript_id)
+        .map_err(|e| e.to_string())?;
+    // **No per-row times, and the report says so.** This head's store records the row, its
+    // tokens and its chain — not a clock per row — so a handover cannot carry one without
+    // inventing it. `0` is "the row has no time", and `Skipped::no_time` counts the lines
+    // that left without a `timestamp`.
+    let items: Vec<(u64, letibot_transcript::TranscriptItem)> = loaded
+        .items
+        .iter()
+        .map(|(i, _, _)| (0u64, i.clone()))
+        .collect();
+    let meta =
+        letibot_claude::handover::Meta::fresh(std::path::Path::new(&row.workspace_root), None);
+    let w =
+        letibot_claude::handover::write_handover(&items, &meta, to).map_err(|e| e.to_string())?;
+    println!(
+        "wrote {} ({} line(s)) and {}",
+        w.jsonl.display(),
+        w.lines,
+        w.markdown.display()
+    );
+    println!("resume it with: claude --resume {}", w.jsonl.display());
+    println!("{}", w.skipped.said());
+    Ok(0)
+}
+
+/// **The line that says a conversation moved**, on the transcript it moved from.
+///
+/// This is the shape the operator chose over a full Claude-format transcript: one
+/// conservative line on the original, pointing at a Markdown handover — so whoever opens
+/// Claude Code later sees, in the conversation they were in, that it continued here and
+/// where to read what happened.
+///
+/// The line is **composed, not typed**, because every part of it is a fact this daemon has
+/// and a person would have to look up: the session id, the span it ran over, the branch and
+/// commit, and the path of the handover. The append is
+/// [`letibot_claude::handover::append_note`]'s — a proven backup first, and a refusal while
+/// a `claude` process is live for that project.
+fn note_continued(
+    store: letibot_tokencore::store::Store,
+    session: &str,
+    transcript: &std::path::Path,
+    dir: Option<&std::path::Path>,
+) -> Result<i32, String> {
+    let row = store
+        .session(session)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("the store has no session `{session}`"))?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let from = letibot_claude::handover::iso_ts(row.created_ms.max(0) as u64);
+    let to = letibot_claude::handover::iso_ts(now);
+
+    // Where the detail goes: the caller's directory, else the session's own workspace —
+    // never `~/.claude/projects`, which is another tool's directory to write in.
+    let out_dir = dir.map(std::path::Path::to_path_buf).unwrap_or_else(|| {
+        std::path::Path::new(&row.workspace_root)
+            .join(".letibot")
+            .join("handover")
+    });
+
+    // The handover itself: the transcript `claude --resume <path>` opens by absolute path
+    // (so it needs no place in `~/.claude/projects` and no existing id), plus the Markdown a
+    // person reads when a Claude release moves the line format.
+    let mut detail = out_dir.join("session.md").display().to_string();
+    match store
+        .current_transcript_id(session)
+        .map_err(|e| e.to_string())?
+    {
+        Some(transcript_id) => {
+            let loaded = store
+                .load_transcript(&transcript_id)
+                .map_err(|e| e.to_string())?;
+            let items: Vec<(u64, letibot_transcript::TranscriptItem)> = loaded
+                .items
+                .iter()
+                .map(|(i, _, _)| (0u64, i.clone()))
+                .collect();
+            let meta = letibot_claude::handover::Meta::fresh(
+                std::path::Path::new(&row.workspace_root),
+                None,
+            );
+            let w = letibot_claude::handover::write_handover(&items, &meta, &out_dir)
+                .map_err(|e| e.to_string())?;
+            detail = w.markdown.display().to_string();
+            println!(
+                "wrote {} ({} line(s)) and {}",
+                w.jsonl.display(),
+                w.lines,
+                w.markdown.display()
+            );
+            println!(
+                "resume that copy with: claude --resume {}",
+                w.jsonl.display()
+            );
+        }
+        // A session with no rows has no conversation to hand over. The line is still
+        // written, because *this session exists* is the fact the transcript is missing.
+        None => println!(
+            "session `{session}` has no rows yet, so there is no conversation to write out"
+        ),
+    }
+
+    let git = git_of(std::path::Path::new(&row.workspace_root));
+    let line = format!(
+        "[letibot] session continued in letibot from {from} to {to} — session {session}, detail \
+         at {detail}, git {git}"
+    );
+    let got = letibot_claude::handover::append_note(
+        transcript,
+        &line,
+        now,
+        &letibot_claude::handover::PsLive,
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "appended {} byte(s) to {}:",
+        got.bytes,
+        transcript.display()
+    );
+    println!("  {line}");
+    println!("the backup taken first: {}", got.backup.display());
+    println!(
+        "to put it back: harnessd --revert {} {}",
+        transcript.display(),
+        got.backup.display()
+    );
+    Ok(0)
+}
+
+/// `branch @ short-sha`, or a sentence saying why it could not be read — the line names a
+/// commit so a reader can see which tree the conversation was about, and a repository that
+/// will not answer must not cost the append.
+fn git_of(dir: &std::path::Path) -> String {
+    let ask = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (!s.is_empty()).then_some(s)
+    };
+    match (
+        ask(&["rev-parse", "--abbrev-ref", "HEAD"]),
+        ask(&["rev-parse", "--short", "HEAD"]),
+    ) {
+        (Some(branch), Some(sha)) => format!("{branch} @ {sha}"),
+        _ => "(no git answer here)".to_string(),
+    }
+}
+
+/// **One line on the end of a transcript Claude Code owns**, with a backup taken and proven
+/// first — and nothing written at all when that backup could not be made or does not match.
+fn append_note(transcript: &std::path::Path, text: &str) -> Result<i32, String> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let got = letibot_claude::handover::append_note(
+        transcript,
+        text,
+        now,
+        &letibot_claude::handover::PsLive,
+    )
+    .map_err(|e| e.to_string())?;
+    println!("appended {} byte(s) to {}", got.bytes, transcript.display());
+    println!("the backup taken first: {}", got.backup.display());
+    println!(
+        "to put it back: harnessd --revert {} {}",
+        transcript.display(),
+        got.backup.display()
+    );
+    Ok(0)
+}
+
+/// **Put a transcript back, byte for byte**, from a backup this binary made.
+fn revert_transcript(
+    transcript: &std::path::Path,
+    backup: &std::path::Path,
+) -> Result<i32, String> {
+    let bytes =
+        letibot_claude::handover::revert(transcript, backup, &letibot_claude::handover::PsLive)
+            .map_err(|e| e.to_string())?;
+    println!(
+        "restored {} from {} ({bytes} byte(s), byte for byte)",
+        transcript.display(),
+        backup.display()
+    );
+    println!("the backup is still there — reverting does not consume it");
+    Ok(0)
+}
+
 /// How many sessions the store already holds, or `None` when there is no store.
 ///
 /// A `SELECT` through `Store::connection`, which is the escape hatch that exists
@@ -2216,14 +2525,42 @@ enum Query {
     Latest,
     Rename(String, String),
     Delete(String),
-    Calibrate { write: bool },
-    Backfill { write: bool },
+    Calibrate {
+        write: bool,
+    },
+    Backfill {
+        write: bool,
+    },
     Etalon(PathBuf),
     EtalonOracle(PathBuf),
     EtalonMap(PathBuf, PathBuf),
     RepairPrefixes,
     Compare,
     ShowBrief,
+    /// What Claude Code has under `~/.claude/projects` (Package H).
+    ListClaude,
+    /// This session's conversation as a Claude Code transcript and a Markdown copy.
+    Handover {
+        session: String,
+        to: PathBuf,
+    },
+    /// One line appended to an existing transcript, with a backup first.
+    Note {
+        transcript: PathBuf,
+        text: String,
+    },
+    /// **The lighter shape**: the composed "continued in letibot" line on the original
+    /// transcript, plus the Markdown handover it points at.
+    NoteContinued {
+        session: String,
+        transcript: PathBuf,
+        dir: Option<PathBuf>,
+    },
+    /// A transcript restored from a backup, byte for byte.
+    Revert {
+        transcript: PathBuf,
+        backup: PathBuf,
+    },
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -2233,6 +2570,17 @@ fn run_query(
     scope: Option<&std::path::Path>,
     tsv: bool,
 ) -> Result<i32, String> {
+    // **The three Claude Code verbs that need no store of ours**, answered before `--store` is
+    // required — so `--list-claude` works on a box whose daemon has never started, and
+    // `--note`/`--revert` act on a file rather than on a session. Package H.
+    match &q {
+        Query::ListClaude => return list_claude(tsv),
+        Query::Note { transcript, text } => return append_note(transcript, text),
+        Query::Revert { transcript, backup } => return revert_transcript(transcript, backup),
+        _ => {}
+    }
+    // **`--note-continued` needs the store** — it composes the line out of the session's own
+    // row — so it is answered below, with `--handover`, once `--store` is known.
     let path = cfg
         .store
         .as_ref()
@@ -2241,6 +2589,22 @@ fn run_query(
         .map_err(|e| format!("opening {}: {e}", path.display()))?;
 
     match q {
+        // **Answered above, before the store was asked for.** Here only because a `match`
+        // must be exhaustive; reaching this arm would mean one of them had started needing
+        // a store without the three early returns being changed, and the `Ok(0)` is the
+        // arm's way of not being a panic in a daemon.
+        Query::ListClaude | Query::Note { .. } | Query::Revert { .. } => Ok(0),
+        // **This session's conversation, as a transcript Claude Code can resume**, plus a
+        // Markdown copy (Package H). The rows come from the store, which is the only place
+        // a finished conversation exists whole.
+        Query::Handover { session, to } => handover(store, &session, &to),
+        // **The lighter shape the operator chose**: a composed line on the ORIGINAL
+        // transcript, and the Markdown handover beside it.
+        Query::NoteContinued {
+            session,
+            transcript,
+            dir,
+        } => note_continued(store, &session, &transcript, dir.as_deref()),
         // **Re-render a prefix that was stored without its tokens.**
         //
         // A `/reseat` fork wrote its new prefix row with an empty token list and a
@@ -3052,6 +3416,51 @@ fn term_cols() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The Claude Code listing** (Package H): the id a person types, then the facts a
+    /// picker row needs — and the two forms, because a script should not parse a table.
+    ///
+    /// Against a fixture directory rather than `~/.claude/projects`, so this says what the
+    /// listing DOES and not what happens to be on the box running the test.
+    #[test]
+    fn the_claude_listing_names_the_id_the_model_and_the_first_ask() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-cli-claude-{}-{}", std::process::id(), {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static N: AtomicU32 = AtomicU32::new(0);
+                N.fetch_add(1, Ordering::Relaxed)
+            }));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("proj")).unwrap();
+        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        std::fs::write(
+            dir.join("proj").join(format!("{id}.jsonl")),
+            concat!(
+                r#"{"type":"user","uuid":"u1","timestamp":"2026-10-07T12:28:34.023Z","cwd":"/w","gitBranch":"main","version":"2.1.285","origin":{"kind":"human"},"message":{"role":"user","content":"make the tests pass"}}"#,
+                "\n",
+                r#"{"type":"assistant","uuid":"a1","timestamp":"2026-10-07T12:28:36.000Z","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"ok"}]}}"#,
+                "\n"
+            ),
+        )
+        .unwrap();
+
+        // The tsv form: six columns, and the first is the id with the namespace mark this
+        // head strips.
+        assert_eq!(list_claude_in(&dir, true).unwrap(), 0);
+        assert_eq!(list_claude_in(&dir, false).unwrap(), 0);
+
+        // A directory that is not there is a sentence naming the directory, not an empty
+        // listing — the same pair `--list-sessions` tells apart for the store.
+        let absent = dir.join("not-there");
+        let err = list_claude_in(&absent, false).unwrap_err();
+        assert!(err.contains("no Claude Code transcript directory"), "{err}");
+        assert!(
+            err.contains("not-there"),
+            "the sentence names the path: {err}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// **The header names the model that ANSWERS the turns**, and says the local binding is the
     /// binding — 2026-10-26: a session whose disclosures, two lines below, said `main
