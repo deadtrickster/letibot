@@ -292,21 +292,15 @@ impl MessagesBackend for OpenAiProvider {
     ) -> Result<Completion, BackendError> {
         let eyes = self.eyes();
         let first = self.round(req, on_delta, eyes, crate::messages::Withheld::nothing());
-        // **A picture the model would not take, learned rather than guessed.** Three things
-        // have to be true and all three are read off the refusal or the request, never
-        // assumed: the status is a 400, the sentence names a content type (or `image_url`)
-        // as the complaint, and the request ACTUALLY carried a picture — see
-        // `crate::messages::text_only_refusal`, whose doc quotes the measured bodies. Then
-        // the model is marked text-only for the rest of this daemon's life, the operator is
-        // told once, and the SAME request goes again with placeholders instead of
-        // pictures. One retry, never a ladder: if the second attempt is refused too, that
-        // refusal is the answer.
+        // **A refusal is read off the wire, never assumed.** Both arms below hang off this one
+        // binding: the status is a 400, and the request ACTUALLY carried a picture. Two different
+        // refusals can answer that shape, and they are two different facts — see
+        // `crate::messages::text_only_refusal` and [`crate::messages::picture_refusal`], whose docs
+        // quote the measured bodies.
         //
-        // **The compaction takes this path too**, which is the reason it exists: the
-        // summary turn carries the same history, so the request that failed at the wall is
-        // the one this makes succeed. MEASURED 2026-10-25, `glm-5.3`:
-        // `http 400: messages.content.type is invalid, allowed values: ['text']`, to the
-        // round and then to the compaction that would have made room.
+        // **The compaction takes these paths too**, which is the reason they exist: the summary
+        // turn carries the same history, so the request that failed at the wall is the one they
+        // make succeed.
         let Err(BackendError::Refused {
             status: 400,
             body: why,
@@ -318,6 +312,12 @@ impl MessagesBackend for OpenAiProvider {
         if !eyes.takes_images() || !carried {
             return first;
         }
+        // **The first refusal: the MODEL takes text only.** The model is marked for the rest of
+        // this daemon's life, the operator is told once, and the SAME request goes again with
+        // placeholders instead of pictures. One retry, never a ladder: if the second attempt is
+        // refused too, that refusal is the answer. MEASURED 2026-10-25, `glm-5.3`:
+        // `http 400: messages.content.type is invalid, allowed values: ['text']`, to the round and
+        // then to the compaction that would have made room.
         if crate::messages::text_only_refusal(why) {
             if crate::messages::mark_text_only(self.preset.name, &self.model) {
                 let said = format!(
@@ -357,15 +357,15 @@ impl MessagesBackend for OpenAiProvider {
         if !crate::messages::picture_refusal(why) {
             return first;
         }
-        let carried: Vec<String> =
+        let pictures: Vec<String> =
             crate::messages::pictures(req.items.iter().chain(req.tail.iter()))
                 .into_iter()
                 .map(String::from)
                 .collect();
-        if carried.is_empty() {
+        if pictures.is_empty() {
             return first;
         }
-        let trying: Vec<(String, String)> = carried
+        let trying: Vec<(String, String)> = pictures
             .iter()
             .map(|d| (crate::messages::picture_key(d), why.clone()))
             .collect();
@@ -384,7 +384,7 @@ impl MessagesBackend for OpenAiProvider {
                 // good picture beside a bad one is withheld with it, which is the smaller loss
                 // than a session that cannot speak.
                 let mut fresh = 0;
-                for d in &carried {
+                for d in &pictures {
                     if crate::messages::mark_bad_picture(d, why) {
                         fresh += 1;
                     }
@@ -394,7 +394,7 @@ impl MessagesBackend for OpenAiProvider {
                      with them named instead of sent and was answered; this daemon will not send \
                      those bytes again{}. The pictures themselves are unchanged on disk.",
                     self.model,
-                    carried.len(),
+                    pictures.len(),
                     if fresh == 0 {
                         " — they were already known"
                     } else {

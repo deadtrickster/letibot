@@ -24,6 +24,20 @@
 //!   `!` line's output used to reach the transcript and the screen and not the model.
 //! - `SegmentMark` → dropped. It is the store's, not the model's.
 //!
+//! # …and a picture that is not a picture is not sent at all
+//!
+//! Both carriers of a picture — a `User` row's image part and a `ToolResult`'s `media` — go
+//! through [`picture_fate`], which asks three things in order of scope: does this model take
+//! pictures, are these bytes a COMPLETE image ([`letibot_transcript::media::complete_image`],
+//! because the transcript is append-only and a row written by a build that was wrong about this
+//! is still there), and has a provider already refused exactly these bytes
+//! ([`mark_bad_picture`]). A picture that fails any of them is rendered as a `not sent`
+//! placeholder that names why.
+//!
+//! MEASURED 2026-10-30, the incident this exists for: a `read` of a 33-byte PNG header was stored
+//! as an image and sent as `image_url`, and the provider refused the whole request — on every
+//! turn, for ever. A session no restart could revive.
+//!
 //! # `reasoning_content`, which this file has now been wrong about twice
 //!
 //! **First it said the opposite.** *"DeepSeek documents that `reasoning_content` from
