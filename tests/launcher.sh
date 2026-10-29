@@ -32,6 +32,10 @@ mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
 cat > "$T/bin/harnessd" <<'STUB'
 #!/usr/bin/env bash
 printf 'harnessd'; printf ' %q' "$@"; printf '\n'
+# **What the launcher gave this child**, for the open-file cases below: a child's limits are
+# its parent's, so this is the only honest way to see what the launcher raised.
+printf 'openfiles %s\n' "$(ulimit -Sn)"
+printf 'openfiles-hard %s\n' "$(ulimit -Hn)"
 STUB
 cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
@@ -96,6 +100,80 @@ expect "  ...and says a model is asked for" "$out" "^local +none.*asks for a mod
 out="$(run '' --dense "one question")"
 expect "a flag's model with no home is named" "$out" "no endpoint for this run: --dense asked"
 expect "  ...and the daemon is started anyway" "$out" "^harnessd "
+
+# **THE LAUNCHER RAISES THE OPEN-FILE LIMIT, AND ITS CHILD IS WHAT SHOWS IT.**
+#
+# Darwin's soft limit is 256 (`launchctl limit maxfiles`: `256 unlimited`) and this daemon is
+# not a 256-descriptor process. MEASURED 2026-10-30 on the operator's Mac: a daemon up one
+# hour held 253 descriptors with the highest numbered 254 — two to spare — and the `git
+# checkout` it forked for a reviewer died of `Too many open files (os error 24)`.
+#
+# It is raised in the LAUNCHER because a soft limit can only be raised to the HARD limit a
+# process was born with, so a daemon cannot give itself room it was not started with. Every
+# child inherits what the launcher sets, which is what the stub above prints.
+#
+# Three things, and none of them needs root:
+#   1. a child of the launcher sees at least the number the launcher asks for — OR the
+#      launcher SAID what it got instead, naming both numbers (a hard limit below the request
+#      is a fact about the box, not a failure);
+#   2. the HARD limit is untouched — `ulimit -n N` would have moved both, and then a daemon
+#      that later needed more could never get it;
+#   3. a soft limit already ABOVE the request is left alone, not clamped down to it.
+#
+# The request is read out of the launcher rather than repeated here, so the two cannot drift.
+asked="$(sed -n 's/^OPEN_FILES_WANTED=\([0-9][0-9]*\).*/\1/p' "$LAUNCHER" | head -1)"
+# limit_case NAME SOFT OUTPUT — rule 1, once, for the one-shot path and the daemon path.
+limit_case() { # limit_case NAME SOFT OUTPUT
+  local name="$1" soft="$2" out="$3" ok=0
+  case "$soft" in
+    '' ) ok=0 ;;
+    *[!0-9]*) ok=1 ;; # `unlimited`
+    *) if [ "$soft" -ge "$asked" ]; then ok=1; fi ;;
+  esac
+  if [ "$ok" = 1 ]; then
+    echo "ok   $name: a child of the launcher gets $soft open files (it asked for $asked)"
+  elif printf '%s' "$out" | grep -qE "open files: got [0-9]+, not the $asked asked for"; then
+    echo "ok   $name: this box gave less than $asked, and the launcher SAID so"
+  else
+    echo "FAIL $name: a child got '${soft:-nothing}' open files, the launcher asked for $asked,"
+    echo "     and nothing said so:"
+    printf '%s\n' "$out" | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+}
+if [ -z "$asked" ]; then
+  echo "FAIL the launcher no longer assigns OPEN_FILES_WANTED=<n>, so this case cannot ask it"
+  fails=$((fails + 1))
+else
+  out="$(run "$DEFAULT_ONLY" "one question")"
+  limit_case "the launcher raises the open-file limit for the daemon it starts" \
+    "$(printf '%s\n' "$out" | sed -n 's/^openfiles //p' | head -1)" "$out"
+  # **The HARD limit must be exactly what this shell has**, because the launcher runs as this
+  # shell's child (`env -i` carries no rlimits): anything else means the raise moved it too.
+  own_hard="$(ulimit -Hn 2>/dev/null || true)"
+  child_hard="$(printf '%s\n' "$out" | sed -n 's/^openfiles-hard //p' | head -1)"
+  if [ "$child_hard" = "$own_hard" ]; then
+    echo "ok   ...and the HARD limit is left where the box set it ($own_hard)"
+  else
+    echo "FAIL the launcher moved the HARD open-file limit: $own_hard -> ${child_hard:-nothing}"
+    fails=$((fails + 1))
+  fi
+  # **Never lower one.** A shell already above the request keeps its own number.
+  higher=$((asked + 1000))
+  if ( ulimit -Sn "$higher" ) >/dev/null 2>&1; then
+    out="$( ulimit -Sn "$higher" && run "$DEFAULT_ONLY" "one question" )"
+    soft="$(printf '%s\n' "$out" | sed -n 's/^openfiles //p' | head -1)"
+    if [ "$soft" = "$higher" ]; then
+      echo "ok   ...and a soft limit already above the request ($higher) is left alone"
+    else
+      echo "FAIL a soft limit of $higher was changed to '${soft:-nothing}' by the launcher"
+      fails=$((fails + 1))
+    fi
+  else
+    echo "skip the never-lower case: this box's hard limit will not give $higher"
+    echo "     NOTHING WAS CHECKED about lowering — that is a fact about this box."
+  fi
+fi
 
 # **`--host NAME` is forwarded to the daemon, value and all** — the session's tools run on
 # that machine (`docs/remote-hosts.md`). The launcher does not resolve the name: the daemon
@@ -341,9 +419,13 @@ if command -v python3 >/dev/null 2>&1; then
   # argv down, and stays until this test kills it.
   cat > "$T/bin/harnessd" <<'STUB'
 #!/usr/bin/env python3
-import os, socket, sys, time
+import os, resource, socket, sys, time
 with open(os.environ["STUB_ARGV"], "a") as log:
     log.write("harnessd " + " ".join(sys.argv[1:]) + "\n")
+    # What the launcher gave this process. The launcher reaches a daemon through
+    # `detach` (perl's setsid + exec on a Mac, setsid under a systemd scope on Linux),
+    # so this is the only place that says the limit survived that path.
+    log.write("openfiles %d\n" % resource.getrlimit(resource.RLIMIT_NOFILE)[0])
 if "--latest-session" in sys.argv:
     print("s-latest")
     sys.exit(0)
@@ -396,6 +478,11 @@ STUB
     "$(daemon_argv)" "--session"
   expect "  ...and the head runs" "$out" "THE HEAD RAN"
   refuse "  ...and the head is given no --resume of its own" "$(head_argv)" "--resume"
+  # **And the limit survives `detach`** — the one-shot case above proves the launcher raised
+  # its own limit; this proves the daemon it detached still has it (perl's `setsid`+`exec` on a
+  # Mac, `systemd-run --scope setsid` on Linux, neither of which touches rlimits).
+  limit_case "the daemon the launcher detaches gets the raised limit too" \
+    "$(sed -n 's/^openfiles //p' "$T/argv.log" 2>/dev/null | head -1)" "$out"
 
   # **2. `--continue` is the verb that names one** — and it names it on the daemon's command line,
   # where the resume (and its hash-chain check) happens at startup.
