@@ -124,7 +124,10 @@ fn text_of(cell: &Value) -> String {
 
 /// A row's `cells`, as strings.
 fn cells_of(row: &Value) -> Vec<String> {
-    row["cells"].as_array().map(|cs| cs.iter().map(text_of).collect()).unwrap_or_default()
+    row["cells"]
+        .as_array()
+        .map(|cs| cs.iter().map(text_of).collect())
+        .unwrap_or_default()
 }
 
 /// Every row of every panel, in the order they are drawn.
@@ -216,7 +219,10 @@ fn a_row_says_the_verb_that_would_move_it_and_why_when_none_would() {
     let feed = a_queue();
     let view = view_of(&feed, &[]);
     let drawn = rows(&view);
-    let live = drawn.iter().find(|r| r["id"] == "r-live-1").expect("a live row");
+    let live = drawn
+        .iter()
+        .find(|r| r["id"] == "r-live-1")
+        .expect("a live row");
     let facts = facts_of(live);
     assert_eq!(
         facts,
@@ -277,7 +283,9 @@ fn the_address_is_under_the_cursor_and_on_no_other_row() {
         .map(|u| u.as_str().unwrap_or_default())
         .collect();
     assert!(
-        under.iter().any(|u| u.starts_with("r-live-2 · head 1f2a3b4c5d")),
+        under
+            .iter()
+            .any(|u| u.starts_with("r-live-2 · head 1f2a3b4c5d")),
         "the id and sha are under the cursor: {under:?}"
     );
     // **No other row carries its id.**
@@ -312,7 +320,9 @@ fn every_live_row_names_its_own_entry() {
             );
             continue;
         }
-        let enter = row.get("enter").unwrap_or_else(|| panic!("{id} has no act"));
+        let enter = row
+            .get("enter")
+            .unwrap_or_else(|| panic!("{id} has no act"));
         assert_eq!(
             enter["id"], id,
             "the act names the entry the row IS, not another: {enter}"
@@ -390,7 +400,10 @@ fn a_queued_landing_says_what_it_waits_for() {
     feed["merges"] = json!([a_merge("m-queued", "queued", true)]);
     let view = view_of(&feed, &[]);
     let drawn = rows(&view);
-    let m = drawn.iter().find(|r| r["id"] == "m-queued").expect("the row");
+    let m = drawn
+        .iter()
+        .find(|r| r["id"] == "m-queued")
+        .expect("the row");
     let under: Vec<&str> = m["under"]
         .as_array()
         .unwrap()
@@ -419,7 +432,10 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(titles.iter().any(|t| *t == "the queue is idle"), "{titles:?}");
+    assert!(
+        titles.iter().any(|t| *t == "the queue is idle"),
+        "{titles:?}"
+    );
     let text = view.to_string();
     assert!(
         text.contains("nothing is in flight"),

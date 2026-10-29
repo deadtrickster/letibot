@@ -460,8 +460,8 @@ mod tests {
     /// the person's `a`/`v`/`r`/`d` must act on that one, whatever the host's own cursor is over.
     #[test]
     fn a_verb_act_carries_its_entry_and_its_own_word() {
-        let one: Act = serde_json::from_value(json!({"verb": "approve", "id": "r-1f2"}))
-            .expect("a verb act");
+        let one: Act =
+            serde_json::from_value(json!({"verb": "approve", "id": "r-1f2"})).expect("a verb act");
         assert_eq!(one, Act::verb_on("approve", "r-1f2"));
         assert_eq!(one.verb(), "approve", "the manifest's word is the verb's");
         assert_eq!(one.entry(), Some("r-1f2"), "and the entry is the id");

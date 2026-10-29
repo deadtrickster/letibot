@@ -14,7 +14,7 @@
 
 use super::*;
 use letibot_plugins::{Capability, Loader, Module, Stack};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -220,7 +220,10 @@ fn a_rows_verb_acts_on_the_entry_the_row_names() {
         ]}}]}],
     })
     .to_string();
-    let project = a_project("act", &a_manifest("\"approve\", \"veto\", \"restart\", \"rm\""));
+    let project = a_project(
+        "act",
+        &a_manifest("\"approve\", \"veto\", \"restart\", \"rm\""),
+    );
     let mut stack = Stack::discover(
         None,
         Some(&project),
@@ -235,7 +238,9 @@ fn a_rows_verb_acts_on_the_entry_the_row_names() {
 
     let mut a = a_head_with_a_queue();
     let workspace = a.workspace_path();
-    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, workspace));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack, workspace,
+    ));
     // Draw, so the pane holds the view the keys read.
     let screen = a.screen(120, 30).join("\n");
     assert!(screen.contains("agent/mine"), "{screen}");
@@ -308,7 +313,9 @@ fn a_layer_that_uses_an_undeclared_verb_falls_back() {
 
     let mut a = a_head_with_a_queue();
     let workspace = a.workspace_path();
-    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, workspace));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack, workspace,
+    ));
     let screen = a.screen(120, 30).join("\n");
     assert!(
         screen.contains("review queue · merge queue"),
@@ -341,7 +348,10 @@ fn a_queue_the_head_has_not_been_told_about_is_not_drawn_by_a_layer() {
 
     let mut a = app();
     a.session_id = "s1".into();
-    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(stack, a.workspace_path()));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack,
+        a.workspace_path(),
+    ));
     a.command("queue");
     let screen = a.screen(120, 30).join("\n");
     assert!(
@@ -394,10 +404,16 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         &std::env::temp_dir(),
     ));
     let screen = a.screen(120, 30).join("\n");
-    assert!(!screen.contains("agent/two"), "folded to begin with: {screen}");
+    assert!(
+        !screen.contains("agent/two"),
+        "folded to begin with: {screen}"
+    );
     // Walk the cursor to the history row: the two live rows, then it.
     let stops = a.queue_plugin_stops;
-    assert!(stops >= 3, "the pane has the live rows and the fold: {stops}");
+    assert!(
+        stops >= 3,
+        "the pane has the live rows and the fold: {stops}"
+    );
     a.queue_sel = stops - 1;
     // The row the fold row names is `finished`; the head's own Enter opens the entry overlay, so
     // the fold is opened by the fold map — which is what the act's id keys it by.
@@ -433,7 +449,10 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
             .unwrap_or(0)
     ));
     let session = "s-live";
-    let layer = data.join("letibot/sessions").join(session).join("plugins/queue");
+    let layer = data
+        .join("letibot/sessions")
+        .join(session)
+        .join("plugins/queue");
     std::fs::create_dir_all(&layer).expect("the session's plugin dir");
     let builtin = letibot_builtins::table()
         .iter()
@@ -470,7 +489,10 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
         let layer = host
             .reader(crate::app::queue_pane::HOOK, crate::app::queue_pane::FEED)
             .expect("a queue layer");
-        assert_eq!(layer.id, "s1", "the session scope answers, above the built-in");
+        assert_eq!(
+            layer.id, "s1",
+            "the session scope answers, above the built-in"
+        );
         before = layer.sha256.clone();
     }
 

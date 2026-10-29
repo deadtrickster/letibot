@@ -1475,4 +1475,3 @@ fn o_goes_into_the_reviewers_session() {
         b.notice
     );
 }
-

@@ -796,7 +796,10 @@ pub(crate) fn gate_running_words(sha: &str, for_ms: u64) -> String {
 /// **The gate each repository is running** (one at a time: R92 item 8) — what its queued
 /// landings wait for. The store has it: a `gating` target since its `checked_ms`, or a `gating`
 /// landing since its `state_ms`, rebased.
-pub(crate) fn gates_running(q: &QueueSnapshot, now: u64) -> std::collections::HashMap<&str, String> {
+pub(crate) fn gates_running(
+    q: &QueueSnapshot,
+    now: u64,
+) -> std::collections::HashMap<&str, String> {
     let mut out = std::collections::HashMap::new();
     for t in q.targets.iter().filter(|t| t.state == "gating") {
         out.insert(

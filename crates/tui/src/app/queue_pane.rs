@@ -34,6 +34,20 @@
 //!   carries the answer so a row can say the one verb that would do something instead of printing
 //!   four and leaving the person to find out.
 //!
+//! # And the one thing it carries that a feed usually does not: `cursor`
+//!
+//! **A pane cannot see the cursor.** C3's input has no field for it, and this pane needs one: the
+//! operator's ruling is one line per entry with the address (the id `/queue approve` takes, the sha
+//! a person quotes) on the picked row and on no other, so a row has to know whether it is picked.
+//! `cursor` is that answer, as the entry id the last frame's row named — so it is **one frame behind
+//! on the very first draw** (there is no view yet to read a row from) and exact from then on: a
+//! cursor moves, the feed changes, the plugin is asked again. `""` is *no row is picked*.
+//!
+//! That price is deliberate. The alternative is a second channel — the host telling an already
+//! asked pane which row the cursor moved to — and a pane that is asked again on every arrow key is
+//! exactly the call-per-keystroke a plugin pane should not be. A next pane that needs the cursor
+//! should read this field rather than invent another; a next pane that does not should ignore it.
+//!
 //! # The seam back
 //!
 //! A row that carries `{"verb": "approve", "id": "r-1f2…"}` names the entry the person's `a`/`v`/

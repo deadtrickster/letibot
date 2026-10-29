@@ -571,7 +571,9 @@ impl App {
             // **A queue verb is not this list's to perform.** The queue pane's keys are the ones
             // that act on an entry, and a session list row carrying `approve` is a layer reaching
             // for a key this pane does not have — said, not silently done.
-            Some(RowAct::Verb { .. }) => Some("asks for a queue verb, which this list has no key for"),
+            Some(RowAct::Verb { .. }) => {
+                Some("asks for a queue verb, which this list has no key for")
+            }
             Some(RowAct::Fold { .. }) => match row.open {
                 Some(Fold::Open) => Some("folds it away"),
                 Some(Fold::Closed) => Some("unfolds it"),

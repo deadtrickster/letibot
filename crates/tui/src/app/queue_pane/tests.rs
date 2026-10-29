@@ -171,7 +171,10 @@ fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
     assert_eq!(live["state"], "reviewing");
     assert_eq!(live["state_words"], "reviewing");
     assert_eq!(live["live"], true, "`reviewing` is the queue working on it");
-    assert_eq!(live["in_state_ms"], 100_100, "now 1_700_100 − state 1_600_000");
+    assert_eq!(
+        live["in_state_ms"], 100_100,
+        "now 1_700_100 − state 1_600_000"
+    );
     assert_eq!(live["repository"], "letibot");
     assert_eq!(live["branch"], "agent/r-live");
     assert_eq!(
@@ -320,7 +323,14 @@ fn live_is_the_hosts_own_rule() {
     for open in ["queued", "gating", "blocked"] {
         assert!(merge_open(open), "{open} is the merge queue's work");
     }
-    for done in ["landed", "failed", "timed_out", "conflict", "moved", "withdrawn"] {
+    for done in [
+        "landed",
+        "failed",
+        "timed_out",
+        "conflict",
+        "moved",
+        "withdrawn",
+    ] {
         assert!(!merge_open(done), "{done} is history");
     }
 }

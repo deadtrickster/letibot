@@ -248,7 +248,9 @@ fn the_verb(verbs: &[VerbWhy]) -> Option<String> {
     // **Nothing would move it** — say the verb they would reach for and why it would not. `restart`
     // is the one a stuck row is stuck ON (the operator: *"so merge queue has 4 failed items, we
     // need a way to restart them"*), so its reason is the useful one.
-    let restart = verbs.iter().find(|v| v.verb == "restart" && !v.why.is_empty());
+    let restart = verbs
+        .iter()
+        .find(|v| v.verb == "restart" && !v.why.is_empty());
     let any = restart.or_else(|| verbs.iter().find(|v| !v.why.is_empty()));
     any.map(|v| format!("{} ({})", v.verb, v.why))
 }
@@ -422,11 +424,7 @@ fn role_of(state: &str) -> Role {
 /// the next answer, and a pane nobody has opened asks for nothing.
 fn history_row(feed: &Feed, folded: bool) -> Out {
     let n = feed.counts.finished;
-    let shown = feed
-        .reviews
-        .iter()
-        .filter(|r| !r.live)
-        .count()
+    let shown = feed.reviews.iter().filter(|r| !r.live).count()
         + feed.merges.iter().filter(|m| !m.live).count();
     Out {
         id: "finished".to_string(),
@@ -523,7 +521,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
     let folded = input.folded.get("finished").copied().unwrap_or(false);
     // **One repository in scope, or several?** A row names its repository only when there is more
     // than one to tell apart — the pane's own rule, and the other half of why its rows were wide.
-    let show_repo = feed.scope.words.contains(", ") || feed.scope.words.contains("every repository");
+    let show_repo =
+        feed.scope.words.contains(", ") || feed.scope.words.contains("every repository");
 
     let mut rows: Vec<Value> = Vec::new();
     // **The queue the person is looking at goes first.** `tab` is the head's, and a plugin that
