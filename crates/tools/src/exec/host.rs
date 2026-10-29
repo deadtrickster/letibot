@@ -3143,6 +3143,86 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         std::fs::remove_dir_all(&scratch).ok();
     }
 
+    /// **A promotion of a run that already has a file keeps it, byte for byte.**
+    ///
+    /// The spawner and the promoter are two callers of one rule
+    /// ([`HostProcesses::spill_output`]), and the failure this pins is the worst one available:
+    /// `spill_to` truncates, so a second promotion that opened the file again would cut a run's
+    /// output at the moment somebody asked where the rest of it goes. The job here is already in
+    /// the session scope, which is the *"already there, nothing moved"* arm — the arm a second
+    /// Ctrl+O takes.
+    #[test]
+    fn a_promotion_does_not_truncate_the_file_a_background_job_already_has() {
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-repromote-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let scratch =
+            std::env::temp_dir().join(format!("letibot-repromote-out-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+        h.set_scratch_dir(&scratch);
+
+        // It prints, then waits: the file has bytes in it and a descriptor still open, which is
+        // the state a truncation would be invisible in until somebody read the file.
+        let id = h
+            .spawn(&SpawnRequest {
+                command: "printf 'kept'; sleep 30".into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background: true,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("a cgroup v2 tree was measured above");
+        let until = Instant::now() + Duration::from_secs(10);
+        while h.output(&id, 0, 64).map(|o| o.retained).unwrap_or(0) == 0 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let before = h
+            .job(&id)
+            .and_then(|v| v.output_file)
+            .expect("a run with no deadline has its file from the spawn");
+        assert_eq!(before.bytes, 4, "the four bytes it has printed so far");
+
+        let p = h
+            .promote(
+                &id,
+                ScopeKind::Session,
+                None,
+                Backgrounding::Operator {
+                    identity: "test".into(),
+                },
+            )
+            .expect("a promotion of a job this host owns");
+        let after = p
+            .output_file
+            .expect("the promotion still answers with the file");
+        assert_eq!(
+            after.path, before.path,
+            "the same file, not a second one beside it"
+        );
+        assert_eq!(
+            after.bytes, 4,
+            "the promotion did not truncate a file the run is writing"
+        );
+        assert_eq!(
+            std::fs::read(&after.path).expect("the file is still there"),
+            b"kept".to_vec()
+        );
+
+        let _ = h.kill_job_as(&id, "test");
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&scratch).ok();
+    }
+
     /// **A name is unique within the session, and it never moves.**
     ///
     /// Two jobs the caller named `tests` are two jobs: the second is `tests-2`. The
