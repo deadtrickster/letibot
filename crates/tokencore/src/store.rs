@@ -1795,7 +1795,13 @@ impl LoadedTranscript {
 }
 
 pub struct Store {
-    conn: Connection,
+    /// **`ManuallyDrop`, so the close is OURS and its failure can be said.** `rusqlite`'s own
+    /// `Drop` calls `sqlite3_close` and *discards* the answer, and `sqlite3_close` fails with
+    /// `SQLITE_BUSY` whenever a statement is still outstanding — leaving the connection, and its
+    /// descriptors, open with no error anywhere. [`Drop`] here takes the connection and calls
+    /// `Connection::close`, which reports that failure instead of swallowing it. `ManuallyDrop`
+    /// derefs, so every method below reads `self.conn` exactly as it always did.
+    conn: std::mem::ManuallyDrop<Connection>,
     /// **Where this store lives**, so a second connection can be opened to it — see
     /// [`Store::path`]. `None` for `open_in_memory`, which is a store with no file to reach.
     path: Option<std::path::PathBuf>,
@@ -1804,6 +1810,37 @@ pub struct Store {
     /// the connection being already owned) and read afterwards by the daemon, and because a
     /// `Store` is `Send` and not `Sync` for reasons the connection already gave.
     newer: std::cell::Cell<Option<NewerStore>>,
+}
+
+/// **How many `Store`s this process holds open** — [`Store::live`]'s counter.
+///
+/// Process-wide and not per-store, because the question it answers is a daemon's: *does the
+/// number of connections grow with the number of sessions?* A `Relaxed` fetch is enough — a test
+/// reads it on one thread after the work it measured has ended, and no other fact is derived
+/// from it.
+static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The connection goes with the struct, and **the close is this impl's**: see the field's doc for
+/// the `SQLITE_BUSY` that `rusqlite`'s own `Drop` swallows. A close that fails is said on stderr —
+/// there is no caller to return it to — because the alternative is the shape that cost the
+/// operator 205 of 256 descriptors: connections nobody knows are still open.
+impl Drop for Store {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        // SAFETY: `conn` is initialised in `from_connection` and nothing else takes it; this is
+        // the one place it is moved out, and the struct is being dropped so it is not read again.
+        let conn = unsafe { std::mem::ManuallyDrop::take(&mut self.conn) };
+        if let Err((_conn, e)) = conn.close() {
+            eprintln!(
+                "store: the connection to {} did not close ({e}) — a statement was still open, so \
+                 its descriptors are held until this process exits",
+                self.path
+                    .as_deref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "an in-memory store".into())
+            );
+        }
+    }
 }
 
 impl Store {
@@ -1829,6 +1866,23 @@ impl Store {
     /// that needs one must say so.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// **How many `Store`s are open in this process right now** — the census a test measures a
+    /// session's lifetime by, because a descriptor count is a proxy and this is the thing.
+    ///
+    /// Each open `Store` is one `rusqlite::Connection` to the file, and a WAL connection holds
+    /// the db (and its `-wal` while a transaction is open): **two descriptors apiece** on the
+    /// box this was written for. So *does a session's store outlive the session?* is a question
+    /// about this number, and *how many descriptors does the daemon hold?* is this number times
+    /// two plus whatever else it has open.
+    ///
+    /// A count and not a registry of paths: the caller that needs to know *which* store is a
+    /// leak already knows which path it passed, and a table of live paths would be a lock in the
+    /// middle of every open. `None` is `open_in_memory`'s, which is still a connection and still
+    /// counted.
+    pub fn live() -> usize {
+        LIVE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// **How long a connection waits for the write lock before giving up** — MEASURED, not chosen.
@@ -1872,12 +1926,24 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
-            conn,
+            conn: std::mem::ManuallyDrop::new(conn),
             path,
             newer: std::cell::Cell::new(None),
         };
         store.migrate()?;
+        LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(store)
+    }
+
+    /// **Run the migrations again on this store's own connection** — for the one test that unwinds
+    /// a schema and checks the migration carries it forward. `from_connection` is where `migrate`
+    /// is called from, and that constructor consumes a `Connection`; this is the same act on a
+    /// connection that is already configured, and it exists so the test does not have to take the
+    /// connection apart to reach it.
+    #[cfg(test)]
+    fn remigrate(self) -> Result<Self> {
+        self.migrate()?;
+        Ok(self)
     }
 
     fn migrate(&self) -> Result<()> {
@@ -5126,7 +5192,7 @@ mod corpus_tests {
             .expect("stamp v4");
         // `None` for the path: this store was opened in memory, and what the test is
         // re-running is the MIGRATION, which does not care where the file is.
-        let s = Store::from_connection(s.conn, None).expect("migrate");
+        let s = s.remigrate().expect("migrate");
 
         let sid = a_session(&s);
         s.record_adjudication(&a_decision("after-migration", &sid))
