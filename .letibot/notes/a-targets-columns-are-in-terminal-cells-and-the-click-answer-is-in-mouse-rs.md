@@ -48,3 +48,27 @@ from the words' length, because `rano::agent::composer::box_edge` truncates the 
 The safe failure is *no target*; arithmetic gives a target for words the frame dropped. Same rule
 as `box_top_label` for the count labels, and worth a test in both directions (a 30-column frame
 records nothing; a frame that draws them records their exact columns).
+
+## The mouse.rs ban, lifted on the record (2026-10-29)
+
+The package brief listed `crates/tui/src/app/keys/mouse.rs` as another branch's file, and this
+branch touches three functions there. The reviewer could not waive that on its own, so the parent
+of the package (the session that wrote the brief) answers it here, and the answer is YES:
+
+* the three matches are **exhaustive over `Target` with no `_` arm** (`still_drawn`, `wheel_at`, and
+  `click_on`'s arm list), so the new variant cannot compile without them — the arms are not a
+  preference, they are the minimum a new target costs;
+* the reason for the ban does not hold: the branch it was protecting (`agent/tui-status-and-copy`)
+  touches `app/keys/input.rs`, `app/tests/{editor,turn}.rs` and `ui/turn_status.rs`, and not
+  `mouse.rs`;
+* and the `click_on` arm is **load-bearing rather than additive there**: that match ends in
+  `(_, None) => Break(None)`, so a target recorded with no stops is silently swallowed unless its
+  arm sits above the catch-all.
+
+Accepted knowingly: a wheel notch over the standings' span is now consumed and moves nothing,
+rather than falling through to scroll the transcript — the rule the count labels and the git field
+already keep, and a consequence of the span becoming a target at all.
+
+Also accepted as **not this branch's job**, and recorded above rather than fixed here: the header's
+git field records `rect.x` without `+ gutter` and sits two columns left of what it drew
+(measured `rect.x=59 drawn_col=61 w=6`). One `+ gutter` is the fix and it deserves its own commit.
