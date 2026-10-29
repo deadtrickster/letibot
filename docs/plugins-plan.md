@@ -857,8 +857,10 @@ other session sees it. Two consequences worth knowing:
 
 * **A scaffolded plugin is not in force until `plugin load`.** The stack lists what is ANSWERING;
 a fresh directory with no module is a source, and `plugin stack` says `no layers at all` until the
-loop has been through `load`. At the next session open it *is* discovered — with a `Failure` naming
-the missing module if it was never built.
+loop has been through `load`. At the next session open it *is* discovered — as a DECLARATION: it
+is listed with `sha —`, nothing answers it, and nothing is recorded as a failure (§4.8's rule is
+the same state, and a correct install of a built-in's tool is exactly this shape). The missing
+build is what `plugin stack` shows, not a `plugin_layer` warning.
 * **A layer that is loaded persists across a restart**, because discovery finds it: the loop needs
 `load` once per change, not once per session.
 
