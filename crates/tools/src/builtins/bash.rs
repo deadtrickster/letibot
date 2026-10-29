@@ -764,6 +764,29 @@ impl Tool for Bash {
             // capture is empty by construction. **The redirect is in the text**, so this is
             // knowable now, needs nothing to run, and is the moment to say it.
             let redirected = crate::builtins::output_redirect_path(command);
+            // **Where the whole of it is, said at the one moment the caller learns the handle.**
+            //
+            // A background run's file has existed since its spawn (`HostProcesses::spawn` opens
+            // it before a byte is drained), so the window is no longer the only copy — and a
+            // reader told only about the window is a reader who loses a long build's first half
+            // past 8 MiB. The same string the promotion's result names, from the same record
+            // (`JobView::output_file`), so the two ways into the background cannot describe the
+            // file two ways.
+            //
+            // **Not when the command redirects its own stdout**: that job's window is empty by
+            // construction and so is its file, and naming a file that will never hold anything
+            // sends the reader to an empty one when the real answer is the path in the command.
+            let kept = match (
+                &redirected,
+                view.as_ref().and_then(|v| v.output_file.clone()),
+            ) {
+                (None, Some(f)) => format!(
+                    "  output file: {} (from byte {}) — every byte it prints goes there too, \
+                     and that file is not bounded by the window's 8 MiB\n",
+                    f.path, f.from
+                ),
+                _ => String::new(),
+            };
             // `Backgrounded`, not `Ok`, even though the model asked. The outcome names a fact
             // about the world — *this command is running and has not answered yet* — and that
             // fact does not depend on who wanted it. Reporting `Ok` here would make a `bash
@@ -808,7 +831,7 @@ impl Tool for Bash {
                     crate::builtins::todo::attach_now(ctx, "job", &id.0)
                 ),
                 format!(
-                    "started `{label}` in the background (pid {}).\n{named}  scope: {} — {}\n\n{} \
+                    "started `{label}` in the background (pid {}).\n{named}{kept}  scope: {} — {}\n\n{} \
                      So do not build your own clock: no `sleep`, no polling loop.",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),

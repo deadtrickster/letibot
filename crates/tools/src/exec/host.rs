@@ -190,10 +190,12 @@ pub struct JobView {
     pub ran_for: Option<Duration>,
     pub produced: u64,
     pub since_last_output: Option<Duration>,
-    /// **Where the whole of this job's output is also going**, once it was promoted out of the
-    /// foreground — or `None` for a job nobody moved (and for one that was already over when
-    /// they asked). See [`OutputFile`]: the window above is bounded, this is not, and a reader
-    /// told only about the window is a reader who loses a long build's first half.
+    /// **Where the whole of this job's output is also going**, for every run nothing bounds —
+    /// `bash { background: true }` from its spawn, a foreground run from the promotion that
+    /// lifted its deadline — and `None` for a run that still has one (and for one that was
+    /// already over when they asked). See [`OutputFile`]: the window above is bounded, this is
+    /// not, and a reader told only about the window is a reader who loses a long build's first
+    /// half.
     pub output_file: Option<OutputFile>,
 }
 
@@ -942,13 +944,13 @@ pub struct HostProcesses {
     /// Bytes retained per job. Beyond this the ring drops from the front and says
     /// so — see [`super::jobs::OutputSlice::denominator`].
     capture_bytes: usize,
-    /// **Where a promoted run's output keeps going** — the session's scratch directory, set by
-    /// the daemon ([`crate::backend::Backend::with_scratch_dir`]'s host half).
+    /// **Where a run with no deadline's output keeps going** — the session's scratch directory,
+    /// set by the daemon ([`crate::backend::Backend::with_scratch_dir`]'s host half).
     ///
     /// Behind a lock because the daemon sets it after the host is built and the host is shared
     /// by `Arc` with every tool in the session. `None` on a host nobody wired one to: a
-    /// promotion then leaves the run's output exactly where it was — in the window — rather than
-    /// inventing a directory.
+    /// backgrounded or promoted run then keeps its output exactly where it was — in the window —
+    /// rather than inventing a directory.
     scratch: Mutex<Option<PathBuf>>,
     /// The shell a command is handed to.
     shell: Vec<String>,
@@ -1200,22 +1202,37 @@ impl HostProcesses {
         self
     }
 
-    /// **Where a promoted run's output goes on living.** The daemon calls this once, with the
-    /// session's scratch directory, and only the session's own opener knows it — see
+    /// **Where a run with no deadline's output goes on living.** The daemon calls this once,
+    /// with the session's scratch directory, and only the session's own opener knows it — see
     /// [`HostBackend::with_scratch_dir`](crate::backend::HostBackend::with_scratch_dir), which
     /// is the one call that sets both halves.
     pub fn set_scratch_dir(&self, dir: impl Into<PathBuf>) {
         *self.scratch.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir.into());
     }
 
-    /// **Give a promoted run a file that keeps everything it prints from here on** — the
-    /// window's unbounded companion, in the session's scratch directory as `job-<id>.out`.
+    /// **Give a run that nothing bounds a file keeping everything it prints** — the window's
+    /// unbounded companion, in the session's scratch directory as `job-<id>.out`.
     ///
-    /// Three answers, and each is a different fact: the file it already has (a second Ctrl+O
-    /// must not truncate a file a run is writing); `None` because this host has no scratch
-    /// directory to put one in; `None` because opening it failed, which is printed on the
-    /// daemon's stderr rather than smuggled into a promotion record that would then claim a
-    /// file nobody can open.
+    /// **Two callers, and they are the two moments a run stops having an end in sight.** The
+    /// **spawn** of a job the caller started with no deadline (`SpawnRequest::background`, and
+    /// the operator's own `!` run, whose stop is their own act) — that is the case the
+    /// harness itself recommends to a long run (*"Killed at its 120s deadline. Re-run it with
+    /// `background: true`"*), and until this existed the run the harness recommended kept its
+    /// output only in the 8 MiB window. And the **promotion** that lifts a foreground run's
+    /// deadline mid-flight.
+    ///
+    /// **A run that still has a deadline does not get one here**, and that is not an
+    /// oversight: [`DEFAULT_CAPTURE_BYTES`] is 8 MiB *"small enough that a runaway `yes`
+    /// cannot take the box"*, and a file behind every `bash` call would take that bound away
+    /// from the one shape a runaway most often has — a foreground command with a 120 s
+    /// deadline, whose output is unbounded for the whole of those 120 s. Such a run gets its
+    /// file from the promotion, seeded with what the window already holds.
+    ///
+    /// Three answers, and each is a different fact: the file it already has (the spawn's, for
+    /// a run that is promoted later — truncating a file a run is writing is the one outcome
+    /// worse than having none); `None` because this host has no scratch directory to put one
+    /// in; `None` because opening it failed, which is printed on the daemon's stderr rather
+    /// than smuggled into a record that would then claim a file nobody can open.
     fn spill_output(&self, job: &Job) -> Option<OutputFile> {
         if let Some(existing) = job.output_file() {
             return Some(existing);
@@ -1239,10 +1256,10 @@ impl HostProcesses {
             Ok(f) => Some(f),
             Err(why) => {
                 // Said where the daemon's own banner is, because the alternative is a
-                // promotion record naming a file that is not there.
+                // record naming a file that is not there.
                 eprintln!(
-                    "letibot: `{}` was moved to the background but its output could not be \
-                     spilled, so it stays only in its window: {why}",
+                    "letibot: `{}`'s output could not be spilled to a file, so it stays only \
+                     in its window: {why}",
                     job_label(job.slug.as_deref(), &job.id.0)
                 );
                 None
@@ -1847,6 +1864,27 @@ impl ProcessHost for HostProcesses {
             .with_memory_cap(memory_cap),
         );
 
+        // **A run nothing bounds gets its file here, before a single byte is drained.**
+        //
+        // This is the case the harness itself recommends: *"Killed at its 120s deadline. Re-run
+        // it with `background: true`"* — and until this line the run it recommended kept its
+        // output only in the window, which is 8 MiB, which a lengthy build outgrows. A
+        // promotion is the other half of the same rule and no longer the only way in: a job
+        // that already has a file when it is promoted keeps it (`spill_output` answers with the
+        // existing one), so the two callers cannot disagree about the path or about where the
+        // file's first byte is.
+        //
+        // **Before the drains, so the file's first byte is the job's first byte.**
+        // `spill_to` seeds from the retained window, and the window is empty here because
+        // nothing has drained yet — so `from` is 0, honestly, rather than because a constant
+        // said so.
+        //
+        // **Not for a run with a deadline.** See [`HostProcesses::spill_output`]: a foreground
+        // `yes` is bounded by 8 MiB of window and by nothing else once it has a file.
+        if req.background || req.tty {
+            self.spill_output(&job);
+        }
+
         let out = child.stdout.take();
         let err = child.stderr.take();
         // **The slave handle goes now, once the child holds its own copy.** A slave this
@@ -1890,6 +1928,11 @@ impl ProcessHost for HostProcesses {
                 if let Some(h) = b {
                     let _ = h.join();
                 }
+                // **Both drains have joined, so the file's last byte is in.** The descriptor
+                // goes now rather than at the host's death: the file is still on disk and
+                // still named, and a session that backgrounds fifty builds must not hold
+                // fifty descriptors on a box whose soft limit is 256 (see the `ulimit` rake).
+                waiter.close_spill();
                 #[cfg(not(target_os = "macos"))]
                 let status = child.wait();
                 // A job already marked `Killed` keeps that: SIGKILL from a cgroup
@@ -2318,8 +2361,10 @@ impl ProcessHost for HostProcesses {
     ///
     /// A foreground command is bounded by its deadline, so a window that holds 8 MiB is a
     /// window that holds all of it. A move to the background lifts that bound — the run may
-    /// now print for an hour — so the promotion is the one moment where *the output is only in
-    /// memory* stops being a fact nobody could notice and becomes an agony. The operator,
+    /// now print for an hour — so the promotion is one of the two moments where *the output is
+    /// only in memory* stops being a fact nobody could notice and becomes an agony (the other
+    /// is the spawn of a run that was backgrounded from the start, which has had its file since
+    /// [`HostProcesses::spawn`]). The operator,
     /// 2026-10-26: *"when I background a lengthy bash run with Ctrl-o its output goes to
     /// /dev/null, causes agony, should go to a tmp file in a scratch dir"*. So the same step
     /// opens `job-<id>.out` in the session's scratch directory ([`OutputFile`]), seeds it with
@@ -2982,6 +3027,120 @@ tcp4 0 0 127.0.0.1.8080 *.* LISTEN 0 0 131072 131072 llama-server:77 00000\n";
         );
         let _ = h.kill_job_as(&running, "test");
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// **A run with no deadline has its file from the spawn, and `from` is 0 because nothing
+    /// had been printed yet** — not because a constant said so.
+    ///
+    /// This is the case the harness itself recommends to a long run (*"Killed at its 120s
+    /// deadline. Re-run it with `background: true`"*) and the one that had no file at all:
+    /// [`Capture::spill_to`] had a single caller, the promotion, so a job that BEGAN in the
+    /// background kept its output only in the ring — and lost all of it when the daemon
+    /// restarted. The ring here is sixteen bytes, so the drop is measurable without a 9 MiB
+    /// experiment.
+    ///
+    /// **And a run that still has a deadline does not get one here**, which is the second half
+    /// of the same rule: the 8 MiB window is what bounds a runaway `yes`, and an unbounded file
+    /// behind every `bash` call would take that bound away from the one shape a runaway has.
+    #[test]
+    fn a_background_job_has_a_file_from_its_spawn_and_a_foreground_one_does_not() {
+        // The cgroup is apparatus, the same skip the tests around this one make.
+        let Some(_) = letibot_tokencore::apparatus::present(
+            "a process-lifetime tree (cgroup v2; process groups on macOS)",
+            letibot_tools::host_tree().is_ok(),
+        ) else {
+            return;
+        };
+        let root = std::env::temp_dir().join(format!("letibot-spawn-spill-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // **A fixture scratch directory, never the box's own** — the same rule the promotion
+        // tests follow, and the reason `set_scratch_dir` takes one at all.
+        let scratch =
+            std::env::temp_dir().join(format!("letibot-spill-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let h = HostProcesses::new(&root)
+            .expect("this box has a cgroup v2 tree")
+            .with_capture_bytes(16);
+        h.set_scratch_dir(&scratch);
+
+        let spawn = |command: &str, background: bool| {
+            h.spawn(&SpawnRequest {
+                command: command.into(),
+                slug: None,
+                cwd: "/".into(),
+                scope: ScopeKind::Session,
+                scope_name: None,
+                background,
+                env: vec![],
+                tty: false,
+                memory: None,
+            })
+            .expect("a cgroup v2 tree was measured above")
+        };
+
+        // Four bytes, then twenty: twenty-four into a sixteen-byte ring, so the ring drops its
+        // first eight and the file must not.
+        let id = spawn("printf aaaa; printf bbbbbbbbbbbbbbbbbbbb", true);
+        let _ = h.wait_job(&id, Duration::from_secs(30));
+
+        let view = h.job(&id).expect("the row stays");
+        let f = view
+            .output_file
+            .expect("a job with no deadline has a file from its spawn");
+        assert!(
+            f.path.ends_with(&format!("job-{id}.out")),
+            "the file is named after the job: {}",
+            f.path
+        );
+        assert!(
+            f.path.starts_with(&scratch.display().to_string()),
+            "the file belongs in the session's scratch directory: {}",
+            f.path
+        );
+        assert_eq!(
+            f.from, 0,
+            "the file's first byte is the job's first byte — nothing had been dropped when it \
+             was opened"
+        );
+
+        // **Read from the disk, not through the harness.** A test that asked the tool whether it
+        // wrote is a test of the tool's opinion of itself.
+        let on_disk = std::fs::read(&f.path).expect("the scratch file exists");
+        assert_eq!(
+            on_disk,
+            b"aaaabbbbbbbbbbbbbbbbbbbb".to_vec(),
+            "the file holds every byte from the job's first, and the ring did not bound it"
+        );
+        assert_eq!(
+            f.bytes, 24,
+            "the count is the file's own, and it is final once the drains have joined"
+        );
+
+        // **The window still dropped the front, and says so** — the two are different facts and
+        // the file is the answer to the first one.
+        let slice = h.output(&id, 0, 1024).expect("the row stays");
+        assert_eq!((slice.dropped, slice.retained), (8, 16));
+        assert_eq!(
+            slice.text(),
+            "bbbbbbbbbbbbbbbb",
+            "the window is the last sixteen bytes and nothing else"
+        );
+
+        // **A run that still has a deadline keeps the window as its only copy** — see this
+        // test's header: an unbounded file behind every `bash` call would remove the bound the
+        // 8 MiB window exists to be.
+        let foreground = spawn("true", false);
+        let _ = h.wait_job(&foreground, Duration::from_secs(30));
+        assert!(
+            h.job(&foreground)
+                .expect("the row stays")
+                .output_file
+                .is_none(),
+            "a deadline-bounded run gets its file from the promotion, not from the spawn"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&scratch).ok();
     }
 
     /// **A name is unique within the session, and it never moves.**
