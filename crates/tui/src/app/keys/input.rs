@@ -29,6 +29,15 @@
 //! Every mouse report but a plain wheel step and a plain left press is dropped: selecting text
 //! stays the terminal's own Shift+drag, and a report the head does not act on must never
 //! become typed punctuation.
+//!
+//! # The ⌘ chords
+//!
+//! Under the kitty keyboard a terminal reports ⌘C as `CSI 99;9u`, and rano keeps that bit
+//! ([`Mods::SUPER`]), so a chord arrives here as a chord instead of as its plain letter: **⌘C**
+//! is silent (the terminal copies the selection, and [`Key::CtrlC`] — which an unbound super used
+//! to leave behind — would interrupt a turn), **⌘V** is the clipboard's picture door
+//! ([`Key::CtrlV`], the same one ctrl-v opens), **⌘Z** undoes and **⌘⇧Z** redoes. Any other ⌘
+//! chord is swallowed by the last character arm — never typed.
 
 use super::Key;
 use rano::term::{Event, KeyCode, KeyEvent, Mods, MouseButton, MouseEvent, MouseKind};
@@ -50,6 +59,21 @@ fn key(k: KeyEvent) -> Option<Key> {
     Some(match k.code {
         KeyCode::Char(c) if m.is_empty() => Key::Char(c),
         KeyCode::Char(c) if m == Mods::CTRL => return ctrl(c),
+        // **⌘ (super) is a chord, not a letter.** The terminal forwards ⌘C as `CSI 99;9u` and
+        // rano keeps the bit now, so the chord arrives as itself; before that it arrived as a
+        // plain `c` and was typed into the prompt (the operator's report, 2026-10-27).
+        //
+        // ⌘C is deliberately `None`: the TERMINAL copies the selection and this head's drag
+        // release copies it too (`App::copy_selection`), so a head that acted here would be a
+        // second copy of one fact. Silence is the whole of its job.
+        KeyCode::Char('c') if m == Mods::SUPER => return None,
+        // ⌘V: the clipboard's picture, through the door ctrl-v already opens — the clipboard
+        // first, unless a payload window is open (`App::attach_from_clipboard`).
+        KeyCode::Char('v') if m == Mods::SUPER => Key::CtrlV,
+        // ⌘Z undoes and ⌘⇧Z redoes, the chords everybody's hands already know. The shifted
+        // spelling comes either as `z` with shift or as `Z` with it, depending on the terminal.
+        KeyCode::Char('z') if m == Mods::SUPER => Key::Undo,
+        KeyCode::Char('z') | KeyCode::Char('Z') if m == Mods::SUPER | Mods::SHIFT => Key::Redo,
         // Alt arrives as an ESC before the key; only these four mean anything. alt-b is a MARK on
         // an empty composer and word-left otherwise — settled in `App::key`, which can see the
         // composer (`app/feedback.rs`); alt-g is the other mark (TODO R81).
@@ -543,43 +567,54 @@ mod tests {
         assert!(k.is_empty(), "{k:?}");
     }
 
-    /// **⌘C reaches this map as a bare `c`, and that is rano's, not this match's** — measured
-    /// 2026-10-27 from the operator's report: *"Cmd-C with a mouse selection copies AND types a
-    /// `c`"*, so a selection copied mid-prompt corrupts the prompt.
+    /// **⌘C is a chord, and it is neither a `c` nor an interrupt** — measured 2026-10-27 from the
+    /// operator's report (*"Cmd-C with a mouse selection copies AND types a `c`"*), fixed
+    /// 2026-10-29 in rano's `fix/super-modifier`.
     ///
     /// **The copy works and is not this head's.** A drag's release copies the selection
-    /// (`App::copy_selection`) and Ghostty copies the selection too, which is why the report says
-    /// *"the text is on the clipboard"*; the damage is the character beside it.
+    /// (`App::copy_selection`) and Ghostty copies it too, which is why the report said *"the text
+    /// is on the clipboard"*; the damage was the character beside it.
     ///
-    /// **Where it goes wrong is one mask in the decoder.** Ghostty forwards ⌘C to the application
-    /// as `CSI 99;9u` — modifier `9` is `1 + 8`, bit 8 is super — because this head asks for the
-    /// kitty keyboard (`CSI > 1 u`). rano keeps three modifier bits (`Mods::from_bits(b & 7)`),
-    /// and `kitty_key` puts a character back through the LEGACY bytes it stands for, which carry
-    /// alt and ctrl only. So the super bit is dropped twice and the sequence decodes to `c` with
-    /// no modifier at all — the same [`Key::Char`] a person types by pressing the key.
+    /// **Where it went wrong was one mask and one round trip in rano.** Ghostty forwards ⌘C as
+    /// `CSI 99;9u` — modifier `9` is `1 + 8`, bit 8 is super — because this head asks for the
+    /// kitty keyboard (`CSI > 1 u`). rano masked the bit off (`Mods::from_bits(b & 7)`) and then
+    /// put the character back through the LEGACY bytes it stands for, which carry alt and ctrl
+    /// only, so the sequence decoded to `c` with no modifier at all: the [`Key::Char`] a person
+    /// types by pressing the key.
     ///
-    /// **Nothing in this tree can recover it**, measured the same day: the one door to the bytes,
-    /// `Terminal::raw_input`, runs them through `legacy_bytes`, and the same sequence comes back
-    /// as the single byte `c`.
-    ///
-    /// **So the fix is in rano and it is two lines** — keep the bit in `Mods::from_bits`, and in
-    /// `kitty_key` emit `KeyCode::Char(ch)` with its mods for a `CSI … u` carrying a bit the
-    /// legacy spelling cannot hold. Measured against a patched rano: with those two lines,
-    /// `CSI 99;9u` decodes to NOTHING, and this head needs no change at all — [`key`]'s last
-    /// character arm answers `None` for any modifier it does not bind, which is the arm that
-    /// swallows the chord.
-    ///
-    /// The two assertions below are the proof, so that the day rano is fixed the first one fails
-    /// loudly and the person who sees it knows which line to invert.
+    /// **This test used to assert that defect, on purpose**, so that the day rano was fixed the
+    /// first assertion failed loudly and named the line to invert. This is that day, and the
+    /// assertions below are the new truth: the three byte sequences decode with their super, and
+    /// [`key`] turns them into the verbs the operator reaches for. ⌘⌃C is the one that used to
+    /// hurt most — with the super gone it was a bare [`Key::CtrlC`], so the chord meant to copy
+    /// interrupted the turn.
     #[test]
-    fn a_cmd_chord_arrives_as_its_plain_character_because_rano_drops_the_super_bit() {
-        // ⌘C, the reported key: today a typed `c`.
-        assert_eq!(decode(b"\x1b[99;9u"), vec![Key::Char('c')]);
-        // ⌘⌃C is worse than the report: the super is gone and the ctrl is what is left, so the
-        // chord that was meant to copy interrupts the turn instead.
-        assert_eq!(decode(b"\x1b[99;13u"), vec![Key::CtrlC]);
-        // And the arm that makes rano's fix sufficient, stated in the modifiers this map CAN
-        // name: a character carrying a modifier with no meaning here is swallowed, never typed.
+    fn a_cmd_chord_arrives_as_a_chord_and_never_as_a_typed_letter() {
+        // The decode itself, in rano's vocabulary: the bit survives.
+        assert_eq!(
+            rano::term::decode(b"\x1b[99;9u"),
+            vec![Event::Key(KeyEvent::new(KeyCode::Char('c'), Mods::SUPER))],
+            "⌘C carries its super"
+        );
+        // ⌘C types nothing and interrupts nothing: the terminal owns the copy.
+        assert_eq!(decode(b"\x1b[99;9u"), Vec::<Key>::new());
+        // ⌘⌃C keeps both bits — it is NOT the interrupt it used to be.
+        assert_eq!(
+            rano::term::decode(b"\x1b[99;13u"),
+            vec![Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                Mods::SUPER | Mods::CTRL
+            ))]
+        );
+        assert_eq!(decode(b"\x1b[99;13u"), Vec::<Key>::new());
+        // ⌘V asks the clipboard for a picture — the door ctrl-v opens.
+        assert_eq!(decode(b"\x1b[118;9u"), vec![Key::CtrlV]);
+        // ⌘Z undoes, ⌘⇧Z redoes, in either spelling of the shifted letter.
+        assert_eq!(decode(b"\x1b[122;9u"), vec![Key::Undo]);
+        assert_eq!(decode(b"\x1b[122;10u"), vec![Key::Redo]);
+        assert_eq!(decode(b"\x1b[90;10u"), vec![Key::Redo]);
+        // And the arm that makes all of it safe, stated in the modifiers this map CAN name: a
+        // character carrying a modifier with no meaning here is swallowed, never typed.
         assert_eq!(
             key_of(Event::Key(KeyEvent::new(
                 KeyCode::Char('c'),
@@ -588,6 +623,17 @@ mod tests {
             None,
             "a modifier this head does not bind is not a reason to type the letter"
         );
+        assert_eq!(
+            key_of(Event::Key(KeyEvent::new(KeyCode::Char('q'), Mods::SUPER))),
+            None,
+            "a ⌘ chord with no meaning here is swallowed too — ⌘Q must not type a `q`"
+        );
+        // The plain letter is still the plain letter, and the ctrl spellings are unchanged.
+        assert_eq!(decode(b"c"), vec![Key::Char('c')]);
+        assert_eq!(decode(b"\x1b[99u"), vec![Key::Char('c')]);
+        assert_eq!(decode(b"\x1b[99;5u"), vec![Key::CtrlC]);
+        assert_eq!(decode(b"\x03"), vec![Key::CtrlC]);
+        assert_eq!(decode(b"\x1a"), vec![Key::Undo]);
     }
 
     /// **The pane's program reads legacy bytes**, whatever spelling the operator's terminal

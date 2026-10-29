@@ -201,11 +201,43 @@ fn applescript_data(class: &str) -> Result<Option<Vec<u8>>, String> {
             _ => format!("the clipboard could not be read: {e}"),
         })?;
     if !out.status.success() {
+        // **A refusal is not an empty clipboard** — see [`refused`]. `missing value` with exit 0
+        // is *there is no picture*; a non-zero exit with a sentence on stderr is `osascript`
+        // saying why it could not read (a denied automation permission, a broken script), and
+        // answering `Ok(None)` to that made the two indistinguishable and said nothing at all.
+        if let Some(Missing::Other(why)) = refused(
+            &out,
+            &format!("`osascript` could not read the clipboard as {class}"),
+        ) {
+            return Err(why);
+        }
         return Ok(None);
     }
     Ok(parse_applescript_data(&String::from_utf8_lossy(
         &out.stdout,
     )))
+}
+
+/// **A reader that ran and said why it failed** — the answer that sits between *install it*
+/// ([`Missing::Tool`]) and *there is no picture* (`Ok(None)`).
+///
+/// A non-zero exit is not an empty clipboard: `osascript` refuses outright when the automation
+/// permission has been denied (TCC), and a broken script fails the same way. Collapsing those
+/// into `Ok(None)` made *"the read was refused"* indistinguishable from *"there is no picture"*,
+/// so the head said nothing and the operator pressed the chord again. A reader that fails with
+/// an EMPTY stderr still answers `Ok(None)`: there is no sentence to put in front of anybody, and
+/// "no picture" is what they will act on.
+#[cfg(target_os = "macos")]
+fn refused(out: &std::process::Output, what: &str) -> Option<Missing> {
+    if out.status.success() {
+        return None;
+    }
+    let said = String::from_utf8_lossy(&out.stderr);
+    let said = said.trim();
+    if said.is_empty() {
+        return None;
+    }
+    Some(Missing::Other(format!("{what}: {said}")))
 }
 
 /// **`«data PNGf89504E47…»` as bytes**, or `None` for anything else — `missing value`, an empty
@@ -887,5 +919,44 @@ mod tests {
         assert_eq!(parse_applescript_data(""), None);
         assert_eq!(parse_applescript_data("«data PNGf»"), None);
         assert_eq!(parse_applescript_data("«data PNGfXYZ»"), None);
+    }
+
+    /// **A refusal is not an empty clipboard** — measured 2026-10-29, from the operator's *"⌘V
+    /// does nothing"*: `osascript` exits non-zero when the automation permission is denied, and
+    /// the head answered `Ok(None)` to that, which is *there is no picture* — so the chord did
+    /// nothing and said nothing, twice in a row.
+    ///
+    /// The three answers are distinct: exit 0 is `missing value` (no picture), a failure WITH a
+    /// sentence is that sentence, and a failure with nothing on stderr is still *no picture* —
+    /// there is no sentence to put in front of anybody.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_refused_clipboard_read_says_why_and_a_silent_one_is_no_picture() {
+        use std::os::unix::process::ExitStatusExt;
+        let out = |code: i32, stderr: &str| std::process::Output {
+            status: std::process::ExitStatus::from_raw(code),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        // Exit 0 is the reader answering, whatever it said on stderr.
+        assert!(refused(&out(0, "a warning nobody asked for"), "the clipboard").is_none());
+        // A failure with a sentence is that sentence, named.
+        let said = match refused(
+            &out(
+                1 << 8,
+                "execution error: Not authorized to send Apple events. (-1743)\n",
+            ),
+            "`osascript` could not read the clipboard as «class PNGf»",
+        ) {
+            Some(Missing::Other(why)) => why,
+            _ => panic!("a refusal that said why is a sentence"),
+        };
+        assert_eq!(
+            said,
+            "`osascript` could not read the clipboard as «class PNGf»: execution error: Not \
+             authorized to send Apple events. (-1743)"
+        );
+        // A failure that said nothing has nothing to say.
+        assert!(refused(&out(1 << 8, "  \n"), "the clipboard").is_none());
     }
 }
