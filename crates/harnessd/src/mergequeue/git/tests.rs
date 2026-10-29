@@ -442,3 +442,69 @@ fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
         .unwrap_or_default();
     assert!(names.is_empty(), "and no debris beside it: {names:?}");
 }
+
+// ===== The proof a deletion needs =====
+
+/// **The proof is three-valued, and `None` from `rev_parse` is two of them.**
+///
+/// `branch_head` answers one `Option` for *the ref is there*, *the ref is not* and *this is not a
+/// repository*, and the resource sweep read that `Option` as permission: a `None` meant *may go*,
+/// and the worktree was removed with it. So the three facts are separated by `show-ref --verify`'s
+/// own exit status, and only the middle one — a ref git says is not there — is permission.
+#[test]
+fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
+    let dir = TempDir::new("proof-three");
+    let repo = repo(&dir.0);
+    let (_wt, _base, head) = branch(&repo, "prov", "p.txt");
+    let what = "the branch `agent/prov`";
+
+    // On the target: the branch was merged.
+    sh(&repo, &["merge", "--ff-only", "agent/prov"]);
+    assert_eq!(ref_proof(&repo, "agent/prov", "main", what), Proof::On);
+    // Not on the target: one commit of its own.
+    let (_wt2, _base2, head2) = branch(&repo, "prov2", "p2.txt");
+    let what2 = "the branch `agent/prov2`";
+    match ref_proof(&repo, "agent/prov2", "main", what2) {
+        Proof::Unproven(kind, why) => {
+            assert_eq!(kind, "carries");
+            assert!(
+                why.contains("carries 1 commit") && why.contains("agent/prov2"),
+                "{why}"
+            );
+        }
+        other => panic!("an unmerged branch is not permission: {other:?}"),
+    }
+    // Not there at all: permission, because it holds no commit.
+    assert_eq!(
+        ref_proof(&repo, "agent/never-existed", "main", what),
+        Proof::Gone
+    );
+    // **A repository git cannot read is NOT `Gone`** — this is the one that used to take a tree with
+    // it. `show-ref` exits 128 here and `rev-parse` answers `None`, and the two are different facts.
+    let not_a_repo = dir.0.join("not-a-repository");
+    std::fs::create_dir_all(&not_a_repo).unwrap();
+    assert_eq!(
+        branch_head(&not_a_repo, "agent/prov"),
+        None,
+        "the one-option answer"
+    );
+    match ref_proof(&not_a_repo, "agent/prov", "main", what) {
+        Proof::Unproven(kind, why) => {
+            assert_eq!(kind, "unreadable");
+            assert!(why.contains("could not be told"), "{why}");
+        }
+        other => panic!("a repository git cannot read is not permission: {other:?}"),
+    }
+    // And the same proof about a worktree's own HEAD, which is what `remove_worktree` is
+    // unrecoverable for: this one is on the target, the unmerged one is not.
+    assert_eq!(
+        commit_proof(&repo, &head, "main", "the worktree's HEAD"),
+        Proof::On
+    );
+    assert!(matches!(
+        commit_proof(&repo, &head2, "main", "the worktree's HEAD"),
+        Proof::Unproven("carries", _)
+    ));
+    // A tree git cannot read is not a tree with no commits in it.
+    assert!(head_of(&not_a_repo).is_err());
+}

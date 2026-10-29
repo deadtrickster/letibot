@@ -52,6 +52,179 @@ pub fn branch_head(repo: &Path, branch: &str) -> Option<String> {
     rev_parse(repo, &format!("refs/heads/{branch}"))
 }
 
+/// **The commit a worktree's own `HEAD` names** — what `git worktree remove --force` is
+/// unrecoverable for when it is a commit no ref holds (a detached head, a branch the row does not
+/// name). `Err` is *it could not be read*, which the sweep keeps for.
+pub fn head_of(wt: &Path) -> Result<String, String> {
+    let sha = git(wt, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])?;
+    let sha = sha.trim().to_string();
+    if sha.is_empty() {
+        return Err(format!(
+            "`git rev-parse HEAD` in {} answered nothing",
+            wt.display()
+        ));
+    }
+    Ok(sha)
+}
+
+/// **What a ref is** — three facts git can tell apart, and the queue may not confuse: a ref that is
+/// there (its sha), a ref that is not, and a repository or a ref git cannot read.
+///
+/// [`rev_parse`] answers one `Option` for all three, which is why this exists: `None` from it was
+/// read as *the ref is gone* by the resource sweep, and a repository git could not read then took
+/// a worktree down with it.
+enum RefState {
+    Sha(String),
+    /// Git said, in so many words, that there is no such ref (exit 1 from `show-ref --verify`).
+    Absent,
+    Unreadable(String),
+}
+
+/// [`RefState`] for `refs/heads/<branch>` — `show-ref --verify` and not `rev-parse`, because its
+/// exit status separates *no such ref* (1) from *this is not a repository* (128).
+fn ref_state(repo: &Path, branch: &str) -> RefState {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        Ok(o) if o.status.success() => match branch_head(repo, branch) {
+            Some(sha) => RefState::Sha(sha),
+            None => {
+                RefState::Unreadable("`git show-ref` named it and `git rev-parse` did not".into())
+            }
+        },
+        Ok(o) if o.status.code() == Some(1) => RefState::Absent,
+        Ok(o) => {
+            let said = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            RefState::Unreadable(if said.is_empty() {
+                format!("git show-ref answered {:?}", o.status.code())
+            } else {
+                said
+            })
+        }
+        Err(e) => RefState::Unreadable(format!("git show-ref: {e}")),
+    }
+}
+
+/// **The proof a deletion needs** — are the commits of a ref (or of a worktree's HEAD) on the
+/// target?
+///
+/// The queue deletes a ref or a tree in three places ([`super::serve::RepoQueue`]'s sweep, its
+/// `landed`, and `supersede_fix_branches`), and the rule is one rule: *nothing in the queue may
+/// delete a ref or a worktree whose commits are not provably on the target.* So the answer is
+/// three-valued on purpose — [`Proof::Gone`] is permission (there is nothing there to lose),
+/// [`Proof::Unproven`] is not, and the safe side of *I could not tell* is keeping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Proof {
+    /// The tip is on the target: `git merge-base --is-ancestor` said so.
+    On,
+    /// The ref does not exist. It holds no commit, so nothing can be lost by removing what is left.
+    Gone,
+    /// **The proof could not be taken**, or was taken and refused: the kind is the sweep's key for
+    /// saying it once, the sentence is what a person reads.
+    Unproven(&'static str, String),
+}
+
+impl Proof {
+    /// The reason it stays, when it stays.
+    pub fn unproven(&self) -> Option<(&'static str, String)> {
+        match self {
+            Proof::Unproven(kind, why) => Some((kind, why.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// **Whether local branch `branch`'s commits are on `target`** — [`Proof`]. `what` names the thing
+/// being proved for the sentence a person reads: *"the branch `agent/x`"*.
+pub fn ref_proof(repo: &Path, branch: &str, target: &str, what: &str) -> Proof {
+    match ref_state(repo, branch) {
+        RefState::Absent => Proof::Gone,
+        RefState::Unreadable(why) => Proof::Unproven(
+            "unreadable",
+            format!(
+                "{what} is kept: whether it exists in {} could not be told ({why}), so whether its \
+                 commits are on `{target}` could not be told either",
+                repo.display()
+            ),
+        ),
+        RefState::Sha(head) => commit_proof(repo, &head, target, what),
+    }
+}
+
+/// **Whether one commit is on `target`** — the same proof about a worktree's own HEAD, which is the
+/// commit a `git worktree remove --force` is unrecoverable for.
+pub fn commit_proof(repo: &Path, head: &str, target: &str, what: &str) -> Proof {
+    let tip = match ref_state(repo, target) {
+        RefState::Sha(tip) => tip,
+        RefState::Absent => {
+            return Proof::Unproven(
+                "target",
+                format!(
+                    "`{target}` cannot be named in {}, so whether {what} is on it cannot be told, \
+                     and it is kept",
+                    repo.display()
+                ),
+            );
+        }
+        RefState::Unreadable(why) => {
+            return Proof::Unproven(
+                "target",
+                format!(
+                    "`{target}` could not be read in {} ({why}), so whether {what} is on it cannot \
+                     be told, and it is kept",
+                    repo.display()
+                ),
+            );
+        }
+    };
+    proof_against(repo, head, &tip, target, what)
+}
+
+/// **The same proof about a commit, against a tip git is handed as a revision** — the target as it
+/// was read a moment ago, which is how a superseded fix's branch is judged (`base` is the tip's sha,
+/// not its name). `target` is the label the sentence uses.
+pub fn commit_on(repo: &Path, head: &str, tip_rev: &str, target: &str, what: &str) -> Proof {
+    match rev_parse(repo, tip_rev) {
+        Some(tip) => proof_against(repo, head, &tip, target, what),
+        None => Proof::Unproven(
+            "target",
+            format!(
+                "`{tip_rev}` cannot be named in {}, so whether {what} is on it cannot be told, and \
+                 it is kept",
+                repo.display()
+            ),
+        ),
+    }
+}
+
+/// `head` against a tip already resolved.
+fn proof_against(repo: &Path, head: &str, tip: &str, target: &str, what: &str) -> Proof {
+    match is_ancestor(repo, head, tip) {
+        Ok(true) => Proof::On,
+        Ok(false) => {
+            let over = commits_over(repo, tip, head)
+                .map(|n| format!("{n} commit(s)"))
+                .unwrap_or_else(|_| "commits".into());
+            Proof::Unproven(
+                "carries",
+                format!(
+                    "{what} is kept: it carries {over} over `{target}` (at {tip}) that are not on \
+                     it, so it is the only copy of that work"
+                ),
+            )
+        }
+        Err(why) => Proof::Unproven(
+            "unknown",
+            format!("whether {what} is on `{target}` could not be told ({why}), so it is kept"),
+        ),
+    }
+}
+
 /// Whether `a` is an ancestor of (or equal to) `b`.
 pub fn is_ancestor(dir: &Path, a: &str, b: &str) -> Result<bool, String> {
     let out = Command::new("git")
@@ -759,6 +932,11 @@ pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), Strin
 
 /// **Delete one branch of `repo`, and treat "there is no such branch" as done** — a sweep runs on
 /// every pass, and the second pass must not fail where the first one succeeded.
+///
+/// **The caller must already have taken the proof** ([`ref_proof`] or [`commit_proof`]): this deletes
+/// whatever it is handed, and a ref whose commits are not on the target is the only copy of that
+/// work. The queue has exactly three callers and each proves first — [`super::serve::RepoQueue`]'s
+/// sweep, its `landed`, and [`retire_if_empty`].
 pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
     if branch_head(repo, branch).is_none() {
         return Ok(());
@@ -769,6 +947,9 @@ pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
 /// Remove a branch's own worktree and the branch, after a landing — only when the tree holds
 /// nothing uncommitted (the daemon's own leftover logs are not the tree's work). `Err` says what
 /// was kept and why.
+///
+/// **A landing is a proof, and it is the caller's** — `landed` retires a branch only once the sha
+/// its compare-and-swap put on the target is still on it ([`commit_proof`]).
 pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
     if let Some(wt) = worktree {
         remove_worktree(repo, Path::new(wt), branch)?;
@@ -785,6 +966,11 @@ pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Resul
 /// may carry the fixer's work, and `main` moving past that tip does not make the work wrong — it
 /// makes it a candidate for somewhere else. The tree is the only copy of whatever was never
 /// committed, so it is never thrown away with the branch.
+///
+/// **The proof is [`commit_on`], the same one the sweep and a landing take** — `rev-list --count
+/// base..head == 0` and *head is an ancestor of base* are one fact, and the queue keeps one spelling
+/// of it so that the invariant (*nothing may delete a ref whose commits are not provably on the
+/// target*) has one home.
 pub fn retire_if_empty(
     repo: &Path,
     base: &str,
@@ -792,18 +978,11 @@ pub fn retire_if_empty(
     worktree: Option<&str>,
 ) -> Result<(), String> {
     if let Some(head) = branch_head(repo, branch) {
-        match commits_over(repo, base, &head) {
-            Ok(0) => {}
-            Ok(n) => {
+        match commit_on(repo, &head, base, base, &format!("`{branch}`")) {
+            Proof::On | Proof::Gone => {}
+            Proof::Unproven(_, why) => {
                 return Err(format!(
-                    "`{branch}` carries {n} commit(s) over {base}, so it and its tree are kept — \
-                     the work is not this tip's, but it may be worth putting somewhere else"
-                ));
-            }
-            Err(e) => {
-                return Err(format!(
-                    "`{branch}` could not be counted against {base} ({e}), so it and its tree \
-                     are kept"
+                    "{why} — the work is not this tip's, but it may be worth putting somewhere else"
                 ));
             }
         }
