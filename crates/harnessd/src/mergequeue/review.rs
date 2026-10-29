@@ -442,7 +442,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         }
         if let Some(said) = p.desk.take_verdict(&child) {
             out.moved = true;
-            verdict(p, &r, &child, said)?;
+            verdict(p, &r, &child, &open.req.cwd, said)?;
             continue;
         }
         match p.runner.collect(&child, std::time::Duration::ZERO) {
@@ -497,7 +497,7 @@ pub const CLONES_DIR: &str = "letibot-review-clones";
 /// busy VM, and the two ladders are counted apart.
 pub const WAITING_FOR_TREE: &str = "waiting for the reviewer's tree";
 
-/// **How long a tree in the clone directory is left alone whatever the store says** — see
+/// **How long a tree in the clone directory is left alone once its row is dead** — see
 /// [`sweep_clones`]. Ten minutes.
 ///
 /// The number is the answer to one question: *how long can a tree be being written while the row
@@ -512,49 +512,78 @@ pub const WAITING_FOR_TREE: &str = "waiting for the reviewer's tree";
 /// passes of being certain.
 pub const CLONE_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// **The per-review trees nobody is on any more** — [`start_reviewer`] makes one clone per review
-/// under [`Pool::clones`] (`review-<row id>`), for BOTH placements, and nothing used to remove one:
-/// MEASURED on the operator's box 2026-10-29, **eleven clones, 530 MB, the oldest four days old**.
-/// The firecode copy that *is* removed (`FirecodeBackend::remove_copy`) is firecode's own project
-/// directory, not this clone.
+/// **The row a tree in the clone directory belongs to**, or `None` for a name that is not a
+/// review's at all — the three spellings [`git::clone_branch`] and its history write:
+///
+/// * `review-<id>-<pid>-<n>` — the tree ONE ATTEMPT works in (this build);
+/// * `.review-<id>-<pid>-<n>.tmp` — that tree while it is being made, or what a killed daemon left;
+/// * `review-<id>` — a tree made before trees were per-attempt, which the sweep still reclaims.
+///
+/// The token is the last two dash-separated fields and both are numbers, so the id is whatever
+/// stands before them — and a row id may itself end in numbers (`s-…-sub-1793298319066201000`),
+/// which is why the token is stripped from the END rather than searched for.
+fn review_id(name: &str) -> Option<&str> {
+    let name = name.strip_suffix(".tmp").unwrap_or(name);
+    let name = name.strip_prefix('.').unwrap_or(name);
+    let rest = name.strip_prefix("review-")?;
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let mut fields = rest.rsplitn(3, '-');
+    let n = fields.next().unwrap_or_default();
+    let pid = fields.next().unwrap_or_default();
+    match fields.next() {
+        Some(id) if !id.is_empty() && digits(pid) && digits(n) => Some(id),
+        _ => Some(rest),
+    }
+}
+
+/// **The trees no reviewer can be in** — [`start_reviewer`] makes one clone per ATTEMPT under
+/// [`Pool::clones`] (`review-<row id>-<pid>-<n>`, [`git::clone_branch`]), for BOTH placements, and
+/// nothing used to remove one: MEASURED on the operator's box 2026-10-29, **eleven clones, 530 MB,
+/// the oldest four days old**. The firecode copy that *is* removed
+/// (`FirecodeBackend::remove_copy`) is firecode's own project directory, not this clone.
 ///
 /// **Why a sweep and not a teardown at the verdict.** A review ends in three places — a verdict
 /// ([`verdict`]), a failed attempt ([`Pool::attempt_failed`]), and a WITHDRAWAL by a person or a
 /// deadline, which lives in `mergequeue::serve` — and the two that leak most (a withdrawal, and
 /// everything a daemon that died left behind) are exactly the ones a per-point removal in this
-/// file could not reach. So the rule is the one Package K's resource sweep uses, one directory
-/// over: a clone is removed once its row is no longer `waiting` or `reviewing`. Package K's sweep
-/// reclaims terminal rows' WORKTREES in the queue's pass; this reclaims reviewer CLONES in the
-/// review pass, because neither can see the other's directory.
+/// file could not reach. Package K's sweep reclaims terminal rows' WORKTREES in the queue's pass;
+/// this reclaims reviewer CLONES in the review pass, because neither can see the other's
+/// directory.
 ///
 /// **Every row on the store, not this daemon's** — the store is shared by every daemon on the box
 /// and `clones` is one global directory, so a sweep scoped to `p.me` would delete a live clone of
 /// another daemon's review.
 ///
-/// # What makes it safe by construction, and why the first cut was not
+/// # The one rule: a live row's trees are kept, a dead row's are reclaimed
 ///
-/// MEASURED 2026-10-29: a reviewer's `git clone` died on *"could not open
-/// '…/review-s-…/.git/objects/pack/tmp_pack_cgbKfF' for reading: No such file or directory"* — a
-/// clone whose directory this sweep had removed WHILE git was writing into it. The row was not
-/// live at that instant (a withdrawal, a block, a target that moved), and the tree was half-made.
-/// Two rules, and each of them ALONE would have stopped it:
+/// **`waiting` or `reviewing` means KEEP**, whatever the tree's age, whatever its token, whoever
+/// made it. A reviewer is a child of some daemon, its row is `reviewing` while it works, and the
+/// row goes back to `waiting` when it is re-seated — so a live row is the only state in which a
+/// reviewer can be standing in a tree, and a tree a reviewer is standing in is the one thing this
+/// sweep exists to never remove. MEASURED 2026-10-29, four reviews in twenty minutes: every one of
+/// them was a reviewer whose tree was deleted while it read it — `bash` answering *the process did
+/// not start: No such file or directory*, `read`/`glob` reporting a workspace with **0 entries**,
+/// and two `cannot_decide`s about branches nobody had looked at.
 ///
-/// * **A tree in flight is not a `review-<id>`.** [`git::clone_branch`] clones beside the name and
-///   renames into it, so the only name this sweep can ever see is a COMPLETE clone. The remainder
-///   after `review-` is the id only up to its first `.`, so `review-<id>.tmp-…` and
-///   `review-<id>.old-…` are read as trees of `<id>` and are never touched by the row rule.
-/// * **A tree younger than [`CLONE_GRACE`] is left alone**, whatever the store says — which is the
-///   belt under the brace: a row can leave `waiting`/`reviewing` while its clone is still being
-///   made (a person's veto, a blocked row, a target that moved), and the store's answer at that
-///   instant is not evidence that the tree is nobody's yet.
+/// **The consequence, said plainly, is a bounded leak**: a row that is re-seated twice keeps the
+/// two trees its earlier attempts were given until the row stops being live. That is the price of
+/// the rule, and it is the right way round — the trees are disk, and the reviews were hours. What
+/// ends it is the row's own end, which is also the only moment at which *no reviewer can be in this
+/// tree* is a fact another daemon can check without asking the reviewer.
 ///
-/// **Four refusals, each of which is a real way this could destroy something:**
+/// **The three refusals that were already here, each of which is a real way this could destroy
+/// something:**
 /// * a directory that is not named [`CLONES_DIR`] is never swept — that refuses `std::env::temp_dir()`
 ///   itself (which three fixtures used to pass), a parent of it, and any directory a test or a
 ///   future caller might be pointed at;
-/// * a path whose age cannot be read is kept;
-/// * a tree that is not a directory is left alone;
+/// * only a DIRECTORY whose name parses as a review's is removed; a file, and a name that does not
+///   parse, is left alone;
 /// * a store that will not answer is not evidence that a tree is nobody's.
+///
+/// **And the grace**, which is the belt under the brace rather than the rule: a dead row's tree is
+/// removed only once it is older than [`CLONE_GRACE`], because a row can be moved out of the live
+/// set while its clone is still being made (a veto, a block, a target that moved) and a tree being
+/// written is not a tree nobody is on.
 fn sweep_clones(p: &Pool) {
     sweep_clones_with(p, CLONE_GRACE)
 }
@@ -578,14 +607,10 @@ fn sweep_clones_with(p: &Pool, grace: std::time::Duration) {
     };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(rest) = name.strip_prefix("review-") else {
+        let Some(id) = review_id(&name) else {
             continue;
         };
-        // **The id is what stands before the first dot** — `review-<id>.tmp-<pid>-<n>` is a tree
-        // being written and `review-<id>.old-…` one being replaced, and neither is swept by the
-        // row rule ([`git::clone_branch`]).
-        let id = rest.split('.').next().unwrap_or(rest);
-        if id.is_empty() || live.contains(id) {
+        if live.contains(id) {
             continue;
         }
         let path = e.path();
@@ -644,8 +669,28 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
     } else {
         r.branch.clone()
     };
-    let dir = p.clones.join(format!("review-{}", r.id));
-    git::clone_branch(&repo, &what, &r.head_sha, &dir).map_err(CouldNotStart::Tree)?;
+    let stem = p.clones.join(format!("review-{}", r.id));
+    let dir = git::clone_branch(&repo, &what, &r.head_sha, &stem).map_err(CouldNotStart::Tree)?;
+    // **The tree is proved before a child is given it.** The clone checks out `head` and the
+    // install is a rename, so this can only fail on something this daemon did not do — and a
+    // reviewer started on a path that is not there, or is not the head the row names, reads
+    // nothing and says `cannot_decide` about a branch nobody looked at. That is a WAIT, not a
+    // verdict (MEASURED twice on 2026-10-29: *"its session root held 0 entries"*).
+    let at = match git::rev_parse(&dir, "HEAD") {
+        Some(sha) if sha == r.head_sha => sha,
+        other => {
+            return Err(CouldNotStart::Tree(format!(
+                "the tree `{}` is {}, and the row is about {}",
+                dir.display(),
+                match other {
+                    Some(sha) => format!("at {sha}"),
+                    None => "not a checkout git can name".to_string(),
+                },
+                r.head_sha
+            )));
+        }
+    };
+    debug_assert_eq!(at, r.head_sha);
     let cwd = match p.placement {
         ReviewerPlacement::Vm => {
             // A VM is booted on the clone; inside it there is no absolute path to name.
@@ -718,12 +763,48 @@ pub fn red_target_prompt(req: &ReviewRequest, target: &str) -> String {
 }
 
 /// **A verdict handed in** — moved onto the row conditionally, and acted on.
+///
+/// `req_cwd` is the tree the child was GIVEN (the desk's own record of what it was asked with), and
+/// it is read before the verdict is: see the check below.
 fn verdict(
     p: &Pool,
     r: &ReviewRow,
     child: &str,
+    req_cwd: &str,
     said: letibot_tools::gatekeeper::Submission,
 ) -> Result<(), StoreError> {
+    // **A verdict about a tree that is not there is not a verdict about the branch** — the check
+    // this whole night turned on. A reviewer whose clone was removed under it reads a fraction of
+    // the artifact, knows it, and answers `cannot_decide`; the row then says *the branch could not
+    // be decided*, which is a claim about somebody's code. So the tree the child was GIVEN is asked
+    // for here, before anything is written, and the two shapes the night produced are both caught:
+    // the directory gone (`bash`: *the process did not start: No such file or directory*) and the
+    // directory there with **0 entries** (`read`/`glob`: *no file at*).
+    //
+    // The head is not compared here, and it does not need to be: a tree is named per ATTEMPT
+    // ([`git::clone_branch`]), so the only tree that can appear at this path is the one this child
+    // was given, and [`start_reviewer`] proved what it was at before the child was started.
+    let tree = Path::new(&req_cwd);
+    let there = tree.is_dir()
+        && std::fs::read_dir(tree)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    if !there {
+        let why = format!(
+            "the review environment went away under the reviewer: the tree it was given (`{}`) is \
+             {} and the row is about {}. Nothing about the branch was judged — this is our \
+             machinery, not the code — so the review is tried again in a fresh tree",
+            tree.display(),
+            if tree.is_dir() {
+                "empty".to_string()
+            } else {
+                "gone".to_string()
+            },
+            r.head_sha
+        );
+        p.wait_for_tree(r, why)?;
+        return Ok(());
+    }
     let by = format!("reviewer:{child}");
     let reasons = serde_json::to_string(&said.reasons).unwrap_or_else(|_| "[]".into());
     let files = serde_json::to_string(&said.looked_at.files).unwrap_or_else(|_| "[]".into());

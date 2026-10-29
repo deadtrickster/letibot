@@ -172,6 +172,16 @@ fn a_daemon(live: &[&str], heard: Arc<Heard>) -> impl Fn(&str, &str) -> Result<S
     }
 }
 
+/// **A directory that looks like a reviewer's tree** — it exists and holds something, which is what
+/// [`verdict`] asks of the path a child was given. A bare `TempDir` is EMPTY, and an empty
+/// directory is one of the two shapes the night produced (`read`/`glob`: *0 entries*), so a fixture
+/// that wants a verdict written has to say its tree has content.
+fn a_tree(tag: &str) -> TempDir {
+    let dir = TempDir::new(tag);
+    std::fs::write(dir.0.join("a.txt"), "one\n").expect("a file in the tree");
+    dir
+}
+
 /// **One reviewer's verdict, handed in and served** — the row claimed by this daemon with the
 /// reviewer on it, the desk opened for that reviewer, the submission at the desk, and then
 /// `passes` passes of [`serve`]: the first writes the verdict, the rest are the passes after it.
@@ -201,6 +211,10 @@ fn judge(
         "the fixture must really have claimed the row"
     );
     let desk = ReviewDesk::new();
+    // **A real tree that OUTLIVES the passes**, because `verdict` asks whether the tree a reviewer
+    // was given is still there — a fixture naming `""` would be asserting a verdict about a tree
+    // that does not exist, which is now a WAIT.
+    let judged_tree = a_tree("judged-tree");
     desk.opened(
         HOST,
         reviewer,
@@ -210,7 +224,7 @@ fn judge(
             branch: BRANCH.into(),
             base_sha: "base".into(),
             head_sha: HEAD.into(),
-            cwd: String::new(),
+            cwd: judged_tree.0.display().to_string(),
         },
     );
     desk.submit(
@@ -686,6 +700,8 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
             .unwrap()
     );
     let desk = ReviewDesk::new();
+    // A real directory that outlives the pass: `verdict` asks whether the reviewer's tree is there.
+    let red_tree = a_tree("red-tree");
     desk.opened(
         HOST,
         "sub-1",
@@ -695,7 +711,7 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
             branch: "main".into(),
             base_sha: red.clone(),
             head_sha: red.clone(),
-            cwd: String::new(),
+            cwd: red_tree.0.display().to_string(),
         },
     );
     desk.submit(
@@ -1090,66 +1106,79 @@ fn age(path: &Path, secs: u64) {
         .expect("its mtime");
 }
 
-/// **A tree younger than [`CLONE_GRACE`] is left alone whatever the store says, and a tree in
-/// flight is not even a candidate** — the two rules that make the sweep safe by construction
-/// ([`sweep_clones`]), asserted apart from the row rule above.
+/// **A live row's trees are NEVER swept, however old; a dead row's go once they are old** — the
+/// rule that makes the sweep safe ([`sweep_clones`]), asserted apart from the store's own words
+/// about a row.
 ///
-/// This is the deterministic half of the operator's 2026-10-29 race. A row can leave
+/// This is the deterministic half of the operator's 2026-10-29 night. A row can leave
 /// `waiting`/`reviewing` while its clone is still being made — a person's veto, a block, a target
 /// that moved — and the store's answer at that instant is not evidence that the tree is nobody's.
-/// So a YOUNG tree of a withdrawn row is kept; only a tree older than the grace goes. The two
-/// spellings a clone in flight uses are named here exactly as [`git::clone_branch`] names them.
+/// So a YOUNG tree of a withdrawn row is kept, and so is an ANCIENT tree of a live row (the row may
+/// have been re-seated a second ago, and its previous reviewer is still standing in it). The three
+/// spellings a tree has are named here exactly as [`git::clone_branch`] writes them.
 #[test]
-fn a_young_tree_and_a_tree_in_flight_are_never_swept() {
+fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
     let dir = TempDir::new("review-grace");
     let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
-    store
-        .enqueue_review(
-            &NewReview {
-                id: "gone".into(),
-                repository: "/the/repository".into(),
-                target: "main".into(),
-                kind: ReviewKind::Branch,
-                session_id: "s-gone".into(),
-                branch: "agent/gone".into(),
-                worktree: None,
-                base_sha: "base".into(),
-                head_sha: "head".into(),
-                brief: "do the work".into(),
-                priority: MergePriority::Subagent,
-                fixes: None,
-                evidence: "enqueued".into(),
-            },
-            "test",
-            1,
-        )
-        .expect("the review row");
-    assert!(
+    for (id, state) in [
+        ("gone", ReviewState::Withdrawn),
+        ("live", ReviewState::Reviewing),
+    ] {
         store
-            .move_review(
-                "gone",
-                ReviewState::Waiting,
-                ReviewState::Withdrawn,
-                &Move::new(ME, "a person vetoed it"),
-                2,
+            .enqueue_review(
+                &NewReview {
+                    id: id.into(),
+                    repository: "/the/repository".into(),
+                    target: "main".into(),
+                    kind: ReviewKind::Branch,
+                    session_id: format!("s-{id}"),
+                    branch: format!("agent/{id}"),
+                    worktree: None,
+                    base_sha: "base".into(),
+                    head_sha: "head".into(),
+                    brief: "do the work".into(),
+                    priority: MergePriority::Subagent,
+                    fixes: None,
+                    evidence: "enqueued".into(),
+                },
+                "test",
+                1,
             )
-            .unwrap(),
-        "the row must really be withdrawn"
-    );
+            .expect("the review row");
+        if state != ReviewState::Waiting {
+            assert!(
+                store
+                    .move_review(
+                        id,
+                        ReviewState::Waiting,
+                        state,
+                        &Move::new(ME, "moved")
+                            .set("owner", ME)
+                            .set("reviewer", "sub-x"),
+                        2,
+                    )
+                    .unwrap(),
+                "{id} must really be {state:?}"
+            );
+        }
+    }
     let clones = dir.0.join(CLONES_DIR);
+    let pid = std::process::id();
     let tree = |name: &str| {
         let p = clones.join(name);
         std::fs::create_dir_all(&p).expect("a directory");
         std::fs::write(p.join("a.txt"), "x").expect("a file in it");
         p
     };
-    // The row's own tree, and the two names a clone passes through on its way to it.
-    let complete = tree("review-gone");
-    let writing = tree(&format!("review-gone.tmp-{}-0", std::process::id()));
-    let replacing = tree(&format!("review-gone.old-{}-1", std::process::id()));
-    // And one nobody's row names at all, old enough to be certain about.
-    let orphan = tree("review-nobody");
-    age(&orphan, 3600);
+    // One attempt's tree of the withdrawn row, that tree being made, and one made before trees were
+    // per-attempt; then the same three for a row that is LIVE.
+    let complete = tree(&format!("review-gone-{pid}-0"));
+    let writing = tree(&format!(".review-gone-{pid}-1.tmp"));
+    let legacy = tree("review-gone");
+    let live_tree = tree(&format!("review-live-{pid}-2"));
+    let live_writing = tree(&format!(".review-live-{pid}-3.tmp"));
+    // And one nobody's row names at all.
+    let orphan = tree(&format!("review-nobody-{pid}-4"));
 
     let started = Arc::new(Started::default());
     let runner = Recorder {
@@ -1174,37 +1203,75 @@ fn a_young_tree_and_a_tree_in_flight_are_never_swept() {
         clones: clones.clone(),
         slots: &Vec::new,
     };
-    // The REAL grace: this is the sweep the daemon runs.
+    // **The REAL grace, and every tree YOUNG.** Nothing of the dead row's goes yet — a clone may
+    // still be being written — and nothing of the live row's goes ever.
     sweep_clones(&pool);
-    assert!(
-        complete.exists(),
-        "a withdrawn row's tree, younger than the grace, is kept: it may still be being written"
-    );
-    assert!(
-        writing.exists() && replacing.exists(),
-        "and a tree in flight is never swept, whatever the store says about its row"
-    );
-    assert!(
-        !orphan.exists(),
-        "an old tree no row names is gone: the sweep still reclaims what a dead daemon left"
-    );
+    for p in [
+        &complete,
+        &writing,
+        &legacy,
+        &live_tree,
+        &live_writing,
+        &orphan,
+    ] {
+        assert!(
+            p.exists(),
+            "a tree younger than the grace is kept: {}",
+            p.display()
+        );
+    }
 
-    // **The grace is a delay and not an exemption**: age the row's own tree past it and it goes,
-    // and the two in-flight names follow once they are old enough to be certain debris.
-    age(&complete, 3600);
+    // **A day later.** The dead row's trees and the orphan go; the LIVE row's stay, however old —
+    // its previous reviewer may be standing in one of them right now.
+    for p in [
+        &complete,
+        &writing,
+        &legacy,
+        &live_tree,
+        &live_writing,
+        &orphan,
+    ] {
+        age(p, 24 * 3600);
+    }
     sweep_clones(&pool);
-    assert!(!complete.exists(), "a tree older than the grace is swept");
-    assert!(
-        writing.exists() && replacing.exists(),
-        "the in-flight names are still young"
-    );
-    age(&writing, 3600);
-    age(&replacing, 3600);
-    sweep_clones(&pool);
-    assert!(
-        !writing.exists() && !replacing.exists(),
-        "a clone that died mid-write is reclaimed once it is old enough"
-    );
+    for p in [&complete, &writing, &legacy, &orphan] {
+        assert!(
+            !p.exists(),
+            "a dead row's tree, and one no row names, is reclaimed: {}",
+            p.display()
+        );
+    }
+    for p in [&live_tree, &live_writing] {
+        assert!(
+            p.exists(),
+            "a LIVE row's trees are never swept — not its attempt's tree, not one being made: {}",
+            p.display()
+        );
+    }
+}
+
+/// **The row a tree belongs to is read off its name, in all three spellings** — the parse the sweep
+/// rests on, asserted on its own, because a name that parses as the wrong row is a tree swept for
+/// another row's state.
+#[test]
+fn a_trees_name_names_its_row() {
+    for (name, want) in [
+        ("review-m-mine-4711-0", Some("m-mine")),
+        // A row id that ends in numbers: the token is stripped from the END.
+        (
+            "review-s-root-sub-1793298319066201000-4711-12",
+            Some("s-root-sub-1793298319066201000"),
+        ),
+        (".review-m-mine-4711-0.tmp", Some("m-mine")),
+        // A tree made before trees were per-attempt.
+        ("review-red-main-1700000000", Some("red-main-1700000000")),
+        ("review-m-mine", Some("m-mine")),
+        // Not a review's at all.
+        ("something-else", None),
+        ("review-", Some("")),
+    ] {
+        assert_eq!(review_id(name), want, "{name}");
+    }
 }
 
 /// **A real clone with the sweep running against it, and the row NOT live, is not disturbed** —
@@ -1282,12 +1349,10 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         clones: clones.clone(),
         slots: &Vec::new,
     };
-    let one = clones.join("review-cloning");
+    let stem = clones.join("review-cloning");
     let clone = {
-        let (repo, one, head) = (repo.clone(), one.clone(), head.clone());
-        std::thread::spawn(move || {
-            git::clone_branch(&repo, "agent/the-work", &head, &one).map(|()| one)
-        })
+        let (repo, stem, head) = (repo.clone(), stem.clone(), head.clone());
+        std::thread::spawn(move || git::clone_branch(&repo, "agent/the-work", &head, &stem))
     };
     // Sweep until the clone is done, the way another daemon's pass would: every millisecond, with
     // the daemon's own grace.
@@ -1320,7 +1385,15 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(names, vec!["review-cloning".to_string()], "{names:?}");
+    assert_eq!(
+        names.len(),
+        1,
+        "one tree, and no debris beside it: {names:?}"
+    );
+    assert!(
+        names[0].starts_with("review-cloning-") && !names[0].ends_with(".tmp"),
+        "{names:?}"
+    );
 }
 
 // ===== A tree that could not be made =====
@@ -1472,4 +1545,138 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
     assert_eq!(row.state, ReviewState::Reviewing, "{row:?}");
     assert_eq!(row.attempts, 0, "still no attempt spent: {row:?}");
     assert!(row.reviewer.is_some(), "{row:?}");
+}
+
+/// **A reviewer whose tree went away mid-review does not get to answer `cannot_decide` about the
+/// branch** — the row says the review ENVIRONMENT went away, and the review waits for a fresh tree.
+///
+/// MEASURED 2026-10-29, twice: a reviewer that had read two files and run two `git` commands found
+/// every later call failing at spawn (`bash`: *"the process did not start: No such file or
+/// directory"*, `read`/`glob`: a workspace with **0 entries**) and handed in `needs_human` — which
+/// the queue wrote as *the branch cannot be decided*, a claim about somebody's code from a reviewer
+/// that saw a fraction of it. So the tree the child was GIVEN is asked for before any verdict is
+/// taken.
+#[test]
+fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
+    use crate::mergequeue::serve::tests::{branch, repo};
+
+    let dir = TempDir::new("review-tree-gone");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "the-work", "b.txt");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "the-review".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: base,
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "the-review",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed").set("owner", ME),
+                2,
+            )
+            .unwrap(),
+        "the fixture must really have claimed the row"
+    );
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let clones = dir.0.join(CLONES_DIR);
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    assert_eq!(
+        serve(&pool).expect("a pass").started,
+        1,
+        "a reviewer starts"
+    );
+    let (_, spec) = started.one();
+    let tree = spec
+        .worktree
+        .as_ref()
+        .expect("a host reviewer is given a tree of its own")
+        .path
+        .clone();
+    // **The machinery eats the tree** — what four reviewers met on 2026-10-29, from the other side.
+    std::fs::remove_dir_all(&tree).expect("the tree is there to remove");
+    // And the reviewer, having read a fraction of an artifact, says it cannot decide.
+    desk.submit(
+        "s-gatekeeper-sub-1",
+        Submission {
+            decision: Decision::NeedsHuman,
+            reasons: vec!["every tool call failed; I could not read the code".into()],
+            looked_at: LookedAt {
+                files: vec!["a.txt".into()],
+                commands: vec!["git diff base...head".into()],
+            },
+        },
+    )
+    .expect("the desk takes the submission");
+
+    serve(&pool).expect("a pass");
+    let row = store.review_row("the-review").unwrap().unwrap();
+    assert_eq!(
+        row.state,
+        ReviewState::Waiting,
+        "the review waits for a tree, and nothing was decided: {row:?}"
+    );
+    assert!(
+        row.verdict.is_none(),
+        "no verdict was written about the branch: {row:?}"
+    );
+    assert_eq!(row.attempts, 0, "and no attempt was spent: {row:?}");
+    assert!(
+        row.failure.starts_with(WAITING_FOR_TREE),
+        "the row says what it is waiting for: {}",
+        row.failure
+    );
+    assert!(
+        row.failure.contains("the review environment went away")
+            && row.failure.contains(&tree)
+            && row.failure.contains(&head),
+        "and says the ENVIRONMENT went away, naming the tree and the head: {}",
+        row.failure
+    );
+    assert!(
+        heard.raised("queue_blocked").is_empty(),
+        "nothing is raised: this is our machinery, not the branch — {:?}",
+        heard.raised("queue_blocked")
+    );
 }

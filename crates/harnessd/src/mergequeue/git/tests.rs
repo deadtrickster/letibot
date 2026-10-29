@@ -320,97 +320,119 @@ fn a_github_ssh_url_becomes_the_https_one_gh_answers_for() {
     }
 }
 
-// ===== A reviewer's clone, and the two processes that can race for its name =====
+// ===== A reviewer's clone: one tree per ATTEMPT =====
 
-/// **Two clones of ONE row leave exactly one complete tree, and neither fails** — the race behind
-/// the operator's notice of 2026-10-29 (see [`clone_branch`]): a second attempt at `review-<id>`
-/// used to `remove_dir_all` the tree the first attempt was still writing into, and git died on its
-/// own `.git/objects/pack/tmp_pack_*` with *"No such file or directory"*.
+/// **Two clones of ONE row never share a path, and neither fails** — the class behind the operator's
+/// four dead reviews of 2026-10-29 (see [`clone_branch`]). The helper used to `remove_dir_all`
+/// whatever stood at `review-<row id>`, so a second attempt at a row deleted the tree the first
+/// attempt's reviewer was reading: git died on its own `.git/objects/pack/tmp_pack_*` (*"No such
+/// file or directory"*), and a reviewer already working there lost its workspace (*"the process did
+/// not start"*, *"0 entries"*).
 ///
-/// The property is not *who wins*: it is that BOTH callers succeed and the name holds one tree a
-/// reader can use — `rev-parse` answers the head the row names and `status` is clean, so the clone
-/// is complete and not a half-written one. Three rounds, because a race that has to be caught on
-/// the first try is a test that will be green for the wrong reason.
+/// The property is not *who wins*: there is no contest. Both callers succeed, the two trees are
+/// DIFFERENT paths, and each is complete — `rev-parse` answers the head the row names and `status`
+/// is clean. Three rounds, because a race that has to be caught on the first try is a test that will
+/// be green for the wrong reason.
 #[test]
-fn two_clones_of_one_row_leave_one_complete_tree_and_neither_fails() {
+fn two_clones_of_one_row_never_share_a_path_and_neither_fails() {
     let dir = TempDir::new("clone-race");
     let repo = repo(&dir.0);
     let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
     let clones = dir.0.join("letibot-review-clones");
-    let one = clones.join("review-the-review");
+    let stem = clones.join("review-the-review");
     for round in 0..3 {
         let threads: Vec<_> = (0..2)
             .map(|n| {
-                let (repo, one, head) = (repo.clone(), one.clone(), head.clone());
+                let (repo, stem, head) = (repo.clone(), stem.clone(), head.clone());
                 std::thread::spawn(move || {
-                    let said = clone_branch(&repo, "agent/the-work", &head, &one);
+                    let said = clone_branch(&repo, "agent/the-work", &head, &stem);
                     (n, said)
                 })
             })
             .collect();
+        let mut trees = Vec::new();
         for t in threads {
             let (n, said) = t.join().expect("the clone thread");
-            assert_eq!(said, Ok(()), "clone {n} of round {round} failed");
+            trees.push(said.unwrap_or_else(|e| panic!("clone {n} of round {round} failed: {e}")));
         }
+        assert_ne!(
+            trees[0], trees[1],
+            "round {round}: two attempts never share one tree"
+        );
+        for tree in &trees {
+            assert!(
+                tree.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("review-the-review-"),
+                "round {round}: the row's stem, then the attempt's own token: {}",
+                tree.display()
+            );
+            assert_eq!(sh(tree, &["rev-parse", "HEAD"]), head, "round {round}");
+            assert_eq!(
+                sh(tree, &["status", "--porcelain"]),
+                "",
+                "round {round}: a complete clone, not a half-written one"
+            );
+            assert!(tree.join("b.txt").exists(), "round {round}");
+        }
+        // Nothing half-made is left beside them: the clone is renamed into place.
         let names: Vec<String> = std::fs::read_dir(&clones)
             .expect("the clone directory")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            names,
-            vec!["review-the-review".to_string()],
-            "round {round}: exactly one tree, under the row's own name"
+        assert!(
+            !names.iter().any(|n| n.ends_with(".tmp")),
+            "round {round}: no clone being made is left behind: {names:?}"
         );
-        assert_eq!(sh(&one, &["rev-parse", "HEAD"]), head, "round {round}");
-        assert_eq!(
-            sh(&one, &["status", "--porcelain"]),
-            "",
-            "round {round}: a complete clone, not a half-written one"
-        );
-        assert!(one.join("b.txt").exists(), "round {round}");
     }
 }
 
-/// **A tree at the name is REPLACED, not refused** — the second clone of a row may not fail
-/// because the first one is still there, and it may not hand the reviewer the first one's tree
-/// either: a reviewer that worked in it may have left files behind.
+/// **A second attempt gets its OWN tree and leaves the first one alone** — a re-seat must not touch
+/// what the previous reviewer is standing in, and the new reviewer must not inherit the files the
+/// previous one left: both, and they are the same decision.
 #[test]
-fn a_second_clone_replaces_the_tree_rather_than_failing() {
-    let dir = TempDir::new("clone-replace");
+fn a_second_clone_gets_its_own_tree_and_leaves_the_first_alone() {
+    let dir = TempDir::new("clone-second");
     let repo = repo(&dir.0);
     let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
-    let one = dir
+    let stem = dir
         .0
         .join("letibot-review-clones")
         .join("review-the-review");
-    clone_branch(&repo, "agent/the-work", &head, &one).expect("the first clone");
-    std::fs::write(one.join("scratch.txt"), "left by a reviewer\n").expect("a file in the tree");
-    clone_branch(&repo, "agent/the-work", &head, &one).expect("the second clone");
+    let first = clone_branch(&repo, "agent/the-work", &head, &stem).expect("the first clone");
+    std::fs::write(first.join("scratch.txt"), "left by a reviewer\n").expect("a file in the tree");
+    let second = clone_branch(&repo, "agent/the-work", &head, &stem).expect("the second clone");
+    assert_ne!(first, second, "a second attempt is a second tree");
     assert!(
-        !one.join("scratch.txt").exists(),
-        "the reviewer's tree is a fresh clone, not the last one's leftovers"
+        first.join("scratch.txt").exists(),
+        "the tree the first reviewer worked in is untouched: {}",
+        first.display()
     );
-    assert_eq!(sh(&one, &["rev-parse", "HEAD"]), head);
-    assert_eq!(sh(&one, &["status", "--porcelain"]), "");
+    assert!(
+        !second.join("scratch.txt").exists(),
+        "and the second reviewer's tree is a fresh clone, not the first one's leftovers"
+    );
+    assert_eq!(sh(&second, &["rev-parse", "HEAD"]), head);
+    assert_eq!(sh(&second, &["status", "--porcelain"]), "");
 }
 
-/// **A clone that cannot be made leaves NOTHING behind** — no `review-<id>.tmp-…` in the directory
-/// for the sweep to have to reason about, and the name free for the next attempt.
+/// **A clone that cannot be made leaves NOTHING behind** — no tree, no `.tmp` for the sweep to have
+/// to reason about, and nothing for the next attempt to trip over.
 #[test]
 fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
     let dir = TempDir::new("clone-fails");
     let repo = repo(&dir.0);
     let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
     let clones = dir.0.join("letibot-review-clones");
-    let one = clones.join("review-the-review");
-    let said = clone_branch(&repo, "agent/no-such-branch", &head, &one)
+    let stem = clones.join("review-the-review");
+    let said = clone_branch(&repo, "agent/no-such-branch", &head, &stem)
         .expect_err("a branch that is not there cannot be cloned");
     assert!(
         said.contains("git clone of `agent/no-such-branch`"),
         "{said}"
     );
-    assert!(!one.exists(), "no tree at the row's name");
     let names: Vec<String> = std::fs::read_dir(&clones)
         .map(|d| {
             d.flatten()
