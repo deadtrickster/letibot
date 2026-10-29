@@ -14,7 +14,7 @@
 //! | [`Waiting::Turn`] | **the PROMPT**, from the moment the harness takes it until its loop returns — `Harness::prompt_in_flight`, which [`Harness::begin_turn_clock`] sets and [`Harness::end_turn_clock`] clears (["called once per prompt, never per round"](Harness::begin_turn_clock)), falling back to the hub's round-level [`Hub::turn_shape`] for a hub with no harness (a test, a replay) |
 //! | [`Waiting::Calls`] | the finer detail inside that: the round's generation ended and the calls it proposed are still running — again [`Hub::turn_shape`] |
 //! | [`Waiting::Delivery`] | the queue that owes the model something: the watcher set's un-drained settlements and held results, a monitor that has fired since [`Harness::monitor_cursor`] moved, and the hub's own pending command or wake ([`Hub::work_pending`]) |
-//! | [`Waiting::Job`], [`Waiting::Child`] | the watcher set's live threads — [`JobWatchers::watching_now`] — filtered by whether the settlement would reach the model as a WAKE ([`awaited`], `crate::delivery`'s own rule) |
+//! | [`Waiting::Job`], [`Waiting::Child`] | the watcher set's live threads — [`JobWatchers::activity_facts`], whose snapshot is what a publish may read — filtered by whether the settlement would reach the model as a WAKE ([`awaited`], `crate::delivery`'s own rule) |
 //! | [`Waiting::Monitor`] | the monitors the session declared, live ([`Monitors::live_names`]) |
 //! | [`Waiting::Ask`] | the cards the hub's view still has open |
 //!
@@ -149,6 +149,25 @@ pub fn awaited(
 /// Every argument is an `Arc` the harness already holds, so the closure keeps no session alive and
 /// borrows nothing: it is read from whatever thread publishes, which for a settlement is the
 /// watcher's own.
+///
+/// # The one rule this closure keeps, and what it cost to learn
+///
+/// **It may not wait on a lock a non-publishing thread can hold.** The daemon's merge queue calls
+/// [`Hub::publish`] from inside its own state machine (`RepoQueue::pass` → `apply_gate` → `judged`
+/// → `raise` → `publish_for_repository`), so anything this closure blocks on becomes a lock the
+/// queue's thread holds while it holds the queue — and a thread that is holding a session's state
+/// and waiting for the queue is a cycle.
+///
+/// Measured 2026-10-29 (`harnessd 0.5.1`, pid 53775): the queue's worker sat 795 of 795 samples in
+/// `raise → publish_for_repository → Hub::publish → refresh_activity → facts_of →
+/// JobWatchers::pending → Mutex::lock` for 8½ hours. The holder was a session closing itself
+/// (`JobWatchers::stop` published while holding its own settlement queue), so the queue's lease
+/// heartbeat stopped, a target stayed `gating` with no gate, and an approved branch sat `queued`.
+///
+/// So every fact here is now taken without waiting: the watcher set answers
+/// [`JobWatchers::activity_facts`] from two atomics and one **leaf** lock (an `Arc` cloned and
+/// released, never held across a call), and the board and the monitors are leaf locks of the same
+/// kind — a lock that is only ever held across a clone cannot be part of a cycle.
 pub fn source(
     watch: Option<Arc<JobWatchers>>,
     monitors: Option<Arc<Monitors>>,
@@ -205,25 +224,28 @@ pub fn facts_of(
         f.monitors = m.live_names();
     }
     if let Some(w) = watch {
-        // A settlement queued for this session, or a result held for its next break, is a turn it
-        // will take by itself. This is the window QC's `wait` exited in (`478f415a`), and it is
-        // the one fact no event on the hub can say.
-        if w.pending() || w.held_count() > 0 {
+        // **A settlement queued for this session, or a result held for its next break, is a turn it
+        // will take by itself.** This is the window QC's `wait` exited in (`478f415a`), and it is
+        // the one fact no event on the hub can say. Taken from the watcher set's own flags and
+        // snapshot — never from its maps — because this runs inside a publish; see [`source`].
+        let watching = w.activity_facts();
+        if watching.pending || watching.held > 0 {
             f.delivery = true;
         }
         let rows = todos.snapshot();
-        for (handle, kind, slug) in w.watching_now() {
-            if !awaited(&handle, slug.as_deref(), kind, &rows, w.wanted(&handle)) {
+        for one in watching.at_work.iter() {
+            if !awaited(&one.handle, one.slug.as_deref(), one.kind, &rows, one.wanted) {
                 continue;
             }
-            f.at_work.push(match kind {
-                crate::jobwatch::BackgroundKind::Subagent => Waiting::Child(handle),
-                crate::jobwatch::BackgroundKind::Job => Waiting::Job(handle),
+            f.at_work.push(match one.kind {
+                crate::jobwatch::BackgroundKind::Subagent => Waiting::Child(one.handle.clone()),
+                crate::jobwatch::BackgroundKind::Job => Waiting::Job(one.handle.clone()),
             });
         }
         // **A settled or failed child keeps nothing open here**: the watcher removes the handle when
-        // its thread ends, and by then the settlement is a queued completion — which is `delivery`,
-        // and the turn it wakes is the session doing something rather than waiting for it.
+        // its thread ends (and refreshes this value as it goes), and by then the settlement is a
+        // queued completion — which is `delivery`, and the turn it wakes is the session doing
+        // something rather than waiting for it.
     }
     f
 }

@@ -87,7 +87,7 @@
 //! level above, because that is the session the settlement is now waiting for.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime};
 
@@ -213,6 +213,148 @@ pub struct JobCompletion {
 /// is a reader re-parsing a type to see it is the same one.
 type Mine = Arc<Mutex<HashMap<String, (BackgroundKind, Option<String>)>>>;
 
+/// **One thing this session is watching, as the activity reads it** — a row of
+/// [`JobWatchers::activity_facts`]'s snapshot.
+///
+/// A copy, and the copying is the point: the maps it comes from (`mine`, `wanted`) are written by
+/// watcher threads and by the harness, and the activity line is re-derived from inside
+/// [`Hub::publish`] — see [`WatchedNow`] for the measurement and the rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Watched {
+    /// The handle a call was given back (`j8032`, `s-kid`).
+    pub handle: String,
+    /// Which of the two it is — the word a sentence about it uses.
+    pub kind: BackgroundKind,
+    /// The name the caller gave it, when it has one (`bash(slug: …)`).
+    pub slug: Option<String>,
+    /// **What the session said it wants of it** (R79) — a wait, a promoted foreground call, or
+    /// `wake: "now"` — as of the last rebuild. Carried in the snapshot rather than looked up per
+    /// handle, because the lookup would take `wanted`'s lock on a publish.
+    pub wanted: Option<WantedNow>,
+}
+
+/// **The three facts the activity line is made of, taken without waiting on a lock a watcher
+/// holds.**
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ActivityFacts {
+    /// A settlement is queued for this session and nobody has drained it — see
+    /// [`JobWatchers::pending`].
+    pub pending: bool,
+    /// How many results are held for the model's next break — see [`JobWatchers::held_count`].
+    pub held: usize,
+    /// The jobs and children it is watching, with what it asked of each.
+    pub at_work: Arc<Vec<Watched>>,
+}
+
+/// **The two maps the activity's snapshot is built from, and the snapshot itself.**
+///
+/// # Why this type exists
+///
+/// The activity line is re-derived from inside [`Hub::publish`] (`Hub::refresh_activity`), and a
+/// publish is made from places that hold a session's own state — the merge queue's state machine
+/// publishes a warning from inside `pass`/`apply_gate`. So **nothing reachable from a publish may
+/// block on a lock a non-queue thread can hold**, and the maps below are exactly such locks:
+/// `mine` is written by [`JobWatchers::watch`] and by every watcher thread as it ends, `wanted` by
+/// the harness and by the delivery sort.
+///
+/// Measured 2026-10-29 (`harnessd 0.5.1`, pid 53775, `main` at `706f4147`): the queue's thread sat
+/// in `apply_gate → judged → raise → publish_for_repository → Hub::publish → refresh_activity →
+/// activity::facts_of → JobWatchers::pending → Mutex::lock` for 8½ hours, 795 of 795 samples.
+/// [`JobWatchers::stop`] held the settlement queue while it published, and the publish asked for
+/// that same queue — one thread, one non-reentrant mutex, and every publisher on the box behind
+/// it. The lease's heartbeat stopped, a target stayed `gating` with no gate (its verdict had been
+/// taken out of the slot before the application began), and an approved branch sat `queued`.
+///
+/// # The rule this type keeps
+///
+/// `snapshot` is a **leaf** lock: it is held only across a clone or a store of an `Arc`, never
+/// across a call that can block, so it cannot be part of a cycle. A publisher takes nothing else
+/// from this set — `pending` and `held` are atomics ([`Settlements::any`], `JobWatchers::held_now`)
+/// — so a publish does not wait here at all.
+///
+/// The order the writers keep is `mine` → `wanted` → `snapshot`; the reader takes only `snapshot`.
+struct WatchedNow {
+    mine: Mine,
+    wanted: Arc<Mutex<HashMap<String, WantedNow>>>,
+    snapshot: Mutex<Arc<Vec<Watched>>>,
+}
+
+impl WatchedNow {
+    fn new(wanted: Arc<Mutex<HashMap<String, WantedNow>>>) -> Arc<WatchedNow> {
+        Arc::new(WatchedNow {
+            mine: Arc::new(Mutex::new(HashMap::new())),
+            wanted,
+            snapshot: Mutex::new(Arc::new(Vec::new())),
+        })
+    }
+
+    /// **Rebuild the snapshot from the two maps** — called by whatever moved them, once it has let
+    /// go of them.
+    ///
+    /// Sorted by handle, because the maps are `HashMap`s and the activity is compared for equality
+    /// to decide whether to publish it: an order that wandered would republish an unchanged line.
+    fn rebuild(&self) {
+        let mine = self.mine.lock().expect("job watchers");
+        let wanted = self.wanted.lock().expect("wanted results");
+        let mut out: Vec<Watched> = mine
+            .iter()
+            .map(|(handle, (kind, slug))| Watched {
+                handle: handle.clone(),
+                kind: *kind,
+                slug: slug.clone(),
+                wanted: wanted.get(handle).copied(),
+            })
+            .collect();
+        drop(wanted);
+        drop(mine);
+        out.sort_by(|a, b| a.handle.cmp(&b.handle));
+        *self.snapshot.lock().expect("watched now") = Arc::new(out);
+    }
+
+    /// **The snapshot, taken without waiting** — a leaf lock, cloned, released.
+    fn now(&self) -> Arc<Vec<Watched>> {
+        Arc::clone(&self.snapshot.lock().expect("watched now"))
+    }
+}
+
+/// **One session's settlement queue, and the flag the activity reads instead of its lock.**
+///
+/// `any` is `true` exactly while `queue` is non-empty: every push sets it **inside** the lock and
+/// every drain clears it inside the lock, so a reader that loads `false` cannot have missed a
+/// settlement that was already there. A reader that loads `true` may find the queue empty by the
+/// time the drain's turn starts — two reads, two instants — and that is a value the turn
+/// republishes, not a fact gone stale.
+///
+/// The queue itself is never taken on a publish path; see [`WatchedNow`].
+struct Settlements {
+    queue: Mutex<VecDeque<JobCompletion>>,
+    any: AtomicBool,
+}
+
+impl Settlements {
+    fn new() -> Arc<Settlements> {
+        Arc::new(Settlements {
+            queue: Mutex::new(VecDeque::new()),
+            any: AtomicBool::new(false),
+        })
+    }
+
+    /// Push under the lock, and say so — one of the two places `any` moves.
+    fn push(&self, c: JobCompletion) {
+        let mut g = self.queue.lock().expect("job completions");
+        g.push_back(c);
+        self.any.store(true, Ordering::SeqCst);
+    }
+
+    /// Everything queued, taken — the other place `any` moves.
+    fn drain(&self) -> Vec<JobCompletion> {
+        let mut g = self.queue.lock().expect("job completions");
+        let out: Vec<JobCompletion> = g.drain(..).collect();
+        self.any.store(false, Ordering::SeqCst);
+        out
+    }
+}
+
 /// The per-session set of watched background jobs and subagents.
 ///
 /// Held by the harness, fed by [`JobWatchSink`] as backgrounded results pass
@@ -254,7 +396,7 @@ pub struct JobWatchers {
     /// [`JobWatchers::take_completions`] between turns, or by
     /// [`JobWatchers::take_mid_turn_completions`] at a round boundary for a session
     /// the daemon cannot wake.
-    completions: Arc<Mutex<VecDeque<JobCompletion>>>,
+    completions: Arc<Settlements>,
     /// **The queue of the set this one was built from, and whose session owns it** —
     /// the parent's, when this is a child's ([`JobWatchers::shares_tree`]).
     ///
@@ -267,7 +409,7 @@ pub struct JobWatchers {
     /// further down. The id beside it is the level above's **session**, because that is
     /// who the ring for a handed-up settlement has to name: the settlement is waiting
     /// for the parent now, and the parent is where it must be looked for.
-    parent: Option<(Arc<Mutex<VecDeque<JobCompletion>>>, String)>,
+    parent: Option<(Arc<Settlements>, String)>,
     /// **This set's own session id** — what a completion it queues is stamped with.
     ///
     /// Read from the hub at construction and never from the tree: a child's set
@@ -290,6 +432,10 @@ pub struct JobWatchers {
     /// into whatever the model is doing. Filled and emptied by [`crate::delivery`]; per session,
     /// like `completions`, and handed up with it by [`JobWatchers::stop`].
     held: Arc<Mutex<Vec<JobCompletion>>>,
+    /// **How many results are held, as an atomic** — the value [`JobWatchers::held_count`] answers,
+    /// so the activity does not have to take `held`'s lock on a publish (see [`WatchedNow`]).
+    /// Written inside `held`'s lock by [`JobWatchers::hold`] and by both takes.
+    held_now: Arc<AtomicUsize>,
     /// **The held counts last published to the hub** — `(jobs, subagents, failed)` — so
     /// [`SessionEvent::HeldResults`] goes out when the set CHANGES and not on every touch (a
     /// re-sort that takes and puts back the same results changes nothing a head draws). Shared
@@ -321,7 +467,10 @@ pub struct JobWatchers {
     /// handle was all this map carried — so a session waiting on a named job read `quiet`, and
     /// `wait` was told nothing more would happen. Recorded at `watch` from the live view, which is
     /// the only moment it can be read.
-    mine: Mine,
+    ///
+    /// **Read through [`WatchedNow`]'s snapshot, never directly, by the activity** — this map is
+    /// written by watcher threads, and the activity is re-derived from inside a hub publish.
+    watched: Arc<WatchedNow>,
     /// **The tree's ROOT** — the one session in a subagent tree that a head can be attached
     /// to, and therefore the one a permission card can be drawn by.
     ///
@@ -362,12 +511,13 @@ impl JobWatchers {
     /// queued and the next `wake` would still drain it, but nothing rings to cause
     /// one, which is the truth for a session no worker is serving.
     pub fn new(host: &Arc<dyn ProcessHost>, hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
+        let wanted: Arc<Mutex<HashMap<String, WantedNow>>> = Arc::new(Mutex::new(HashMap::new()));
         Arc::new(JobWatchers {
             host: Some(Arc::downgrade(host)),
             recorder: Arc::new(Mutex::new(None)),
             hub: Arc::downgrade(hub),
             tasks: None,
-            completions: Arc::new(Mutex::new(VecDeque::new())),
+            completions: Settlements::new(),
             // A root has no level above it: nothing it fails to drain can be handed up.
             parent: None,
             me: hub.session_id(),
@@ -376,9 +526,10 @@ impl JobWatchers {
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
             held: Arc::new(Mutex::new(Vec::new())),
+            held_now: Arc::new(AtomicUsize::new(0)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
-            wanted: Arc::new(Mutex::new(HashMap::new())),
-            mine: Arc::new(Mutex::new(HashMap::new())),
+            wanted: Arc::clone(&wanted),
+            watched: WatchedNow::new(wanted),
             // A root session is its own tree: the root and its own id are one.
             root: hub.session_id(),
             read: Arc::new(Mutex::new(ReadRecord::default())),
@@ -458,12 +609,13 @@ impl JobWatchers {
     /// the wake work only where a command could also be backgrounded. It is the same
     /// channel either way; this is the arm where the job half has nothing to watch.
     pub fn watching_tasks(hub: &Arc<Hub>, bell: Option<Arc<Bell>>) -> Arc<Self> {
+        let wanted: Arc<Mutex<HashMap<String, WantedNow>>> = Arc::new(Mutex::new(HashMap::new()));
         Arc::new(JobWatchers {
             host: None,
             recorder: Arc::new(Mutex::new(None)),
             hub: Arc::downgrade(hub),
             tasks: None,
-            completions: Arc::new(Mutex::new(VecDeque::new())),
+            completions: Settlements::new(),
             parent: None,
             me: hub.session_id(),
             bell,
@@ -471,9 +623,10 @@ impl JobWatchers {
             watching: Arc::new(Mutex::new(HashSet::new())),
             settled: Arc::new(Mutex::new(HashSet::new())),
             held: Arc::new(Mutex::new(Vec::new())),
+            held_now: Arc::new(AtomicUsize::new(0)),
             held_said: Arc::new(Mutex::new((0, 0, 0))),
-            wanted: Arc::new(Mutex::new(HashMap::new())),
-            mine: Arc::new(Mutex::new(HashMap::new())),
+            wanted: Arc::clone(&wanted),
+            watched: WatchedNow::new(wanted),
             root: hub.session_id(),
             read: Arc::new(Mutex::new(ReadRecord::default())),
         })
@@ -503,9 +656,12 @@ impl JobWatchers {
             watching: Arc::clone(&self.watching),
             settled: Arc::clone(&self.settled),
             held: Arc::clone(&self.held),
+            held_now: Arc::clone(&self.held_now),
             held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
-            mine: Arc::new(Mutex::new(HashMap::new())),
+            // Its own snapshot, over its own `mine`: what this set watches is this set's, and the
+            // map it is built from starts empty for a set built for another session.
+            watched: WatchedNow::new(Arc::clone(&self.wanted)),
             root: self.root.clone(),
             read: Arc::clone(&self.read),
         })
@@ -563,11 +719,12 @@ impl JobWatchers {
             // **Its own**, for the queue's reason: what this session holds and what it asked
             // for are this session's.
             held: Arc::clone(&self.held),
+            held_now: Arc::clone(&self.held_now),
             held_said: Arc::clone(&self.held_said),
             wanted: Arc::clone(&self.wanted),
             // **Its own**, for `held`'s reason: what this session is waiting on is its own, and a
             // child that inherited its parent's would report the parent's jobs as its work.
-            mine: Arc::new(Mutex::new(HashMap::new())),
+            watched: WatchedNow::new(Arc::clone(&self.wanted)),
             root: tree.root.clone(),
             // Its own, for `held`'s reason: what this session's model has read is its own.
             read: Arc::clone(&self.read),
@@ -597,8 +754,7 @@ impl JobWatchers {
     /// it — and that is the door [`JobWatchers::take_mid_turn_completions`] opens, whose
     /// guard is exactly this root/child difference.
     pub fn take_completions(&self) -> Vec<JobCompletion> {
-        let mut g = self.completions.lock().expect("job completions");
-        g.drain(..).collect()
+        self.completions.drain()
     }
 
     /// **Take them at a round boundary, for the session the daemon does not hold.**
@@ -635,10 +791,22 @@ impl JobWatchers {
     /// the daemon calls it: a settlement is queued by its watcher thread.
     #[doc(hidden)]
     pub fn queue_for_test(&self, c: JobCompletion) {
-        self.completions
-            .lock()
-            .expect("job completions")
-            .push_back(c);
+        self.completions.push(c);
+    }
+
+    /// **Hold this session's settlement queue while `during` runs** — the position a publisher must
+    /// not be able to be parked in, stood in on purpose.
+    ///
+    /// The measurement this file was rewritten for is exactly this state: one thread inside this
+    /// queue's lock and publishing, every other publisher on the box queued behind it. Nothing in
+    /// the daemon holds the queue across a publish any more (see [`JobWatchers::stop`]) and the
+    /// activity does not ask for it at all (see [`WatchedNow`]) — so a test can hold it and still
+    /// require a publish to return, and that is what
+    /// `tests/activity.rs::a_publish_returns_while_the_settlement_queue_is_held` asserts.
+    #[doc(hidden)]
+    pub fn hold_settlements_for_test<R>(&self, during: impl FnOnce() -> R) -> R {
+        let _held = self.completions.queue.lock().expect("job completions");
+        during()
     }
 
     /// **Say this handle's result is wanted the moment it ends** (R79) — the daemon's half of
@@ -662,6 +830,10 @@ impl JobWatchers {
             .expect("wanted results")
             .entry(handle.to_string())
             .or_insert(why);
+        // **And the snapshot, because `awaited` reads the want from it.** A want is what makes a
+        // running job or child count as work the session is blocked on, so a snapshot left without
+        // it would read `quiet` about a session that asked to be told the moment it ended.
+        self.watched.rebuild();
     }
 
     /// Whether this handle was asked for, and how — read by [`crate::delivery`]'s sort.
@@ -677,6 +849,7 @@ impl JobWatchers {
     /// still outstanding.
     pub fn delivered(&self, handle: &str) {
         self.wanted.lock().expect("wanted results").remove(handle);
+        self.watched.rebuild();
     }
 
     /// **These completions have just been put into the model's transcript** — recorded with the
@@ -705,6 +878,8 @@ impl JobWatchers {
                 wanted.remove(&c.job);
             }
         }
+        // And the snapshot, which carries each handle's want (`WatchedNow`).
+        self.watched.rebuild();
         // **And a subagent's settlement is marked delivered in the store**, because this is the
         // one place *the model has been told* is true. A daemon that goes down between a child
         // settling and its parent being told brings that settlement back on the parent's next
@@ -783,7 +958,7 @@ impl JobWatchers {
         };
         let names = |c: &JobCompletion| c.job == handle || c.slug.as_deref() == Some(handle);
         let pending = {
-            let q = self.completions.lock().expect("job completions");
+            let q = self.completions.queue.lock().expect("job completions");
             q.iter().find(|c| names(c)).map(|c| c.arrived)
         }
         .or_else(|| {
@@ -809,7 +984,9 @@ impl JobWatchers {
     /// ([`JobWatchers::take_held_to_resort`]) and promoted every one of them.
     pub fn hold(&self, more: Vec<JobCompletion>) {
         if !more.is_empty() {
-            self.held.lock().expect("held results").extend(more);
+            let mut h = self.held.lock().expect("held results");
+            h.extend(more);
+            self.held_now.store(h.len(), Ordering::SeqCst);
         }
         self.say_held();
     }
@@ -817,7 +994,7 @@ impl JobWatchers {
     /// **Everything held, taken** — the batch delivered, or the set handed up — and said on the
     /// hub, which then reads nothing held.
     pub fn take_held(&self) -> Vec<JobCompletion> {
-        let taken = std::mem::take(&mut *self.held.lock().expect("held results"));
+        let taken = self.take_held_to_resort();
         self.say_held();
         taken
     }
@@ -826,7 +1003,10 @@ impl JobWatchers {
     /// the hub: the sort puts back what is still held with [`JobWatchers::hold`], which says the
     /// result, so a head never sees the set drop to zero and come back within one sort.
     pub fn take_held_to_resort(&self) -> Vec<JobCompletion> {
-        std::mem::take(&mut *self.held.lock().expect("held results"))
+        let mut h = self.held.lock().expect("held results");
+        let taken = std::mem::take(&mut *h);
+        self.held_now.store(0, Ordering::SeqCst);
+        taken
     }
 
     /// **The held set's counts — jobs, subagents, and how many of them failed.**
@@ -873,7 +1053,8 @@ impl JobWatchers {
 
     /// How many results are held right now.
     pub fn held_count(&self) -> usize {
-        self.held.lock().expect("held results").len()
+        // The flag, for `pending`'s reason: `held`'s lock is one a session's own thread holds.
+        self.held_now.load(Ordering::SeqCst)
     }
 
     /// **Has a settlement arrived that this session has not been told yet?** — the queue behind
@@ -884,13 +1065,15 @@ impl JobWatchers {
     /// aside so a RUNNING turn is not interrupted: both are *the model is owed a turn*, and neither
     /// is a job still running.
     pub fn pending(&self) -> bool {
-        !self.completions.lock().expect("job completions").is_empty()
+        // **The flag, not the queue** — see [`Settlements::any`]. A publish reaches this, and a
+        // publish that waited on the queue is the 8½-hour deadlock in [`WatchedNow`]'s header.
+        self.completions.any.load(Ordering::SeqCst)
     }
 
     /// **The jobs and children THIS session is waiting on, by handle and kind** — the things whose
     /// settlement will reach its model.
     ///
-    /// Read from [`JobWatchers::mine`] rather than from the tree-wide `watching` set, and the
+    /// Read from [`WatchedNow`]'s `mine` rather than from the tree-wide `watching` set, and the
     /// difference is the tree (R58): `watching` is shared so a settlement is watched once wherever it
     /// is handed up, so a parent's job sits in a child's too — and work the child is not waiting on
     /// is not work the child's model is owed a turn for.
@@ -900,6 +1083,7 @@ impl JobWatchers {
     /// [`crate::activity`] refresh — `Delivery`, and then the turn it wakes.
     pub fn watching_now(&self) -> Vec<(String, BackgroundKind, Option<String>)> {
         let mut out: Vec<(String, BackgroundKind, Option<String>)> = self
+            .watched
             .mine
             .lock()
             .expect("job watchers")
@@ -910,6 +1094,30 @@ impl JobWatchers {
         // when it CHANGES, and a `HashMap`'s iteration order is not a change.
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// **The three facts the activity line is made of, taken without waiting on a lock a watcher
+    /// holds** — the invariant [`letibot_sessionlog::hub::Hub::publish`] rests on, and the answer
+    /// to the 8½-hour deadlock [`WatchedNow`] records.
+    ///
+    /// `pending` and `held` are atomics, and the watchers are one **leaf** lock over an `Arc` that
+    /// is cloned and released: nothing here can wait on a thread that is itself waiting for
+    /// something else, so a publish that reaches this cannot be part of a cycle.
+    ///
+    /// **What a reader sees, and what it can miss.** Each of the three is one instant and they are
+    /// not one instant together — a watcher that ends between the load of `pending` and the clone of
+    /// the snapshot is in neither — so the value is a moment, not a guarantee, exactly as
+    /// `Hub::work_pending` says of itself. What makes that safe is that every move of these facts
+    /// publishes afterwards: a settlement rings the worker (whose turn republishes), `hold`/`take_held`
+    /// say the held counts on the hub, and both watcher threads refresh the activity after they take
+    /// their handle out. So a publish that reads here always reads the truth as of the read, and a
+    /// change that lands in the same breath is announced by the thread that made it.
+    pub fn activity_facts(&self) -> ActivityFacts {
+        ActivityFacts {
+            pending: self.pending(),
+            held: self.held_count(),
+            at_work: self.watched.now(),
+        }
     }
 
     /// **The session at the top of this tree** — the ROOT, which is where a subagent's ask
@@ -981,13 +1189,21 @@ impl JobWatchers {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
         let pending: Vec<JobCompletion> = {
-            let mut own = self.completions.lock().expect("job completions");
+            let mut own = self.completions.queue.lock().expect("job completions");
             // **What was HELD goes up with the queue** (R79): a held result is one this session
-            // was going to read at its next break, and a stopped session has none.
-            let mut all = self.take_held();
+            // was going to read at its next break, and a stopped session has none. Taken with
+            // `take_held_to_resort` — the door that does NOT say so on the hub — because saying it
+            // publishes, and a publish from inside this lock is the deadlock this method was the
+            // site of: the activity asked for this queue (`JobWatchers::pending`), so one thread
+            // took it twice and every publisher in the daemon queued behind that thread. Measured
+            // 2026-10-29: the merge queue's worker sat there for 8½ hours. See [`WatchedNow`].
+            let mut all = self.take_held_to_resort();
             all.extend(own.drain(..));
+            self.completions.any.store(false, Ordering::SeqCst);
             all
         };
+        // **Said out here**, where it cannot wait on the queue this drain has just let go of.
+        self.say_held();
         // A session at the top of a tree has nowhere to hand anything up to, and a
         // session that drained everything it had leaves nothing to carry.
         let Some((above, who)) = &self.parent else {
@@ -996,7 +1212,11 @@ impl JobWatchers {
         if pending.is_empty() {
             return;
         }
-        above.lock().expect("job completions").extend(pending);
+        {
+            let mut g = above.queue.lock().expect("job completions");
+            g.extend(pending);
+            above.any.store(true, Ordering::SeqCst);
+        }
         // **And the ring, naming the session it was handed TO.** The push that queued
         // this rang the owner before the hand-over was even possible; without this ring a
         // settlement that arrives here a moment after that ring would sit in the parent's
@@ -1050,9 +1270,9 @@ impl JobWatchers {
         });
         let watching = Arc::clone(&self.watching);
         let settled = Arc::clone(&self.settled);
-        let mine = Arc::clone(&self.mine);
+        let watched = Arc::clone(&self.watched);
         let runner = self.tasks.as_ref().and_then(Weak::upgrade);
-        // **Which kind this handle is, decided once and recorded** — see [`JobWatchers::mine`] for
+        // **Which kind this handle is, decided once and recorded** — see [`WatchedNow`] for
         // why a reader must not ask the runner again later. The same question `watch` has always
         // asked, in the same place, so the two answers cannot disagree.
         let child = runner
@@ -1063,7 +1283,7 @@ impl JobWatchers {
         } else {
             BackgroundKind::Job
         };
-        // **The name, read while the job exists** — see [`JobWatchers::mine`]. A subagent's name is
+        // **The name, read while the job exists** — see [`WatchedNow`]. A subagent's name is
         // the runner's (`slug_of`), and a job's is the one `bash` was given.
         let slug = if child {
             self.tasks
@@ -1077,14 +1297,19 @@ impl JobWatchers {
                 .and_then(|v| v.slug)
         };
         if let Some(runner) = runner.filter(|_| child) {
-            mine.lock()
+            watched
+                .mine
+                .lock()
                 .expect("job watchers")
                 .insert(job.clone(), (kind, slug));
-            let mine = Arc::clone(&mine);
+            // **And the activity's snapshot** — a handle in `mine` that the snapshot does not have
+            // is a session waiting on a child and reading `quiet`.
+            watched.rebuild();
+            let watched = Arc::clone(&watched);
             let queue = Arc::clone(&queue);
             let _ = std::thread::Builder::new()
                 .name(format!("subagent-watch-{}", &job[..job.len().min(20)]))
-                .spawn(move || watch_task(runner, hub, queue, watching, settled, mine, job));
+                .spawn(move || watch_task(runner, hub, queue, watching, settled, watched, job));
             return;
         }
         // Not a subagent and no host to ask: nothing here can ever settle this handle, so
@@ -1094,12 +1319,15 @@ impl JobWatchers {
             watching.lock().expect("job watchers").remove(&job);
             return;
         };
-        mine.lock()
+        watched
+            .mine
+            .lock()
             .expect("job watchers")
             .insert(job.clone(), (kind, slug));
+        watched.rebuild();
         let _ = std::thread::Builder::new()
             .name(format!("job-watch-{}", &job[..job.len().min(20)]))
-            .spawn(move || watch_one(host, hub, queue, watching, settled, mine, job));
+            .spawn(move || watch_one(host, hub, queue, watching, settled, watched, job));
     }
 }
 
@@ -1111,11 +1339,11 @@ impl JobWatchers {
 /// routing rule — or one level up when that session has already stopped.
 struct SettlementQueue {
     /// The queue of the session that started it.
-    own: Arc<Mutex<VecDeque<JobCompletion>>>,
+    own: Arc<Settlements>,
     /// **The queue of the level above it and that session's own id**, when there is one.
     /// The id travels with the queue because the hand-up needs both and they must not be
     /// able to disagree about where the settlement went.
-    parent: Option<(Arc<Mutex<VecDeque<JobCompletion>>>, String)>,
+    parent: Option<(Arc<Settlements>, String)>,
     /// The owner's stop flag — see [`JobWatchers::stop`]. Read **while holding `own`**,
     /// which is what makes the two orderings exhaustive.
     stopped: Arc<AtomicBool>,
@@ -1146,16 +1374,17 @@ impl SettlementQueue {
         if let Some(rec) = &self.recorder {
             rec.record(&c);
         }
-        let mut g = self.own.lock().expect("job completions");
+        let mut g = self.own.queue.lock().expect("job completions");
         if self.stopped.load(Ordering::Relaxed)
             && let Some((above, who)) = &self.parent
         {
             drop(g);
-            above.lock().expect("job completions").push_back(c);
+            above.push(c);
             self.ring(who);
             return;
         }
         g.push_back(c);
+        self.own.any.store(true, Ordering::SeqCst);
         drop(g);
         self.ring(&self.owner);
     }
@@ -1487,7 +1716,7 @@ fn watch_one(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Mine,
+    watched: Arc<WatchedNow>,
     job: String,
 ) {
     loop {
@@ -1583,7 +1812,14 @@ fn watch_one(
     watching.lock().expect("job watchers").remove(&job);
     // **And this session is not waiting on it any more.** Two maps, one moment: a handle left in
     // `mine` would keep the session reading as busy on a job whose watcher has gone.
-    mine.lock().expect("job watchers").remove(&job);
+    watched.mine.lock().expect("job watchers").remove(&job);
+    // **And the snapshot, and the value on the hub.** The `refresh_activity` the settlement made
+    // ran while this handle was still in `mine` (it is removed here, after the push), so without
+    // this the line reads `waiting on: delivery, job j8032` for a job whose watcher has gone.
+    watched.rebuild();
+    if let Some(h) = hub.upgrade() {
+        h.refresh_activity();
+    }
 }
 
 /// **The same settlement, waited on the way a subagent settles.**
@@ -1612,7 +1848,7 @@ fn watch_task(
     queue: Arc<SettlementQueue>,
     watching: Arc<Mutex<HashSet<String>>>,
     settled: Arc<Mutex<HashSet<String>>>,
-    mine: Mine,
+    watched: Arc<WatchedNow>,
     job: String,
 ) {
     loop {
@@ -1666,7 +1902,14 @@ fn watch_task(
     watching.lock().expect("job watchers").remove(&job);
     // **And this session is not waiting on it any more.** Two maps, one moment: a handle left in
     // `mine` would keep the session reading as busy on a job whose watcher has gone.
-    mine.lock().expect("job watchers").remove(&job);
+    watched.mine.lock().expect("job watchers").remove(&job);
+    // **And the snapshot, and the value on the hub.** The `refresh_activity` the settlement made
+    // ran while this handle was still in `mine` (it is removed here, after the push), so without
+    // this the line reads `waiting on: delivery, job j8032` for a job whose watcher has gone.
+    watched.rebuild();
+    if let Some(h) = hub.upgrade() {
+        h.refresh_activity();
+    }
 }
 
 /// Queue one subagent's settlement and ring — the push and the bell, which are the

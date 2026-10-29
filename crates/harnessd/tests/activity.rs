@@ -349,3 +349,212 @@ fn a_child_the_plan_waits_on_is_an_entry_and_one_it_does_not_is_not() {
         "the words a head draws and a caller reads"
     );
 }
+
+/// **A runner whose child has already answered** — so the watcher thread settles on its first pass
+/// and the handle really leaves the set. `collect` answers `Done` to the `watch` probe as well,
+/// which is what makes the handle a subagent rather than a job.
+struct Answers {
+    handle: String,
+}
+
+impl TaskRunner for Answers {
+    fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+        Err("this runner starts nothing".into())
+    }
+    fn collect(&self, handle: &str, _timeout: Duration) -> TaskStatus {
+        if handle == self.handle {
+            TaskStatus::Done {
+                answer: "the fix".into(),
+                child: None,
+            }
+        } else {
+            TaskStatus::Unknown
+        }
+    }
+}
+
+/// A warning, which is the shape the merge queue's `raise` publishes — one of the events whose fold
+/// asks the activity to be re-derived.
+fn a_warning(code: &str) -> SessionEvent {
+    SessionEvent::Warning {
+        code: code.into(),
+        detail: "the queue's own raise".into(),
+        compaction: None,
+    }
+}
+
+/// **A publish returns while a session's settlement queue is held** — the deadlock the merge queue
+/// spent 8½ hours in on 2026-10-29, as a property rather than as a story.
+///
+/// The queue's state machine publishes from inside itself
+/// (`pass` → `apply_gate` → `judged` → `raise` → `publish_for_repository` → `Hub::publish`), and
+/// `Hub::publish` re-derives the activity, so **anything the activity reads is a lock the queue's
+/// thread holds while it holds the queue**. One thread holding the settlement queue was therefore
+/// enough: `sample 53775` found the queue's worker in `JobWatchers::pending → Mutex::lock` in 795 of
+/// 795 samples.
+///
+/// The wait is bounded on purpose: a test for a deadlock that hangs is a test that says nothing.
+#[test]
+fn a_publish_returns_while_the_settlement_queue_is_held() {
+    let hub = Hub::new("s-held-queue");
+    let watch = watchers(&hub);
+    hub.set_activity_source(activity::source(
+        Some(watch.clone()),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(TodoBoard::new(Vec::new())),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    // A settlement in the queue, so the value the publisher re-derives is not the empty one.
+    watch.queue_for_test(child_settlement("s-held-queue", "j8032"));
+
+    let (holding_tx, holding_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let watch = watch.clone();
+        std::thread::spawn(move || {
+            watch.hold_settlements_for_test(|| {
+                holding_tx.send(()).expect("the test is waiting");
+                // Hold it until the publisher is done, or until the test has given up — a holder
+                // that never let go would turn one failure into a hung binary.
+                let _ = release_rx.recv_timeout(Duration::from_secs(10));
+            })
+        })
+    };
+    holding_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the holder took the queue");
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let publisher = {
+        let hub = hub.clone();
+        std::thread::spawn(move || {
+            hub.publish(a_warning("queue_blocked"));
+            let _ = done_tx.send(());
+        })
+    };
+    let returned = done_rx.recv_timeout(Duration::from_secs(5));
+    let _ = release_tx.send(());
+    let _ = holder.join();
+    let _ = publisher.join();
+    returned.expect(
+        "a publish must not wait on a session's settlement queue: the merge queue publishes from \
+         inside its own state machine, so a publish that waits is a lock the queue holds while a \
+         session's thread holds the queue",
+    );
+
+    // **And the facts are still right**: the settlement is still queued, and the value the publish
+    // left behind says so.
+    assert_eq!(
+        hub.activity(),
+        Activity::of(vec![Waiting::Delivery]),
+        "the line a head draws: {:?}",
+        hub.activity()
+    );
+}
+
+/// **A session closing itself does not wedge a publisher** — the exact site of the 8½ hours.
+///
+/// `JobWatchers::stop` publishes the held counts as it hands them up, and it used to do that while
+/// holding the settlement queue — which the activity then asked for, from the same thread. One
+/// non-reentrant mutex taken twice: the closing session never returned, and every publisher on the
+/// box (the merge queue's worker among them) queued behind it for the rest of the night.
+///
+/// A held result is the state that makes `stop` speak, so the test holds one first: that is what the
+/// operator's own sessions do — a result held for the next break is the whole point of `held`.
+#[test]
+fn a_session_closing_itself_does_not_wedge_a_publisher() {
+    let hub = Hub::new("s-stopping");
+    let watch = watchers(&hub);
+    hub.set_activity_source(activity::source(
+        Some(watch.clone()),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+        Arc::new(TodoBoard::new(Vec::new())),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    watch.hold(vec![child_settlement("s-stopping", "j9001")]);
+    assert_eq!(watch.held_count(), 1, "the held set is what makes `stop` speak");
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let stopper = {
+        let watch = watch.clone();
+        std::thread::spawn(move || {
+            watch.stop();
+            let _ = done_tx.send(());
+        })
+    };
+    let stopped = done_rx.recv_timeout(Duration::from_secs(5));
+    let _ = stopper.join();
+    stopped.expect(
+        "`stop` published while holding its own settlement queue, and the publish asked for that \
+         queue: one thread, one non-reentrant mutex, and every publisher behind it",
+    );
+
+    // The held result was handed up rather than dropped, and nothing is held any more.
+    assert_eq!(watch.held_count(), 0, "a stopped session holds nothing");
+    assert!(
+        !watch.pending(),
+        "its own queue was drained and handed up, so nothing is queued for it"
+    );
+}
+
+/// **A watcher that has gone is not work any more** — the snapshot follows the map it is built from.
+///
+/// The settlement the watcher queued is `Delivery` (the model is owed the turn it wakes), and the
+/// child is no longer an entry: the handle leaves the set as the thread ends, and the line says so
+/// before anything drains the queue.
+#[test]
+fn the_line_drops_a_child_whose_watcher_has_gone() {
+    let hub = Hub::new("s-child-gone");
+    let runner: Arc<dyn TaskRunner> = Arc::new(Answers {
+        handle: "s-kid-done".into(),
+    });
+    let watch = watchers(&hub).with_tasks(&runner);
+    let board = Arc::new(TodoBoard::new(Vec::new()));
+    hub.set_activity_source(activity::source(
+        Some(watch.clone()),
+        None,
+        Arc::new(AtomicUsize::new(0)),
+        board.clone(),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    board.upsert_model(&[(
+        "land the fix".into(),
+        TodoStatus::InProgress,
+        vec![TodoNeed::Child {
+            id: "s-kid-done".into(),
+        }],
+    )]);
+
+    watch.watch("s-kid-done".into());
+    // The child answers at once, so the watcher ends; the handle leaves the set and the settlement
+    // is queued. What is left is `Delivery` and no child.
+    let ended = std::time::Instant::now() + Duration::from_secs(10);
+    while !watch.watching_now().is_empty() && std::time::Instant::now() < ended {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        watch.watching_now().is_empty(),
+        "the watcher settled and took its handle out: {:?}",
+        watch.watching_now()
+    );
+    assert!(watch.pending(), "the settlement it queued is still owed");
+
+    hub.refresh_activity();
+    assert_eq!(
+        hub.activity(),
+        Activity::of(vec![Waiting::Delivery]),
+        "a child that has gone is not work; the result it left behind is: {:?}",
+        hub.activity()
+    );
+
+    // Drained, the session is quiet — and that is the value a `wait` reads as *done*.
+    watch.take_completions();
+    hub.refresh_activity();
+    assert!(
+        hub.activity().is_quiet(),
+        "nothing left (got {})",
+        said(&hub.activity())
+    );
+}

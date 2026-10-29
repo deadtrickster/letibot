@@ -610,6 +610,27 @@ struct Inner {
 ///
 /// The hub is handed back in so the closure cannot answer about a different session than the one
 /// it was registered on, and so it holds no `Arc<Hub>` of its own (which would be a cycle).
+///
+/// # What a source may not do, and what it cost to learn
+///
+/// **It may not wait on a lock that a thread outside the publishing path can hold.** [`Hub::publish`]
+/// calls it ([`Hub::refresh_activity`]), and `publish` is made from inside state machines that hold
+/// their own locks — the merge queue's `RepoQueue::pass` → `apply_gate` → `judged` → `raise` →
+/// `publish_for_repository` is the one that measured it. So a source that blocks turns *a publish*
+/// into *a lock the queue's thread holds while it holds the queue*, which is a cycle the moment any
+/// holder of that lock is waiting for the queue.
+///
+/// Measured 2026-10-29 (`harnessd 0.5.1`, pid 53775): the queue's worker sat in
+/// `refresh_activity` → `activity::facts_of` → `JobWatchers::pending` → `Mutex::lock` for 8½ hours,
+/// 795 of 795 samples, because a session closing itself published while holding the queue that
+/// read was about to take. The lease's heartbeat stopped at the second `regate`, a target stayed
+/// `gating` with no gate process, and an approved branch sat `queued` with nothing to land it.
+///
+/// The shape that satisfies it, and what `letibot_harnessd::activity::source` now uses: the facts a
+/// source reads are either atomics or **leaf** locks — held only across a clone or a store of an
+/// `Arc`, never across a call that can block — so no source read can be part of a cycle. A source
+/// that must read something else should publish a snapshot from the thread that owns it rather than
+/// take that thread's lock here.
 pub type ActivitySource = Arc<dyn Fn(&Hub) -> crate::activity::Activity + Send + Sync>;
 
 /// What a session looks like from outside it: enough for a picker, and cheap
@@ -1046,6 +1067,9 @@ impl Hub {
     ///
     /// Nothing happens for a hub nobody registered a source on (every test, and every hub built
     /// below the daemon), which is the honest reading: such a hub has no jobs to be waiting on.
+    ///
+    /// **This runs inside [`Hub::publish`], so the source must not block** — see [`ActivitySource`]
+    /// for the measurement that made that a rule rather than a wish.
     pub fn refresh_activity(&self) -> bool {
         let source = self
             .activity_source
