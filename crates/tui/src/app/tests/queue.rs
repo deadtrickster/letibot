@@ -448,7 +448,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     );
     assert!(screen.contains("this session's repository"), "{screen}");
     assert!(
-        screen.contains("1 in review · 0 being merged · 0 parked")
+        screen.contains("1 in review · 0 being merged · 0 stuck · 0 landed")
             && !screen.contains("red target"),
         "the edge counts this repository only: {screen}"
     );
@@ -460,7 +460,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     assert!(screen.contains("EMERGENCY"), "{screen}");
     assert!(screen.contains("every repository"), "{screen}");
     assert!(
-        screen.contains("1 in review · 0 being merged · 0 parked")
+        screen.contains("1 in review · 0 being merged · 0 stuck · 0 landed")
             && !screen.contains("red target(s)"),
         "the EDGE stays this session's repository's whatever the pane shows: {screen}"
     );
@@ -557,17 +557,25 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
     );
 }
 
-/// **The edge counts the queues by what stands**, and says nothing when nothing does.
+/// **The edge counts the queues by what stands**, and says nothing when nothing does — and the
+/// four columns are the four questions the operator asked of them: what is waiting on a reviewer,
+/// what is being landed, what is STUCK, and what landed today.
 #[test]
 fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     let mut a = app();
     a.session_id = "s1".into();
+    // **Nothing that stands** — an approved review is the merge queue's business now, and a
+    // rejected one, a withdrawn one and a landing that moved on are the queue's past.
     a.apply(queue_frame(queues(
         vec![
             queue_review_row("a", "approved"),
-            queue_review_row("b", "withdrawn"),
+            queue_review_row("b", "rejected"),
+            queue_review_row("c", "withdrawn"),
         ],
-        vec![queue_merge_row("m-a", "landed")],
+        vec![
+            queue_merge_row("m-a", "withdrawn"),
+            queue_merge_row("m-b", "moved"),
+        ],
     )));
     let screen = a.screen(120, 24).join("\n");
     assert!(!screen.contains("in review"), "{screen}");
@@ -583,8 +591,129 @@ fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     )));
     let screen = a.screen(120, 24).join("\n");
     assert!(
-        screen.contains("1 in review · 1 being merged · 2 parked"),
+        screen.contains("1 in review · 1 being merged · 2 stuck · 0 landed"),
         "{screen}"
+    );
+}
+
+/// **The words, exactly** — the operator's two sentences of 2026-10-29: *"i definitely want to
+/// see landed counter after parked, and wtf parked means?"*, then *"so, label it as such -
+/// stuck?"*. And a landing is a STANDING: a queue that landed two branches today and holds
+/// nothing else still has something to say, so the words are drawn on the count alone.
+#[test]
+fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(queue_frame(queues(
+        Vec::new(),
+        vec![
+            queue_merge_row("m-a", "landed"),
+            queue_merge_row("m-b", "landed"),
+        ],
+    )));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(
+        screen.contains("0 in review · 0 being merged · 0 stuck · 2 landed"),
+        "{screen}"
+    );
+}
+
+/// **A terminal row inflates no live column, and the operator's own shape is both halves of
+/// that** (2026-10-29): a `rejected` review is terminal — the reviewer's complaints have gone
+/// back to the branch's session and nothing will retry it — so it is not stuck; a `failed`
+/// landing is the reader's to move, so it is. The snapshot carries both, because the daemon
+/// sends every row it has (`mergequeue::snapshot` reads `review_rows(None)`).
+#[test]
+fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(queue_frame(queues(
+        vec![
+            queue_review_row("one", "rejected"),
+            queue_review_row("two", "withdrawn"),
+        ],
+        vec![queue_merge_row("m-one", "failed")],
+    )));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(
+        screen.contains("0 in review · 0 being merged · 1 stuck · 0 landed"),
+        "{screen}"
+    );
+    assert_eq!(
+        a.queue_standings().stuck,
+        1,
+        "the failed landing is the one"
+    );
+
+    // **Take the landing away and the edge goes quiet**: two terminal reviews stand nothing, so
+    // nothing is drawn — which is the whole defect `rejected`-in-the-column was.
+    a.apply(queue_frame(queues(
+        vec![
+            queue_review_row("one", "rejected"),
+            queue_review_row("two", "withdrawn"),
+        ],
+        Vec::new(),
+    )));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(
+        !screen.contains("in review ·"),
+        "a terminal row drew a standing: {screen}"
+    );
+    assert_eq!(a.queue_standings().stuck, 0);
+}
+
+/// **`landed` is the last day, not for ever** — the same window the pane's done list already
+/// uses (`RECENT_MS`), so a queue that has worked all week reads as today's work and the number
+/// falls back to zero on its own. The stamp is the row's own: `state_ms` is when the store moved
+/// it to `landed` (`gating_to`).
+#[test]
+fn a_landing_older_than_the_recent_window_is_not_counted() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    // **A snapshot ten days old on its own clock**, so that a landing CAN be outside the window —
+    // the fixture's default `at_ms` is 62 s after the epoch, and every stamp in it is inside.
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-old", "landed")]);
+    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
+    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS + 1_000);
+    a.apply(queue_frame(snap));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(
+        !screen.contains("landed"),
+        "a landing outside the window is not today's work: {screen}"
+    );
+
+    // **And one second inside it is** — the boundary is the window's, not the fixture's.
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-new", "landed")]);
+    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
+    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS - 1_000);
+    a.apply(queue_frame(snap));
+    let screen = a.screen(140, 24).join("\n");
+    assert!(
+        screen.contains("0 in review · 0 being merged · 0 stuck · 1 landed"),
+        "{screen}"
+    );
+}
+
+/// **A red target still leads at its own severity, in front of the columns it grew into** —
+/// `‼ 1 red target(s)` is the alarm and `Role::Failure` is what it is drawn in, and neither is a
+/// function of how many columns follow it.
+#[test]
+fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-a", "landed")]);
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("‼ 1 red target(s) · 0 in review · 0 being merged · 0 stuck · 1 landed"),
+        "{screen}"
+    );
+    assert_eq!(
+        a.queue_standings().role(),
+        rano::style::Role::Failure,
+        "the emergency is still the severity of the whole line"
     );
 }
 
@@ -633,7 +762,7 @@ fn a_click_on_the_standings_opens_the_queue() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review · 0 being merged · 0 parked";
+    let words = "1 in review · 0 being merged · 0 stuck · 0 landed";
     // The record and the glass agree — the rectangle IS the span the frame drew, gutter and
     // all — or the click below proves nothing.
     let row = screen
@@ -680,6 +809,56 @@ fn a_click_on_the_standings_opens_the_queue() {
     assert!(screen.contains("review queue · merge queue"), "{screen}");
 }
 
+/// **The click still lands after the words grew a column** (2026-10-29) — the standings were
+/// three and are four, and the record is read off the drawn row (`screen::drawn_span`) rather than
+/// rebuilt from the counts, so the longest form this head can draw is the case that proves it:
+/// both alarms, every column non-zero. Arithmetic over the counts would place this rectangle
+/// right of where the words were drawn the moment a column was added.
+#[test]
+fn the_standings_target_covers_the_words_they_grew_into() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    let mut snap = queues(
+        vec![queue_review_row("one", "waiting")],
+        vec![
+            queue_merge_row("m-a", "gating"),
+            queue_merge_row("m-b", "failed"),
+            queue_merge_row("m-c", "landed"),
+            queue_merge_row("m-d", "landed"),
+        ],
+    );
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.targets.push(target(LETIBOT, "timed_out"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let screen = a.screen(200, 30);
+    let rect = standings_rect(&a);
+    let words = "‼ 1 red target(s) · ⚠ 1 target(s) unjudged · 1 in review · 1 being merged · 1 \
+                 stuck · 2 landed";
+    let row = screen
+        .get(rect.y)
+        .unwrap_or_else(|| panic!("the recorded row is not in the frame: {rect:?}"));
+    assert_eq!(
+        column_of(row, words),
+        rect.x,
+        "the target is not where the frame drew the four columns: {row:?}"
+    );
+    assert_eq!(
+        rect.w,
+        words.chars().count(),
+        "the target is not their width"
+    );
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16 + 1,
+            y: rect.y as u16
+        }),
+        Some(Action::ListMergeQueue),
+        "the queue's door, on the words this head draws now"
+    );
+    assert_eq!(a.top_surface(), Some(Surface::Queue));
+}
+
 /// **A click one cell outside the standings asks for nothing.** The edge around the words is
 /// furniture, and a click on it is a click nobody claimed — it must not reach the queue by
 /// rounding, luck or the gutter.
@@ -696,7 +875,7 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review · 0 being merged · 0 parked";
+    let words = "1 in review · 0 being merged · 0 stuck · 0 landed";
     let row = screen
         .get(rect.y)
         .expect("the recorded row is in the frame");
@@ -733,7 +912,7 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
         a.apply(queue_frame(snap));
         let screen = a.screen(120, 24);
         let rect = standings_rect(&a);
-        let words = format!("{prefix} · 0 in review · 0 being merged · 0 parked");
+        let words = format!("{prefix} · 0 in review · 0 being merged · 0 stuck · 0 landed");
         let row = screen
             .get(rect.y)
             .expect("the recorded row is in the frame");
@@ -825,7 +1004,7 @@ fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
         .find(|l| l.contains('╰'))
         .expect("the composer's bottom edge");
     assert!(
-        !edge.contains("0 parked"),
+        !edge.contains("0 landed"),
         "the premise: thirty columns cut the words: {edge:?}"
     );
     assert!(
@@ -837,14 +1016,16 @@ fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
 
 /// **A queue that stands nothing has no standings, and the edge records no target for them** —
 /// the counts are drawn only while they are true, so the click's target is absent with them:
-/// the same frame, the same row, nothing to claim the pointer.
+/// the same frame, the same row, nothing to claim the pointer. A landing is a standing, so the
+/// rows here are the ones that are the queue's PAST and not today's work: an approved review
+/// (the merge queue's business now) and a landing that moved on.
 #[test]
 fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
     let mut a = app();
     a.session_id = "s1".into();
     a.apply(queue_frame(queues(
         vec![queue_review_row("a", "approved")],
-        vec![queue_merge_row("m-a", "landed")],
+        vec![queue_merge_row("m-a", "moved")],
     )));
     let screen = a.screen(120, 24);
     assert!(

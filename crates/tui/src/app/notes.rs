@@ -536,9 +536,9 @@ pub const NOTICE_MS: u64 = 1_600;
 /// **Because the fact does not go with the sentence.** `merge_queued` says *your child's
 /// branch is in the merge queue*, and the same frame that takes the row down carries the
 /// queue's standings on the bottom edge — how many entries are in review, how many are being
-/// merged, how many are parked — and the queue pane names every entry and its branch. So the
-/// row is the news and the edge is the standing fact; a head with no second place to read it
-/// must not put a code in that table, which is the argument written on it in
+/// merged, how many are stuck, how many landed today — and the queue pane names every entry and
+/// its branch. So the row is the news and the edge is the standing fact; a head with no second
+/// place to read it must not put a code in that table, which is the argument written on it in
 /// `letibot_sessionlog::warning`.
 ///
 /// **Measured from the announcement's own `ts`, not from the frame that drew it** — the log's

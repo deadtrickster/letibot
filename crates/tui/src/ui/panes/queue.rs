@@ -144,7 +144,7 @@ impl App {
     /// is in gets every repository's, as before.
     pub(crate) fn queue_standings(&self) -> Standings {
         let f = self.queue_filter(&QueueScope::Here);
-        standings_where(&self.queues_all, |r| f.keeps(r))
+        standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
     }
 
     /// **The pane** — see the module docs. Takes `&mut self` to record where each row was drawn
@@ -347,7 +347,10 @@ impl App {
         out.blank();
 
         // ---- The strip.
-        let (strip, at) = tab_row(self.queue_view, &standings_where(&self.queues, |_| true));
+        let (strip, at) = tab_row(
+            self.queue_view,
+            &standings_where(&self.queues, self.queue_now(), |_| true),
+        );
         let tabs = QueueTabs {
             row: out.lines.len(),
             ..at
@@ -716,11 +719,30 @@ fn moves_lines(recent: &[QueueMove], id: &str, n: usize, now: u64, w: usize) -> 
         .collect()
 }
 
+/// **What the queue is DOING, in four columns** — drawn on the composer's bottom edge, and the
+/// subject of [`standings_where`]'s reading of the snapshot.
+///
+/// **The third column is `stuck`, and the word is the operator's** (2026-10-29): *"wtf parked
+/// means?"*, then *"so, label it as such - stuck?"*. `parked` was this head's word for a row the
+/// queue had stopped on, and it said nothing a reader could act on — a failed landing and a
+/// review nobody could run are not *parked*, they are stuck, and the column says what the reader
+/// has to do about them. **The store's words are untouched** — a merge row's own states are
+/// still `blocked`, `failed`, `timed_out` and `conflict` (`MergeState`), no table in this tree
+/// has a `parked` in it, and the rename is the COLUMN's: what a person reads, not what the queue
+/// records.
+///
+/// **The fourth is `landed`, and it counts a DAY** — the operator: *"i definitely want to see
+/// landed counter after parked"*. For ever would be a number that only grows, so it is the same
+/// window the pane's done list uses ([`RECENT_MS`], the last day): a queue that has worked all
+/// week reads as today's work, and the number falls back to zero on its own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Standings {
     pub(crate) review: usize,
     pub(crate) merging: usize,
-    pub(crate) parked: usize,
+    /// **Open and stopped** — the rows a person has to move (see [`standings_where`]).
+    pub(crate) stuck: usize,
+    /// **Landed inside the last day** — not for ever.
+    pub(crate) landed: usize,
     /// Target branches that are red — the emergency.
     pub(crate) red: usize,
     /// **Target branches nobody could judge** — timed out or blocked (R92 item 5). Nothing lands
@@ -730,11 +752,15 @@ pub(crate) struct Standings {
 
 impl Standings {
     pub(crate) fn words(&self) -> Option<String> {
-        let standing = self.review + self.merging + self.parked + self.red + self.unjudged;
+        // **A landing is a standing** — the operator asked for the count, so it is drawn on its
+        // own: a queue that landed two branches today and holds nothing else still has something
+        // to say. Only a queue that has stood nothing and landed nothing for a day is silent.
+        let standing =
+            self.review + self.merging + self.stuck + self.landed + self.red + self.unjudged;
         (standing > 0).then(|| {
             let mut s = format!(
-                "{} in review · {} being merged · {} parked",
-                self.review, self.merging, self.parked
+                "{} in review · {} being merged · {} stuck · {} landed",
+                self.review, self.merging, self.stuck, self.landed
             );
             if self.unjudged > 0 {
                 s = format!("⚠ {} target(s) unjudged · {s}", self.unjudged);
@@ -749,7 +775,7 @@ impl Standings {
     pub(crate) fn role(&self) -> Role {
         if self.red > 0 {
             Role::Failure
-        } else if self.unjudged > 0 || self.parked > 0 {
+        } else if self.unjudged > 0 || self.stuck > 0 {
             Role::Attention
         } else {
             Role::Pending
@@ -757,15 +783,50 @@ impl Standings {
     }
 }
 
-/// **The standings of the rows `keep` admits by repository.** A target's own red-tip review is
-/// not counted once that target is green again — the alarm clears with the target, not with
-/// whoever withdraws the row.
-pub(crate) fn standings_where(q: &QueueSnapshot, keep: impl Fn(&str) -> bool) -> Standings {
+/// **The standings of the rows `keep` admits by repository**, as of `now` — the snapshot's own
+/// clock carried forward (`App::queue_now`), because the landed column asks about a window and
+/// the snapshot's `at_ms` is a moment, not a clock.
+///
+/// # The snapshot is the wire's whole history, and these counters are a reading of it
+///
+/// `mergequeue::snapshot` reads `review_rows(None)` and `merge_rows(None)`: every row the store
+/// has, in every state, because nothing in this tree deletes one (the history IS the record). So
+/// the terminal rows are in the `QueueSnapshot` this head holds, and a counter that takes them at
+/// face value is a counter about the past drawn where the reader is asking about now.
+///
+/// **That is what `parked` was doing** (measured 2026-10-29, reading): `rejected` was counted
+/// into the column, and a rejected review is terminal — the reviewer's complaints have gone back
+/// to the branch's session and nothing will retry the row — so it sat in a live column for ever,
+/// beside a `blocked` landing somebody still had to move. The words changed to `stuck` and the
+/// counting was fixed with them:
+///
+/// * **`in review`** — `waiting` and `reviewing`, the review queue's open states.
+/// * **`being merged`** — `queued` and `gating`, the merge queue's working states.
+/// * **`stuck`** — open and stopped: a review that could not be RUN (`blocked`) or whose reviewer
+///   said `needs_human` (`cannot_decide`), and a landing whose gate was red (`failed`), ran out
+///   of time (`timed_out`), would not rebase (`conflict`) or could not be started (`blocked`).
+///   Each is a person's to move (`restart`, `approve`, `regate`), which is the test the column
+///   applies: a row nothing will retry and nobody has to touch is not stuck.
+/// * **`landed`** — the store's own `state`, and its own `state_ms` inside [`RECENT_MS`].
+///
+/// **Every other state is terminal and is counted nowhere**: `approved` (the review queue's
+/// terminal state — the row is the merge queue's business from that moment, so counting it here
+/// would count one branch twice), `rejected`, `withdrawn` and `archived` on a review; `landed`,
+/// `moved` and `withdrawn` on a landing. A terminal row never inflates a live column.
+///
+/// A target's own red-tip review is not counted once that target is green again — the alarm
+/// clears with the target, not with whoever withdraws the row.
+pub(crate) fn standings_where(
+    q: &QueueSnapshot,
+    now: u64,
+    keep: impl Fn(&str) -> bool,
+) -> Standings {
     let green = |repo: &str, target: &str| {
         q.targets
             .iter()
             .any(|t| t.repository == repo && t.target == target && t.state == "green")
     };
+    let recent = |ms: u64| now.saturating_sub(ms) <= RECENT_MS;
     let mut s = Standings::default();
     for r in q.reviews.iter().filter(|r| keep(&r.repository)) {
         if r.kind == "target" && green(&r.repository, &r.target) {
@@ -773,14 +834,21 @@ pub(crate) fn standings_where(q: &QueueSnapshot, keep: impl Fn(&str) -> bool) ->
         }
         match r.state.as_str() {
             "waiting" | "reviewing" => s.review += 1,
-            "blocked" | "rejected" | "cannot_decide" => s.parked += 1,
+            // **`cannot_decide` is here and not in the live columns**: the store calls it
+            // terminal *until a person rules*, and a row waiting on a person is what this column
+            // is for — the one state in it the store does not call open.
+            "blocked" | "cannot_decide" => s.stuck += 1,
             _ => {}
         }
     }
     for m in q.merges.iter().filter(|m| keep(&m.repository)) {
         match m.state.as_str() {
             "queued" | "gating" => s.merging += 1,
-            "blocked" | "failed" | "timed_out" | "conflict" => s.parked += 1,
+            "blocked" | "failed" | "timed_out" | "conflict" => s.stuck += 1,
+            // **The store's own state and its own stamp**: `state_ms` is when the row entered
+            // `landed` (`gating_to`), and `landed_sha` is the tree it landed. Outside the window
+            // it is a landing this edge no longer counts.
+            "landed" if recent(m.state_ms) => s.landed += 1,
             _ => {}
         }
     }
