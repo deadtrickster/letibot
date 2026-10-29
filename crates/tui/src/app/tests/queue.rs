@@ -68,21 +68,36 @@ fn tab_switches_between_the_review_queue_and_the_merge_queue() {
     assert!(!screen.contains("agent/one"), "{screen}");
 }
 
-/// **A row says how long it has been in its CURRENT state and who is working it** — R61 defect
-/// 12: the age was since creation, and no row named its owner.
+/// **A row says how long it has been in its CURRENT state, and names an owner only when the
+/// claim is not the serving daemon's** — R61 defect 12 was that the age was since creation and
+/// no row named its owner at all. Since the declutter `by …` is for a claim from somewhere
+/// else: the daemon holding the repository's lease is the pane's own, and its name on every row
+/// was one of the three fields the operator was reading past.
 #[test]
-fn a_row_says_time_in_state_and_its_owner() {
+fn a_row_says_time_in_state_and_names_an_owner_only_from_elsewhere() {
     let mut a = app();
     a.session_id = "s1".into();
     a.command("queue");
     let mut r = queue_review_row("one", "reviewing");
-    r.owner = "lab/4242/1700000000000".into();
+    r.owner = "elsewhere/999/1700000000000".into();
     r.created_ms = 0;
     r.state_ms = 2_000; // the snapshot is read at 62s: one minute in state
     a.apply(queue_frame(queues(vec![r], Vec::new())));
     let screen = a.screen(160, 40).join("\n");
-    assert!(screen.contains("1m00s in state"), "{screen}");
-    assert!(screen.contains("by lab/4242"), "{screen}");
+    assert!(screen.contains("reviewing for 1m00s"), "{screen}");
+    assert!(screen.contains("by elsewhere/999"), "{screen}");
+
+    // The fixture's lease is `lab/4242`'s, so a row IT claimed says nothing: the pane's one
+    // chrome line already names who serves the repository.
+    let mut mine = queue_review_row("two", "reviewing");
+    mine.owner = "lab/4242/1700000000000".into();
+    a.apply(queue_frame(queues(vec![mine], Vec::new())));
+    let screen = a.screen(160, 40).join("\n");
+    assert!(
+        !screen.contains("by lab/4242"),
+        "the serving daemon's own claim is not said again: {screen}"
+    );
+    assert!(screen.contains("lab (pid 4242"), "{screen}");
 }
 
 /// **Who serves the queues, and how alive it is** — the lease's owner, build and heartbeat age;
@@ -1160,6 +1175,242 @@ fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
         "{screen}"
     );
     assert!(!screen.contains("is in no repository"), "{screen}");
+}
+
+// -- the declutter (2026-10-29) ---------------------------------------------------------
+//
+// The operator, of this pane: *"the queue pane is illegible mess"*, and *"the queue is the most
+// automatic and opaque thing in the whole project rn"*. What was on every entry was a second
+// line whose FIRST field was a 39-character session id — an address that exists so it can be
+// typed into `/queue approve`, repeated on every row and read by nobody — plus the repository
+// and the owner, both of which the pane had already said. So: an entry is ONE line, the reason
+// it is parked is on that line, and the id and the sha are on the row under the cursor only.
+
+const ID_A: &str = "s-1793010881933039000-sub-1793283793199051000";
+const ID_B: &str = "s-1793010881933039000-sub-1793283793199051001";
+const ID_C: &str = "s-1793010881933039000-sub-1793283793199051002";
+
+/// **Three parked reviews and one landing** — the snapshot the declutter is judged on: what the
+/// operator opens this pane for is a row that is not moving, and why it is not.
+fn three_parked_and_a_landing() -> letibot_sessionlog::event::QueueSnapshot {
+    let parked = |id: &str, name: &str, state: &str, verdict: &str, evidence: &str| {
+        let mut r = queue_review_row(name, state);
+        r.id = id.into();
+        r.branch = format!("agent/{name}");
+        r.head_sha = "0d5f8d1e5e4c3b2a19f8e7d6c5b4a39281706f5e".into();
+        r.verdict = Some(verdict.into());
+        r.evidence = evidence.into();
+        r.owner = "lab/4242/1700000000000".into();
+        r
+    };
+    let mut snap = queues(
+        vec![
+            parked(
+                ID_A,
+                "rev-alpha",
+                "blocked",
+                "failed",
+                "`cargo test` failed: 3 tests red in letibot-tui\nand a second line the row \
+                 does not carry",
+            ),
+            parked(
+                ID_B,
+                "rev-beta",
+                "cannot_decide",
+                "cannot_decide",
+                "the reviewer could not read the diff: the clone was refused",
+            ),
+            parked(
+                ID_C,
+                "rev-gamma",
+                "rejected",
+                "rejected",
+                "the operator vetoed it: the branch touches a file another package owns",
+            ),
+        ],
+        vec![queue_merge_row("m-delta", "queued")],
+    );
+    snap.here = Some(here_in(LETIBOT));
+    snap
+}
+
+/// The pane's lines that carry `needle`, by index.
+fn lines_with(rows: &[String], needle: &str) -> Vec<usize> {
+    rows.iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains(needle))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// **An entry is ONE line, and the id and the sha are on the picked one only.**
+#[test]
+fn an_entry_is_one_line_and_the_id_is_on_the_picked_row_only() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(three_parked_and_a_landing()));
+    let rows = a.queue_lines(120);
+    let drawn = rows.join("\n");
+
+    // One line each: three entries, three rows, and the two unpicked ones are adjacent.
+    for name in ["agent/rev-alpha", "agent/rev-beta", "agent/rev-gamma"] {
+        assert_eq!(
+            lines_with(&rows, name).len(),
+            1,
+            "`{name}` is not one line:\n{drawn}"
+        );
+    }
+    let beta = lines_with(&rows, "agent/rev-beta")[0];
+    let gamma = lines_with(&rows, "agent/rev-gamma")[0];
+    assert_eq!(
+        beta + 1,
+        gamma,
+        "an unpicked entry drew a second line:\n{drawn}"
+    );
+
+    // The id — what `/queue approve` takes — is on the row under the cursor, once, with the sha
+    // it was judged at. The others are not drawn at all.
+    let alpha = lines_with(&rows, "agent/rev-alpha")[0];
+    assert_eq!(
+        lines_with(&rows, ID_A).len(),
+        1,
+        "the picked row's id:\n{drawn}"
+    );
+    assert_eq!(
+        lines_with(&rows, ID_A),
+        vec![alpha + 1],
+        "the id is not the picked row's own second line:\n{drawn}"
+    );
+    assert!(
+        rows[alpha + 1].contains("head 0d5f8d1e5e"),
+        "the picked row's line has no sha: {:?}",
+        rows[alpha + 1]
+    );
+    for id in [ID_B, ID_C] {
+        assert!(
+            lines_with(&rows, id).is_empty(),
+            "an unpicked row drew its id ({id}):\n{drawn}"
+        );
+    }
+    // And the same in the merge view: the id and the sha of the landing under the cursor.
+    a.key(Key::Tab);
+    let rows = a.queue_lines(120);
+    let drawn = rows.join("\n");
+    assert_eq!(lines_with(&rows, "agent/delta").len(), 1, "{drawn}");
+    let landing = lines_with(&rows, "agent/delta")[0];
+    assert!(
+        rows[landing + 1].contains("m-delta · approved abc1234567"),
+        "the landing's id and sha are not its own second line: {:?}",
+        rows[landing + 1]
+    );
+}
+
+/// **The reason stays on the row** — for a parked row it is the whole value of the row, so the
+/// verdict and the first line of the evidence are folded onto the entry's own line, and only
+/// the first line: the evidence's second line is the overlay's.
+#[test]
+fn a_parked_rows_reason_is_on_its_own_line() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    a.apply(queue_frame(three_parked_and_a_landing()));
+    let rows = a.queue_lines(120);
+    let drawn = rows.join("\n");
+    let alpha = &rows[lines_with(&rows, "agent/rev-alpha")[0]];
+    assert!(alpha.contains("blocked for 1m00s"), "{alpha:?}");
+    assert!(
+        alpha.contains("failed — `cargo test` failed: 3 tests red in letibot-tui"),
+        "the verdict and the evidence are not on the row: {alpha:?}"
+    );
+    assert!(
+        !drawn.contains("and a second line the row"),
+        "the evidence's second line was drawn on the pane:\n{drawn}"
+    );
+    // A verdict that only repeats the state is not said twice.
+    let beta = &rows[lines_with(&rows, "agent/rev-beta")[0]];
+    assert!(beta.contains("cannot decide for 1m00s"), "{beta:?}");
+    assert!(
+        !beta.contains("cannot_decide —"),
+        "the state and the verdict are one fact: {beta:?}"
+    );
+    assert!(
+        beta.contains("· the reviewer could not read the diff"),
+        "{beta:?}"
+    );
+}
+
+/// **A field is said once** — the repository only when the pane has not already named it: not on
+/// `/queue` (its scope line does), but always under `every repository`, where the scope line names
+/// none and a row would otherwise leave the reader guessing which project it is in.
+#[test]
+fn a_row_names_its_repository_only_when_the_snapshot_holds_more_than_one() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut one = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    one.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(one));
+    let rows = a.queue_lines(120);
+    let row = &rows[lines_with(&rows, "agent/one")[0]];
+    assert!(
+        !row.contains("letibot"),
+        "the repository is on the row and in the scope line: {row:?}"
+    );
+
+    // **`every repository` names none**, so even one repository's rows say which.
+    assert_eq!(a.command("queue all"), None);
+    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.queue_lines(140);
+    let row = &rows[lines_with(&rows, "agent/one")[0]];
+    assert!(
+        row.contains("· letibot"),
+        "the scope line names no repository and neither does the row: {row:?}"
+    );
+
+    // Two repositories: each row says which, because the scope line cannot.
+    a.apply(queue_frame(two_repositories()));
+    let rows = a.queue_lines(140);
+    let drawn = rows.join("\n");
+    let mine = &rows[lines_with(&rows, "agent/mine")[0]];
+    let theirs = &rows[lines_with(&rows, "agent/theirs")[0]];
+    assert!(mine.contains("· letibot"), "{mine:?}\n{drawn}");
+    assert!(theirs.contains("· pg-noop"), "{theirs:?}\n{drawn}");
+}
+
+/// **The chrome is one line** — who serves the repository and how alive it is, the repositories
+/// that never asked for a queue, and the archive, all under the rows in one faint line; and the
+/// sentence telling the reader what `enter` does is gone, because the hint bar and the picked
+/// row's verbs both say it.
+#[test]
+fn the_lease_the_unqueued_repositories_and_the_archive_are_one_line() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut snap = queues(Vec::new(), Vec::new());
+    snap.here = Some(here_in(LETIBOT));
+    snap.not_queued = vec![LETIBOT.into()];
+    snap.archived = 3;
+    a.apply(queue_frame(snap));
+    let rows = a.queue_lines(200);
+    let chrome = lines_with(&rows, "served by");
+    assert_eq!(chrome.len(), 1, "the lease is not one line: {rows:?}");
+    let line = &rows[chrome[0]];
+    assert!(line.contains("heartbeat 2.0s ago"), "{line:?}");
+    assert!(
+        line.contains("not queued: no `Merge gate` section in AGENTS.md — letibot"),
+        "{line:?}"
+    );
+    assert!(
+        line.contains("3 row(s) of the pre-split queue are archived"),
+        "{line:?}"
+    );
+    assert!(
+        !rows.iter().any(|l| l.contains("enter opens the row whole")),
+        "the instruction sentence is still a line of its own: {rows:?}"
+    );
 }
 
 /// **`o` goes into the reviewer's session** — the operator: *"there is also problem with /queue -

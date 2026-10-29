@@ -11,18 +11,28 @@
 //! * **The emergencies first** — a red target branch at emergency severity (*"red main is a
 //!   high-severity emergency"*), a target timed out or blocked, and a snapshot that could not be
 //!   read, said in its own words and never drawn as an empty queue.
-//! * **Who serves each repository** — the lease's owner, its build, and how old its heartbeat
-//!   is; a heartbeat past the lease's lifetime is drawn as STALE.
 //! * **The view's queue** (`tab` switches): every open row, then the recent finished ones. Each
-//!   row says its state, how long it has been IN that state, and the daemon working it.
-//! * **The selected row's last moves** (from, to, when, by whom, why) and, in the merge view, the
-//!   gate's steps; Enter opens the row whole with its full history.
+//!   row is ONE line — its state, how long it has been IN that state, and its reason — and the
+//!   row under the cursor adds what only it needs: the id `/queue approve` takes, the sha, its
+//!   last moves (from, to, when, by whom, why), the gate's steps and its verbs. Enter opens the
+//!   row whole with its full history.
+//! * **One chrome line under the rows** — who serves each repository (the lease's owner, its
+//!   build, how old its heartbeat is; STALE past the lease's lifetime), the repositories that
+//!   never asked for a queue, and the archive.
 //!
 //! The states are the daemon's WORDS (the wire carries words), and the marks are this head's
 //! reading of them.
+//!
+//! **One line per entry is the operator's ruling, not a style** (2026-10-29): *"the queue pane is
+//! illegible mess"*, *"the queue is the most automatic and opaque thing in the whole project rn"*.
+//! Every entry used to carry a second line whose first field was a 39-character session id — an
+//! address that exists so it can be typed into `/queue approve`, repeated on every row and read
+//! by nobody — beside the repository and the owner the pane had already named. So a row says a
+//! field ONCE (`Said`): the repository only when the snapshot holds more than one, the owner only
+//! when the claim is not the serving daemon's.
 
 use crate::app::*;
-use crate::ui::render::{dur_human, row_strings, trim_to, wrap};
+use crate::ui::render::{dur_human, row_strings, trim_to, visible_width, wrap};
 use letibot_sessionlog::event::{
     MergeGateOutcome, MergeGateStep, QueueMerge, QueueMove, QueueReview, QueueSnapshot,
 };
@@ -159,16 +169,18 @@ impl App {
         let now = self.queue_now();
         let mut out = PaneLines::new();
         out.push(pane::title("review queue · merge queue"));
-        out.blank();
         if self.queues_got_ms == 0 {
+            out.blank();
             out.push(pane::faint("    asking the daemon for the queues…"));
             self.queue_stop_rows = Vec::new();
             self.queue_tabs = None;
             return row_strings(&out.lines, self.cfg.palette());
         }
         // ---- Whose queues these are (R92 item 5): this session's repository unless the
-        // operator named another scope, and said either way.
-        match self.queue_filter(&self.queue_scope) {
+        // operator named another scope, and said either way. ONE resolution, because a row's
+        // fields are decided by whether this line already names the repository.
+        let filter = self.queue_filter(&self.queue_scope);
+        match &filter {
             Filter::Nowhere(ws) => {
                 out.push(note_line(
                     "◆",
@@ -186,7 +198,7 @@ impl App {
             Filter::Repo(r) => out.push(pane::faint(&trim_to(
                 &format!(
                     "    {} — this session's repository · `/queue all` shows every repository",
-                    repo_name(&r)
+                    repo_name(r)
                 ),
                 w,
             ))),
@@ -220,9 +232,11 @@ impl App {
                 w,
             ))),
         }
-        out.blank();
 
-        // ---- Emergencies and failures to read, first.
+        // ---- Emergencies and failures to read, first. They are the reason to look at the pane,
+        // so they stay above the rows; the lease, the repositories that never asked and the
+        // archive are chrome and go in ONE faint line under them.
+        let alarms = out.lines.len();
         if let Some(why) = &self.queues.unreadable {
             out.push(note_line(
                 "⚠",
@@ -296,55 +310,9 @@ impl App {
                 ));
             }
         }
-        // ---- Who serves each repository, and how alive it is.
-        for l in &self.queues.leases {
-            let age = now.saturating_sub(l.heartbeat_ms);
-            let stale = age > LEASE_STALE_MS;
-            out.push(note_line(
-                if stale { "⚠" } else { "◆" },
-                if stale { Role::Attention } else { Role::Faint },
-                &format!(
-                    "{} served by {} (pid {}, {}) · heartbeat {} ago{}",
-                    repo_name(&l.repository),
-                    l.host,
-                    l.pid,
-                    l.build,
-                    dur_human(age),
-                    if stale {
-                        " — STALE: another daemon takes it over"
-                    } else {
-                        ""
-                    }
-                ),
-                w,
-            ));
+        if out.lines.len() > alarms {
+            out.blank();
         }
-        if self.queues.leases.is_empty() {
-            out.push(note_line(
-                "⚠",
-                Role::Attention,
-                "no daemon holds a queue lease — nothing is serving the queues",
-                w,
-            ));
-        }
-        // ---- The repositories that are no queue target at all (2026-10-26): the queue is the
-        // repositories that asked for it, and asking is a `Merge gate` section. One muted line,
-        // never a count and never an alarm.
-        if !self.queues.not_queued.is_empty() {
-            out.push(pane::faint(trim_to(
-                &format!(
-                    "    not queued: no `Merge gate` section in AGENTS.md — {}",
-                    self.queues
-                        .not_queued
-                        .iter()
-                        .map(|r| repo_name(r))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-                w,
-            )));
-        }
-        out.blank();
 
         // ---- The strip.
         let (strip, at) = tab_row(
@@ -373,60 +341,120 @@ impl App {
             }));
         }
         let running = gates_running(&self.queues, now);
+        let said = Said::of(
+            &self.queues,
+            matches!(filter, Filter::Repo(_) | Filter::Repos(_)),
+        );
         let mut stops = Vec::with_capacity(rows.len());
         for (k, row) in rows.iter().enumerate() {
             let picked = k == cursor;
             stops.push(out.lines.len());
-            let (head, under) = match *row {
-                QRow::Review(i) => review_row(&self.queues.reviews[i], now, w),
+            out.push_stop(match *row {
+                QRow::Review(i) => review_row(&self.queues.reviews[i], &said, now, picked, w),
                 QRow::Merge(i) => {
                     let m = &self.queues.merges[i];
                     let waits = (m.state == "queued")
                         .then(|| running.get(m.repository.as_str()))
                         .flatten()
                         .map(String::as_str);
-                    merge_row(m, now, waits, w)
+                    merge_row(m, &said, now, waits, picked, w)
                 }
-            };
-            out.push_stop(Line::new(
-                std::iter::once(Span::raw(format!("{} ", pane::mark(picked))))
-                    .chain(head.spans)
-                    .collect(),
-            ));
-            out.push(under);
-            if picked {
-                let id = self.queue_row_id(*row);
-                for l in moves_lines(&self.queues.recent, &id, 3, now, w) {
-                    out.push(l);
+            });
+            // ---- Everything else about a row belongs to the row under the cursor: the id and
+            // the sha `/queue approve` takes, its last moves, the gate's steps and the verbs.
+            if !picked {
+                continue;
+            }
+            match *row {
+                QRow::Review(i) => {
+                    let r = &self.queues.reviews[i];
+                    out.push(detail_line(&r.id, "head", &r.head_sha, w));
                 }
-                match *row {
-                    QRow::Review(i) => {
-                        out.extend_lines(verb_rows(&Selected::Review(&self.queues.reviews[i]), w))
+                QRow::Merge(i) => {
+                    let m = &self.queues.merges[i];
+                    out.push(detail_line(&m.id, "approved", &m.approved_sha, w));
+                }
+            }
+            let id = self.queue_row_id(*row);
+            for l in moves_lines(&self.queues.recent, &id, 3, now, w) {
+                out.push(l);
+            }
+            match *row {
+                QRow::Review(i) => {
+                    out.extend_lines(verb_rows(&Selected::Review(&self.queues.reviews[i]), w))
+                }
+                QRow::Merge(i) => {
+                    let m = &self.queues.merges[i];
+                    for l in gate_lines(&m.gate_steps, m.state == "gating", w, GateRows::Pane) {
+                        out.push(l);
                     }
-                    QRow::Merge(i) => {
-                        let m = &self.queues.merges[i];
-                        for l in gate_lines(&m.gate_steps, m.state == "gating", w, GateRows::Pane) {
-                            out.push(l);
-                        }
-                        out.extend_lines(verb_rows(&Selected::Merge(m), w));
-                    }
+                    out.extend_lines(verb_rows(&Selected::Merge(m), w));
                 }
             }
         }
-        if self.queues.archived > 0 {
-            out.blank();
-            out.push(pane::faint(format!(
-                "    {} row(s) of the pre-split queue are archived (merge_queue_v23)",
-                self.queues.archived
-            )));
-        }
         out.blank();
-        out.push(pane::faint(
-            "    enter opens the row whole: the ask, the verdict, the gate's words and every move",
-        ));
+        out.push(self.queue_chrome(now, w));
         self.queue_stop_rows = stops;
         self.queue_tabs = Some(tabs);
         row_strings(&out.lines, self.cfg.palette())
+    }
+
+    /// **The pane's ONE chrome line** — who serves each repository and how alive it is, the
+    /// repositories that never asked for a queue, and the archive. None of it is what the pane is
+    /// opened for and all of it is worth knowing once, so it is one faint line under the rows:
+    /// the lease's heartbeat and the STALE warning keep their words, and a stale (or absent)
+    /// lease turns the whole line into an alarm.
+    fn queue_chrome(&self, now: u64, w: usize) -> Line {
+        let mut said: Vec<String> = Vec::new();
+        let mut stale = false;
+        for l in &self.queues.leases {
+            let age = now.saturating_sub(l.heartbeat_ms);
+            let old = age > LEASE_STALE_MS;
+            stale |= old;
+            said.push(format!(
+                "{} served by {} (pid {}, {}) · heartbeat {} ago{}",
+                repo_name(&l.repository),
+                l.host,
+                l.pid,
+                l.build,
+                dur_human(age),
+                if old {
+                    " — STALE: another daemon takes it over"
+                } else {
+                    ""
+                }
+            ));
+        }
+        if self.queues.leases.is_empty() {
+            stale = true;
+            said.push("no daemon holds a queue lease — nothing is serving the queues".into());
+        }
+        // ---- The repositories that are no queue target at all (2026-10-26): the queue is the
+        // repositories that asked for it, and asking is a `Merge gate` section.
+        if !self.queues.not_queued.is_empty() {
+            said.push(format!(
+                "not queued: no `Merge gate` section in AGENTS.md — {}",
+                self.queues
+                    .not_queued
+                    .iter()
+                    .map(|r| repo_name(r))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if self.queues.archived > 0 {
+            said.push(format!(
+                "{} row(s) of the pre-split queue are archived (merge_queue_v23)",
+                self.queues.archived
+            ));
+        }
+        let role = if stale { Role::Attention } else { Role::Faint };
+        Line::new(vec![
+            Span::raw("  "),
+            Span::role(if stale { "⚠" } else { "◆" }, role),
+            Span::raw(" "),
+            Span::role(trim_to(&said.join(" · "), w.saturating_sub(4)), role),
+        ])
     }
 
     /// **One row, whole** — the overlay Enter opens: every field the snapshot carries, the
@@ -589,43 +617,134 @@ pub(crate) fn mark_of(state: &str) -> (&'static str, Role) {
     }
 }
 
-fn review_row(r: &QueueReview, now: u64, w: usize) -> (Line, Line) {
+/// **How many repositories the snapshot holds** — a row says which one it is of when there is more
+/// than one to tell apart (see [`Said`]).
+fn repositories(q: &QueueSnapshot) -> usize {
+    let mut seen: Vec<&str> = q
+        .reviews
+        .iter()
+        .map(|r| r.repository.as_str())
+        .chain(q.merges.iter().map(|m| m.repository.as_str()))
+        .collect();
+    seen.sort_unstable();
+    seen.dedup();
+    seen.len()
+}
+
+/// **What the pane has already said**, so a row says a field once — the repository when the scope
+/// line above has named it (and there is one to name), and the daemon serving it: a claim by the
+/// daemon holding that repository's lease is this pane's own, and `by …` is for a claim from
+/// somewhere else (a stale one, or another machine's).
+struct Said<'a> {
+    q: &'a QueueSnapshot,
+    name_repository: bool,
+}
+
+impl<'a> Said<'a> {
+    /// `scoped` is whether the pane's scope line already names the repositories the rows are in —
+    /// `/queue` and `/queue /PATH`-of-one do, `every repository` does not, and then a row has to
+    /// say which one it is of even when there is only one.
+    fn of(q: &'a QueueSnapshot, scoped: bool) -> Said<'a> {
+        Said {
+            q,
+            name_repository: !scoped || repositories(q) > 1,
+        }
+    }
+
+    fn serves(&self, repository: &str, owner: &str) -> bool {
+        let who = owner_word(owner);
+        self.q
+            .leases
+            .iter()
+            .any(|l| l.repository == repository && format!("{}/{}", l.host, l.pid) == who)
+    }
+}
+
+/// **A row's one line** — its mark, its branch, the state it has been in for how long, whatever
+/// else the pane has not already said, and then the REASON, which is what the row is for. The
+/// reason is placed after the fixed fields and given every column they leave, so a long one is
+/// cut at the pane's edge rather than crowding the row out of the pane.
+fn row_line(
+    picked: bool,
+    mark: &str,
+    role: Role,
+    what: &str,
+    what_role: Role,
+    tail: &str,
+    why: &str,
+    w: usize,
+) -> Line {
+    let left = format!("{mark} {what} {tail}");
+    // The mark column (`▸ ` or `  `) is drawn before this, so it is spent here too.
+    let room = w.saturating_sub(visible_width(&left) + 2 + 3);
+    let said = if why.is_empty() || room < 16 {
+        String::new()
+    } else {
+        format!(" · {}", trim_to(why, room))
+    };
+    Line::new(vec![
+        Span::raw(format!("{} ", pane::mark(picked))),
+        Span::role(mark, role),
+        Span::role(format!(" {what} "), what_role),
+        Span::role(format!("{tail}{said}"), Role::Faint),
+    ])
+}
+
+/// **The picked row's second line** — the id `/queue approve` takes and the sha it was judged at,
+/// and nothing else: everything else about the row is one keypress away (`enter`).
+fn detail_line(id: &str, what: &str, sha: &str, w: usize) -> Line {
+    let short: String = sha.chars().take(10).collect();
+    let mut said = id.to_string();
+    if !short.is_empty() {
+        said.push_str(&format!(" · {what} {short}"));
+    }
+    pane::faint(trim_to(&format!("      {said}"), w))
+}
+
+fn review_row(r: &QueueReview, said: &Said, now: u64, picked: bool, w: usize) -> Line {
     let (mark, role) = mark_of(&r.state);
     let what = if r.kind == "target" {
-        format!(" RED TARGET `{}` ", r.target)
+        format!("RED TARGET `{}`", r.target)
     } else {
-        format!(" {} ", clean_line(&r.branch))
+        clean_line(&r.branch)
     };
+    let state = r.state.replace('_', " ");
     let mut tail = format!(
-        "· {} · {} in state · {}",
-        r.state.replace('_', " "),
-        dur_human(now.saturating_sub(r.state_ms)),
-        repo_name(&r.repository)
+        "· {state} for {}",
+        dur_human(now.saturating_sub(r.state_ms))
     );
-    if !r.owner.is_empty() {
+    if said.name_repository {
+        tail.push_str(&format!(" · {}", repo_name(&r.repository)));
+    }
+    if !r.owner.is_empty() && !said.serves(&r.repository, &r.owner) {
         tail.push_str(&format!(" · by {}", owner_word(&r.owner)));
     }
-    let head = Line::new(vec![
-        Span::role(mark, role),
-        Span::role(
-            what,
-            if r.kind == "target" {
-                Role::Failure
-            } else {
-                Role::Strong
-            },
-        ),
-        Span::role(tail, Role::Faint),
-    ]);
-    let short: String = r.head_sha.chars().take(10).collect();
-    let mut why = format!("{} · head {short}", r.id);
-    if let Some(v) = &r.verdict {
-        why.push_str(&format!(" · {v}"));
-    }
+    // **The verdict, unless it is the state said twice** — a `cannot_decide` review whose verdict
+    // is `cannot_decide` has one fact, not two.
+    let mut why = match &r.verdict {
+        Some(v) if v.replace('_', " ") != state => v.clone(),
+        _ => String::new(),
+    };
     if !r.evidence.is_empty() {
-        why.push_str(&format!(" — {}", first_line(&r.evidence)));
+        if !why.is_empty() {
+            why.push_str(" — ");
+        }
+        why.push_str(&first_line(&r.evidence));
     }
-    (head, pane::faint(trim_to(&format!("         {why}"), w)))
+    row_line(
+        picked,
+        mark,
+        role,
+        &what,
+        if r.kind == "target" {
+            Role::Failure
+        } else {
+            Role::Strong
+        },
+        &tail,
+        &why,
+        w,
+    )
 }
 
 /// **`gate running on <sha> for Nm`** — the words for a gate in flight, from when it started.
@@ -656,35 +775,49 @@ fn gates_running(q: &QueueSnapshot, now: u64) -> std::collections::HashMap<&str,
     out
 }
 
-fn merge_row(m: &QueueMerge, now: u64, waits: Option<&str>, w: usize) -> (Line, Line) {
+fn merge_row(
+    m: &QueueMerge,
+    said: &Said,
+    now: u64,
+    waits: Option<&str>,
+    picked: bool,
+    w: usize,
+) -> Line {
     let (mark, role) = mark_of(&m.state);
     let mut tail = format!(
-        "· {} · {} in state · onto `{}` in {}",
+        "· {} for {} · onto `{}`",
         m.state.replace('_', " "),
         dur_human(now.saturating_sub(m.state_ms)),
-        m.target,
-        repo_name(&m.repository)
+        m.target
     );
-    if !m.owner.is_empty() {
+    if said.name_repository {
+        tail.push_str(&format!(" · {}", repo_name(&m.repository)));
+    }
+    if !m.owner.is_empty() && !said.serves(&m.repository, &m.owner) {
         tail.push_str(&format!(" · by {}", owner_word(&m.owner)));
     }
     if m.fixes.is_some() {
         tail.push_str(" · FIX for the red target");
     }
-    let head = Line::new(vec![
-        Span::role(mark, role),
-        Span::role(format!(" {} ", clean_line(&m.branch)), Role::Strong),
-        Span::role(tail, Role::Faint),
-    ]);
-    let short: String = m.approved_sha.chars().take(10).collect();
-    let mut why = format!("{} · approved {short}", m.id);
-    if let Some(gate) = waits {
-        why.push_str(&format!(" · waits: {gate}"));
-    }
+    // **What a queued landing waits for** (R92 item 8) — the repository's gate, on its own line
+    // no longer: it is the row's reason, so it goes where the reason goes.
+    let mut why = waits.map(|g| format!("waits: {g}")).unwrap_or_default();
     if !m.evidence.is_empty() {
-        why.push_str(&format!(" — {}", first_line(&m.evidence)));
+        if !why.is_empty() {
+            why.push_str(" — ");
+        }
+        why.push_str(&first_line(&m.evidence));
     }
-    (head, pane::faint(trim_to(&format!("         {why}"), w)))
+    row_line(
+        picked,
+        mark,
+        role,
+        &clean_line(&m.branch),
+        Role::Strong,
+        &tail,
+        &why,
+        w,
+    )
 }
 
 /// **A row's moves** — the last `n` of them, from the snapshot's recent history.
