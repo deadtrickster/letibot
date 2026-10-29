@@ -2456,7 +2456,10 @@ mod tests {
             "the first call knows nothing"
         );
         assert_eq!(inputs[1]["state"], json!({"n": 2}), "the second is told");
-        assert_eq!(inputs[1]["v"], json!(1));
+        // **The contract version is the SDK's own number**, not a copy: it said `1` while the
+        // contract had grown to 2, so a layer that read `v` to decide whether it would be handed a
+        // feed was told *no* by a host that was about to hand it one.
+        assert_eq!(inputs[1]["v"], json!(letibot_plugin::pane::V));
         assert_eq!(inputs[1]["size"], json!({"w": SIZE_W, "h": SIZE_H}));
         assert!(inner.panes.contains_key("plan-dashboard/dashboard"));
     }
