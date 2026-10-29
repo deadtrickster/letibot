@@ -1,12 +1,50 @@
 //! A reviewer that could not be PLACED for want of a free VM slot is not an attempt - and
 //! the words a review that stops for a person says about why.
+//!
+//! The limit belongs to the placement: [`review_limit`] is a `vm` queue's VM slots, exactly as
+//! before, and a `host` queue's own number (`reviewers_at_once`, else what its machines can take).
 
 use letibot_tokencore::store::QueueTransition;
 use letibot_transcript::text::clip_chars;
 
+use super::settings::Reviewers;
+
+/// Cores one reviewer is budgeted on a machine it shares.
+pub const CORES_PER_REVIEWER: f64 = 4.0;
+
+/// The most reviewers one machine takes, whatever its cores.
+pub const PER_HOST_MAX: usize = 4;
+
+/// How many reviewers one machine can take now: `spare / CORES_PER_REVIEWER`, floored and capped
+/// at [`PER_HOST_MAX`]. `0` means not this pass, not never.
+pub fn reviewers_fit(spare: f64) -> usize {
+    if !(spare > 0.0) {
+        return 0;
+    }
+    ((spare / CORES_PER_REVIEWER).floor() as usize).min(PER_HOST_MAX)
+}
+
+/// How many reviews a queue claims at once for its placement. `vm` keeps
+/// [`crate::mergequeue::serve::MAX_REVIEWING`]. `host` takes `at_once`, else `host_capacity`.
+/// At least one: a limit of zero reads on screen like a broken queue.
+pub fn review_limit(placement: Reviewers, at_once: Option<usize>, host_capacity: usize) -> usize {
+    match placement {
+        Reviewers::Vm => crate::mergequeue::serve::MAX_REVIEWING,
+        Reviewers::Host => at_once.unwrap_or(host_capacity).max(1),
+    }
+}
+
 /// The clause a review waiting for a VM slot leads its move (and `failure`) with - what the
 /// claim reads to hold the row until its not-before time, and what [`streak`] counts.
 pub const WAITING_FOR_SLOT: &str = "waiting for a free VM slot";
+
+/// The clause for a pool of machines with no room. Its own sentence so the VM register never says
+/// it about a machine that simply has its reviewers on it.
+pub const WAITING_FOR_ROOM: &str = "waiting for a free reviewer slot";
+
+/// How long a row waits for a reviewer slot before it is claimed again. Short: a host slot frees
+/// when a reviewer finishes, and a longer hold would leave a free machine idle.
+pub const ROOM_RETRY_MS: u64 = 15 * 1000;
 
 /// The clause added to the move on which a long wait was raised - so it is raised once.
 pub const SLOTS_EXHAUSTED: &str = "VM slots exhausted";
@@ -154,10 +192,12 @@ pub fn branch_wait(own: Streak, others: &[Streak]) -> BranchWait {
 }
 
 /// Is a waiting row held back by a wait it did not spend an attempt on? - its `failure`
-/// leads with one of the two wait clauses ([`WAITING_FOR_SLOT`], or
+/// leads with one of the wait clauses ([`WAITING_FOR_SLOT`], [`WAITING_FOR_ROOM`], or
 /// [`crate::mergequeue::review::WAITING_FOR_TREE`]) and its not-before time is still ahead.
 pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool {
-    (failure.starts_with(WAITING_FOR_SLOT) || failure.starts_with(super::review::WAITING_FOR_TREE))
+    (failure.starts_with(WAITING_FOR_SLOT)
+        || failure.starts_with(WAITING_FOR_ROOM)
+        || failure.starts_with(super::review::WAITING_FOR_TREE))
         && deadline_ms.is_some_and(|d| d > now_ms)
 }
 

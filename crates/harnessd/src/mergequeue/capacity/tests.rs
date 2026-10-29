@@ -259,3 +259,53 @@ fn a_branch_waits_once_across_its_rows() {
         "a row alone is its own wait"
     );
 }
+
+/// **The claim limit belongs to the PLACEMENT** — the defect this was written for: `MAX_REVIEWING`
+/// was two for every project, a fact about the box's firecode taps, and it held a local subagent
+/// reading a local clone to the number of microVMs this machine would boot. MEASURED 2026-10-29:
+/// two reviewers ran and fourteen rows waited.
+#[test]
+fn the_claim_limit_is_the_placements_own_and_a_vm_queue_keeps_the_vm_slots() {
+    // **A `host` queue takes what its machines can take** — eighteen spare cores is four here, and
+    // a pool of five machines is twenty.
+    assert_eq!(review_limit(Reviewers::Host, None, 1), 1);
+    assert_eq!(review_limit(Reviewers::Host, None, 18), 18);
+    // **A number the project (or the flag) named wins** over the pool's own capacity, in both
+    // directions: three on a pool that could take twenty, and twenty on a pool that could take one.
+    assert_eq!(review_limit(Reviewers::Host, Some(3), 18), 3);
+    assert_eq!(review_limit(Reviewers::Host, Some(20), 1), 20);
+    // **Never zero** — a pool with no spare capacity is a wait (`WAITING_FOR_ROOM`), not a queue
+    // that has stopped, and a limit of zero reads on screen exactly like a broken one.
+    assert_eq!(review_limit(Reviewers::Host, None, 0), 1);
+    // **And `vm` is untouched, whatever anybody says.** Its limit is the box's firecode taps, which
+    // `vm_capacity` recognises at the placement; this number only has to stay what it always was.
+    assert_eq!(
+        review_limit(Reviewers::Vm, None, 20),
+        crate::mergequeue::serve::MAX_REVIEWING
+    );
+    assert_eq!(
+        review_limit(Reviewers::Vm, Some(20), 20),
+        crate::mergequeue::serve::MAX_REVIEWING,
+        "`reviewers_at_once` is a `host` placement's setting and does not move the VM count"
+    );
+    assert_eq!(crate::mergequeue::serve::MAX_REVIEWING, 2);
+}
+
+/// **`spare / CORES_PER_REVIEWER`, floored, and never more than `PER_HOST_MAX`** — the arithmetic
+/// behind the pool's per-host cap, on its own so the bounds are visible.
+#[test]
+fn a_machines_room_is_spare_cores_over_four_capped_at_four() {
+    assert_eq!(reviewers_fit(0.0), 0, "a full machine takes nobody");
+    assert_eq!(reviewers_fit(3.9), 0, "and neither does one with 3.9 spare");
+    assert_eq!(reviewers_fit(4.0), 1);
+    assert_eq!(reviewers_fit(7.9), 1);
+    assert_eq!(reviewers_fit(8.0), 2);
+    assert_eq!(reviewers_fit(12.0), 3);
+    assert_eq!(reviewers_fit(16.0), PER_HOST_MAX);
+    // **A 64-core box takes four, not sixteen** — the cap is about the machine answering for itself
+    // and about one box not taking the whole queue, not about cores alone.
+    assert_eq!(reviewers_fit(64.0), PER_HOST_MAX);
+    assert_eq!(PER_HOST_MAX, 4);
+    // Negative is an oversubscribed box, and it is a real answer rather than a panic.
+    assert_eq!(reviewers_fit(-2.0), 0);
+}

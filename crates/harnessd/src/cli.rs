@@ -341,6 +341,16 @@ fn usage() -> String {
      \x20                           thing, and this flag overrides it;\n\
      \x20                           `--gate-host local` (or an empty name) puts\n\
      \x20                           it back on this machine\n\
+     \x20 --reviewers-at-once N how many reviewers this daemon's queues run at ONCE.\n\
+     \x20                           The default belongs to the placement: `vm` keeps\n\
+     \x20                           the box's VM slots, and `host` runs as many as the\n\
+     \x20                           machines it may use can take (four per machine, one\n\
+     \x20                           per four spare cores). The project's\n\
+     \x20                           `[queue] reviewers_at_once` says the same thing\n\
+     \x20 --reviewer-hosts LIST   the machines a reviewer may be placed on, comma\n\
+     \x20                           separated: names from the operator's hosts.toml,\n\
+     \x20                           `local` for this machine, or `*` for every\n\
+     \x20                           declared host. The default is this machine only\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -950,6 +960,65 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     return Err(hosts.refusal(&name));
                 }
                 host_asked = Some(name);
+            }
+            // Per-invocation overrides of `[queue] reviewers_at_once` and `reviewer_hosts`, for a
+            // daemon above several repositories that has no one project file.
+            "--reviewers-at-once" => {
+                let n = next()?;
+                let n: usize = n
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("--reviewers-at-once: `{n}` is not a number"))?;
+                if n == 0 {
+                    return Err(
+                        "--reviewers-at-once: 0 would claim no review at all, which is a queue \
+                         nobody can tell from a broken one — the smallest number that means \
+                         anything is 1"
+                            .to_string(),
+                    );
+                }
+                cfg.reviewers_at_once = Some(n);
+            }
+            "--reviewer-hosts" => {
+                let list = next()?;
+                let mut out: Vec<String> = Vec::new();
+                for entry in list.split(',') {
+                    let name = entry.trim();
+                    if name.is_empty() {
+                        continue;
+                    }
+                    if crate::mergequeue::review::hosts::is_forbidden(name) {
+                        return Err(format!("--reviewer-hosts: `{name}` is never used"));
+                    }
+                    if name != "local" && name != "*" {
+                        // The same rule `--host` follows: a name that is not declared is refused
+                        // here, before a daemon starts, rather than by a review that falls back.
+                        let hosts = letibot_tools::remote::Hosts::load();
+                        if hosts.get(name).is_none() {
+                            return Err(format!(
+                                "--reviewer-hosts: {}. `local` is this machine, and `*` is every \
+                                 host the file declares",
+                                hosts.refusal(name)
+                            ));
+                        }
+                    }
+                    if !out.iter().any(|e| e == name) {
+                        out.push(name.to_string());
+                    }
+                }
+                if out.is_empty() {
+                    return Err(
+                        "--reviewer-hosts: an empty list — name the machines a reviewer may use \
+                         (`local` for this one), or leave the flag out for this machine only"
+                            .to_string(),
+                    );
+                }
+                // `*` is every declared host, as in `leticode.toml`.
+                cfg.reviewer_hosts = if out.iter().any(|e| e == "*") {
+                    None
+                } else {
+                    Some(out)
+                };
             }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),

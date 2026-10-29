@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use letibot_turn::Endpoint;
 use serde_json::{Value, json};
@@ -490,6 +491,27 @@ pub struct Config {
     /// [`crate::mergequeue::gate::gate_host`]. `None` is this machine, which is what a fixture must
     /// get; the daemon is the one caller that reads the file.
     pub gate_host: Option<String>,
+    /// **The machines a `host` reviewer may be placed on, and what this daemon already has on
+    /// them** — one pool per daemon, shared by the queue's workers and the review pool, because the
+    /// per-host cap is a fact about this daemon's own work (`mergequeue::review::hosts`).
+    ///
+    /// **A fixture gets a pool of this machine alone**, which is the same safe end
+    /// [`Config::reviewers`] takes and for the same reason: `for_this_box` is what every test in
+    /// this tree is built from, and a test that probed — let alone placed work on — one of the
+    /// operator's machines because a constructor defaulted would be a test that runs on somebody
+    /// else's box. [`Config::for_the_daemon`] opens it to every host the operator declared.
+    ///
+    /// It rides the config rather than being built where it is used because a CHILD's `open` is the
+    /// thing that places a reviewer: the pool has to reach the spawn, and the config is what the
+    /// spawn already carries.
+    pub review_hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+    /// **`--reviewers-at-once N`** — how many reviewers this daemon's queues run at once, when the
+    /// operator says so on the command line. `None` is the project's `[queue] reviewers_at_once`,
+    /// and below that the placement's own number (`mergequeue::capacity::review_limit`).
+    pub reviewers_at_once: Option<usize>,
+    /// **`--reviewer-hosts a,b,c`** — the machines this daemon's reviewers may use, when the
+    /// operator says so on the command line. `None` is the project's `[queue] reviewer_hosts`.
+    pub reviewer_hosts: Option<Vec<String>>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
     /// What to try when the model this session is on is OUT - `[fallback] models` in
@@ -1563,6 +1585,12 @@ impl Config {
             // spec's - see the fields.
             skills: Vec::new(),
             reviewer_skills: Vec::new(),
+            // **A pool of this machine alone, and no ssh** — see the field: a fixture must not
+            // place work on the operator's machines because a constructor defaulted, and the
+            // daemon opens the pool to every declared host in `for_the_daemon`.
+            review_hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+            reviewers_at_once: None,
+            reviewer_hosts: Some(vec![crate::mergequeue::review::hosts::LOCAL.to_string()]),
             provider: None,
             fabric: None,
             allow_bash: false,
@@ -1600,20 +1628,22 @@ impl Config {
     /// afterwards; a file that will not parse means `host`, not a stopped daemon.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
-        // The box's directories, resolved HERE and once. The harness, the notes reader and
-        // the skills index all take them off this config afterwards, so an in-process fixture
-        // cannot inherit the operator's `~/.claude` and a daemon reads it exactly as before.
-        cfg.read_the_box();
-        // One read of the project's file for both answers: where its reviewers run and where its
-        // gate runs are the same file, and two calls could disagree about which file that is.
-        let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();
-        cfg.reviewers = queue.reviewers;
-        cfg.reviewer_skills = queue.reviewer_skills.clone();
-        cfg.gate_host = queue.gate_host;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         // The reviewers' own directory, beside the landing root and for the same reason: it is
         // the daemon's, not a session's, and a fixture that serves reviews names its own.
         cfg.review_clones = Some(std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR));
+        // The box's directories, resolved HERE and once. The harness, the notes reader and
+        // the skills index all take them off this config afterwards, so an in-process fixture
+        // cannot inherit the operator's `~/.claude` and a daemon reads it exactly as before.
+        cfg.read_the_box();
+        // One read of the project's file for every answer: where its reviewers and gate run, how
+        // many reviewers at once, and on which machines. Two reads could disagree about the file.
+        let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();
+        cfg.reviewers = queue.reviewers;
+        cfg.reviewer_skills = queue.reviewer_skills.clone();
+        cfg.gate_host = queue.gate_host.clone();
+        cfg.reviewer_hosts = queue.reviewer_hosts.clone();
+        cfg.reviewers_at_once = queue.reviewers_at_once;
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
         // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")

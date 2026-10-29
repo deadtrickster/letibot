@@ -24,6 +24,11 @@
 //!                                 #   they are rebased one onto the last, gated ONCE, and
 //!                                 #   landed one commit at a time (default: 1 - one branch,
 //!                                 #   one gate, exactly as before)
+//! reviewers_at_once = 4           # how many reviewers this queue runs AT ONCE. Default:
+//!                                 #   `vm` is the box's VM slots; `host` is what the pool
+//!                                 #   of machines can take, from their cores
+//! reviewer_hosts = ["lab2x1"]     # opt in: the declared hosts a `host` reviewer may be placed
+//!                                 #   on (`["*"]` is all of them). Default: this machine only
 //! ```
 //!
 //! The first three are the operator's own rulings, and each per PROJECT because
@@ -125,6 +130,12 @@ pub struct QueueSettings {
     /// bodies are preloaded into each reviewer's prompt, on top of the index every session gets
     /// (`Config::skills`, which the review queue's session carries). Empty is the ordinary case.
     pub reviewer_skills: Vec<String>,
+    /// `[queue] reviewers_at_once`. `None` is the placement's own number
+    /// ([`super::capacity::review_limit`]).
+    pub reviewers_at_once: Option<usize>,
+    /// `[queue] reviewer_hosts`, the opt-in to fan reviewers out. Absent is this machine alone
+    /// (`["local"]`, D18). `None` is every declared host (`["*"]`). A list is exactly those names.
+    pub reviewer_hosts: Option<Vec<String>>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -140,6 +151,8 @@ impl Default for QueueSettings {
             gate_train: 1,
             gate_host: None,
             reviewer_skills: Vec::new(),
+            reviewers_at_once: None,
+            reviewer_hosts: Some(vec!["local".to_string()]),
             path: None,
         }
     }
@@ -168,6 +181,10 @@ struct QueueTable {
     /// the key rather than with a deserialiser's complaint about a type.
     #[serde(default)]
     gate_train: Option<i64>,
+    #[serde(default)]
+    reviewers_at_once: Option<i64>,
+    #[serde(default)]
+    reviewer_hosts: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -233,6 +250,54 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
         gate_carry.push(rel.to_string_lossy().into_owned());
     }
+    // **A number of reviewers, or nothing.** Zero is refused rather than read as "no reviewers":
+    // a queue that claims nothing is a queue nobody can tell from a broken one, and an operator
+    // who wants none wants `reviewers` left alone and the target not red.
+    let reviewers_at_once = match q.reviewers_at_once {
+        None => None,
+        Some(n) if n >= 1 => Some(n as usize),
+        Some(n) => {
+            return Err(format!(
+                "{}: [queue] reviewers_at_once = {n} — a queue runs at least one reviewer at a \
+                 time, so the smallest number that means anything here is 1 (and leaving the key \
+                 out is the placement's own number)",
+                path.display()
+            ));
+        }
+    };
+    // Absent is this machine (D18). `["*"]` becomes `None`, every declared host. An empty entry
+    // and a forbidden host are refused by name rather than dropped.
+    let reviewer_hosts = match q.reviewer_hosts {
+        None => Some(vec![super::review::hosts::LOCAL.to_string()]),
+        Some(list) => {
+            let mut out: Vec<String> = Vec::new();
+            for entry in &list {
+                let name = entry.trim();
+                if name.is_empty() {
+                    return Err(format!(
+                        "{}: [queue] reviewer_hosts has an empty entry - every entry is a host \
+                         name the operator declared in `hosts.toml`, or `\"local\"` for this \
+                         machine",
+                        path.display()
+                    ));
+                }
+                if super::review::hosts::is_forbidden(name) {
+                    return Err(format!(
+                        "{}: [queue] reviewer_hosts names `{name}`, which is never used",
+                        path.display()
+                    ));
+                }
+                if !out.iter().any(|e| e == name) {
+                    out.push(name.to_string());
+                }
+            }
+            if out.iter().any(|e| e == "*") {
+                None
+            } else {
+                Some(out)
+            }
+        }
+    };
     Ok(QueueSettings {
         gate_carry,
         reviewers,
@@ -240,6 +305,8 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .gate_host
             .map(|h| h.trim().to_string())
             .filter(|h| !h.is_empty()),
+        reviewers_at_once,
+        reviewer_hosts,
         target: q
             .target
             .map(|t| t.trim().to_string())
@@ -380,6 +447,64 @@ mod tests {
             let e = for_repository(&repo).unwrap_err();
             assert!(e.contains("gate_train"), "{bad}: {e}");
             assert!(e.contains(bad), "{bad}: {e}");
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// `reviewers_at_once` and `reviewer_hosts` are read per project. Absent hosts mean this
+    /// machine alone, `["*"]` is every declared host, and `lubuntu3` is refused by name.
+    #[test]
+    fn the_reviewers_limit_and_its_pool_are_read_or_refused_by_name() {
+        let (dir, repo) = file("main_model = \"local\"\n[queue]\ntarget = \"main\"\n");
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(s.reviewers_at_once, None, "the placement's own number");
+        assert_eq!(
+            s.reviewer_hosts,
+            Some(vec!["local".to_string()]),
+            "reviewers stay on this machine unless the project opts in"
+        );
+        assert_eq!(QueueSettings::default().reviewer_hosts, s.reviewer_hosts);
+
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\nreviewers_at_once = 6\nreviewer_hosts = [\"lab2x1\", \" lubuntu2 \", \
+             \"lab2x1\"]\n",
+        )
+        .unwrap();
+        let s = for_repository(&repo).unwrap();
+        assert_eq!(s.reviewers_at_once, Some(6));
+        assert_eq!(
+            s.reviewer_hosts.as_deref(),
+            Some(["lab2x1".to_string(), "lubuntu2".to_string()].as_slice()),
+            "trimmed, and a name twice is one machine"
+        );
+
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\nreviewer_hosts = [\"*\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            for_repository(&repo).unwrap().reviewer_hosts,
+            None,
+            "`*` is every declared host"
+        );
+
+        for (text, want) in [
+            ("[queue]\nreviewers_at_once = 0\n", "reviewers_at_once"),
+            ("[queue]\nreviewers_at_once = -2\n", "reviewers_at_once"),
+            (
+                "[queue]\nreviewer_hosts = [\"lab2x1\", \"\"]\n",
+                "reviewer_hosts",
+            ),
+            (
+                "[queue]\nreviewer_hosts = [\"lab2x1\", \"lubuntu3\"]\n",
+                "lubuntu3",
+            ),
+        ] {
+            std::fs::write(dir.join("leticode.toml"), text).unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains(want), "{text}: {e}");
         }
         let _ = std::fs::remove_dir_all(dir);
     }

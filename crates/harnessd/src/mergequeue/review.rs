@@ -2,6 +2,7 @@
 //! is a `task` child of the gatekeeper session.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
@@ -20,6 +21,10 @@ use super::notices;
 use super::serve::MAX_REVIEW_ATTEMPTS;
 use super::settings::{QueueSettings, RedTarget};
 use crate::sessions::gatekeeper::ReviewerPlacement;
+
+pub mod hosts;
+
+use hosts::ReviewHosts;
 
 /// What the reviewers' host needs to serve its claimed rows.
 pub struct Pool<'a> {
@@ -47,6 +52,12 @@ pub struct Pool<'a> {
     /// The skills every reviewer is started with, from `[queue] reviewer_skills` for the repository
     /// being served. Empty is the ordinary case.
     pub reviewer_skills: &'a [String],
+    /// This daemon's one pool of machines, shared with the queue's workers so the per-host cap
+    /// counts every reviewer it runs.
+    pub machines: Arc<ReviewHosts>,
+    /// The machines `machines` may use, from [`crate::config::Config::reviewer_hosts`]: `None` is
+    /// every declared host, a list is exactly those. One per daemon, not per repository.
+    pub reviewer_hosts: Option<Vec<String>>,
     /// What holds each busy VM slot, one line per tap (`crate::vm_reap::slot_holders`), read when a
     /// capacity wait is raised as long, so the notice says what to free instead of only that all are
     /// busy.
@@ -205,6 +216,66 @@ impl Pool<'_> {
         Ok(true)
     }
 
+    /// Every machine the placement may use is full. A wait with a short not-before time, never an
+    /// attempt and never a block.
+    fn wait_for_room(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
+        let failure = format!("{}{why}", capacity::WAITING_FOR_ROOM);
+        self.mv(
+            r,
+            ReviewState::Waiting,
+            Move::new(self.me, failure.clone())
+                .owned_by(self.me)
+                .set("owner", "")
+                .clear("reviewer")
+                .set("deadline_ms", now_ms() + capacity::ROOM_RETRY_MS)
+                .set("failure", failure),
+        )
+    }
+
+    /// A reviewer whose machine refused it runs on this one instead: same row, new child, and no
+    /// attempt spent. No room here either is a wait.
+    fn retry_locally(&self, r: &ReviewRow, host: &str, why: &str) -> Result<bool, StoreError> {
+        match start_reviewer(self, r, true) {
+            Ok(Started {
+                handle,
+                req,
+                machine,
+            }) => {
+                let said = format!(
+                    "the reviewer on {host} could not be placed - {} - so this one runs here \
+                     ({handle})",
+                    capacity::gist(why)
+                );
+                let moved = self.mv(
+                    r,
+                    ReviewState::Reviewing,
+                    Move::new(self.me, said)
+                        .owned_by(self.me)
+                        .set("reviewer", handle.clone()),
+                )?;
+                if moved {
+                    if let Some(m) = &machine {
+                        self.machines.started(&handle, m);
+                    }
+                    self.desk.opened(self.host, &handle, &r.id, req);
+                } else {
+                    let _ = self.runner.kill(&handle);
+                }
+                Ok(moved)
+            }
+            Err(CouldNotStart::Full(why)) => self.wait_for_room(r, why),
+            Err(CouldNotStart::Tree(why)) => self.wait_for_tree(r, why),
+            Err(CouldNotStart::Runner(local)) => {
+                let said = format!(
+                    "the reviewer could not be placed on {host} - {} - and could not start here \
+                     either: {local}",
+                    capacity::gist(why)
+                );
+                self.attempt_failed(r, said)
+            }
+        }
+    }
+
     /// The reviewer's tree could not be MADE - the clone failed, or the finished clone could
     /// not be put at its name. Not an attempt, and not a block
     fn wait_for_tree(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
@@ -280,6 +351,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     out.redelivered = redeliver_refusals(p)?;
     out.moved |= out.redelivered > 0;
     let rows = p.store.review_rows(None)?;
+    p.machines.refresh(p.reviewer_hosts.as_deref());
 
     // ---- Start a reviewer for every row this daemon claimed and nobody is on.
     for r in rows
@@ -289,8 +361,13 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         if p.desk.is_open_for(&r.id) {
             continue;
         }
-        match start_reviewer(p, r) {
-            Ok((handle, req)) => {
+        match start_reviewer(p, r, false) {
+            Ok(started) => {
+                let Started {
+                    handle,
+                    req,
+                    machine,
+                } = started;
                 if p.mv(
                     r,
                     ReviewState::Reviewing,
@@ -298,6 +375,9 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                         .owned_by(p.me)
                         .set("reviewer", handle.clone()),
                 )? {
+                    if let Some(m) = &machine {
+                        p.machines.started(&handle, m);
+                    }
                     p.desk.opened(p.host, &handle, &r.id, req);
                     out.started += 1;
                 } else {
@@ -311,6 +391,12 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
             // the branch. See [`Pool::wait_for_tree`].
             Err(CouldNotStart::Tree(why)) => {
                 p.wait_for_tree(r, why)?;
+                out.moved = true;
+            }
+            Err(CouldNotStart::Full(why)) => {
+                // **The pool is full, which is a wait** — the row goes back in line with a
+                // not-before time and nothing counted against it.
+                p.wait_for_room(r, why)?;
                 out.moved = true;
             }
             Err(CouldNotStart::Runner(why)) if capacity::vm_capacity(&why).is_some() => {
@@ -393,6 +479,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         match p.runner.collect(&child, std::time::Duration::ZERO) {
             TaskStatus::Running { .. } => still.push(child),
             TaskStatus::Done { .. } => {
+                p.machines.finished(&child);
                 out.moved = true;
                 p.attempt_failed(
                     &r,
@@ -405,17 +492,43 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
             }
             TaskStatus::Failed { why } => {
                 out.moved = true;
-                match capacity::vm_capacity(&why) {
-                    // No free slot is a wait, not an attempt (see `capacity`).
-                    Some(cap) => {
-                        p.wait_for_slot(&r, &cap)?;
+                // A machine that refused the placement is not a verdict: nothing was judged, so
+                // no attempt is counted and the review starts here.
+                let on_host = p.machines.where_is(&child).flatten();
+                match on_host {
+                    Some(host) if placement_refused(&why, &host) => {
+                        p.machines.finished(&child);
+                        p.machines.mark_down(Some(&host), why.clone());
+                        p.raise(
+                            &r.repository,
+                            "queue_reviewer_fell_back",
+                            format!(
+                                "the reviewer of `{}` could not be placed on {host} - {} - so it \
+                                 runs on this machine instead. No attempt was counted, and {host} \
+                                 is out of the pool until the next pass.",
+                                r.branch,
+                                capacity::gist(&why)
+                            ),
+                        );
+                        out.moved |= p.retry_locally(&r, &host, &why)?;
                     }
-                    None => {
-                        p.attempt_failed(&r, format!("the reviewer `{child}` failed: {why}"))?;
-                    }
+                    _ => match capacity::vm_capacity(&why) {
+                        // No free slot is a wait, not an attempt (see `capacity`).
+                        Some(cap) => {
+                            p.wait_for_slot(&r, &cap)?;
+                        }
+                        None => {
+                            p.machines.finished(&child);
+                            p.attempt_failed(
+                                &r,
+                                format!("the reviewer `{child}` failed: {why}"),
+                            )?;
+                        }
+                    },
                 }
             }
             TaskStatus::Unknown => {
+                p.machines.finished(&child);
                 out.moved = true;
                 p.attempt_failed(
                     &r,
@@ -425,7 +538,21 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         }
     }
     p.desk.keep(p.host, &still);
+    // **A host that failed this pass is asked again next one** — a reboot is minutes, and a queue
+    // that never retried would run on this machine for ever.
+    p.machines.end_pass();
     Ok(out)
+}
+
+/// **Was this failure the MACHINE, rather than the review?**
+///
+/// A remote placement that cannot be made fails the child at its open with
+/// `HarnessError::Setup` around `SshBackend`'s own sentence, which always opens
+/// `placing this session on <host>`. That is the one shape that means *nothing was judged and
+/// nothing should be counted* — a reviewer that got as far as running and then died is a different
+/// thing and stays an attempt.
+pub fn placement_refused(why: &str, host: &str) -> bool {
+    why.contains(&format!("placing this session on {host}"))
 }
 
 /// The directory a review's clone lives in, under the temp dir - one per review, named
@@ -472,11 +599,14 @@ fn sweep_clones_with(p: &Pool, grace: std::time::Duration) {
     let Ok(rows) = p.store.review_rows(None) else {
         return;
     };
-    let live: std::collections::HashSet<&str> = rows
+    let mut live: std::collections::HashSet<String> = rows
         .iter()
         .filter(|r| matches!(r.state, ReviewState::Waiting | ReviewState::Reviewing))
-        .map(|r| r.id.as_str())
+        .map(|r| r.id.clone())
         .collect();
+    for open in p.desk.open(p.host) {
+        live.insert(open.entry_id);
+    }
     let Ok(entries) = std::fs::read_dir(&p.clones) else {
         return;
     };
@@ -511,8 +641,14 @@ fn age_of(path: &Path) -> Option<std::time::Duration> {
 /// Start one reviewer: where it runs, on what tree, with which prompt. Both placements get
 /// a tree of their own, made here once - a detached clone of the entry's repository at the
 /// head the row names. What differs is what is done with it
-fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), CouldNotStart> {
+fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
+    let pool = p.reviewer_hosts.as_deref();
+    let chosen = if local_only {
+        p.machines.choose_local()
+    } else {
+        p.machines.choose(pool)
+    };
     let mut spec = TaskSpec {
         role: "gatekeeper".into(),
         placement: p.placement.placement(),
@@ -521,12 +657,23 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
         skills: p.reviewer_skills.to_vec(),
         ..Default::default()
     };
+    let mut machine: Option<hosts::Machine> = None;
     // The branch the row is about - the target itself for a red tip, the child's branch for a review
     // - and the head as the queue read it when it claimed the row.
     let what = if r.kind == ReviewKind::Target {
         r.target.clone()
     } else {
         r.branch.clone()
+    };
+    // A full pool is a wait, asked before the clone so a row that waits leaves no tree behind.
+    // A VM placement clones inside the boot and asks nothing here.
+    let chosen = if matches!(p.placement, ReviewerPlacement::Vm) {
+        None
+    } else {
+        match chosen {
+            Some(m) => Some(m),
+            None => return Err(CouldNotStart::Full(pool_full_sentence(p, pool))),
+        }
     };
     let stem = p.clones.join(format!("review-{}", r.id));
     let dir = git::clone_branch(&repo, &what, &r.head_sha, &stem).map_err(CouldNotStart::Tree)?;
@@ -553,16 +700,30 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
             String::new()
         }
         ReviewerPlacement::Host | ReviewerPlacement::NoVm { .. } => {
-            // A host reviewer works in the checkout, so the child's workspace and the `cwd` its
-            // prompt names are one path - the branch at the head it judges, never the operator's tree.
-            let at = dir.display().to_string();
-            spec.worktree = Some(WorktreePlacement {
-                path: at.clone(),
-                branch: what,
-                base_sha: r.base_sha.clone(),
-                main_tree: false,
-            });
-            at
+            let chosen = chosen.expect("a host placement is placed before its tree is made");
+            let cwd = match &chosen.name {
+                Some(host) => {
+                    // The child's own `open` bundles this clone to the host. No worktree and no
+                    // cwd: a path from here would name one that machine does not have.
+                    spec.placement = letibot_tools::builtins::task::Placement::Remote(host.clone());
+                    spec.vm_source = Some(dir);
+                    String::new()
+                }
+                None => {
+                    // The child's workspace and the `cwd` its prompt names are one path: the
+                    // branch at the head it judges, never the operator's tree.
+                    let at = dir.display().to_string();
+                    spec.worktree = Some(WorktreePlacement {
+                        path: at.clone(),
+                        branch: what,
+                        base_sha: r.base_sha.clone(),
+                        main_tree: false,
+                    });
+                    at
+                }
+            };
+            machine = Some(chosen);
+            cwd
         }
     };
     let req = ReviewRequest {
@@ -580,7 +741,38 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
         .runner
         .start(&prompt, &spec)
         .map_err(CouldNotStart::Runner)?;
-    Ok((handle, req))
+    Ok(Started {
+        handle,
+        req,
+        machine,
+    })
+}
+
+/// A reviewer that started, and the machine a `host` placement sent it to (the per-host cap
+/// counts it until it is collected).
+struct Started {
+    handle: String,
+    req: ReviewRequest,
+    machine: Option<hosts::Machine>,
+}
+
+/// What a full pool says: each machine it looked at and what it said.
+fn pool_full_sentence(p: &Pool, pool: Option<&[String]>) -> String {
+    let said: Vec<String> = p
+        .machines
+        .machines(pool)
+        .iter()
+        .map(|m| match (m.spare, &m.why) {
+            (Some(spare), _) => format!("{}: {spare:.1} spare core(s)", m.label()),
+            (None, Some(why)) => format!("{}: {}", m.label(), capacity::clip(why, 120)),
+            (None, None) => format!("{}: not asked yet", m.label()),
+        })
+        .collect();
+    format!(
+        " - every machine this project's reviewers may use is full or busy ({}), so the review \
+         waits instead of spending an attempt",
+        said.join("; ")
+    )
 }
 
 /// Why a reviewer could not be started - and the two arms are different KINDS of fact
@@ -592,6 +784,8 @@ enum CouldNotStart {
     Tree(String),
     /// The runner would not start the child - placement, firecode, the seat.
     Runner(String),
+    /// Every machine the placement may use is full: a wait, not an attempt.
+    Full(String),
 }
 
 /// The red target's reviewer is told what its verdict MEANS - the tip is broken, so
@@ -1128,3 +1322,6 @@ mod tests;
 
 #[cfg(test)]
 mod capacity_tests;
+
+#[cfg(test)]
+mod placement_tests;

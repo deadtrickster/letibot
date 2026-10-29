@@ -238,6 +238,9 @@ pub(crate) fn env_with_desk(
         gate_deadline: Duration::from_secs(60),
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
+        reviewers_at_once: None,
+        hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         idle: Duration::from_millis(50),
     })
 }
@@ -362,6 +365,92 @@ fn run(q: &RepoQueue, passes: usize) {
     for _ in 0..passes {
         assert_ne!(q.settle(&stop).unwrap(), Pass::LostLease);
     }
+}
+
+// ===== How many reviewers at once =====
+
+/// **The claim limit belongs to the placement, and the queue obeys the number it is given** — the
+/// defect this is written against: `MAX_REVIEWING` was two for every project, a fact about the
+/// box's firecode taps, so fourteen rows waited behind two readers on a machine with thirty-two
+/// spare cores next door. MEASURED 2026-10-29.
+///
+/// Three assertions, and they are the three ways the number is arrived at
+/// (`capacity::review_limit`): the project's `reviewers_at_once` is honoured; a `vm` queue keeps
+/// the VM-slot count whatever the project says; and a `host` queue with no number of its own
+/// claims what its machines can take, which for a fixture's pool of this machine alone is
+/// `PER_HOST_MAX` rather than two.
+#[test]
+fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slots() {
+    use crate::mergequeue::settings::Reviewers;
+    let w = World::new("reviewers-at-once");
+    // Five branches, each with a worktree of its own, all waiting for a reviewer.
+    for i in 0..5 {
+        let name = format!("b{i}");
+        let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
+        w.enqueue(&name, &wt, &base, &head);
+    }
+    // **A function and not a closure**: a closure here captured the FIRST world, and the shadowed
+    // `w` below is a different binding — it counted another repository's rows and answered zero.
+    fn reviewing(w: &World) -> usize {
+        w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.state == ReviewState::Reviewing)
+            .count()
+    }
+
+    // **A number the project named** — three, on a queue that would otherwise take four here.
+    let q = w.worker_with(
+        Arc::new(GreenGate),
+        "at-once",
+        QueueSettings {
+            reviewers: Reviewers::Host,
+            reviewers_at_once: Some(3),
+            ..Default::default()
+        },
+    );
+    run(&q, 1);
+    assert_eq!(reviewing(&w), 3, "three claimed, and two still in line");
+
+    // **And `vm` ignores that number**, because a VM reviewer's limit is the box's firecode taps.
+    let w = World::new("reviewers-at-once-vm");
+    for i in 0..5 {
+        let name = format!("b{i}");
+        let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
+        w.enqueue(&name, &wt, &base, &head);
+    }
+    let q = w.worker_with(
+        Arc::new(GreenGate),
+        "at-once-vm",
+        QueueSettings {
+            reviewers: Reviewers::Vm,
+            reviewers_at_once: Some(4),
+            ..Default::default()
+        },
+    );
+    run(&q, 1);
+    assert_eq!(
+        reviewing(&w),
+        crate::mergequeue::serve::MAX_REVIEWING,
+        "a `vm` queue claims exactly what it always did"
+    );
+
+    // **A `host` queue with no number of its own** takes what its machines can take — this
+    // fixture's pool is this machine alone, which is `PER_HOST_MAX` places.
+    let w = World::new("reviewers-at-once-default");
+    for i in 0..5 {
+        let name = format!("b{i}");
+        let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
+        w.enqueue(&name, &wt, &base, &head);
+    }
+    let q = w.worker(Arc::new(GreenGate), "at-once-default");
+    run(&q, 1);
+    assert_eq!(
+        reviewing(&w),
+        crate::mergequeue::capacity::PER_HOST_MAX,
+        "the pool's own capacity, not the two a VM queue would take"
+    );
 }
 
 // ===== The landing =====
@@ -2479,6 +2568,9 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         gate_deadline: Duration::from_secs(60),
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
+        reviewers_at_once: None,
+        hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         idle: Duration::from_millis(50),
     });
     let q = RepoQueue::new(

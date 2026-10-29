@@ -263,6 +263,9 @@ fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
             review_deadline_ms: crate::mergequeue::serve::REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: crate::mergequeue::serve::REVIEWER_START_GRACE_MS,
             idle: std::time::Duration::from_millis(10),
+            reviewers_at_once: None,
+            hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+            reviewer_hosts: Some(vec!["local".to_string()]),
         }),
     )
 }
@@ -1222,6 +1225,8 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         // other name, so no test can point a sweep at the box's real clone directory.
         clones: fx.dir.path().join(crate::mergequeue::review::CLONES_DIR),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     for _ in 0..3 {
@@ -1410,6 +1415,9 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
             // Nobody starts a reviewer here, so the claim is blocked on the next pass.
             reviewer_start_grace_ms: 0,
             idle: std::time::Duration::from_millis(10),
+            reviewers_at_once: None,
+            hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+            reviewer_hosts: Some(vec!["local".to_string()]),
         }),
     );
     passes(&q, 1);

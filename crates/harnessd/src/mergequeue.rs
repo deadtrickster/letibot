@@ -639,6 +639,12 @@ pub fn spawn_for(
         }),
         cfg.landing_root.clone(),
         desk,
+        // **The one pool of machines, shared with the review pool** — the per-host cap is a fact
+        // about this daemon's work, so the queue's workers and the reviewers count against the same
+        // four places on a host.
+        cfg.review_hosts.clone(),
+        cfg.reviewers_at_once,
+        cfg.reviewer_hosts.clone(),
     );
     // Every daemon hears every repository's moves: the worker below announces only what THIS
     // daemon moves, so a head attached here would never re-read a queue another daemon serves.

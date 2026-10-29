@@ -124,17 +124,38 @@ pub struct QueueEnv {
     pub gate_deadline: Duration,
     pub review_deadline_ms: u64,
     pub reviewer_start_grace_ms: u64,
-    /// How long a worker sleeps after a pass with nothing to do.
+    /// **How long a worker sleeps after a pass with nothing to do.**
     pub idle: Duration,
+    /// **`--reviewers-at-once`, when the daemon's command line named one** — the outermost of the
+    /// three places the number comes from (flag, project file, the pool's own capacity).
+    pub reviewers_at_once: Option<usize>,
+    /// **What the machines a `host` reviewer may use can take** — this daemon's pool
+    /// (`review::hosts::ReviewHosts`), shared with the review pool so the per-host cap counts every
+    /// reviewer this daemon has running. Read from the last probe, never by waiting for one.
+    pub hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+    /// **Which machines that pool is** — [`crate::config::Config::reviewer_hosts`], where `None` is
+    /// *every host the operator declared, plus this machine*.
+    pub reviewer_hosts: Option<Vec<String>>,
 }
 
 impl QueueEnv {
+    /// **How many reviewers the pool can take right now** — the pool's own answer for the machines
+    /// this daemon may use, and it never touches the network: a snapshot that is stale is refreshed
+    /// on another thread.
+    pub fn review_capacity(&self) -> usize {
+        self.hosts.capacity(self.reviewer_hosts.as_deref())
+    }
+
     /// The daemon's own: this daemon's identity, the local gate, thirty minutes, the project's
-    /// `leticode.toml` - and the desk its review session opens reviews on.
+    /// `leticode.toml` - the desk its review session opens reviews on, and the pool its reviewers
+    /// and workers share.
     pub fn production(
         door: Arc<dyn QueueDoor>,
         landing_root: Option<PathBuf>,
         desk: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+        hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+        reviewers_at_once: Option<usize>,
+        reviewer_hosts: Option<Vec<String>>,
     ) -> Self {
         QueueEnv {
             me: super::lease::this_daemon().clone(),
@@ -153,6 +174,9 @@ impl QueueEnv {
             review_deadline_ms: REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
             idle: Duration::from_secs(2),
+            reviewers_at_once,
+            hosts,
+            reviewer_hosts,
         }
     }
 }
@@ -1047,6 +1071,17 @@ impl RepoQueue {
             .iter()
             .filter(|r| r.state == ReviewState::Reviewing)
             .count();
+        // **How many reviews this queue runs at once, for the placement it runs them in**
+        // ([`super::capacity::review_limit`]): a `vm` queue keeps the box's VM-slot count, and a
+        // `host` queue takes what its machines can take — the project's own number when it named
+        // one, else the pool's. The default used to be `MAX_REVIEWING` for every project, which
+        // was a fact about firecode's taps being asked of a local subagent reading a local clone:
+        // MEASURED 2026-10-29, two reviewers ran and fourteen rows waited.
+        let limit = super::capacity::review_limit(
+            settings.reviewers,
+            self.env.reviewers_at_once.or(settings.reviewers_at_once),
+            self.env.review_capacity(),
+        );
         // A row waiting for a free VM slot is held until its not-before time (`capacity`): no
         // attempt was spent on it, and claiming it every pass would only ask firecode again.
         let mut waiting: Vec<&ReviewRow> = rows
@@ -1064,7 +1099,7 @@ impl RepoQueue {
             )
         });
         let mut claimed = 0;
-        for r in waiting.into_iter().take(MAX_REVIEWING.saturating_sub(busy)) {
+        for r in waiting.into_iter().take(limit.saturating_sub(busy)) {
             let head = match r.kind {
                 ReviewKind::Target => Some(r.head_sha.clone()),
                 ReviewKind::Branch => git::branch_head(&self.repo, &r.branch),

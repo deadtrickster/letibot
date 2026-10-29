@@ -253,6 +253,8 @@ fn judge(
         live: &live,
         settings: &settings,
         clones,
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     for _ in 0..passes {
@@ -1179,6 +1181,8 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         live: &|_: &str| false,
         settings: &settings,
         clones,
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     serve(&pool).expect("a pass");
@@ -1324,6 +1328,8 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
         settings: &settings,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     assert_eq!(
@@ -1605,6 +1611,8 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         settings: &settings,
         clones: clones.clone(),
         reviewer_skills: &[],
+        machines: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        reviewer_hosts: Some(vec!["local".to_string()]),
         slots: &Vec::new,
     };
     // One sweep, with the grace named as zero: the row rule is this test's subject, and the grace is
