@@ -70,21 +70,28 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     // name table), so the operator can always reach the agent that arbitrates this machine.
     cfg.session_id = super::session_id();
     cfg.title = "the room".to_string();
-    // **Its own socket**, so a room daemon never collides with a folder's daemon — and so the
-    // launcher's `--socket` for a folder is untouched.
-    let socket = super::socket_path().ok_or_else(|| {
+    // **Two sockets, and they are not the same one.** `room-<host key>.sock` is the ROOM's — what
+    // every session on the box connects to — and the daemon needs one of its own for a head to
+    // attach to the coordinator's session (that is how the operator reaches the arbiter, and how
+    // the wasm pane will). They live side by side, named so a reader can tell which is which;
+    // pointing both at one path would have the room's bind take the daemon's socket away.
+    let room_socket = super::socket_path().ok_or_else(|| {
         "a room coordinator needs somewhere to put its socket, and this box has neither \
          $XDG_DATA_HOME nor $HOME — set LETIBOT_ROOM_SOCKET to name one"
             .to_string()
     })?;
-    cfg.socket = socket;
+    let named = room_socket
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "room.sock".to_string());
+    cfg.socket = room_socket.with_file_name(format!("daemon-{named}"));
     // **A workspace of its own, and a directory that exists.** A session whose workspace is
     // missing publishes `workspace_gone` on every wake (`Harness::wake`), which would be the
     // coordinator's first and only sentence.
     let data = cfg
         .socket
         .parent()
-        .map(|p| p.join("room"))
+        .map(|p| p.join("room-workspace"))
         .ok_or_else(|| "the room's socket has no parent directory".to_string())?;
     std::fs::create_dir_all(&data)
         .map_err(|e| format!("creating the room's workspace {}: {e}", data.display()))?;
@@ -314,7 +321,17 @@ mod tests {
         assert!(cfg.room);
         assert_eq!(cfg.store, None, "the room keeps no store");
         assert_eq!(cfg.session_id, super::super::session_id());
-        assert_eq!(cfg.socket, socket);
+        assert_ne!(
+            cfg.socket, socket,
+            "the daemon's own socket is not the room's: the room's bind would take it away"
+        );
+        assert_eq!(
+            cfg.socket
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string()),
+            Some("daemon-room.sock".to_string()),
+            "beside it, named so a reader can tell which is which"
+        );
         assert!(!cfg.allow_bash);
         assert!(!cfg.serve_queues);
         assert_eq!(cfg.seat, Seat::Orchestrator);
