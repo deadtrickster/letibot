@@ -364,6 +364,21 @@ pub struct RegistryDoor {
     pub store_path: std::path::PathBuf,
 }
 
+/// **Whether a session is live in this daemon now** — one answer, two readers:
+/// [`serve::QueueDoor::session_live`], and the review queue's own fallback for a refusal whose
+/// author and root are both dead (`review::deliver_refusal`). One function rather than two
+/// copies, because the second reader would have been written from memory of the first.
+///
+/// A session counts while this daemon holds it, **or** while it has spawned it and not yet opened
+/// it (`Registry::opening`): a spawned child is handed its handle before its own thread has
+/// opened its session, and the open of a reviewer placed in a firecode VM is a clone and a boot.
+pub fn session_is_live(
+    registry: &letibot_sessionlog::registry::Registry,
+    session_id: &str,
+) -> bool {
+    registry.get(session_id).is_some() || registry.opening(session_id)
+}
+
 impl serve::QueueDoor for RegistryDoor {
     fn announce(&self, event: SessionEvent) {
         self.registry.broadcast(event);
@@ -421,13 +436,7 @@ impl serve::QueueDoor for RegistryDoor {
     }
 
     fn session_live(&self, session_id: &str) -> bool {
-        // **Alive is two answers, not one.** A spawned child is handed its handle before its own
-        // thread has opened its session, and the open of a reviewer placed in a firecode VM is a
-        // clone and a boot — so `get` alone called a child that had just been started *gone*, and
-        // `RepoQueue::review_upkeep` re-seated its row within seconds (three times: `blocked` at
-        // *attempt 3 of 3*). `Registry::opening` is the other half: an id this daemon has spawned
-        // and not yet adopted, which is nobody's session to attach to and very much a live one.
-        self.registry.get(session_id).is_some() || self.registry.opening(session_id)
+        session_is_live(&self.registry, session_id)
     }
 
     fn sees_sessions(&self) -> bool {

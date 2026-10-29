@@ -1032,8 +1032,11 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
     let runner = fx.runner(Vec::new());
     let deliver = |to: &str, text: &str| runner.send(to, text);
     let registry = fx.registry.clone();
-    let events = move |e: SessionEvent| {
-        registry.broadcast(e);
+    let events = {
+        let registry = registry.clone();
+        move |e: SessionEvent| {
+            registry.broadcast(e);
+        }
     };
     let settings = |_: &Path| Ok(crate::mergequeue::settings::QueueSettings::default());
     let pool = crate::mergequeue::review::Pool {
@@ -1046,6 +1049,8 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         events: &events,
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
+        // The daemon's own liveness door, as `Harness::serve_reviews` wires it.
+        live: &|id: &str| crate::mergequeue::session_is_live(&registry, id),
         settings: &settings,
         // A directory of this fixture's own, named as the queue's is: `sweep_clones` refuses any
         // other name, so no test can point a sweep at the box's real clone directory.

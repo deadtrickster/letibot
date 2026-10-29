@@ -65,6 +65,11 @@ pub struct Pool<'a> {
     pub warn: &'a dyn Fn(&str, SessionEvent),
     /// Send a refusal's complaints to a session (`TaskRunner::send`).
     pub deliver: &'a dyn Fn(&str, &str) -> Result<String, String>,
+    /// **Whether a session is live in this daemon now** — [`super::serve::QueueDoor::session_live`]'s
+    /// answer, the same door `RepoQueue::review_upkeep` asks about a reviewer's child. Read when a
+    /// refusal has nobody in its own tree to go to and a live session of the same workspace is
+    /// looked for ([`live_session_in_workspace`]); nothing else here asks it.
+    pub live: &'a dyn Fn(&str) -> bool,
     pub settings: &'a dyn Fn(&Path) -> Result<QueueSettings, String>,
     /// Where a VM reviewer's fresh clone is made.
     pub clones: PathBuf,
@@ -1021,30 +1026,115 @@ fn open_fix_branch(
 }
 
 /// **The refusal goes back to the child that wrote the branch**, or its root when the child is
-/// gone; when nobody can be told, the operator is (it stays on the row either way).
+/// gone; then to a live session of the branch's workspace when the whole tree is dead; and when
+/// nobody can be told, the operator is (it stays on the row either way).
+///
+/// **One recipient, and the first that takes it wins.** The chain stops at the first delivery that
+/// answers `Ok`, so no pass ever tells two sessions about one refusal — and the fallbacks are
+/// tried in the order of how much each can be expected to act on it: the session that wrote the
+/// branch, the session that started it, then whichever live session of the same workspace is
+/// newest.
+///
+/// The last rung exists because the operator's own report of 2026-10-29 was a card in his head —
+/// `session · review · agent/fix-tool-mount-landing · refused, told nobody` — while the reviewer's
+/// five reasons sat in a store row and in a warning broadcast to hubs: the child had finished
+/// hours earlier and the root was a dead session in the store, so the chain ended at nobody and
+/// the model that could have answered never heard.
 fn deliver_refusal(p: &Pool, r: &ReviewRow, reasons: &[String]) {
     let to_child = notices::refused(r, reasons);
     let child = r.session_id.clone();
-    let mut missed: Vec<String> = Vec::new();
+    // Every party the door tried, in its own words — the evidence *told nobody* has to carry.
+    let mut tried: Vec<String> = Vec::new();
     if !child.is_empty() {
         match (p.deliver)(&child, &to_child) {
             Ok(_) => return,
-            Err(e) => missed.push(format!("`{child}`: {e}")),
+            Err(e) => tried.push(format!("`{child}`: {e}")),
         }
     }
     let root = super::root_session(p.store, &child);
     if !root.is_empty() && root != child {
-        let to_root = notices::refused_to_root(r, reasons, &child, &missed.join("; "));
+        let to_root = notices::refused_to_root(r, reasons, &child, &tried.join("; "));
         match (p.deliver)(&root, &to_root) {
             Ok(_) => return,
-            Err(e) => missed.push(format!("`{root}`: {e}")),
+            Err(e) => tried.push(format!("`{root}`: {e}")),
         }
+    }
+    match live_session_in_workspace(p, r, &child, &root) {
+        Some((to, workspace)) => {
+            let to_them =
+                notices::refused_to_workspace(r, reasons, &child, &workspace, &tried.join("; "));
+            match (p.deliver)(&to, &to_them) {
+                Ok(_) => return,
+                Err(e) => tried.push(format!("`{to}`: {e}")),
+            }
+        }
+        None => tried.push(format!(
+            "no live top-level session of `{}` is open in this daemon",
+            r.repository
+        )),
     }
     p.raise(
         &r.repository,
         "refusal_undelivered",
-        notices::refusal_undelivered(r, &missed.join("; ")),
+        notices::refusal_undelivered(r, &tried.join("; ")),
     );
+}
+
+/// **The live session of the branch's workspace a refusal falls back to** — the newest top-level
+/// session of the repository `r` names, that this daemon holds, with its workspace.
+///
+/// Three answers, and each is somebody else's:
+///
+/// - **Live** is [`super::serve::QueueDoor::session_live`]'s, asked through [`Pool::live`] — the
+///   door `RepoQueue::review_upkeep` already asks about a reviewer's child, so a session counts
+///   while this daemon holds it *or* has spawned it and not yet opened it. A session row in the
+///   store is not enough: the operator's report is exactly the case of a root that exists in the
+///   store and has nobody attached, and a message to it is a message into a hole.
+/// - **The same workspace** is [`super::repositories_of_workspace_cached`] over the session's own
+///   `workspace_root` — the queue's own reading of which repositories a folder is a session of,
+///   so a project folder of several checkouts answers for each of them, and a worktree answers
+///   for its repository.
+/// - **Top-level** is `parent_session_id` empty: a child is somebody's subagent, and its root is
+///   the session that should have been told on the rung above. The queue's own session is not a
+///   candidate either — it already holds the row, and a refusal told to the queue is a refusal
+///   told to nobody.
+///
+/// `child` and `root` are the parties the chain has already attempted, so a session that has
+/// already refused this message is not asked for it twice.
+fn live_session_in_workspace(
+    p: &Pool,
+    r: &ReviewRow,
+    child: &str,
+    root: &str,
+) -> Option<(String, String)> {
+    let mut best: Option<(String, String, i64)> = None;
+    for s in p.store.list_sessions().unwrap_or_default() {
+        if s.parent_session_id.is_some_and(|parent| !parent.is_empty()) {
+            continue;
+        }
+        if s.id == child || s.id == root || letibot_sessionlog::is_gatekeeper_session(&s.id) {
+            continue;
+        }
+        // A row with no workspace cannot be said to be in the branch's.
+        if s.workspace_root.is_empty() || !(p.live)(&s.id) {
+            continue;
+        }
+        let in_workspace = super::repositories_of_workspace_cached(Path::new(&s.workspace_root))
+            .iter()
+            .any(|repo| repo == &r.repository);
+        if !in_workspace {
+            continue;
+        }
+        // **Newest**, by the store's own reading of a session's last activity — the same order
+        // the picker lists them in.
+        if best
+            .as_ref()
+            .is_none_or(|(_, _, ms)| s.last_activity_ms > *ms)
+        {
+            best = Some((s.id.clone(), s.workspace_root.clone(), s.last_activity_ms));
+        }
+    }
+    best.map(|(id, workspace, _)| (id, workspace))
 }
 
 /// **A finished `task_start` child's branch, put up for review** — the enqueue. The repository

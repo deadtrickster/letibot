@@ -213,6 +213,9 @@ impl World {
             events: &events,
             warn: &|_: &str, e| events(e),
             deliver: &deliver,
+            // No session of this fixture is live, and its `deliver` takes every message anyway,
+            // so the workspace fallback is never reached.
+            live: &|_: &str| false,
             settings: &settings,
             // A directory of this fixture's own, named as the queue's is: `sweep_clones` refuses
             // any other name, so no test can point a sweep at the box's real clone directory.

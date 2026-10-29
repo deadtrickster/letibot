@@ -10852,6 +10852,9 @@ impl Harness {
                 );
             },
             deliver: &deliver,
+            // **The queue's own liveness door**, asked of a refusal whose author and root are
+            // both dead: the session that takes it has to be one this daemon holds now.
+            live: &|id: &str| crate::mergequeue::session_is_live(&registry, id),
             settings: &crate::mergequeue::settings::for_repository,
             clones: self.cfg.review_clones.clone().unwrap_or_else(|| {
                 std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
