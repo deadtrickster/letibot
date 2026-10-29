@@ -377,7 +377,8 @@ fn png_complete(bytes: &[u8]) -> bool {
     let mut idat = false;
     let mut first = true;
     while at + 8 <= bytes.len() {
-        let len = u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
+        let len =
+            u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
         let kind = &bytes[at + 4..at + 8];
         // Length, type, data and CRC all have to be IN the file: a chunk that runs past the end is
         // a truncated picture, which is the case this whole function is about.
@@ -778,7 +779,10 @@ mod tests {
     #[test]
     fn a_truncated_png_is_not_an_image() {
         let full = png(2, 2);
-        assert!(Media::of("a.png", &full).is_some(), "the fixture is complete");
+        assert!(
+            Media::of("a.png", &full).is_some(),
+            "the fixture is complete"
+        );
         // Every prefix of it, up to the last byte of the IEND, is incomplete.
         for cut in [8usize, 20, 33, 40, full.len() - 1] {
             assert!(

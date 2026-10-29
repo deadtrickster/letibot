@@ -327,9 +327,7 @@ pub fn pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>) -> Vec<
                     }
                 }
             }
-            TranscriptItem::ToolResult {
-                media: Some(m), ..
-            } => out.push(m.data_ref.as_str()),
+            TranscriptItem::ToolResult { media: Some(m), .. } => out.push(m.data_ref.as_str()),
             _ => {}
         }
     }
@@ -1037,10 +1035,7 @@ mod tests {
     /// is the point: the fixture that used to stand in for one, `iVBORw0KGgo=`, was the incident's
     /// file.
     fn picture_ref() -> String {
-        letibot_transcript::testing::data_ref(
-            "image/png",
-            &letibot_transcript::testing::png(2, 2),
-        )
+        letibot_transcript::testing::data_ref("image/png", &letibot_transcript::testing::png(2, 2))
     }
 
     /// **The request's tail is the LAST message, and it is not in the transcript.**
@@ -1503,7 +1498,7 @@ mod tests {
                 },
                 UserPart::Image {
                     media_type: "image/png".into(),
-                    data_ref: uri.into(),
+                    data_ref: uri,
                 },
             ],
         }];

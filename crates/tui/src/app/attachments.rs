@@ -471,7 +471,11 @@ pub(crate) fn attachments_dir() -> PathBuf {
 ///
 /// The name is the session and a counter, so two pastes never collide and a chip's path says
 /// which session asked for it.
-pub(crate) fn save_clipboard_image(session_id: &str, n: u64, png: &[u8]) -> Result<PathBuf, String> {
+pub(crate) fn save_clipboard_image(
+    session_id: &str,
+    n: u64,
+    png: &[u8],
+) -> Result<PathBuf, String> {
     save_clipboard_image_under(&attachments_dir(), session_id, n, png)
 }
 
@@ -604,7 +608,9 @@ impl crate::app::App {
         let n = self.pasted_images;
         let session = self.session_id.clone();
         let path = match &self.attachments_dir {
-            Some(dir) => crate::app::attachments::save_clipboard_image_under(dir, &session, n, &png),
+            Some(dir) => {
+                crate::app::attachments::save_clipboard_image_under(dir, &session, n, &png)
+            }
             None => crate::app::attachments::save_clipboard_image(&session, n, &png),
         };
         let path = match path {
@@ -742,7 +748,10 @@ mod tests {
     #[test]
     fn a_test_build_resolves_a_directory_of_its_own() {
         let mine = attachments_dir();
-        assert_ne!(mine, crate::app::panes::head_runtime_dir().join("attachments"));
+        assert_ne!(
+            mine,
+            crate::app::panes::head_runtime_dir().join("attachments")
+        );
         assert!(
             mine.starts_with(std::env::temp_dir()),
             "a test build's directory is not under the temp dir: {}",

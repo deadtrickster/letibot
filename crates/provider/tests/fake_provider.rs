@@ -221,10 +221,7 @@ fn a_refusal_carries_the_providers_own_message() {
 /// at all — which is exactly what the incident's 33-byte PNG header was. See
 /// `letibot_transcript::testing`.
 fn picture_ref(w: u32, h: u32) -> String {
-    letibot_transcript::testing::data_ref(
-        "image/png",
-        &letibot_transcript::testing::png(w, h),
-    )
+    letibot_transcript::testing::data_ref("image/png", &letibot_transcript::testing::png(w, h))
 }
 
 fn picture_bytes(w: u32, h: u32) -> usize {

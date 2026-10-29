@@ -357,10 +357,11 @@ impl MessagesBackend for OpenAiProvider {
         if !crate::messages::picture_refusal(why) {
             return first;
         }
-        let carried: Vec<String> = crate::messages::pictures(req.items.iter().chain(req.tail.iter()))
-            .into_iter()
-            .map(String::from)
-            .collect();
+        let carried: Vec<String> =
+            crate::messages::pictures(req.items.iter().chain(req.tail.iter()))
+                .into_iter()
+                .map(String::from)
+                .collect();
         if carried.is_empty() {
             return first;
         }

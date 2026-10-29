@@ -34,13 +34,15 @@
 /// which is why the bytes are four times the pixel count plus a header — the fixture is a picture,
 /// not a compression test.
 pub fn png(w: u32, h: u32) -> Vec<u8> {
-    let mut raw = Vec::with_capacity(h as usize * (1 + 4 * w as usize));
+    // One row of opaque black, built once: filter type 0 (none), then the pixels.
+    let mut row = Vec::with_capacity(1 + 4 * w as usize);
+    row.push(0);
+    for _ in 0..w {
+        row.extend_from_slice(&[0x00, 0x00, 0x00, 0xff]);
+    }
+    let mut raw = Vec::with_capacity(h as usize * row.len());
     for _ in 0..h {
-        // Filter type 0 (none), then the row's pixels.
-        raw.push(0);
-        for _ in 0..w {
-            raw.extend_from_slice(&[0x00, 0x00, 0x00, 0xff]);
-        }
+        raw.extend_from_slice(&row);
     }
     let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
     let mut ihdr = Vec::with_capacity(13);
@@ -87,7 +89,11 @@ pub fn jpeg(w: u16, h: u16) -> Vec<u8> {
     sof.extend_from_slice(&[3, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]);
     jpeg_segment(&mut out, 0xc0, &sof);
     jpeg_segment(&mut out, 0xdb, &[0u8; 65]);
-    jpeg_segment(&mut out, 0xda, &[3, 1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3f, 0x00]);
+    jpeg_segment(
+        &mut out,
+        0xda,
+        &[3, 1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3f, 0x00],
+    );
     out.extend_from_slice(&[0u8; 8]);
     out.extend_from_slice(b"\xff\xd9");
     out
@@ -132,10 +138,7 @@ pub fn webp(w: u32, h: u32) -> Vec<u8> {
 /// **One image as the `data:` reference a row carries** — the shape both a `Media` and a
 /// `UserPart::Image` hold, so a fixture does not spell the prefix a second time.
 pub fn data_ref(mime: &str, bytes: &[u8]) -> String {
-    format!(
-        "data:{mime};base64,{}",
-        crate::media::encode_base64(bytes)
-    )
+    format!("data:{mime};base64,{}", crate::media::encode_base64(bytes))
 }
 
 fn png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
