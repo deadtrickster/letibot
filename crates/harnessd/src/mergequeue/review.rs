@@ -233,8 +233,16 @@ impl Pool<'_> {
     }
 
     /// A reviewer whose machine refused it runs on this one instead: same row, new child, and no
-    /// attempt spent. No room here either is a wait.
-    fn retry_locally(&self, r: &ReviewRow, host: &str, why: &str) -> Result<bool, StoreError> {
+    /// attempt spent. No room here either is a wait. The new child goes on `still`: the pass
+    /// prunes the desk and the pool against that list, so a child opened after it was taken would
+    /// be closed in the pass that opened it.
+    fn retry_locally(
+        &self,
+        r: &ReviewRow,
+        host: &str,
+        why: &str,
+        still: &mut Vec<String>,
+    ) -> Result<bool, StoreError> {
         match start_reviewer(self, r, true) {
             Ok(Started {
                 handle,
@@ -258,6 +266,7 @@ impl Pool<'_> {
                         self.machines.started(&handle, m);
                     }
                     self.desk.opened(self.host, &handle, &r.id, req);
+                    still.push(handle);
                 } else {
                     let _ = self.runner.kill(&handle);
                 }
@@ -508,7 +517,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                                 capacity::gist(&why)
                             ),
                         );
-                        out.moved |= p.retry_locally(&r, &host, &why)?;
+                        out.moved |= p.retry_locally(&r, &host, &why, &mut still)?;
                     }
                     _ => match capacity::vm_capacity(&why) {
                         // No free slot is a wait, not an attempt (see `capacity`).

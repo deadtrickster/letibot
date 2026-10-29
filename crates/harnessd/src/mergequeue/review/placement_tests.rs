@@ -514,6 +514,47 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
             .any(|(c, d)| c == "queue_reviewer_fell_back" && d.contains("lab2x1")),
         "the operator is told once, by name: {said:?}"
     );
+    // **And it is a reviewer the queue can HEAR** — the desk still holds it, and a verdict it hands
+    // in is taken. This is the assertion the first cut was missing: the fallback opens its desk entry
+    // from inside the collect loop, AFTER the list of live children was taken, so a fallback left off
+    // that list had its entry closed in the same pass that opened it. It then ran a whole review,
+    // called `review_verdict`, and was refused with *"is not reviewing an entry of the merge queue"*
+    // — a fallback nobody can hear, spending the three attempts and then blocking.
+    let child = row.reviewer.clone().expect("the row names its reviewer");
+    assert!(
+        desk.is_open_for("the-review"),
+        "the fallback reviewer is still on the desk after the pass that started it"
+    );
+    assert_eq!(
+        desk.open(HOST)
+            .iter()
+            .map(|o| o.child.clone())
+            .collect::<Vec<_>>(),
+        vec![child.clone()],
+        "and it is the one the row names, not the dead child from the host"
+    );
+    desk.submit(
+        &child,
+        letibot_tools::gatekeeper::Submission {
+            decision: letibot_tools::gatekeeper::Decision::Accept,
+            reasons: vec!["the fallback read the branch".into()],
+            looked_at: letibot_tools::gatekeeper::LookedAt {
+                files: vec!["b.txt".into()],
+                commands: vec!["git diff".into()],
+            },
+        },
+    )
+    .expect("a verdict from the fallback reviewer is taken at the desk");
+    assert!(
+        serve(&pool).expect("a pass").moved,
+        "the verdict is written"
+    );
+    assert_eq!(
+        store.review_row("the-review").unwrap().unwrap().state,
+        ReviewState::Approved,
+        "and the review ends on it — the fallback's verdict is the queue's"
+    );
+
     // **And the pass that used it is the pass that clears it** — `end_pass` is the queue's promise
     // that a reboot is minutes, so a host that failed here is tried again next time. That the
     // FAILURE removes it from the rest of ITS pass is `hosts::tests`'

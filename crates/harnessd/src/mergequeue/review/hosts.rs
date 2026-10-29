@@ -224,16 +224,21 @@ impl ReviewHosts {
 
     /// **Which machine the next reviewer goes to**, or `None` when the pool is full this pass.
     ///
-    /// The rule is the operator's: *chosen by spare capacity*. Ties go to this machine, because a
-    /// reviewer that runs here costs no transport at all — and the per-host cap is already applied
-    /// by [`Machine::room`], so a 32-core box does not take the whole queue.
+    /// The rule is the operator's: *chosen by spare capacity* — the most spare cores first, so a
+    /// 32-core box with 28 free is picked before this machine's 18. **A tie goes to this machine**,
+    /// because a reviewer that runs here costs no transport at all. (The first cut ranked *is it a
+    /// host* above spare, so every host beat this machine whatever its load; that is a different
+    /// rule — *keep the operator's box for last* — and it was not the one asked for.)
+    ///
+    /// The per-host cap is already applied by [`Machine::room`], so a 32-core box does not take the
+    /// whole queue however much of it is free.
     pub fn choose(&self, pool: Option<&[String]>) -> Option<Machine> {
         let inner = self.lock();
         // This machine alone is never gated on spare cores, as before the pool existed.
         if let [only] = self.machines_locked(&inner, pool).as_slice() {
             return Some(only.clone());
         }
-        let mut best: Option<(usize, f64, Machine)> = None;
+        let mut best: Option<Machine> = None;
         for m in self.machines_locked(&inner, pool) {
             if m.room(taken(&inner, m.name.as_deref())) == 0 {
                 continue;
@@ -244,16 +249,19 @@ impl ReviewHosts {
             {
                 continue;
             }
-            let rank = (m.name.is_some() as usize, m.spare.unwrap_or(0.0));
+            let spare = m.spare.unwrap_or(0.0);
             let better = match &best {
                 None => true,
-                Some((remote, spare, _)) => (*remote, *spare) < rank,
+                // **More spare wins; equal spare is this machine's.** `>` and not `>=` on the spare
+                // alone, because the machines are walked local-first and a later machine with the
+                // same spare must not displace it.
+                Some(b) => spare > b.spare.unwrap_or(0.0),
             };
             if better {
-                best = Some((rank.0, rank.1, m));
+                best = Some(m);
             }
         }
-        best.map(|(_, _, m)| m)
+        best
     }
 
     /// **This machine, if it has room** — the fallback a host's refusal lands on.

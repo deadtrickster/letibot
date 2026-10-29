@@ -94,6 +94,27 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
         Some("lab2x1"),
         "the most spare wins, and it is not this machine"
     );
+
+    // **And the ordering is SPARE, not *is it a host*** — this machine with more spare than every
+    // host is the one a reviewer goes to. The first cut ranked `(is_remote, spare)`, so any host beat
+    // this machine whatever its load, which is a rule nobody asked for.
+    let hosts = ReviewHosts::new();
+    hosts.set_spare(None, Some(40.0), None);
+    hosts.set_spare(Some("lab2x1"), Some(12.0), None);
+    assert_eq!(
+        hosts.choose(None).map(|m| m.label()),
+        Some("local".to_string()),
+        "the box with the most spare is chosen even when it is this one"
+    );
+    // **A tie is this machine's**, because a reviewer here costs no transport at all.
+    let hosts = ReviewHosts::new();
+    hosts.set_spare(None, Some(16.0), None);
+    hosts.set_spare(Some("lab2x1"), Some(16.0), None);
+    assert_eq!(
+        hosts.choose(None).map(|m| m.label()),
+        Some("local".to_string()),
+        "equal spare goes to this machine"
+    );
 }
 
 /// **The per-host cap refuses a second reviewer past it** — the point of the cap: one reviewer's
