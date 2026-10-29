@@ -54,7 +54,9 @@
 
 use std::path::PathBuf;
 
-use crate::config::{AdjudicatorChoice, Config, Disclosure, Seat, SpillPolicy, SpillStorage};
+use crate::config::{
+    AdjudicatorChoice, Config, Disclosure, Reviewers, Seat, SpillPolicy, SpillStorage,
+};
 use crate::{Daemon, Dialect, Outcome, OutcomeSaid, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
@@ -203,6 +205,27 @@ fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Optio
             None
         }
     }
+}
+
+/// **What `--reviewers WORD` does to a `Config`** — the flag's whole body, in a function so the
+/// one thing it must get right is a value a test can read.
+///
+/// Two spellings and nothing else ([`Reviewers::parse`] refuses anything else BY NAME, with both
+/// words in the sentence — a flag whose only wrong values are silent is the shape this tree keeps
+/// closing). **`vm` goes through [`Config::allow_vm_reviewers`]**, which is the named way a value
+/// becomes `Vm` — the same function a test that means to exercise a VM placement calls — so the
+/// flag and the test ask for the microVM by the same door.
+///
+/// The flag wins over the project file because of where it is parsed: `Config::for_the_daemon`
+/// reads `[queue] reviewers` first and the argument loop runs after it, so this overwrites that
+/// value — and `host` overwrites it too, which is the half a daemon seated above several
+/// repositories needs (there is one file it could read and several projects it serves).
+fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
+    match Reviewers::parse(word)? {
+        Reviewers::Vm => cfg.allow_vm_reviewers(),
+        Reviewers::Host => cfg.reviewers = Reviewers::Host,
+    }
+    Ok(())
 }
 
 /// **A `provider/model` name a file set that this box cannot reach**, as a sentence.
@@ -1000,6 +1023,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 vm_copy = true;
                 cfg.vm_mount = false;
             }
+            // **Where this daemon's REVIEWERS run** — `host` (the default: a reviewer child on
+            // this machine, in a checkout of the head it judges, as the subagents that author the
+            // branches already run) or `vm` (each reviewer booted in a firecode microVM).
+            //
+            // `--help` has advertised this flag since the two words were introduced and the
+            // parser never had an arm for it: `harnessd --reviewers vm` answered *unknown
+            // argument --reviewers*, which is a person being told their configuration is a typo
+            // by a build whose own help says it is not. It is here now, and it is the same shape
+            // as `--gate-host`: the project's `[queue] reviewers` is read by
+            // `Config::for_the_daemon`, and this flag is parsed AFTER it, so the flag wins — and
+            // `--reviewers host` puts it back, which is how a daemon seated above several
+            // repositories overrides the one file it could read.
+            "--reviewers" => apply_reviewers_flag(&mut cfg, &next()?)?,
             // **Where the merge gate runs.** A name from the operator's `hosts.toml`, checked
             // here for `--host`'s reason: a name nobody declared is refused by this line rather
             // than by a gate that fails on the first branch after it. `local` (or an empty name)
@@ -3761,6 +3797,51 @@ mod tests {
         let mut asked = Config::for_the_daemon("/tmp");
         asked.allow_vm_reviewers();
         assert_eq!(asked.reviewers, crate::config::Reviewers::Vm);
+    }
+
+    /// **`--reviewers` is parsed, both spellings, and it wins over the file** — the flag
+    /// `--help` has advertised since the two words existed and the parser did not have.
+    ///
+    /// MEASURED 2026-10-29: `harnessd --reviewers vm` answered *unknown argument --reviewers*,
+    /// which tells an operator their configuration is a typo when the build's own help says it is
+    /// not. What is asserted here is the flag's whole body ([`apply_reviewers_flag`]) against a
+    /// `Config` the way the argument loop holds one: after `for_the_daemon`, which is the value the
+    /// project's `[queue] reviewers` put there.
+    ///
+    /// **`run` itself is not driven from here**, and the reason is not convenience: it delegates
+    /// this process's memory scope, sets the gate's cap and the gate's host process-wide, and
+    /// reads the operator's `providers.toml` — a lib test that called it would leave every other
+    /// test in this binary with settings that are not theirs (`gate_host()` in particular, which a
+    /// gate test asserts is unset). So the flag's body is a function with a name, and this is it.
+    #[test]
+    fn the_reviewers_flag_takes_both_spellings_and_overrides_the_project() {
+        // The default, with no flag at all.
+        let mut cfg = Config::for_the_daemon("/tmp");
+        assert_eq!(cfg.reviewers, Reviewers::Host, "no flag, no VM");
+
+        // `--reviewers vm` — the spelling that used to be *unknown argument*.
+        apply_reviewers_flag(&mut cfg, "vm").expect("`vm` is one of the two words");
+        assert_eq!(cfg.reviewers, Reviewers::Vm);
+
+        // `--reviewers host` puts it back over a config that says `vm`, which is the whole point
+        // of the flag outranking the project file.
+        apply_reviewers_flag(&mut cfg, "host").expect("`host` is the other");
+        assert_eq!(cfg.reviewers, Reviewers::Host);
+
+        // A third word is refused BY NAME with both of them in the sentence, rather than
+        // silently leaving whatever was there.
+        cfg.allow_vm_reviewers();
+        let why = apply_reviewers_flag(&mut cfg, "firecode").unwrap_err();
+        assert!(why.contains("\"firecode\""), "{why}");
+        assert!(
+            why.contains("\"host\"") && why.contains("\"vm\""),
+            "the refusal names both words: {why}"
+        );
+        assert_eq!(
+            cfg.reviewers,
+            Reviewers::Vm,
+            "a refused word changes nothing"
+        );
     }
 
     /// **A `main_model` from a file lands on the right `cfg` field.** A
