@@ -59,6 +59,11 @@ pub const WORKSPACE: &str = "workspace";
 pub const GATE: &str = "gate";
 /// A turn that produced no answer being salvaged (§5.7).
 pub const SALVAGE: &str = "salvage";
+/// **The host's room** — a tagged queue somebody else posted to, claimed, finished or lost a
+/// claimant on, and the questions a raised item puts to the arbiter. A kind of its own because it
+/// is news about *other sessions on this box* rather than about this session's own work, and a
+/// layer that rewords one is rewording a disclosure about a neighbour.
+pub const ROOM: &str = "room";
 
 /// Every kind the host composes. A hook name outside this list is one nothing ever asks for, and
 /// `plugin_hooks` says so rather than leaving a layer that answers silence.
@@ -73,6 +78,7 @@ pub const KINDS: &[&str] = &[
     WORKSPACE,
     GATE,
     SALVAGE,
+    ROOM,
 ];
 
 /// **The kinds whose notice may not be dropped**, only reworded — the host's set, not the
@@ -86,6 +92,7 @@ pub const MUST_SEE: &[&str] = &[
     WORKSPACE,
     GATE,
     SALVAGE,
+    ROOM,
 ];
 
 /// The export name for one notice kind.

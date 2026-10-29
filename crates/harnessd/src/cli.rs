@@ -179,7 +179,7 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
 /// disagreement is RETURNED and the caller puts it on the screen, because a file
 /// the operator wrote that silently did not take effect is the defect this whole
 /// feature is against.
-fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Option<String> {
+pub(crate) fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Option<String> {
     if let Some((provider, m)) = model.split_once('/') {
         cfg.provider = Some(crate::config::ProviderConfig {
             name: provider.to_string(),
@@ -235,7 +235,7 @@ fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
 /// The alternative is the failure the tree has paid for three times — a *plausible*
 /// string reaching the first turn and coming back as a `401` that names neither the
 /// file nor the line that wrote it.
-fn unreachable_provider(model: &str) -> Option<String> {
+pub(crate) fn unreachable_provider(model: &str) -> Option<String> {
     let (provider, m) = model.split_once('/')?;
     let Ok(preset) = letibot_provider::Preset::parse(provider) else {
         let known: Vec<&str> = letibot_provider::presets::ALL
@@ -857,7 +857,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--workspace" => cfg.workspace = PathBuf::from(next()?),
             "--socket" => cfg.socket = PathBuf::from(next()?),
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
-            "--session" => cfg.session_id = next()?,
+            "--session" => {
+                let named = next()?;
+                // **`host` is the box's own agent, by name** — the room's coordinator, whose id is
+                // derived from the machine (`s-room-<host key>`) so that `letibot --session host`
+                // always resolves without the operator remembering a hash. The operator's ask:
+                // *"a singleton with a special session name - 'host' so i can always connect to
+                // it"*.
+                cfg.session_id = if named.eq_ignore_ascii_case("host") {
+                    crate::room::session_id()
+                } else {
+                    named
+                };
+            }
             "--title" => cfg.title = next()?,
             "--model" => {
                 let m = next()?;
@@ -926,6 +938,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // no model-facing queue notice (see `Config::serve_queues`). The store watcher
             // stays, so a head attached here still redraws when another daemon moves a row.
             "--no-queue" => cfg.serve_queues = false,
+            // **The box's room coordinator** (the room's slice 2). A whole daemon whose only job
+            // is the room: its own socket, no store, no project, and one session of its own that
+            // arbitrates the queues. See `crate::room::coordinator` for what it configures and
+            // for the two things it refuses to start without.
+            "--room" => cfg.room = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
             // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
             // have to be the model doing the work, and on this fleet it should not
@@ -1229,6 +1246,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // read from the project's file.
     crate::mergequeue::gate::set_gate_host(cfg.gate_host.clone());
 
+    // **The box's room coordinator** (the room's slice 2). Configured here, after every flag and
+    // file has spoken and before anything is loaded or bound: a coordinator with no store, its own
+    // socket and session id derived from the host, and a model it refuses to start without. See
+    // `crate::room::coordinator::configure` for each decision and its reason.
+    //
+    // A `--room` daemon is not a folder's daemon, so it is not a one-shot either: `--prompt` with
+    // `--room` would be a room that arbitrates one question and exits, which is not a thing anybody
+    // wants and is not worth a second refusal.
+    if cfg.room {
+        crate::room::coordinator::configure(&mut cfg)?;
+    }
+
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
             return Err(
@@ -1453,8 +1482,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // be discarded by a pass that found the row was no longer its reviewer's (measured 2026-10-29).
     let reviews = std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new());
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let merge_queue =
-        crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone(), reviews.clone());
+    // **A coordinator serves no repository**, so it claims no lease and runs no gate: `--room`
+    // sets `serve_queues` off, and `spawn_for` is not called at all rather than called and made to
+    // find nothing. The room is the queue this daemon serves.
+    let merge_queue = if cfg.room {
+        None
+    } else {
+        crate::mergequeue::spawn_for(&cfg, merge_stop.clone(), registry.clone(), reviews.clone())
+    };
 
     let socket = daemon.socket().display().to_string();
     let dialect = cfg.dialect.name();
@@ -1923,6 +1958,32 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // session's harness registers its own `review_verdict` against `parts.reviews`, and a
     // reviewer's verdict has to reach the queue that asked for it, so this is not a second desk.
     parts.reviews = reviews;
+
+    // **The room, before the first session opens.** The coordinator's socket has to exist when
+    // `Harness::open` builds the session's room link, and its session id has to be the arbiter's
+    // before any event can be routed to it — so it is started here, after the vocabulary (a
+    // coordinator that cannot load one has already failed) and before `open_first_with_seat`.
+    //
+    // Held in a local so an orderly stop drops it: `Coordinator::drop` unbinds the socket and gives
+    // the lease back, which is what makes the next coordinator a FRESH start rather than a takeover
+    // of a dead one. A coordinator that is killed leaves both behind on purpose — the lease is how
+    // the next one learns it was killed rather than that it never existed.
+    let _coordinator = if cfg.room {
+        let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
+            let bell = std::sync::Arc::clone(registry.bell());
+            std::sync::Arc::new(move |session: &str| bell.ring_wake(session))
+        };
+        match crate::room::coordinator::Coordinator::start(&cfg.session_id, bell) {
+            Ok(c) => Some(c),
+            Err(why) => {
+                let said = boot.failed(why);
+                daemon.shutdown();
+                return Err(said);
+            }
+        }
+    } else {
+        None
+    };
 
     // Captured before `cfg` and `parts` are handed to the worker: the HTTP head
     // needs the same vocabulary and dialect and none of the session state.

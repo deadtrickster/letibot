@@ -753,6 +753,25 @@ pub struct Config {
     /// fixture builds on — leaves it `true` because its store is a temp file: the flag is what
     /// makes the difference, not the constructor.
     pub serve_queues: bool,
+    /// **This daemon is the box's ROOM COORDINATOR** (`--room`) — a whole `harnessd` whose only
+    /// job is the room: its own socket, its own data directory, no project, **no store**, and one
+    /// session of its own (`s-room-<host key>`) that arbitrates the queues.
+    ///
+    /// Set by `--room` and by nothing else, and `false` in every fixture and every folder's daemon:
+    /// there is one coordinator per box and a second one is refused by a lease, not by a flag. The
+    /// two readers are `cli::run` (which configures the socket, the session id and the model, and
+    /// starts the server) and `Harness::open` (which decides whether a session gets a room link —
+    /// see `crate::room`).
+    pub room: bool,
+    /// **Whether this daemon's sessions may join the box's room.**
+    ///
+    /// `true` on the daemon's own path ([`Config::for_the_daemon`], and `--room`), `false` in every
+    /// fixture and every constructor a test builds — the same rule `landing_root` follows, and for
+    /// the same reason: a test must not reach the operator's real box. A session's `room` tool still
+    /// RESOLVES everywhere (it says there is no coordinator behind it), and the socket existing is
+    /// not enough to join: a fixture on a box where the operator runs a coordinator would otherwise
+    /// post into their queue.
+    pub room_link: bool,
     /// **Where the daemon's own logs live** — `<data dir>/logs`, one directory per session under
     /// it (`delivery-log.jsonl`, `context-claims.jsonl`, `notes-offers.jsonl`; see
     /// [`Config::daemon_logs`]). Set by [`Config::for_the_daemon`]; `None` in every fixture, which
@@ -2206,6 +2225,8 @@ impl Config {
             // reviews sets its own directory. See the field.
             review_clones: None,
             serve_queues: true,
+            room: false,
+            room_link: false,
             logs_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
@@ -2300,6 +2321,10 @@ impl Config {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .or_else(|| crate::mergequeue::git::letibot_data_dir().map(|d| d.join("logs")));
+        // **And this daemon's sessions may join the box's room** (the room's slice 2). Set HERE and
+        // not in `for_this_box`, which every fixture builds on: a test's session must not post into
+        // the operator's queue, and the socket existing is not consent.
+        cfg.room_link = true;
         cfg
     }
 
