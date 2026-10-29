@@ -184,8 +184,15 @@ impl Act {
     /// Which verb this is, as a manifest declares it — `switch`, `fold`, `event`, or the queue
     /// verb's own word (`approve`, `veto`, `restart`, `rm`, …).
     ///
-    /// The last arm is why this answers a borrowed word rather than a `'static` one: a queue
-    /// verb's name is the plugin's, and the allowlist a reviewer reads is the list of those names.
+    /// **Why this answers a borrowed word and not a `&'static str`.** Before [`Act::Verb`] existed
+    /// every arm was a literal and `'static` was free. The queue verb's word is the LAYER's — it
+    /// arrives in the answer, it is the string the manifest's `actions` allowlist is checked
+    /// against, and there is no table in this crate to intern it against. The two ways to keep
+    /// `'static` were to add a second method for the real word (two doors, one of them a lie) or to
+    /// answer a word that is not the verb's (`"verb"`, which would make `validate_for` pass a view
+    /// the manifest never declared). So the return type widened, once, at a version where the only
+    /// caller that could notice is one that stored the answer in a `&'static str` — a compile error
+    /// at that call site, never a wrong word at run time.
     pub fn verb(&self) -> &str {
         match self {
             Act::Switch { .. } => "switch",
@@ -384,9 +391,14 @@ pub struct Input {
     /// **The feeds this layer declared, and only those**, by name (`Feed::name`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub feeds: std::collections::BTreeMap<String, serde_json::Value>,
-    /// **The host's fold state, by row id** — `true` for a row the person has folded away. The
-    /// host keeps it so a fold is instant and survives the next answer; a pane that has no folds
-    /// never sees the field.
+    /// **The host's fold state, by row id** — `true` for a row the person has OPENED (a fold that
+    /// is open, not one that is shut: `App::picker_folds` and `App::queue_folds` both store
+    /// *open*, which is what a row's `fold` act sets). The host keeps it so a fold is instant and
+    /// survives the next answer; a pane that has no folds never sees the field.
+    ///
+    /// A layer reads its own row's id out of the map and answers `Fold::Open`/`Fold::Closed` from
+    /// it — `plugins/builtin/sessions` and `plugins/builtin/queue` both do, and both would have
+    /// drawn the opposite glyph for a day had this doc been the one that was right.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub folded: std::collections::BTreeMap<String, bool>,
     /// The answer of the layer below, when this layer asked for it (§2.1) — absent otherwise, and

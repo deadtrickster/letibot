@@ -304,6 +304,13 @@ impl App {
             Surface::Config => ControlFlow::Break(self.config_change()),
             Surface::Todos => self.todos_read(),
             Surface::Queue => {
+                // **A row that folds is folded by Enter**, before Enter means *open the entry*: the
+                // history's own row says `enter opens it` and carries `{"fold": true}`, and a
+                // pane whose key does nothing over the twelve finished rows is a pane whose history
+                // — the `failed` landings, the `rejected` reviews — cannot be reached at all.
+                if self.queue_fold() {
+                    return ControlFlow::Break(None);
+                }
                 // **What Enter opens is the ENTRY, and everything the queue knows about it**: the
                 // ask it was produced under, the state and its reason, and the verdict's evidence
                 // — the two rows the pane already holds, in full.

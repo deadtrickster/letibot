@@ -84,7 +84,8 @@ fn a_queue() -> Value {
     }
     json!({
         "now_ms": 1_700_100u64, "at_ms": 1_700_000u64,
-        "scope": {"kind": "here", "words": "this session's repository — letibot",
+        "scope": {"kind": "here", "several": false,
+                  "words": "this session's repository — letibot",
                   "repositories": ["letibot"]},
         "view": "review", "unreadable": null, "archived": 0, "not_queued": [],
         "reviews": reviews, "merges": merges,
@@ -97,6 +98,18 @@ fn a_queue() -> Value {
         "counts": {"review": 2, "merge": 1, "finished": 12, "red_targets": 1,
                    "unjudged_targets": 0, "stale_leases": 0},
         "cursor": "",
+    })
+}
+
+/// **One line of the chrome**, by its label — the `lines` block a panel draws above the rows.
+fn chrome_line<'a>(view: &'a Value, label: &str) -> Option<&'a Value> {
+    view["panels"].as_array()?.iter().find_map(|p| {
+        p["summary"].as_array()?.iter().find_map(|b| {
+            b.get("lines")?
+                .as_array()?
+                .iter()
+                .find(|l| l["label"] == label)
+        })
     })
 }
 
@@ -388,9 +401,82 @@ fn a_stale_lease_says_so_and_names_the_lifetime_it_passed() {
     feed["leases"][0]["stale"] = json!(true);
     feed["leases"][0]["heartbeat_ms"] = json!(100_100u64);
     let view = view_of(&feed, &[]);
+    let stale = chrome_line(&view, "STALE letibot").expect("the alarm line");
+    assert_eq!(
+        stale["value"], "mac (pid 4242, 0.5.1) has not said anything",
+        "who has gone quiet"
+    );
+    assert_eq!(stale["tail"], "1m", "the age of the heartbeat");
+    assert_eq!(stale["role"], "attention");
+}
+
+/// **A healthy lease is drawn too, with its owner and a fresh heartbeat** — the half the first cut
+/// dropped: the pane spoke only when a lease was STALE, so *nobody is serving this* and *it is
+/// served and well* looked the same, and the host pane this replaces said both.
+#[test]
+fn a_healthy_lease_names_its_owner_and_its_heartbeat() {
+    let view = view_of(&a_queue(), &[]);
+    let lease = chrome_line(&view, "letibot").expect("a line for the repository");
+    assert_eq!(
+        lease["value"], "served by mac (pid 4242, 0.5.1) · heartbeat",
+        "the holder, the way the host pane names it"
+    );
+    assert_eq!(lease["tail"], "4s", "and how long since it last said so");
+    // **And no STALE line** — the legend names the word, so the chrome is what is asked.
+    assert!(
+        chrome_line(&view, "STALE letibot").is_none(),
+        "a fresh lease is not an alarm"
+    );
+}
+
+/// **No lease at all is a sentence, not an absence** — *nothing is serving the queues* is the fact
+/// a person needs, and a chrome that draws nothing when it has nothing says neither.
+#[test]
+fn no_lease_says_nothing_is_serving_the_queues() {
+    let mut feed = a_queue();
+    feed["leases"] = json!([]);
+    let view = view_of(&feed, &[]);
     let text = view.to_string();
-    assert!(text.contains("STALE letibot"), "{text}");
-    assert!(text.contains("1m"), "the age of the heartbeat: {text}");
+    assert!(
+        text.contains("no daemon holds a queue lease — nothing is serving the queues"),
+        "{text}"
+    );
+}
+
+/// **A row names its repository when the scope holds more than one** — and only then. The answer is
+/// the host's (`scope.several`), never a reading of the scope's prose.
+#[test]
+fn a_row_names_its_repository_only_when_several_are_in_scope() {
+    let mut feed = a_queue();
+    feed["scope"]["several"] = json!(true);
+    feed["scope"]["words"] = json!("/home/dead/Projects — named");
+    let view = view_of(&feed, &[]);
+    let drawn = rows(&view);
+    let live = drawn
+        .iter()
+        .find(|r| r["id"] == "r-live-1")
+        .expect("a live row");
+    assert!(
+        facts_of(live).iter().any(|f| f == "letibot"),
+        "the repository is on the row: {:?}",
+        facts_of(live)
+    );
+    // **And with one repository in scope it is not repeated** — even when the words contain a
+    // separator, which is exactly what the prose-reading cut got wrong.
+    let mut one = a_queue();
+    one["scope"]["several"] = json!(false);
+    one["scope"]["words"] = json!("this session's repositories, one project — letibot");
+    let view = view_of(&one, &[]);
+    let drawn = rows(&view);
+    let live = drawn
+        .iter()
+        .find(|r| r["id"] == "r-live-1")
+        .expect("a live row");
+    assert!(
+        !facts_of(live).iter().any(|f| f == "letibot"),
+        "one repository, so the title says it: {:?}",
+        facts_of(live)
+    );
 }
 
 /// **A queued landing says what it is waiting for**, in the pane's own words.

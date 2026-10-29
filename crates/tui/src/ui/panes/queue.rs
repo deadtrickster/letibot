@@ -60,10 +60,14 @@ pub(crate) enum QRow {
     Merge(usize),
 }
 
-fn review_open(state: &str) -> bool {
+/// **Is the review queue working on this row?** The daemon's own rule, in one place: the feed a
+/// plugin reads carries the answer (`live`), so a layer never has to guess *in flight* from a state
+/// word — a second copy of this predicate is a copy that drifts.
+pub(crate) fn review_open(state: &str) -> bool {
     matches!(state, "waiting" | "reviewing" | "blocked")
 }
-fn merge_open(state: &str) -> bool {
+/// The same for a landing. See [`review_open`].
+pub(crate) fn merge_open(state: &str) -> bool {
     matches!(state, "queued" | "gating" | "blocked")
 }
 

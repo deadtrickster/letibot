@@ -51,10 +51,8 @@ fn the_queue_pane_asks_for_the_queues_and_draws_what_comes_back() {
 #[test]
 fn tab_switches_between_the_review_queue_and_the_merge_queue() {
     let mut a = builtin();
-    eprintln!("PROBE made the app");
     a.session_id = "s1".into();
     a.command("queue");
-    eprintln!("PROBE opened the pane");
     a.apply(queue_frame(queues(
         vec![queue_review_row("one", "waiting")],
         vec![queue_merge_row("m-two", "gating")],
@@ -123,10 +121,8 @@ fn a_row_says_time_in_state_and_names_an_owner_only_from_elsewhere() {
 #[test]
 fn the_pane_says_who_serves_each_repository_and_a_stale_heartbeat() {
     let mut a = builtin();
-    eprintln!("PROBE made the app");
     a.session_id = "s1".into();
     a.command("queue");
-    eprintln!("PROBE opened the pane");
     a.apply(queue_frame(queues(Vec::new(), Vec::new())));
     let screen = a.screen(160, 40).join("\n");
     assert!(
@@ -313,10 +309,8 @@ fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
 #[test]
 fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would() {
     let mut a = builtin();
-    eprintln!("PROBE made the app");
     a.session_id = "s1".into();
     a.command("queue");
-    eprintln!("PROBE opened the pane");
     a.apply(queue_frame(queues(
         vec![queue_review_row("one", "rejected")],
         vec![queue_merge_row("m-two", "failed")],
@@ -1090,10 +1084,8 @@ fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
 #[test]
 fn a_click_on_a_queue_row_selects_the_row_drawn_there() {
     let mut a = builtin();
-    eprintln!("PROBE made the app");
     a.session_id = "s1".into();
     a.command("queue");
-    eprintln!("PROBE opened the pane");
     a.apply(queue_frame(queues(
         vec![
             queue_review_row("one", "waiting"),

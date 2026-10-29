@@ -92,6 +92,13 @@ struct Feed {
 struct Scope {
     #[serde(default)]
     words: String,
+    /// **Whether a row has to name its repository** — the host's answer to *is there more than one
+    /// in scope to tell apart?* It is a field and not a reading of `words` because the words are
+    /// prose: a path scope's (`/path — named`) contain no separator and a one-repository project's
+    /// (`…, one project — x`) contain one, so grepping them names the repository when it is
+    /// redundant and omits it when it is the only thing that says where a row is from.
+    #[serde(default)]
+    several: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -207,10 +214,17 @@ struct Target {
 struct Lease {
     #[serde(default)]
     repository: String,
+    /// **Who holds it**, as the host pane names the holder: `lab (pid 4242, harnessd 0.3.0)`. The
+    /// claim's opaque owner string is in the feed too and this layer does not read it — the two
+    /// halves a person recognises are the host and the pid.
     #[serde(default)]
-    owner: String,
+    pid: u64,
+    #[serde(default)]
+    host: String,
     #[serde(default)]
     build: String,
+    /// How long since the holder last said anything — an age, not a stamp: the host's clock is the
+    /// only one there is, and a guest that read its own would be a trap.
     #[serde(default)]
     heartbeat_ms: u64,
     #[serde(default)]
@@ -486,11 +500,32 @@ fn chrome(feed: &Feed) -> Vec<Value> {
             _ => {}
         }
     }
-    for l in feed.leases.iter().filter(|l| l.stale) {
+    // ---- Who serves each repository, and how alive it is. **Every lease, healthy or not** — the
+    // host pane this replaces said `letibot served by lab (pid 4242, harnessd 0.3.0) · heartbeat
+    // 2.0s ago` for each of them, and a pane that only spoke when one was stale left a person
+    // unable to tell *nobody is serving this* from *it is being served and nobody said so*.
+    for l in &feed.leases {
+        let who = format!("{} (pid {}, {})", l.host, l.pid, l.build);
+        if l.stale {
+            lines.push(json!({
+                "label": format!("STALE {}", l.repository),
+                "value": format!("{who} has not said anything"),
+                "tail": age(l.heartbeat_ms),
+                "role": "attention",
+            }));
+        } else {
+            lines.push(json!({
+                "label": l.repository,
+                "value": format!("served by {who} · heartbeat"),
+                "tail": age(l.heartbeat_ms),
+                "role": "faint",
+            }));
+        }
+    }
+    if feed.leases.is_empty() {
         lines.push(json!({
-            "label": format!("STALE {}", l.repository),
-            "value": format!("{} ({}) has not said anything", l.owner, l.build),
-            "tail": age(l.heartbeat_ms),
+            "label": "no lease",
+            "value": "no daemon holds a queue lease — nothing is serving the queues",
             "role": "attention",
         }));
     }
@@ -521,8 +556,8 @@ fn answer(bytes: &[u8]) -> Option<String> {
     let folded = input.folded.get("finished").copied().unwrap_or(false);
     // **One repository in scope, or several?** A row names its repository only when there is more
     // than one to tell apart — the pane's own rule, and the other half of why its rows were wide.
-    let show_repo =
-        feed.scope.words.contains(", ") || feed.scope.words.contains("every repository");
+    // The answer is the host's (`scope.several`), because the host is what resolved the scope.
+    let show_repo = feed.scope.several;
 
     let mut rows: Vec<Value> = Vec::new();
     // **The queue the person is looking at goes first.** `tab` is the head's, and a plugin that

@@ -1090,7 +1090,9 @@ pub struct App {
     /// so a move while it is open shows the new state rather than the state at the keypress.
     pub(crate) queue_open: Option<String>,
     /// **The row folds the plugin's queue pane keeps**, by row id — the ledger C3 gives the host so
-    /// a fold is instant and survives the next answer. Sent as `Input::folded`.
+    /// a fold is instant and survives the next answer. Sent as `Input::folded`, and **written by
+    /// [`App::queue_fold`]**: Enter on a row whose act is `{"fold": true}` toggles this map, which
+    /// is how the history row's `enter opens it` is a key that opens it.
     pub(crate) queue_folds: std::collections::BTreeMap<String, bool>,
     /// **The view the plugin last answered**, kept so a keypress reads the row that was DRAWN — the
     /// entry a row's act names, which is what `a`/`v`/`r`/`d` act on.

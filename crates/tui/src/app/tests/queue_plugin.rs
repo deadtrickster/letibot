@@ -394,8 +394,14 @@ fn the_builtin_escape_draws_the_hosts_own_pane() {
     assert!(!a.queue_builtin);
 }
 
-/// **The fold is the host's**, keyed by row id — pressing Enter on the history row opens it and the
-/// next answer draws the finished rows, with no call in between to say so.
+/// **Enter on the history row opens the fold, and the next frame draws it** — the key the row says,
+/// not the map written by hand.
+///
+/// The first cut of this test asserted the fold's RENDERING by inserting `finished: true` itself, so
+/// it proved that a view with the fold open draws the history and nothing about the key that is
+/// supposed to open it — while `App::queue_folds` was written by no production path at all, and
+/// every finished row (the `failed` landings the operator asked to restart, the `rejected` reviews)
+/// was unreachable behind a row saying `enter opens it`.
 #[test]
 fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
     let mut a = a_head_with_a_queue();
@@ -408,22 +414,275 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         !screen.contains("agent/two"),
         "folded to begin with: {screen}"
     );
-    // Walk the cursor to the history row: the two live rows, then it.
+    assert!(
+        screen.contains("enter opens it"),
+        "and the row says which key opens it: {screen}"
+    );
+    // Walk the cursor to the history row: the live rows, then it.
     let stops = a.queue_plugin_stops;
     assert!(
         stops >= 3,
         "the pane has the live rows and the fold: {stops}"
     );
     a.queue_sel = stops - 1;
-    // The row the fold row names is `finished`; the head's own Enter opens the entry overlay, so
-    // the fold is opened by the fold map — which is what the act's id keys it by.
-    a.queue_folds.insert("finished".into(), true);
-    a.redraw = true;
+
+    // **Enter** — the key, not the map.
+    a.key(Key::Enter);
+    assert_eq!(
+        a.queue_folds.get("finished"),
+        Some(&true),
+        "Enter on the row that folds opens the fold"
+    );
+    assert!(
+        a.queue_open.is_none(),
+        "and does not open an entry overlay for a row that is not an entry"
+    );
     let screen = a.screen(120, 30).join("\n");
     assert!(
         screen.contains("agent/two"),
         "the finished row is drawn once the fold is open:\n{screen}"
     );
+    assert!(
+        screen.contains("enter folds it away"),
+        "and the row now says how to close it:\n{screen}"
+    );
+
+    // **And Enter again closes it** — the cursor is back on the fold row, which is the last stop.
+    a.queue_sel = a.queue_plugin_stops - 1;
+    a.key(Key::Enter);
+    assert_eq!(a.queue_folds.get("finished"), Some(&false));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(!screen.contains("agent/two"), "closed again: {screen}");
+}
+
+/// **The bar's Enter names the fold when the cursor is on it** — the row and the bar cannot
+/// disagree about what the key does, because both read the same act.
+#[test]
+fn the_bars_enter_names_the_fold_when_the_cursor_is_on_it() {
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 30);
+    a.queue_sel = 0;
+    let bar = a.hint_bar(1000);
+    assert!(
+        bar.contains("opens the row: the ask, the verdict"),
+        "over a live row Enter opens the entry: {bar}"
+    );
+    a.queue_sel = a.queue_plugin_stops - 1;
+    let bar = a.hint_bar(1000);
+    assert!(
+        bar.contains("opens the history"),
+        "over the folded history it opens it: {bar}"
+    );
+    // **And once it is open, the bar says the other direction** — a bar that went on offering
+    // `opens` over an open fold names a key whose press does the opposite.
+    a.key(Key::Enter);
+    a.screen(120, 30);
+    a.queue_sel = a.queue_plugin_stops - 1;
+    let bar = a.hint_bar(1000);
+    assert!(bar.contains("closes the history"), "{bar}");
+}
+
+/// **Enter on a LIVE row still opens the entry**, so the fold's key did not swallow the pane's own —
+/// the two meanings of Enter, side by side.
+#[test]
+fn enter_on_a_live_row_opens_the_entry_and_not_a_fold() {
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 30);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    assert_eq!(a.queue_open.as_deref(), Some("one"), "the row's own entry");
+    assert!(
+        a.queue_folds.is_empty(),
+        "and no fold was touched: {:?}",
+        a.queue_folds
+    );
+}
+
+/// **A closed fold takes its rows with it and the cursor comes back to the fold row** — a `queue_sel`
+/// left past the end of the shortened list is a pane drawn with no cursor on it.
+#[test]
+fn closing_the_fold_keeps_the_cursor_on_a_row_that_is_there() {
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.queue_folds.insert("finished".into(), true);
+    a.screen(120, 30);
+    // The cursor is deep in the history — the last row of the open list.
+    let open = a.queue_plugin_stops;
+    a.queue_sel = open - 1;
+    a.queue_folds.insert("finished".into(), false);
+    let rows = a.screen(120, 30);
+    assert!(
+        a.queue_plugin_stops < open,
+        "the premise: closing the fold took rows with it ({} stops, then {})",
+        open,
+        a.queue_plugin_stops
+    );
+    assert_eq!(
+        a.queue_sel,
+        a.queue_plugin_stops - 1,
+        "the cursor was clamped back onto the fold row, which is the last stop"
+    );
+    assert!(
+        rows.iter().any(|l| l.contains('▸')),
+        "and the frame has a cursor on it:\n{}",
+        rows.join("\n")
+    );
+}
+
+/// **A finished row's verb acts on IT once the fold is open** — the operator's own need: *"so merge
+/// queue has 4 failed items, we need a way to restart them"*. The four failed items are finished
+/// rows, so before the fold could be opened there was no key that could reach one.
+#[test]
+fn a_finished_rows_verb_acts_on_the_row_the_fold_revealed() {
+    let mut a = a_head_with_a_queue();
+    a.apply(queue_frame(queues(
+        vec![queue_review_row("one", "reviewing")],
+        vec![
+            queue_merge_row("m-three", "queued"),
+            queue_merge_row("m-bad", "failed"),
+        ],
+    )));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.queue_folds.insert("finished".into(), true);
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("agent/bad"),
+        "the failed landing is on the frame:\n{screen}"
+    );
+    // The stops are the live review, the live landing, the failed one, then the fold row.
+    a.queue_sel = 2;
+    assert_eq!(
+        a.key(Key::Char('r')),
+        Some(Action::Slash {
+            line: "queue restart m-bad".into()
+        }),
+        "`r` restarts the row the fold revealed"
+    );
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(
+        a.queue_open.as_deref(),
+        Some("m-bad"),
+        "and Enter opens that row whole"
+    );
+}
+
+/// **`/queue builtin` changes WHO draws the pane and nothing about WHICH queues** — the scope the
+/// person set survives the escape and the way back.
+#[test]
+fn the_builtin_escape_keeps_the_scope_the_person_set() {
+    let mut a = a_head_with_a_queue();
+    // **This session is in one repository**, so the Here scope says so and `/queue all` says
+    // something else — without that difference the test could not tell the scopes apart.
+    a.queues_all.here = Some(letibot_sessionlog::event::QueueHere {
+        workspace: "/home/dead/Projects/letibot/letibot".into(),
+        repository: Some("/home/dead/Projects/letibot/letibot".into()),
+        repositories: vec!["/home/dead/Projects/letibot/letibot".into()],
+    });
+    a.rescope_queues();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(140, 30).join("\n");
+    assert!(
+        screen.contains("this session's repository — letibot"),
+        "the premise: the pane is on this session's repository:\n{screen}"
+    );
+
+    a.command("queue all");
+    let screen = a.screen(140, 30).join("\n");
+    assert!(screen.contains("every repository"), "{screen}");
+
+    // **The escape, and the way back** — neither touches the scope.
+    a.command("queue builtin");
+    assert_eq!(
+        a.queue_scope,
+        QueueScope::All,
+        "the scope was reset by the escape"
+    );
+    let screen = a.screen(140, 30).join("\n");
+    assert!(
+        screen.contains("every repository ·"),
+        "the head's own pane, still on every repository:\n{screen}"
+    );
+    assert!(
+        !screen.contains("— this session's repository"),
+        "and not quietly back on this session's:\n{screen}"
+    );
+
+    a.command("queue plugin");
+    assert_eq!(a.queue_scope, QueueScope::All);
+    let screen = a.screen(140, 30).join("\n");
+    assert!(screen.contains("every repository"), "{screen}");
+}
+
+/// **The layer is asked once a second, not once a frame** — the host's cache is keyed by the input,
+/// and the feed's clock is quantised for exactly this.
+///
+/// Measured through a scripted layer that records every input it is handed: two frames inside one
+/// second are ONE call, and the frame after the second ticks is the second.
+#[test]
+fn the_layer_is_asked_once_a_second_and_not_once_a_frame() {
+    let seen = Seen::default();
+    let view = json!({
+        "title": "a queue",
+        "panels": [{"id": "rows", "title": "live", "summary": [{"tree": {"rows": [
+            {"id": "one", "cells": ["[~]", "agent/one", "reviewing"],
+             "enter": {"verb": "approve", "id": "one"}},
+        ]}}]}],
+    })
+    .to_string();
+    let project = a_project("cache", &a_manifest("\"approve\""));
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(ScriptedLoader {
+            seen: seen.clone(),
+            answer: Some(view),
+        }),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = a_head_with_a_queue();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack,
+        a.workspace_path(),
+    ));
+    a.screen(120, 30);
+    assert_eq!(seen.take().len(), 1, "the first frame asks the layer");
+
+    // **Half a second later**: the clock has moved, the input has not.
+    a.now_ms += 500;
+    a.redraw = true;
+    a.screen(120, 30);
+    assert_eq!(
+        seen.take().len(),
+        0,
+        "a frame inside the same second is a cache hit, not a wasm call"
+    );
+
+    // **And the next second is a new question** — an age has moved, and the pane must be redrawn.
+    a.now_ms += 500;
+    a.redraw = true;
+    a.screen(120, 30);
+    assert_eq!(seen.take().len(), 1, "a second later is a new call");
+    std::fs::remove_dir_all(&project).ok();
 }
 
 /// **The live loop, measured**: a `plugin.wasm` rebuilt in the session's own plugin directory is a
@@ -542,21 +801,51 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
 }
 
 /// **The pane, printed** — a probe that writes what the layer draws at the two widths, so the
-/// answer can quote a frame rather than describe one. `#[ignore]` because it asserts nothing.
+/// answer can quote a frame rather than describe one. `#[ignore]` because it asserts nothing: the
+/// two-width test above is the one that fails a build.
+///
+/// `cargo test -p letibot-tui --lib -- --ignored --nocapture probe_render_the_pane`.
 #[test]
 #[ignore]
 fn probe_render_the_pane() {
-    for (w, h) in [(80, 24), (239, 61)] {
+    // **The operator's own shape**: two rows the queue is working on, four it has failed with, and
+    // the history folded away — the frame that was *"illegible mess"* before this pane.
+    let fixture = || {
         let mut a = a_head_with_a_queue();
+        a.apply(queue_frame(queues(
+            vec![
+                queue_review_row("one", "reviewing"),
+                queue_review_row("two", "rejected"),
+            ],
+            vec![
+                queue_merge_row("m-three", "gating"),
+                queue_merge_row("m-four", "failed"),
+                queue_merge_row("m-five", "timed_out"),
+                queue_merge_row("m-six", "conflict"),
+                queue_merge_row("m-seven", "failed"),
+            ],
+        )));
         *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
             "s1",
             &std::env::temp_dir(),
         ));
-        a.cfg.width = w;
-        let screen = a.screen(w, h);
-        eprintln!("===== {w}x{h} =====");
-        for row in screen {
-            eprintln!("|{}", row);
+        a
+    };
+    for (w, h) in [(80, 24), (239, 61)] {
+        for open in [false, true] {
+            let mut a = fixture();
+            a.cfg.width = w;
+            if open {
+                a.queue_folds.insert("finished".into(), true);
+            }
+            let screen = a.screen(w, h);
+            eprintln!(
+                "===== {w}x{h}, history {} =====",
+                if open { "open" } else { "folded" }
+            );
+            for row in screen {
+                eprintln!("|{}", row.trim_end());
+            }
         }
     }
 }

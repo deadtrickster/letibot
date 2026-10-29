@@ -245,7 +245,9 @@ const QUEUE: &[Binding] = &[
         &[On::Enter],
         Always,
         Act::Open,
-        Text("opens the row: the ask, the verdict, the gate's words, every move"),
+        // **The row's own words**, because Enter means two things on this pane: it opens an
+        // entry whole, and it opens the history's fold (`App::row_says`).
+        Row,
     ),
     b(&[On::Tab], Always, Act::View, Text("switches the view")),
     b(
@@ -603,6 +605,16 @@ impl App {
                 match self.job_stops().get(self.jobs_sel) {
                     Some(JobStop::Finished) => "unfolds finished",
                     _ => "reads the job's output",
+                }
+                .to_string(),
+            ),
+            // **Enter on the queue opens a row or the history's fold**, and the bar says which of
+            // the two this row is — the same question the key answers (`App::queue_fold`).
+            (Surface::Queue, Act::Open) => Some(
+                match self.queue_row_folds() {
+                    Some(true) => "closes the history",
+                    Some(false) => "opens the history",
+                    None => "opens the row: the ask, the verdict, the gate's words, every move",
                 }
                 .to_string(),
             ),

@@ -58,15 +58,33 @@ use letibot_plugin::pane::{Feed, Input, Size};
 use letibot_sessionlog::event::{MergeGateOutcome, MergeGateStep, QueueMove};
 use serde_json::{Value, json};
 
-use crate::app::sessions_pane::Host;
 use crate::app::*;
 use crate::ui::panes::queue::{
-    Filter, LEASE_STALE_MS, QueueScope, Selected, Verb, gates_running, mark_of, owner_word,
-    repo_name, verb_moves,
+    Filter, LEASE_STALE_MS, QueueScope, Selected, Verb, gates_running, mark_of, merge_open,
+    owner_word, repo_name, review_open, verb_moves,
 };
+use letibot_plugin::pane::Act;
 
 /// The hook this pane answers under: `pane_queue` (the pane's id is the layer's, `queue/queue`).
 pub(crate) const HOOK: &str = "pane_queue";
+
+/// **The resolution of the feed's clock** — one second, because that is the finest thing a row can
+/// say and the whole reason it is quantised at all.
+///
+/// The host answers a pane once per distinct `Input` (`sessions_pane::Host::ask` keys its cache on
+/// the serialised input), so a feed carrying the clock to the millisecond is a cache that misses on
+/// every frame: one wasm call, and one serialisation of the whole snapshot, per draw. A row's
+/// finest-grained fact is [`age`]'s `{}s`, and the plugin draws nothing finer, so a second's bucket
+/// cannot change a drawn frame — while it turns *a call per tick* into *a call per second*.
+///
+/// The one visible price is that an age in the feed is up to 999 ms younger than the same age in
+/// the host's own pane. Both round to the same word, which is the point.
+const CLOCK_QUANTUM_MS: u64 = 1_000;
+
+/// `now`, rounded down to [`CLOCK_QUANTUM_MS`].
+fn quantised(now: u64) -> u64 {
+    now / CLOCK_QUANTUM_MS * CLOCK_QUANTUM_MS
+}
 
 /// The feed's name in `plugin.toml` and in `Input::feeds` — one word, both sides.
 pub(crate) const FEED: Feed = Feed::Queue;
@@ -75,16 +93,25 @@ pub(crate) const FEED: Feed = Feed::Queue;
 /// drawing, and *the queue* is the word the operator uses.
 const PANE: &str = "the queue";
 
-/// **Is the review queue working on this row?** — `ui/panes/queue.rs`'s `review_open`, repeated
-/// here because the feed must say it: a plugin guessing *in flight* from a state word would be a
-/// second copy of the daemon's rule, and the two copies would drift.
-pub(crate) fn review_open(state: &str) -> bool {
-    matches!(state, "waiting" | "reviewing" | "blocked")
-}
-
-/// The same for a landing. See [`review_open`].
-pub(crate) fn merge_open(state: &str) -> bool {
-    matches!(state, "queued" | "gating" | "blocked")
+/// **Does the scope keep more than one repository to tell apart?** — the one question a row's
+/// repository name answers, decided from the scope the head RESOLVED and never from its prose.
+///
+/// The prose was the first cut's answer and it was wrong in both directions: a `/queue /PATH`
+/// scope's words (`/path — named`) contain no `", "`, so a path over a project of several
+/// repositories drew every row without its repository; and one project's one-repository words
+/// (`this session's repositories, one project — x`) contain one, so the name repeated on every row
+/// under a scope that had only one to name.
+///
+/// `Filter::Repo` is the case where the name is already in the pane's title, and `Filter::Nowhere`
+/// is the case where there is no repository at all. Everything else is *several, or not known to be
+/// one* — and then a row says which, because a row that cannot say where it is from is a row a
+/// person has to guess about.
+fn several_of(filter: &Filter) -> bool {
+    match filter {
+        Filter::Repo(_) | Filter::Nowhere(_) => false,
+        Filter::Repos(rs) => rs.len() > 1,
+        Filter::Path(_) | Filter::Every => true,
+    }
 }
 
 impl App {
@@ -100,8 +127,11 @@ impl App {
 
     /// **The queue, as a plugin reads it** — see this module's doc for what is here and why.
     pub(crate) fn queue_feed(&self) -> Value {
-        let now = self.queue_plugin_now();
+        // **The clock is quantised** — see [`CLOCK_QUANTUM_MS`]: the input is the host's cache key,
+        // so a millisecond clock is a wasm call per frame for a number no row can draw.
+        let now = quantised(self.queue_plugin_now());
         let q = &self.queues;
+        let scope = self.queue_filter(&self.queue_scope);
         let serving = |repo: &str| q.leases.iter().find(|l| l.repository == repo);
         let serving_owner = |owner: &str, repo: &str| {
             !owner.is_empty() && serving(repo).is_some_and(|l| l.owner == owner)
@@ -246,6 +276,10 @@ impl App {
             "scope": {
                 "kind": self.queue_scope.kind(),
                 "words": self.queue_scope_words(),
+                // **Whether a row must name its repository** — the host's answer, because the
+                // question is *how many are in scope* and the head is what resolved the scope.
+                // A plugin reading this instead of the words is the whole point of the field.
+                "several": several_of(&scope),
                 "repositories": self.queues.here.as_ref().map(|h| {
                     h.repositories.iter().map(|r| repo_name(r)).collect::<Vec<String>>()
                 }).unwrap_or_default(),
@@ -361,10 +395,17 @@ impl App {
         }
         let view = self.queue_plugin_view()?;
         let screen = crate::ui::panes::plugin::Screen::Overview;
-        let content = crate::ui::panes::plugin::content(&view, screen, self.queue_sel, w);
         // **The stops are the view's**, so the arrows walk what the plugin drew and `queue_sel`
         // means one thing to the cursor, to Enter and to a click.
         self.queue_plugin_stops = crate::ui::panes::plugin::stops(&view, screen).len();
+        // **The cursor cannot be left past the end of the list it is on.** Folding the history
+        // away removes every row the cursor could have been on, and a `queue_sel` past the last
+        // stop is a pane drawn with no `▸` on it — a cursor that vanished with no key to bring it
+        // back. Clamped here, against the count just read, so the mark and the keys agree.
+        if self.queue_plugin_stops > 0 {
+            self.queue_sel = self.queue_sel.min(self.queue_plugin_stops - 1);
+        }
+        let content = crate::ui::panes::plugin::content(&view, screen, self.queue_sel, w);
         self.queue_stop_rows = content.lines.stop_rows.clone();
         // The plugin's pane has no tab strip: its own header says which queue is which.
         self.queue_tabs = None;
@@ -382,15 +423,73 @@ impl App {
     /// enumeration: that is the whole of `Act::Verb`, and the reason a plugin row can now say which
     /// entry it means.
     pub(crate) fn queue_plugin_entry(&self) -> Option<String> {
+        let (_, act) = self.queue_plugin_row()?;
+        act.and_then(|a| a.entry().map(str::to_string))
+    }
+
+    /// **The row under the cursor, and the act it carries** — `None` when the pane on the screen is
+    /// the head's own, or the cursor is on a line rather than a row.
+    ///
+    /// Read from the view the last draw kept ([`App::queue_held`]), which is the only place the
+    /// drawn rows exist: the plugin's rows are not the host's enumeration, so a key that re-derived
+    /// them would be reading a different list from the one on the screen.
+    fn queue_plugin_row(&self) -> Option<(String, Option<Act>)> {
         let view = self.queue_held.as_ref()?;
         let screen = crate::ui::panes::plugin::Screen::Overview;
-        let target = crate::ui::panes::plugin::target_of(view, screen, self.queue_sel)?;
-        match target {
-            crate::ui::panes::plugin::Target::Row(r) => {
-                r.enter.as_ref().and_then(|a| a.entry()).map(str::to_string)
-            }
-            // A line and a finding carry no act in this contract, so neither names an entry.
+        match crate::ui::panes::plugin::target_of(view, screen, self.queue_sel)? {
+            crate::ui::panes::plugin::Target::Row(r) => Some((r.id().to_string(), r.enter.clone())),
+            // A line and a finding carry no act in this contract, so neither names a row.
             _ => None,
+        }
+    }
+
+    /// **Does the row under the cursor fold, and which way does it stand?** — `None` for every row
+    /// that is not a fold, which is every row but the history's.
+    ///
+    /// This is what the hint bar reads, so its Enter says `opens the history` over the fold row and
+    /// `opens the row` over an entry — a bar that promised to open a row over the one row Enter
+    /// folds would be the same lie the fold map told before anything wrote it.
+    pub(crate) fn queue_row_folds(&self) -> Option<bool> {
+        let (id, act) = self.queue_plugin_row()?;
+        matches!(act, Some(Act::Fold { .. }))
+            .then(|| self.queue_folds.get(&id).copied().unwrap_or(false))
+    }
+
+    /// **Enter on a row that folds** — the host's `folded` map, keyed by the row's own id, so a fold
+    /// is instant, costs no call, and survives the next answer (C3's rule).
+    ///
+    /// This is the half of `Act::Fold` the queue pane was missing: the layer drew `enter opens it`
+    /// over the history and nothing on this surface performed the fold, so every finished row —
+    /// the `failed` landings the operator asked to be able to restart, the `rejected` reviews — was
+    /// behind a key that did nothing.
+    ///
+    /// Answers whether the row under the cursor was one that folds, so Enter can fall through to
+    /// its own meaning when it was not.
+    pub(crate) fn queue_fold(&mut self) -> bool {
+        let Some((id, Some(Act::Fold { .. }))) = self.queue_plugin_row() else {
+            return false;
+        };
+        // **The act's own `fold` is not the direction.** `Act::fold()` carries `true` because the
+        // wire needs a bool; what the key means is *toggle*, the same way the session list's Enter
+        // reads it (`sessions_pane::perform`).
+        let open = !self.queue_folds.get(&id).copied().unwrap_or(false);
+        self.queue_folds.insert(id, open);
+        self.redraw = true;
+        true
+    }
+
+    /// **The pane, drawn again as it was** — what `/queue builtin` and `/queue plugin` do to the
+    /// drawing, and nothing to the scope.
+    ///
+    /// Choosing who draws the pane is not choosing WHICH queues: `/queue all` followed by
+    /// `/queue builtin` used to drop back to this session's repository, so the escape from a broken
+    /// layer quietly threw away the scope the person had just set.
+    pub(crate) fn queue_drawing_again(&mut self) -> Option<Action> {
+        self.redraw = true;
+        if self.is_open(Surface::Queue) {
+            None
+        } else {
+            self.open_surface(Surface::Queue)
         }
     }
 }

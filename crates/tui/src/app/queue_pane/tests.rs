@@ -142,21 +142,96 @@ fn a_head() -> App {
 }
 
 /// **The feed's own clock**: the snapshot's `at_ms` plus however long the head has held it, so an
-/// age the plugin draws is measured from the same instant the host pane measures from.
+/// age the plugin draws is measured from the same instant the host pane measures from — rounded down
+/// to the second, which is the finest thing a row can say (see `CLOCK_QUANTUM_MS`).
 #[test]
 fn the_feed_carries_the_hosts_clock_and_its_scope() {
     let a = a_head();
     let feed = a.queue_feed();
-    assert_eq!(feed["now_ms"], 1_700_100);
+    assert_eq!(
+        feed["now_ms"], 1_700_000,
+        "1_700_100 rounded down to the second: the input is the host's cache key"
+    );
     assert_eq!(feed["at_ms"], 1_700_000);
     assert_eq!(feed["scope"]["kind"], "here");
     assert_eq!(
         feed["scope"]["words"], "this session's repositories, one project — letibot, letim",
         "the words the pane's own header uses"
     );
+    assert_eq!(
+        feed["scope"]["several"], true,
+        "one project of two repositories: a row has to say which"
+    );
     assert_eq!(feed["view"], "review");
     assert_eq!(feed["archived"], 3);
     assert_eq!(feed["not_queued"][0], "letim");
+}
+
+/// **The clock is quantised to the second, so a frame that changes nothing a row can draw costs no
+/// wasm call** — the host answers a pane once per distinct `Input`, and a millisecond clock in the
+/// feed is a cache that misses on every tick.
+#[test]
+fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {
+    let mut a = a_head();
+    let first = a.queue_feed();
+    // **Within the second, the input is the SAME input** — 899 ms of frames, one answer.
+    a.now_ms += 899;
+    assert_eq!(
+        a.queue_feed(),
+        first,
+        "a frame inside the second is not a new question"
+    );
+    // **And at the next second it is a new one** — the ages have moved, and a cache hit would draw
+    // the previous second's answer.
+    a.now_ms += 101;
+    let second = a.queue_feed();
+    assert_ne!(second, first, "a second later is a new answer");
+    assert_eq!(second["now_ms"], 1_701_000);
+    assert_eq!(
+        second["reviews"][0]["in_state_ms"], 101_000,
+        "an age in the feed is measured from the quantised clock too"
+    );
+}
+
+/// **A row names its repository only when the scope keeps more than one** — the host's answer, from
+/// the scope it RESOLVED, so a path scope over several repositories names them and a one-repository
+/// project does not.
+#[test]
+fn the_scope_says_whether_a_row_must_name_its_repository() {
+    // This session's own repository: the title names it, so no row repeats it.
+    let mut one = a_head();
+    one.queues_all.here = Some(QueueHere {
+        workspace: "/home/dead/Projects/letibot".into(),
+        repository: Some("/home/dead/Projects/letibot".into()),
+        repositories: vec!["/home/dead/Projects/letibot".into()],
+    });
+    one.rescope_queues();
+    assert_eq!(one.queue_feed()["scope"]["several"], false);
+
+    // One project of several repositories: the rows have to say which.
+    let many = a_head();
+    assert_eq!(many.queue_feed()["scope"]["several"], true);
+
+    // A named path: several, or not known to be one — so a row says which, and the words do not
+    // enter into it (this is the case the prose-reading cut got wrong in both directions).
+    let mut path = a_head();
+    path.queue_scope = QueueScope::Path("/home/dead/Projects".to_string());
+    assert_eq!(path.queue_feed()["scope"]["several"], true);
+
+    // Every repository: likewise.
+    let mut all = a_head();
+    all.queue_scope = QueueScope::All;
+    assert_eq!(all.queue_feed()["scope"]["several"], true);
+
+    // No repository at all: there is nothing to name.
+    let mut none = a_head();
+    none.queues_all.here = Some(QueueHere {
+        workspace: "/tmp".into(),
+        repository: None,
+        repositories: vec![],
+    });
+    none.rescope_queues();
+    assert_eq!(none.queue_feed()["scope"]["several"], false);
 }
 
 /// **A review, in the words a person reads it in** — the state as the daemon spells it, the age in
@@ -172,8 +247,8 @@ fn a_review_row_is_the_states_own_words_and_the_verbs_that_would_move_it() {
     assert_eq!(live["state_words"], "reviewing");
     assert_eq!(live["live"], true, "`reviewing` is the queue working on it");
     assert_eq!(
-        live["in_state_ms"], 100_100,
-        "now 1_700_100 − state 1_600_000"
+        live["in_state_ms"], 100_000,
+        "now 1_700_100 − state 1_600_000, on the quantised clock"
     );
     assert_eq!(live["repository"], "letibot");
     assert_eq!(live["branch"], "agent/r-live");
@@ -243,7 +318,10 @@ fn a_stale_lease_is_flagged_with_the_daemons_own_lifetime() {
     assert_eq!(lease["repository"], "letibot");
     assert_eq!(lease["owner"], "mac/4242");
     assert_eq!(lease["pid"], 4242);
-    assert_eq!(lease["heartbeat_ms"], 100_100);
+    assert_eq!(
+        lease["heartbeat_ms"], 100_000,
+        "100 s on the quantised clock — still past the 90 s lease lifetime"
+    );
     assert_eq!(
         lease["stale"], true,
         "100 s is past the 90 s lease lifetime"
@@ -259,7 +337,7 @@ fn a_red_target_and_the_counters_the_strip_carries() {
     let target = &feed["targets"][0];
     assert_eq!(target["target"], "main");
     assert_eq!(target["state"], "red");
-    assert_eq!(target["since_ms"], 50_100);
+    assert_eq!(target["since_ms"], 50_000);
     assert_eq!(target["evidence"], "the gate's step 2 failed");
     let counts = &feed["counts"];
     assert_eq!(counts["review"], 1, "one live review");
@@ -277,7 +355,7 @@ fn a_move_and_a_repository_that_never_asked_for_a_queue() {
     assert_eq!(mv["entry_id"], "r-live");
     assert_eq!(mv["from"], "waiting");
     assert_eq!(mv["to"], "reviewing");
-    assert_eq!(mv["ago_ms"], 100_100);
+    assert_eq!(mv["ago_ms"], 100_000);
     assert_eq!(mv["by"], "mac/4242");
     assert_eq!(mv["why"], "the reviewer picked it up");
     assert_eq!(feed["not_queued"][0], "letim");
