@@ -111,11 +111,13 @@ impl TaskRunner for Recording {
     }
 }
 
-const REPO: &str = "/the/repository";
-
 struct Fixture {
     _dir: TempDir,
     db: PathBuf,
+    /// **The repository the rows are about, and a real one** — a reviewer's tree is a clone of it
+    /// at the row's head (`mergequeue::review::start_reviewer`), so a fixture with no repository
+    /// would measure *a reviewer that could not start* instead of the review.
+    repo: PathBuf,
     cfg: Config,
     registry: Arc<Registry>,
     started: Arc<Mutex<Vec<Asked>>>,
@@ -127,6 +129,7 @@ impl Fixture {
     fn new(tag: &str) -> Option<Self> {
         let gguf = crate::vocab_gguf()?;
         let dir = TempDir::new(tag);
+        let repo = crate::mergequeue::serve::tests::repo(dir.path());
         let db = dir.path().join("sessions.db");
         let mut cfg = Config::for_this_box(dir.path());
         cfg.vocab_gguf = Some(gguf);
@@ -134,6 +137,9 @@ impl Fixture {
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
         cfg.http_retries = 0;
+        // **A directory of the fixture's own** for the reviewers' clones — `sweep_clones` refuses
+        // any other name, and a fixture must never write into (or sweep) the box's own.
+        cfg.review_clones = Some(dir.path().join(crate::mergequeue::review::CLONES_DIR));
         let registry = Registry::new();
         registry
             .create(&cfg.session_id, "", Sessions::wiring(&cfg))
@@ -147,6 +153,7 @@ impl Fixture {
         Some(Self {
             _dir: dir,
             db,
+            repo,
             cfg,
             registry,
             started: Arc::new(Mutex::new(Vec::new())),
@@ -163,11 +170,14 @@ impl Fixture {
         crate::mergequeue::lease::this_daemon().owner.clone()
     }
 
-    /// A review row, put up for review and CLAIMED by `owner`, the way the queue's thread does.
-    fn claimed(&self, id: &str, brief: &str, owner: &str) {
+    /// A review row, put up for review and CLAIMED by `owner`, the way the queue's thread does —
+    /// and the HEAD it names, which is a real commit on a real branch `agent/<id>`.
+    fn claimed(&self, id: &str, brief: &str, owner: &str) -> String {
+        let (_wt, base, head) =
+            crate::mergequeue::serve::tests::branch(&self.repo, id, &format!("{id}.txt"));
         let s = self.store();
         s.acquire_queue_lease(
-            REPO,
+            &self.repo.display().to_string(),
             &LeaseClaim {
                 owner: owner.into(),
                 pid: 1,
@@ -181,14 +191,14 @@ impl Fixture {
         s.enqueue_review(
             &NewReview {
                 id: id.into(),
-                repository: REPO.into(),
+                repository: self.repo.display().to_string(),
                 target: "main".into(),
                 kind: ReviewKind::Branch,
                 session_id: format!("s-{id}"),
                 branch: format!("agent/{id}"),
                 worktree: None,
-                base_sha: "base".into(),
-                head_sha: format!("head-{id}"),
+                base_sha: base,
+                head_sha: head.clone(),
                 brief: brief.into(),
                 priority: MergePriority::Subagent,
                 fixes: None,
@@ -208,6 +218,7 @@ impl Fixture {
             )
             .expect("the claim")
         );
+        head
     }
 
     fn sessions<'p>(&self, parts: &'p Parts, ending: Ending) -> Sessions<'p> {
@@ -251,7 +262,7 @@ fn a_claimed_review_is_spawned_as_the_queue_sessions_own_child() {
         return;
     };
     let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-    f.claimed("m-mine", "make the reader keep the last record", &f.me());
+    let head = f.claimed("m-mine", "make the reader keep the last record", &f.me());
     let mut sessions = f.sessions(&parts, Ending::Running);
     assert_eq!(sessions.serve_reviews(), 1, "{:?}", f.asked());
     let asked = f.asked();
@@ -267,7 +278,7 @@ fn a_claimed_review_is_spawned_as_the_queue_sessions_own_child() {
             .contains("make the reader keep the last record")
     );
     assert!(
-        asked[0].prompt.contains("base...head-m-mine"),
+        asked[0].prompt.contains(&format!("...{head}")),
         "the head the claim bound: {}",
         asked[0].prompt
     );
@@ -305,7 +316,7 @@ fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
         return;
     };
     let parts = Parts::load(&f.cfg).expect("the vocabulary must load");
-    f.claimed("m-mine", "keep the last record", &f.me());
+    let head = f.claimed("m-mine", "keep the last record", &f.me());
     let mut sessions = f.sessions(&parts, Ending::Running);
     assert_eq!(sessions.serve_reviews(), 1);
     assert_eq!(sessions.fill_gatekeeper_board(), 1);
@@ -318,7 +329,7 @@ fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
                 reasons: vec!["the test covers it".into()],
                 looked_at: LookedAt {
                     files: vec!["src/reader.rs".into()],
-                    commands: vec!["git diff base...head-m-mine".into()],
+                    commands: vec![format!("git diff base...{head}")],
                 },
             },
         )
@@ -326,12 +337,15 @@ fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
     assert_eq!(sessions.serve_reviews(), 0);
     let row = f.store().review_row("m-mine").unwrap().unwrap();
     assert_eq!(row.state, ReviewState::Approved, "{row:?}");
-    assert_eq!(row.reviewed_sha.as_deref(), Some("head-m-mine"));
+    assert_eq!(row.reviewed_sha.as_deref(), Some(head.as_str()));
     assert_eq!(row.verdict_by.as_deref(), Some("reviewer:sub-1"));
     assert_eq!(row.reasons, vec!["the test covers it"]);
-    let merges = f.store().merge_rows(Some(REPO)).unwrap();
+    let merges = f
+        .store()
+        .merge_rows(Some(&f.repo.display().to_string()))
+        .unwrap();
     assert_eq!(merges.len(), 1);
-    assert_eq!(merges[0].approved_sha, "head-m-mine");
+    assert_eq!(merges[0].approved_sha, head);
     assert_eq!(merges[0].state, MergeState::Queued);
     assert_eq!(
         sessions.fill_gatekeeper_board(),

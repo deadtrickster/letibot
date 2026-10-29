@@ -356,7 +356,15 @@ fn usage() -> String {
       \x20                           here, and this daemon's sessions are told no\n\
       \x20                           queue news (a package worker must not be set\n\
       \x20                           to fixing a `main` nobody asked it about). The\n\
-      \x20                           store watcher stays, so a head still moves\n\
+      \x20                           store watcher stays, so a head still moves\
+     \x20 --reviewers host|vm     where this daemon's REVIEWERS run. `host` (the\
+     \x20                           default) is a reviewer child on this machine, in\
+     \x20                           a checkout of the head it judges -- as the\
+     \x20                           subagents that author the branches already run;\
+     \x20                           `vm` is each reviewer in a firecode microVM,\
+     \x20                           which asks nobody for anything and costs a guest\
+     \x20                           exec per read. The project's `[queue] reviewers`\
+     \x20                           says the same thing, and this flag overrides it\n\
      \x20 --adjudicator console     who decides a gated call, and the default for any\n\
      \x20                           role that can reach the gate. Reads this daemon's\n\
      \x20                           own stdin, so it works in the foreground and an\n\
@@ -539,10 +547,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let _ = letibot_tools::exec::delegate_memory();
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // **`for_the_daemon`, and not `for_this_box`.** The daemon is the one caller that is a live
-    // operator's box running the review queue, so this is where the reviewer VM is armed — every
-    // fixture builds its `Config` with `for_this_box`, which states no VM, and a test that means to
-    // exercise a VM placement asks for one by name (`Config::allow_vm_reviewers`). See
-    // `Config::gatekeeper_vm` for the whole of the reason.
+    // operator's box running the review queue, so this is where the PROJECT's answer to *where do
+    // my reviewers run* is read (`[queue] reviewers`) — every fixture builds its `Config` with
+    // `for_this_box`, which says `host`, and a test that means to exercise a VM placement asks for
+    // one by name (`Config::allow_vm_reviewers`). `--reviewers vm` below overrides the file. See
+    // `Config::reviewers` for the whole of the reason.
     let mut cfg = Config::for_the_daemon(cwd);
     // **The guard model comes from config, not from a flag.**
     //
@@ -3694,23 +3703,29 @@ mod tests {
         }
     }
 
-    /// **The daemon's config is the one with the reviewer VM armed, and the fixture constructor is
-    /// not** — the two halves of the property `Config::gatekeeper_vm` states.
+    /// **A daemon and a fixture both say `host` until something asks otherwise** — the two halves
+    /// of the property [`Config::reviewers`] states.
     ///
-    /// Both halves are asserted because either alone is a lie: a `for_this_box` that armed the VM
-    /// would put a microVM under every test that built a fixture, and a `for_the_daemon` that did
-    /// not would quietly take the queue's reviewers off the boundary the placement exists for —
-    /// every `bash` call of theirs a permission card, which is the thing a VM placement is for.
+    /// Both halves are asserted because either alone is a lie: a `for_this_box` that said `vm`
+    /// would put a microVM under every test that built a fixture, and a `for_the_daemon` that
+    /// quietly said `vm` would take every review on this box back into a VM nobody asked for —
+    /// which is the 30–60-minute, one-of-two-slots review the operator ruled against on 2026-10-29.
+    /// `--reviewers vm` and `Config::allow_vm_reviewers` are the two named ways to ask.
     #[test]
-    fn the_daemon_arms_the_reviewer_vm_and_a_fixture_does_not() {
-        assert!(
-            !Config::for_this_box("/tmp").gatekeeper_vm,
+    fn a_fixture_and_a_daemon_both_place_reviewers_on_the_host_unless_asked() {
+        assert_eq!(
+            Config::for_this_box("/tmp").reviewers,
+            crate::config::Reviewers::Host,
             "a fixture built the ordinary way must state no VM, or a test boots one by accident"
         );
-        assert!(
-            Config::for_the_daemon("/tmp").gatekeeper_vm,
-            "the daemon is the caller that may place a reviewer in a VM"
+        assert_eq!(
+            Config::for_the_daemon("/tmp").reviewers,
+            crate::config::Reviewers::Host,
+            "the daemon places reviewers on the host unless the project or the flag asks"
         );
+        let mut asked = Config::for_the_daemon("/tmp");
+        asked.allow_vm_reviewers();
+        assert_eq!(asked.reviewers, crate::config::Reviewers::Vm);
     }
 
     /// **A `main_model` from a file lands on the right `cfg` field.** A

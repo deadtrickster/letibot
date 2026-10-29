@@ -57,11 +57,15 @@
 //! person's `/queue approve|veto`, and a verdict written by any other host straight into the
 //! store. All three move the STORE, and the board is a view of it.
 //!
-//! **And not a worktree of its own, deliberately.** A review is spawned as a plain `task` and not a
-//! `task_start`: the reviewer READS a branch (`git diff base...branch` from the repository it is
-//! already in — `gatekeeper::review_prompt` is the whole of its framing), and a `task_start` tree
-//! would be a branch of its own that `HarnessTaskRunner::enqueue_entry` then mints a queue entry
-//! for — a reviewer's empty tree offered to the merge queue as work.
+//! **And a TREE of its own, though not a branch of its own.** A review is spawned as a plain
+//! `task` and not a `task_start`: the reviewer READS a branch (`git diff base...sha` from the
+//! checkout it is given — `gatekeeper::review_prompt` is the whole of its framing), and a
+//! `task_start` tree would be a branch of its own that `HarnessTaskRunner::enqueue_entry` then
+//! mints a queue entry for — a reviewer's empty tree offered to the merge queue as work. What it
+//! does get is a detached CLONE of the entry's repository at the head the row names
+//! (`mergequeue::review::start_reviewer`, both placements), handed over as the child's workspace,
+//! so a reviewer on this machine reads the branch under review and not the tree the operator has
+//! open.
 //!
 //! # Where the rows live, and where the STATES live — the boundary this must not cross
 //!
@@ -224,9 +228,13 @@ pub enum ReviewerPlacement {
     ///
     /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
     Vm,
-    /// **This machine, because the session states no VM** ([`crate::config::Config::gatekeeper_vm`])
-    /// — the arm a caller that must not boot one takes, and the behaviour every review had before
-    /// the placement existed.
+    /// **This machine, because the project says so** ([`crate::config::Config::reviewers`]) —
+    /// `[queue] reviewers = "host"`, the DEFAULT, and the arm a caller that must not boot one
+    /// takes. The reviewer is a `gatekeeper`-seated child of this session working in a checkout of
+    /// the head it judges ([`Harness::serve_reviews`] makes the clone and hands it over as the
+    /// child's tree), so it reads the branch and not the operator's checkout.
+    ///
+    /// [`Harness::serve_reviews`]: crate::harness::Harness::serve_reviews
     Host,
     /// **This machine, because the BOX cannot boot one.** The session asked for a VM and this is
     /// the box's answer, carrying the reason it gave: declared, so nothing here reads as a choice
@@ -267,39 +275,59 @@ is excluded), so `git diff <base>...<branch>` reads the branch the row names. No
 reviewer's tree comes back as a branch: what comes back is a VERDICT, and that is what you write.\n"
                 .to_string(),
             ReviewerPlacement::Host => "\n\
-Where your reviewers run: **on this machine**, inside this session's own boundary — this session \
-states no VM (`gatekeeper_vm = false`), so its reviewers are not placed in one. A reviewer seats \
-`gatekeeper` and has `bash`, so its calls are permission cards, and they come to YOUR head: a card \
-nobody answers times out and the review fails. If a review stalls waiting on one, that is why.\n"
+Where your reviewers run: **on this machine**, in a CHECKOUT OF THE HEAD THEY JUDGE — not in this \
+project's working tree, and not in a firecode VM. `[queue] reviewers` says `host` (the default: a \
+reviewer is a reader, and the subagents that AUTHOR these branches already run here). Each review \
+child is given its own clone of the entry's repository, checked out detached at the sha the row \
+names, and that clone is removed when the review ends — so `git diff <base>...<sha>`, `read`, \
+`grep` and `glob` all see the branch and never the tree the operator has open.\n\
+\n\
+**What that gives up, said plainly.** A reviewer here is a `gatekeeper`-seated child with `bash`, \
+and nothing but the seat and the permission cards stands between it and this machine: it can run \
+anything the operator can, reach the operator's credentials and the whole filesystem, and a branch \
+under review may carry a test that does something destructive. The seat is read-only and its \
+`bash` calls are cards that come to YOUR head — a card nobody answers times out and the review \
+fails — but that is a boundary on ATTENTION, not a sandbox. `[queue] reviewers = \"vm\"` is the \
+answer for a project that wants the boundary instead.\n"
                 .to_string(),
             ReviewerPlacement::NoVm { why } => format!(
                 "\n\
-Where your reviewers run: **on this machine, NOT in a VM** — this session asks for a VM \
-(`gatekeeper_vm`) and this box cannot boot one: {why}. That is the box's answer and not a choice \
-this session can override, because a `firecode` placement this box cannot honour would fail every \
-review in the queue at once: a reviewer that cannot start is written as a FAILED ATTEMPT on the \
-row. So the reviewer runs here, seats `gatekeeper` with `bash`, and its calls are permission cards \
-that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PATH (or \
-`$FIRECODE_BIN`) and a restart.\n"
+Where your reviewers run: **on this machine, NOT in a VM** — this project asks for one \
+(`[queue] reviewers = \"vm\"`, or `--reviewers vm`) and this box cannot boot one: {why}. That is \
+the box's answer and not a choice this session can override, because a `firecode` placement this \
+box cannot honour would fail every review in the queue at once: a reviewer that cannot start is \
+written as a FAILED ATTEMPT on the row. So the reviewer runs here, in a checkout of the head it \
+judges, seats `gatekeeper` with `bash`, and its calls are permission cards that come to YOUR head. \
+The operator's remedy is a `firecode` on the daemon's PATH (or `$FIRECODE_BIN`) and a restart.\n"
             ),
         }
     }
 }
 
-/// **Where the reviewers of a review-queue session run**: a firecode VM where this box can boot
-/// one, this machine where it cannot — and this machine when the session states no VM.
+/// **Where the reviewers of a review-queue session run**: this machine — the DEFAULT, and what a
+/// project that says `[queue] reviewers = "host"` or nothing gets — or a firecode VM, which a
+/// project asks for by name and this box can only give where it can boot one.
+///
+/// # The default is the host, and the reason is a night of measurements (2026-10-29)
+///
+/// A VM-placed reviewer paid a **guest exec per file read**: `crates/tools/src/builtins/grep.rs`
+/// did one `backend.read` per candidate, which over the firecode backend is one `firecode in`
+/// each, so a repository-scale `grep` was hundreds of round trips and minutes of a held queue
+/// slot. One exec lost its request between `socat`'s `OK` and `execserver.sh`'s first read and
+/// both ends waited for ever (containment landed a 120 s deadline; the race did not). A review
+/// therefore took 30–60 minutes and held one of two slots.
+///
+/// And the symmetry that settled it: the subagents that AUTHOR these branches already run on this
+/// machine — `task_start`'s children do `cargo test` in the operator's own tree with the
+/// operator's credentials — so placing only the READER in a VM buys isolation the author never
+/// had, and pays for it in a protocol with no ack.
 ///
 /// # Why the reviewer is the one child whose placement is decided FOR it
 ///
 /// Every other child's placement is the caller's word (`task`'s `where`, `task_start`'s). A
-/// reviewer has no caller: the queue's own clock starts it ([`Harness::serve_reviews`]), and the
-/// session it belongs to is a HOST session seating `bash`, so every `bash` call a reviewer makes is
-/// a permission card — measured as one card per reviewer, and with no head attached the card times
-/// out at 300 s and the review FAILS. Inside a VM there is no card to answer, because the VM is the
-/// boundary: the reviewer runs at allow-all and asks nobody, which is the whole of what the queue
-/// needs from it. The operator's own rule for the substrate says the same thing from the other end:
-/// *"Use it for work that must not spend the operator's attention — a reviewer, a long build, a
-/// probe."* So this is the one place that has to decide.
+/// reviewer has no caller: the queue's own clock starts it ([`Harness::serve_reviews`]). So this is
+/// the one place that has to decide — and the decision is a project's ([`crate::config::Reviewers`]),
+/// with the daemon's `--reviewers` as its override.
 ///
 /// # Why the box's answer cannot be overridden into a VM it cannot boot
 ///
@@ -311,10 +339,10 @@ that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PA
 /// only ever REMOVE the VM, never force one, and the box's own answer is a declared state
 /// ([`ReviewerPlacement::NoVm`]) rather than a silent `Host`.
 ///
-/// `may_use_vm` is [`crate::config::Config::gatekeeper_vm`], and it is an argument rather than an
-/// environment read for the reason [`letibot_tools::firecode::FirecodeSpec`]'s `bin` is one: a
-/// caller that must not boot a VM says so as a value, instead of racing every other reader of
-/// `$FIRECODE_BIN` in the process.
+/// `may_use_vm` is [`crate::config::Config::reviewers`] read as one question, and it is an argument
+/// rather than an environment read for the reason [`letibot_tools::firecode::FirecodeSpec`]'s
+/// `bin` is one: a caller that must not boot a VM says so as a value, instead of racing every
+/// other reader of `$FIRECODE_BIN` in the process.
 ///
 /// **What the check is, and what it is not.** `firecode_available()` answers *the CLI is there and
 /// runnable*, which is not the same claim as *a VM can boot*: a box with the CLI and no working
@@ -328,16 +356,17 @@ that come to YOUR head. The operator's remedy is a `firecode` on the daemon's PA
 /// `cd`-ing are all relative, and relative is what a copy preserves — so a reviewer reads the same
 /// words wherever it runs. See [`ReviewerPlacement::said`] for what THIS session is told instead.
 ///
-/// # The other half of the decision: WHICH TREE the VM is booted on
+/// # The other half of the decision: WHICH TREE the reviewer gets
 ///
-/// A `Firecode` placement copies a tree, and this function answers only *where*, not *what*. The
-/// what is [`Harness::serve_reviews`]'s next line — `TaskSpec::vm_source`, from
-/// `mergequeue::review_copy_source` — and it is the half that was missing for the whole life of
-/// the placement: the copy source was the session's own workspace, which for the review queue is
-/// the daemon's workspace, which is not always the repository. On the operator's box it is a
-/// folder of repositories and the copy is 72.8 GiB, refused at `crates/tools`' ceiling, so no
-/// reviewer started and the queue landed nothing (measured 2026-10-10, three refusals for two
-/// branches).
+/// **Both arms hand the reviewer a tree of its own, at the head the row names** — and neither is
+/// this session's workspace, which for the review queue is the daemon's workspace and not always
+/// the repository (on the operator's box it is a folder of repositories, 72.8 GiB against a VM's
+/// 8 GiB ceiling, measured 2026-10-10). `mergequeue::review::start_reviewer` makes ONE clone per
+/// review — `git::clone_branch(repo, branch, head_sha, <clones>/review-<row id>)` — and the two
+/// arms differ only in what is done with it: a VM is booted on it (`TaskSpec::vm_source`), and a
+/// host reviewer WORKS in it (`TaskSpec::worktree`, so its workspace and the `cwd` its prompt
+/// names are both that checkout). The clone is detached at the sha, so a reviewer reads the head
+/// it judges and never the tip the operator happens to have out.
 ///
 /// **A VM-placed reviewer had never been exercised end to end on this box, and that is the larger
 /// finding of that night.** The placement itself is asserted (`review_pass` records what the pass

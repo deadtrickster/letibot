@@ -13,6 +13,13 @@ use serde_json::{Value, json};
 
 use crate::dialect::Dialect;
 
+/// **Where a project's reviewers run** — `[queue] reviewers` in `leticode.toml`, `--reviewers`
+/// on the daemon's command line, and [`Config::reviewers`] in a session.
+///
+/// Defined in `mergequeue::settings` because the project file is where a PROJECT says it; named
+/// here so every reader of a `Config` meets one word for it.
+pub use crate::mergequeue::settings::Reviewers;
+
 /// §8.3 clause 5's budget, as configuration.
 ///
 /// **`Unset` is the default and it is correct**, per D6: an unset budget is a
@@ -615,32 +622,45 @@ pub struct Config {
     /// Inherited by a plain `task` child (it works in the same tree, so the same cache is right);
     /// replaced at each worktree spawn.
     pub build_env: Vec<(String, String)>,
-    /// **Whether the review queue's reviewers may be placed in a firecode VM** — the one child
-    /// whose placement is decided FOR it rather than by the call that spawns it
-    /// (`Harness::serve_reviews`, and see `crate::sessions::gatekeeper::reviewer_placement` for the
-    /// whole of the decision).
+    /// **Where the review queue's reviewers run** — the one child whose placement is decided FOR
+    /// it rather than by the call that spawns it (`Harness::serve_reviews`, and see
+    /// `crate::sessions::gatekeeper::reviewer_placement` for the whole of the decision).
     ///
-    /// `true` is *may*, not *will*: the box still has to be able to boot one, so this is a VM where
-    /// `firecode` is installed and this machine where it is not. It is a **value** rather than
-    /// something read off the machine, so a caller that must not boot one states it instead of
-    /// racing `$FIRECODE_BIN`.
+    /// The value is [`Reviewers`] and not a bool on purpose: the question an operator asks is
+    /// *"is a reviewer trusted with my machine?"*, and the answer is two words — `host`, where
+    /// the children that AUTHOR the branches already run, and `vm`, where the reviewer is booted
+    /// in a firecode microVM. `[queue] reviewers` in the project's `leticode.toml` is the same
+    /// choice, and `--reviewers` on the daemon's command line is the third spelling of it.
     ///
-    /// # `false` is the default, and that is a fact about who builds a `Config`
+    /// # `Host` is the default, and that is a fact about who builds a `Config`
     ///
-    /// **A session built the ordinary way — [`Config::for_this_box`], which is the constructor every
-    /// fixture in this tree is built from — states no VM.** So a test that drives a real review
-    /// through the real spawner cannot boot a firecracker microVM over its workspace by forgetting a
-    /// line: it would have to ask, by name, with [`Config::allow_vm_reviewers`]. That is the one
-    /// thing the placement's own arms cannot give a test — `cfg(test)` never reaches an integration
-    /// test (`session_channel` is one, and it is the case that was measured), and a constructor that
-    /// defaults to a VM is armed the moment a fixture exists, which is the shape of a test nobody
-    /// has remembered to fix booting one on `/tmp` to answer a question it is not asking.
+    /// **A session built the ordinary way — [`Config::for_this_box`], which is the constructor
+    /// every fixture in this tree is built from — states `Host`.** So a test that drives a real
+    /// review through the real spawner cannot boot a firecracker microVM over its workspace by
+    /// forgetting a line: it would have to ask, by name, with
+    /// [`Config::allow_vm_reviewers`]. That is the one thing the placement's own arms cannot give
+    /// a test — `cfg(test)` never reaches an integration test (`session_channel` is one, and it is
+    /// the case that was measured), and a constructor that defaults to a VM is armed the moment a
+    /// fixture exists, which is the shape of a test nobody has remembered to fix booting one on
+    /// `/tmp` to answer a question it is not asking.
     ///
-    /// **The daemon arms it** — [`Config::for_the_daemon`], the one caller that is a live operator's
-    /// box running the review queue — so a reviewer there goes in a VM wherever this box can boot
-    /// one, which is the whole reason the placement exists. `letibot-m1` does not call that
-    /// constructor: it is a measurement script over one session and takes the posture every review
-    /// had before the placement existed, the reviewer on the host.
+    /// **And the default is the operator's ruling of 2026-10-29**, not a safety margin: see
+    /// [`Reviewers`]. A VM-placed reviewer paid a guest exec per file read, lost a request between
+    /// the host and the guest, and took 30–60 minutes holding one of two slots — to isolate a
+    /// READER more than the subagent that wrote the branch, which runs on this machine with the
+    /// operator's own credentials.
+    ///
+    /// # Who may say `Vm`
+    ///
+    /// * **[`Config::for_the_daemon`]** reads `[queue] reviewers` from the project file of the
+    ///   daemon's own workspace, so a project that wants the isolation asks for it once in its
+    ///   repository and every daemon started there obeys.
+    /// * **`--reviewers vm`** on the daemon's command line overrides the file, which is the way
+    ///   to say it for a daemon seated above several repositories (the placement is decided once
+    ///   per pass, for the daemon, not per row).
+    /// * **A test that means to exercise the VM arm** calls [`Config::allow_vm_reviewers`] by
+    ///   name, which is the difference between a test asking for a microVM and a test that got one
+    ///   because a fixture was built.
     ///
     /// **And the box's own answer cannot be overridden into a VM it cannot boot.** A reviewer that
     /// cannot start is written as a FAILED ATTEMPT on the review's row
@@ -648,7 +668,7 @@ pub struct Config {
     /// the queue at once — on the one box that can run no reviewer at all. Such a box runs its
     /// reviewers here and SAYS SO, in the session's own prompt, rather than falling back silently:
     /// the state is `ReviewerPlacement::NoVm` with the reason the box gave.
-    pub gatekeeper_vm: bool,
+    pub reviewers: Reviewers,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
     /// **What to try when the model this session is on is OUT** — `[fallback] models`
@@ -686,6 +706,17 @@ pub struct Config {
     /// `~/.local/share/letibot`. A confined session binds its repository's landing tree under
     /// this root read-only (`harness::confined_grants`), and the queue lands under it.
     pub landing_root: Option<std::path::PathBuf>,
+    /// **Where a review's own checkout is made** — `<temp>/letibot-review-clones` on the daemon
+    /// (`Harness::serve_reviews`), and a fixture's own directory when it drives reviews.
+    ///
+    /// One clone per review, `review-<row id>`, made by `mergequeue::review::start_reviewer` for
+    /// both placements; `mergequeue::review::sweep_clones` removes the ones no row is on any more.
+    ///
+    /// `None` — every fixture that does not serve reviews — is the daemon's own path, and the
+    /// field exists for [`Config::landing_root`]'s reason exactly: a test that serves a review must
+    /// not write into (or sweep) the box's real directory, and the way it says so is a value
+    /// rather than a `cfg(test)` check that never reaches an integration test.
+    pub review_clones: Option<std::path::PathBuf>,
     /// **Whether this daemon runs the merge and review queues** — `true` unless `--no-queue` says
     /// otherwise.
     ///
@@ -2010,7 +2041,7 @@ impl Config {
     /// every `task` child (the spawn in `HarnessTaskRunner`). Each builds its config from the
     /// daemon's command line and reads it here, so a fix written into one opener would be three
     /// openers behind — and the one that matters is whichever one is placed in a VM, which is a
-    /// fact about `--where` and about `gatekeeper_vm` rather than about the door.
+    /// fact about `--where` and about `reviewers` rather than about the door.
     ///
     /// # What nothing to name means
     ///
@@ -2091,10 +2122,10 @@ impl Config {
     /// `Default` impl would let them travel silently.
     ///
     /// **It is also the constructor every fixture in this tree is built from**, so the one field
-    /// that would put a microVM under a test is left at the safe end here: `gatekeeper_vm` is
-    /// `false`. The daemon — the one caller that is a live operator's box — arms it through
-    /// [`Config::for_the_daemon`]; the field carries the whole reason, and the short of it is that a
-    /// test must not boot firecracker by forgetting a line.
+    /// that would put a microVM under a test is left at the safe end here: `reviewers` is
+    /// [`Reviewers::Host`]. The daemon — the one caller that is a live operator's box — reads the
+    /// project's own answer in [`Config::for_the_daemon`]; the field carries the whole reason, and
+    /// the short of it is that a test must not boot firecracker by forgetting a line.
     pub fn for_this_box(workspace: impl Into<PathBuf>) -> Config {
         Config {
             dialect: Dialect::Qwen,
@@ -2154,6 +2185,9 @@ impl Config {
             seat: Seat::default(),
             grants_ro: Vec::new(),
             landing_root: None,
+            // `None` is the daemon's own `<temp>/letibot-review-clones`; a fixture that serves
+            // reviews sets its own directory. See the field.
+            review_clones: None,
             serve_queues: true,
             logs_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
@@ -2176,8 +2210,9 @@ impl Config {
             build_env: Vec::new(),
             // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
             // `for_this_box` is what every test in this tree builds from, and the daemon — the one
-            // caller that is a live operator's box — arms it in `for_the_daemon`. See the field.
-            gatekeeper_vm: false,
+            // caller that is a live operator's box — reads the project file in `for_the_daemon`.
+            // `Host` is also the operator's own ruling of 2026-10-29. See the field.
+            reviewers: Reviewers::Host,
             provider: None,
             fabric: None,
             allow_bash: false,
@@ -2209,16 +2244,33 @@ impl Config {
         }
     }
 
-    /// **The daemon's own configuration: [`Config::for_this_box`] with the reviewer VM armed.**
+    /// **The daemon's own configuration: [`Config::for_this_box`], with the project's own answer
+    /// to *where do my reviewers run*.**
     ///
-    /// One function rather than a line at the daemon's entry point, so *who may place a reviewer in
-    /// a VM* is one thing to read, one thing to call and one thing to test — the daemon's entry is
-    /// `cli::run`, and it is the only caller. See [`Config::gatekeeper_vm`] for why the default is
-    /// the other way round.
+    /// One function rather than a line at the daemon's entry point, so *where a reviewer may be
+    /// placed* is one thing to read, one thing to call and one thing to test — the daemon's entry
+    /// is `cli::run`, and it is the only caller. See [`Config::reviewers`] for the field and
+    /// [`Reviewers`] for the two words.
+    ///
+    /// **The project file is read HERE and the flag is not**: `[queue] reviewers` is a property
+    /// of the repository, so a daemon started in that repository obeys it without anybody
+    /// remembering a flag — and `--reviewers`, which `cli::run` applies after this returns, is how
+    /// an operator overrides it for one invocation (or for a daemon seated above several
+    /// repositories, where there is no one project file to read).
+    ///
+    /// A project file that will not parse does NOT stop the daemon: `mergequeue::settings`
+    /// refuses it by name when the queue reads it for a repository, which is where the operator
+    /// sees the sentence. Here it means the default, `host`, which is the answer that runs a
+    /// reviewer rather than the one that boots a VM nobody asked for.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
-        cfg.allow_vm_reviewers();
+        cfg.reviewers = crate::mergequeue::settings::for_repository(&cfg.workspace)
+            .map(|s| s.reviewers)
+            .unwrap_or_default();
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
+        // **The reviewers' own directory**, beside the landing root and for the same reason: it is
+        // the daemon's, not a session's, and a fixture that serves reviews names its own.
+        cfg.review_clones = Some(std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR));
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
         // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
@@ -2238,14 +2290,14 @@ impl Config {
     }
 
     /// **Arm this session's review-queue reviewers for a VM** — the one named way the value behind
-    /// [`Config::gatekeeper_vm`] becomes `true`.
+    /// [`Config::reviewers`] becomes [`Reviewers::Vm`].
     ///
-    /// The daemon calls it ([`Config::for_the_daemon`]); a test that MEANS to exercise a VM
-    /// placement calls it by name, which is the difference between a test asking for a microVM and
-    /// a test that got one because a fixture was built. Nothing else may be the reason, which is
-    /// why this is a function and not four lines that each say the same thing in reverse.
+    /// Two callers, and both mean it: `cli::run` for `--reviewers vm`, and a test that MEANS to
+    /// exercise a VM placement — which is the difference between a test asking for a microVM and a
+    /// test that got one because a fixture was built. Nothing else may be the reason, which is why
+    /// this is a function and not four lines that each say the same thing in reverse.
     pub fn allow_vm_reviewers(&mut self) {
-        self.gatekeeper_vm = true;
+        self.reviewers = Reviewers::Vm;
     }
 
     /// **The model name the prompt lookup runs on**: `provider/model` for a metered

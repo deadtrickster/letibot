@@ -1041,7 +1041,9 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
         settings: &settings,
-        clones: std::env::temp_dir(),
+        // A directory of this fixture's own, named as the queue's is: `sweep_clones` refuses any
+        // other name, so no test can point a sweep at the box's real clone directory.
+        clones: fx.dir.path().join(crate::mergequeue::review::CLONES_DIR),
         slots: &Vec::new,
     };
     for _ in 0..3 {

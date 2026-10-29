@@ -231,6 +231,10 @@ fn judge(
         }
     };
     let settings = |_: &Path| Ok(QueueSettings::default());
+    // **A directory of this helper's own, named as the queue's is** — `sweep_clones` refuses any
+    // other name, so a fixture cannot be pointed at the box's real clone directory.
+    let clones_dir = TempDir::new("review-judge-clones");
+    let clones = clones_dir.0.join(CLONES_DIR);
     let pool = Pool {
         store,
         runner: &Reviewers,
@@ -242,7 +246,7 @@ fn judge(
         warn: &|_: &str, e| events(e),
         deliver,
         settings: &settings,
-        clones: std::env::temp_dir(),
+        clones,
         slots: &Vec::new,
     };
     for _ in 0..passes {
@@ -717,6 +721,10 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         }
     };
     let settings = |_: &Path| Ok(QueueSettings::default());
+    // **A directory of this fixture's own, named as the queue's is** — a sweep refuses anything
+    // else, so a fixture cannot be pointed at `std::env::temp_dir()` and delete the operator's
+    // real clones (see `review::sweep_clones`).
+    let clones = dir.0.join(CLONES_DIR);
     let pool = Pool {
         store: &store,
         runner: &Reviewers,
@@ -728,7 +736,7 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
         settings: &settings,
-        clones: std::env::temp_dir(),
+        clones,
         slots: &Vec::new,
     };
     serve(&pool).expect("a pass");
@@ -757,5 +765,311 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
             .fixes
             .is_none(),
         "no fixer was recorded on the row"
+    );
+}
+
+// ===== Where a reviewer works =====
+
+/// What a [`Recorder`] was asked to start: the prompt verbatim, and the spec the spawn carries.
+#[derive(Default)]
+struct Started {
+    items: Mutex<Vec<(String, TaskSpec)>>,
+}
+
+impl Started {
+    /// The one reviewer that was started — a second one is a failure, not a detail.
+    fn one(&self) -> (String, TaskSpec) {
+        let items = self.items.lock().unwrap();
+        assert_eq!(items.len(), 1, "one reviewer for one row");
+        items[0].clone()
+    }
+}
+
+/// A runner that records what it was handed and answers a handle. Nothing is spawned: what is
+/// under test is the TREE a reviewer is given, which is decided before any child exists.
+struct Recorder {
+    started: Arc<Started>,
+}
+
+impl TaskRunner for Recorder {
+    fn start(&self, prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+        self.started
+            .items
+            .lock()
+            .unwrap()
+            .push((prompt.to_string(), spec.clone()));
+        Ok("s-gatekeeper-sub-1".into())
+    }
+    fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+        TaskStatus::Running {
+            note: None,
+            child: None,
+        }
+    }
+}
+
+/// **A reviewer on this machine works in a checkout of the head it judges, and NOT at `main`'s
+/// tip** — the operator's ruling of 2026-10-29: *"a reviewer that judges the wrong tree is worse
+/// than a slow one"*.
+///
+/// The host arm used to hand the reviewer `r.repository` — the operator's own checkout, on
+/// whatever branch they happened to have out — while the child's workspace was the DAEMON's, so a
+/// review read a tree nobody had asked it about. This asserts the three things that make it read
+/// the branch and nothing else, and each one fails if the arm goes back to `r.repository.clone()`:
+///
+/// * the spec the spawn is handed carries a `worktree` — the field that makes a child's workspace
+///   something other than its parent's (`Harness::run_to_completion`) — and its path is not the
+///   repository;
+/// * `git rev-parse HEAD` in that tree is the ROW's `head_sha`, with `main` moved on past it so
+///   that *the head it judges* and *the tip* are two different commits;
+/// * the file `main` moved still holds the BRANCH's bytes, and the branch's own file is there.
+///
+/// The prompt's `cwd` is asserted with them: that is the path the reviewer's `bash` is told to run
+/// in, and a reviewer whose workspace was right while its `cwd` was the operator's tree would read
+/// the branch with `read` and the operator's tree with `grep`.
+#[test]
+fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
+    use crate::mergequeue::serve::tests::{branch, commit, repo, sh};
+
+    let dir = TempDir::new("review-checkout");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "the-work", "b.txt");
+    // **The tip moves past the head after the branch was cut**, so a tree at `main`'s tip and a
+    // tree at `head_sha` differ in a file this test reads.
+    let tip = commit(&repo, "a.txt", "two\n", "main moves on");
+    assert_ne!(head, tip, "the fixture needs two different commits");
+
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "the-review".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: base.clone(),
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "the-review",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed").set("owner", ME),
+                2,
+            )
+            .unwrap(),
+        "the fixture must really have claimed the row"
+    );
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let clones = dir.0.join(CLONES_DIR);
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    assert_eq!(
+        serve(&pool).expect("a pass").started,
+        1,
+        "the claimed row's reviewer is started"
+    );
+
+    let (prompt, spec) = started.one();
+    let tree = spec
+        .worktree
+        .as_ref()
+        .expect("a host reviewer is given a tree of its own")
+        .path
+        .clone();
+    let tree = Path::new(&tree);
+    assert_ne!(
+        tree,
+        repo.as_path(),
+        "a reviewer must not read the operator's checkout"
+    );
+    assert!(
+        tree.starts_with(&clones),
+        "the checkout is the queue's own, under {}: {}",
+        clones.display(),
+        tree.display()
+    );
+    assert_eq!(
+        sh(tree, &["rev-parse", "HEAD"]),
+        head,
+        "the reviewer's working directory is at the head the row names"
+    );
+    assert_ne!(
+        sh(tree, &["rev-parse", "HEAD"]),
+        tip,
+        "and NOT at main's tip"
+    );
+    assert_eq!(
+        std::fs::read_to_string(tree.join("a.txt")).expect("the file main moved"),
+        "one\n",
+        "the tree holds the branch's bytes, not the tip's"
+    );
+    assert!(
+        tree.join("b.txt").exists(),
+        "and the file the branch added: {}",
+        tree.display()
+    );
+    assert!(
+        prompt.contains(&tree.display().to_string()),
+        "the prompt sends the reviewer's `bash` to the same tree it works in: {prompt}"
+    );
+}
+
+/// **A clone nobody is on any more is removed by the next pass, and a live row's is kept** — the
+/// assertion that would have caught the 530 MB of eleven never-removed clones measured on the
+/// operator's box on 2026-10-29 (see [`sweep_clones`]).
+///
+/// **The row that matters most is the WITHDRAWN one**: a verdict and a failed attempt both pass
+/// through this file, but a person's `/queue veto` and a deadline move the row in
+/// `mergequeue::serve` — which is why the rule is *its row is not waiting or reviewing* rather
+/// than a teardown at each ending. No clone is really made here: what is under test is which
+/// DIRECTORIES go, so three directories and three rows say it without a repository.
+#[test]
+fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
+    let dir = TempDir::new("review-sweep");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    for (id, state) in [
+        ("withdrawn", ReviewState::Withdrawn),
+        ("waiting", ReviewState::Waiting),
+        ("reviewing", ReviewState::Reviewing),
+    ] {
+        store
+            .enqueue_review(
+                &NewReview {
+                    id: id.into(),
+                    repository: "/the/repository".into(),
+                    target: "main".into(),
+                    kind: ReviewKind::Branch,
+                    session_id: format!("s-{id}"),
+                    branch: format!("agent/{id}"),
+                    worktree: None,
+                    base_sha: "base".into(),
+                    head_sha: "head".into(),
+                    brief: format!("do {id}"),
+                    priority: MergePriority::Subagent,
+                    fixes: None,
+                    evidence: "enqueued".into(),
+                },
+                "test",
+                1,
+            )
+            .expect("the review row");
+        if state != ReviewState::Waiting {
+            assert!(
+                store
+                    .move_review(
+                        id,
+                        ReviewState::Waiting,
+                        state,
+                        &Move::new(ME, "moved")
+                            .set("owner", ME)
+                            .set("reviewer", "sub-x"),
+                        2,
+                    )
+                    .unwrap(),
+                "{id} must really be {state:?}"
+            );
+        }
+    }
+    let clones = dir.0.join(CLONES_DIR);
+    for name in [
+        "review-withdrawn",
+        "review-waiting",
+        "review-reviewing",
+        // Never a row of this store: what a daemon that died left behind.
+        "review-s-gone-sub-1",
+        // And a name that is not a review's, which the sweep must not touch.
+        "something-else",
+    ] {
+        let p = clones.join(name);
+        std::fs::create_dir_all(&p).expect("a directory");
+        std::fs::write(p.join("a.txt"), "x").expect("a file in it");
+    }
+    // A FILE called like a clone is not a directory and is left alone.
+    std::fs::write(clones.join("review-a-file"), "x").expect("a file");
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    // **One pass is enough, and it is the pass that also starts reviewers**: the sweep runs first.
+    serve(&pool).expect("a pass");
+
+    assert!(
+        !clones.join("review-withdrawn").exists(),
+        "a withdrawn row's clone is gone: nothing else will ever remove it"
+    );
+    assert!(
+        !clones.join("review-s-gone-sub-1").exists(),
+        "and a dead daemon's is gone too — its row is on no store"
+    );
+    assert!(
+        clones.join("review-waiting").exists(),
+        "a waiting row's clone is kept: its reviewer is still to be started"
+    );
+    assert!(
+        clones.join("review-reviewing").exists(),
+        "and a reviewing row's is kept: a reviewer is in it"
+    );
+    assert!(
+        clones.join("something-else").exists(),
+        "a directory that is not a review's is never touched"
+    );
+    assert!(
+        clones.join("review-a-file").is_file(),
+        "a file is not a directory, and is left alone"
     );
 }
