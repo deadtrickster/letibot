@@ -139,24 +139,39 @@ fn workspace_scope(workspace: &Path) -> Option<PathBuf> {
 
 /// The box scope: the config dir's own file, else the canonical one under the
 /// box's home.
+///
+/// **Exactly two addresses**, which is the rule the operator gave: the config dir
+/// this crate already reads, and `~/.claude/`. A canonical file dropped in the
+/// config dir is not a third one — it would be a place the rule never names, and
+/// a file that arrives from a place nobody documented is the kind of surprise
+/// this tree keeps paying for.
 fn box_scope(box_dirs: &BoxDirs) -> Option<PathBuf> {
-    in_dir(&box_dirs.config).or_else(|| {
-        let canonical = box_dirs
-            .home
-            .join(CANONICAL_DIR)
-            .join(CANONICAL_INSTRUCTION_FILE);
-        // `is_file` rather than `exists`: a directory named `CLAUDE.md` is not a
-        // file anything can read, and a dangling symlink is the same nothing.
-        canonical.is_file().then_some(canonical)
-    })
+    if let Some(own) = in_path(&box_dirs.config, INSTRUCTION_FILE).filter(|p| p.is_file()) {
+        return Some(own);
+    }
+    let canonical = in_path(&box_dirs.home, CANONICAL_DIR)
+        .and_then(|dir| in_path(&dir, CANONICAL_INSTRUCTION_FILE));
+    // `is_file` rather than `exists`: a directory named like the file is not a
+    // file anything can read, and a dangling symlink is the same nothing.
+    canonical.filter(|p| p.is_file())
 }
 
 /// One directory's answer: the seat's own name, else the canonical one.
 fn in_dir(dir: &Path) -> Option<PathBuf> {
     [INSTRUCTION_FILE, CANONICAL_INSTRUCTION_FILE]
         .into_iter()
-        .map(|name| dir.join(name))
+        .filter_map(|name| in_path(dir, name))
         .find(|p| p.is_file())
+}
+
+/// `dir/name`, or `None` when `dir` is empty.
+///
+/// **An empty path is not the working directory.** `BoxDirs::default()` is "this
+/// box has no instruction file of its own", and `PathBuf::new().join(name)` is a
+/// RELATIVE path — so an unguarded join would have a fixture, or a daemon whose
+/// `$HOME` is unset, reading `./leticode.md` out of wherever it was started.
+fn in_path(dir: &Path, name: &str) -> Option<PathBuf> {
+    (!dir.as_os_str().is_empty()).then(|| dir.join(name))
 }
 
 #[cfg(test)]
@@ -299,6 +314,38 @@ mod tests {
     fn a_box_with_neither_name_adds_nothing() {
         let ws = dir("box-nothing-ws");
         assert!(instructions(&ws, &no_box()).is_empty());
+    }
+
+    /// **The box scope is exactly the two addresses the rule names**: the config
+    /// dir's own file, and the canonical one under the box's home. A canonical
+    /// file dropped in the config dir is not a third — a file that arrived from a
+    /// place nobody documented would be a surprise, and this rule has two places.
+    #[test]
+    fn the_box_scope_is_the_two_addresses_the_rule_names() {
+        let ws = dir("box-third-ws");
+        let box_dirs = no_box();
+        write(
+            &box_dirs.config,
+            CANONICAL_INSTRUCTION_FILE,
+            "not one of the two addresses\n",
+        );
+        assert!(instructions(&ws, &box_dirs).is_empty());
+    }
+
+    /// **An empty box dir is nothing, not the working directory** —
+    /// `BoxDirs::default()` means "this box has none", and a join onto an empty
+    /// path is RELATIVE.
+    #[test]
+    fn an_empty_box_dir_is_not_the_working_directory() {
+        let ws = dir("empty-box-ws");
+        let found = instructions(&ws, &BoxDirs::default());
+        assert!(
+            found.is_empty(),
+            "an empty box dir must answer nothing rather than look in {}: {found:?}",
+            std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
+        );
     }
 
     /// **The workspace's file comes first**, because it is the more specific
