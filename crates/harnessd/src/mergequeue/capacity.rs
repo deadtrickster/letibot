@@ -191,8 +191,7 @@ pub fn branch_wait(own: Streak, others: &[Streak]) -> BranchWait {
 /// written and the claim is the only place it is read: a busy VM slot and a tree that could not be
 /// made are different waits with the same shape.
 pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool {
-    (failure.starts_with(WAITING_FOR_SLOT)
-        || failure.starts_with(super::review::WAITING_FOR_TREE))
+    (failure.starts_with(WAITING_FOR_SLOT) || failure.starts_with(super::review::WAITING_FOR_TREE))
         && deadline_ms.is_some_and(|d| d > now_ms)
 }
 

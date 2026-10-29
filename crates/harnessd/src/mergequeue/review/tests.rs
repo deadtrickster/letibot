@@ -1297,10 +1297,9 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         sweeps += 1;
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let tree = clone
-        .join()
-        .expect("the clone thread")
-        .unwrap_or_else(|e| panic!("the clone was disturbed by the sweep after {sweeps} of them: {e}"));
+    let tree = clone.join().expect("the clone thread").unwrap_or_else(|e| {
+        panic!("the clone was disturbed by the sweep after {sweeps} of them: {e}")
+    });
     sweep_clones(&pool);
     assert!(
         tree.exists(),
@@ -1450,7 +1449,11 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
     // The next pass, once the branch is back: the same row, the same head, a reviewer.
     sh(&repo, &["branch", "agent/the-work", &head]);
     claim(&store);
-    assert_eq!(serve(&pool).expect("a pass").started, 1, "a reviewer starts");
+    assert_eq!(
+        serve(&pool).expect("a pass").started,
+        1,
+        "a reviewer starts"
+    );
     let (prompt, spec) = started.one();
     let tree = Path::new(
         &spec

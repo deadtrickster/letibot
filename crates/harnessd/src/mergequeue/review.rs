@@ -679,7 +679,10 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
         ReviewKind::Branch => letibot_tools::gatekeeper::review_prompt(&req),
         ReviewKind::Target => red_target_prompt(&req, &r.target),
     };
-    let handle = p.runner.start(&prompt, &spec).map_err(CouldNotStart::Runner)?;
+    let handle = p
+        .runner
+        .start(&prompt, &spec)
+        .map_err(CouldNotStart::Runner)?;
     Ok((handle, req))
 }
 

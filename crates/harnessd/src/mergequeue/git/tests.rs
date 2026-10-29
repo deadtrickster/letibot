@@ -380,7 +380,10 @@ fn a_second_clone_replaces_the_tree_rather_than_failing() {
     let dir = TempDir::new("clone-replace");
     let repo = repo(&dir.0);
     let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
-    let one = dir.0.join("letibot-review-clones").join("review-the-review");
+    let one = dir
+        .0
+        .join("letibot-review-clones")
+        .join("review-the-review");
     clone_branch(&repo, "agent/the-work", &head, &one).expect("the first clone");
     std::fs::write(one.join("scratch.txt"), "left by a reviewer\n").expect("a file in the tree");
     clone_branch(&repo, "agent/the-work", &head, &one).expect("the second clone");
@@ -403,7 +406,10 @@ fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
     let one = clones.join("review-the-review");
     let said = clone_branch(&repo, "agent/no-such-branch", &head, &one)
         .expect_err("a branch that is not there cannot be cloned");
-    assert!(said.contains("git clone of `agent/no-such-branch`"), "{said}");
+    assert!(
+        said.contains("git clone of `agent/no-such-branch`"),
+        "{said}"
+    );
     assert!(!one.exists(), "no tree at the row's name");
     let names: Vec<String> = std::fs::read_dir(&clones)
         .map(|d| {
