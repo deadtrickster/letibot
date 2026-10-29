@@ -1,0 +1,17 @@
+[package]
+name = "letibot-room"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# **Two dependencies, and the shortness is the design.** The room is a state machine with no
+# store, no socket, no clock and no OS: the coordinator daemon (the next slice) owns all four, and
+# a state machine that needed any of them could not be tested without them. `serde` is here
+# because the wire is `crate::wire` and its frames are values.
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

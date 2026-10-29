@@ -1109,6 +1109,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-room"
+version = "0.5.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-sessionlog"
 version = "0.5.1"
 dependencies = [
