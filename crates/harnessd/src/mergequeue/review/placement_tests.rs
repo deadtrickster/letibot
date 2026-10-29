@@ -321,6 +321,93 @@ fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box(
     assert_eq!(started.specs().len(), 1, "one child was started, not two");
 }
 
+/// **A reviewer that handed its verdict in frees the place it held** — the leak this test exists
+/// against, and it was a real one: the first cut freed a place at each place a reviewer ENDED and
+/// missed the one ending EVERY successful review takes (a verdict at the desk), so each completed
+/// review held a place for the life of the daemon and the pool ran down to nothing while the queue
+/// went on claiming. A queue that stops is worse than the one this change set out to speed up.
+///
+/// Nothing here is asserted by hand: `serve` starts the reviewer, the desk takes the verdict the
+/// way a reviewer hands one in, and the next `serve` collects it — and then the pool is asked what
+/// it has room for.
+#[test]
+fn a_verdict_frees_the_place_the_reviewer_held() {
+    use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
+    let _hosts = HostsFile::with(&["lab2x1"]);
+    let dir = TempDir::new("review-frees-its-place");
+    let (store, _repo, head) = claimed(&dir);
+
+    let machines = ReviewHosts::new();
+    // **Four spare cores: exactly ONE place**, so *freed* and *not freed* are two different answers
+    // and not two ways of saying `PER_HOST_MAX`.
+    machines.set_spare(Some("lab2x1"), Some(4.0), None);
+    machines.set_spare(None, Some(0.0), None);
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+        fail_first: false,
+    };
+    let desk = ReviewDesk::new();
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &|_: &str, _: &str| Ok(String::new()),
+        settings: &settings,
+        clones: dir.0.join(CLONES_DIR),
+        machines: machines.clone(),
+        reviewer_hosts: Some(vec!["lab2x1".to_string()]),
+        slots: &Vec::new,
+    };
+    assert_eq!(serve(&pool).expect("a pass").started, 1);
+    let child = "s-gatekeeper-sub-0";
+    assert_eq!(
+        machines.capacity(Some(&["lab2x1".to_string()])),
+        0,
+        "the one place is taken while the reviewer is running"
+    );
+
+    // **The reviewer hands its verdict in** — the desk is the only door one goes through.
+    desk.submit(
+        child,
+        Submission {
+            decision: Decision::Accept,
+            reasons: vec!["the change does what the brief asked".into()],
+            looked_at: LookedAt {
+                files: vec!["b.txt".into()],
+                commands: vec!["git diff".into()],
+            },
+        },
+    )
+    .expect("the verdict is taken at the desk");
+    assert!(
+        serve(&pool).expect("a pass").moved,
+        "the verdict is written"
+    );
+    assert_eq!(
+        store.review_row("the-review").unwrap().unwrap().state,
+        ReviewState::Approved,
+        "the review is over"
+    );
+    assert_eq!(
+        machines.capacity(Some(&["lab2x1".to_string()])),
+        1,
+        "and the place it held is free again — a second review of a fourteen-row queue must be \
+         able to go to the same machine"
+    );
+    assert!(
+        machines.choose(Some(&["lab2x1".to_string()])).is_some(),
+        "the pool offers the machine again"
+    );
+}
+
 /// **A host that cannot be reached falls back to this machine, and says so** — the operator's rule:
 /// *"the queue must not go red because a machine was rebooting"*.
 ///

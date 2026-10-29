@@ -228,6 +228,42 @@ pub(crate) fn env_with_desk(
     settings: QueueSettings,
     desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
 ) -> Arc<QueueEnv> {
+    env_with_desk_and_hosts(
+        gate,
+        door,
+        who,
+        settings,
+        desk,
+        crate::mergequeue::review::hosts::ReviewHosts::new(),
+    )
+}
+
+/// The same env with the POOL named, for a test whose answer depends on how many reviewers this
+/// machine can take.
+///
+/// **A test that asserts a number of reviewers must install the facts**, not read the box's: the
+/// local machine's capacity is `min(PER_HOST_MAX, floor(max(cores, 4) / 4))`, which is four on a
+/// sixteen-core box, three on twelve and two on ten. A fixture that said *four* without installing
+/// anything would be asserting what the machine running it happens to have.
+pub(crate) fn env_with_hosts(
+    gate: Arc<dyn GateRunner>,
+    door: Arc<Door>,
+    who: &str,
+    settings: QueueSettings,
+    hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+) -> Arc<QueueEnv> {
+    env_with_desk_and_hosts(gate, door, who, settings, None, hosts)
+}
+
+/// Both, for a test that needs a desk to ask AND a pool whose facts it installed.
+fn env_with_desk_and_hosts(
+    gate: Arc<dyn GateRunner>,
+    door: Arc<Door>,
+    who: &str,
+    settings: QueueSettings,
+    desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
+    hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+) -> Arc<QueueEnv> {
     Arc::new(QueueEnv {
         me: me(who),
         gate,
@@ -239,7 +275,7 @@ pub(crate) fn env_with_desk(
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
         reviewers_at_once: None,
-        hosts: crate::mergequeue::review::hosts::ReviewHosts::new(),
+        hosts,
         reviewer_hosts: Some(vec!["local".to_string()]),
         idle: Duration::from_millis(50),
     })
@@ -291,7 +327,29 @@ impl World {
         settings: QueueSettings,
         desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     ) -> RepoQueue {
-        let env = env_with_desk(gate, self.door.clone(), who, settings, desk);
+        self.worker_in_and_holding(gate, who, settings, desk, crate::mergequeue::review::hosts::ReviewHosts::new())
+    }
+    /// The same worker, in a pool whose facts the caller installed — for a test that asserts a
+    /// NUMBER of reviewers, which must not be the number the box running it happens to have.
+    fn worker_in(
+        &self,
+        gate: Arc<dyn GateRunner>,
+        who: &str,
+        settings: QueueSettings,
+        hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+    ) -> RepoQueue {
+        self.worker_in_and_holding(gate, who, settings, None, hosts)
+    }
+    /// Both, for a test that needs a desk to ask AND a pool whose facts it installed.
+    fn worker_in_and_holding(
+        &self,
+        gate: Arc<dyn GateRunner>,
+        who: &str,
+        settings: QueueSettings,
+        desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
+        hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
+    ) -> RepoQueue {
+        let env = env_with_desk_and_hosts(gate, self.door.clone(), who, settings, desk, hosts);
         let store = self.store();
         assert!(matches!(
             store
@@ -436,15 +494,25 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
         "a `vm` queue claims exactly what it always did"
     );
 
-    // **A `host` queue with no number of its own** takes what its machines can take — this
-    // fixture's pool is this machine alone, which is `PER_HOST_MAX` places.
+    // **A `host` queue with no number of its own** takes what its machines can take — and the
+    // machine's facts are INSTALLED, because the number this asserts must be the one the pool was
+    // given and not the one the box running the test happens to have. `min(4, floor(16 / 4))` is
+    // four on any machine; reading the real cores would be four only on a sixteen-core box, three
+    // on a twelve-core one and two on a ten-core one — a test asserting the runner, not the change.
     let w = World::new("reviewers-at-once-default");
     for i in 0..5 {
         let name = format!("b{i}");
         let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
         w.enqueue(&name, &wt, &base, &head);
     }
-    let q = w.worker(Arc::new(GreenGate), "at-once-default");
+    let hosts = crate::mergequeue::review::hosts::ReviewHosts::new();
+    hosts.set_spare(None, Some(16.0), None);
+    let q = w.worker_in(
+        Arc::new(GreenGate),
+        "at-once-default",
+        QueueSettings::default(),
+        hosts,
+    );
     run(&q, 1);
     assert_eq!(
         reviewing(&w),

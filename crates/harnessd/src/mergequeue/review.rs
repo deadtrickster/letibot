@@ -479,7 +479,6 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         match p.runner.collect(&child, std::time::Duration::ZERO) {
             TaskStatus::Running { .. } => still.push(child),
             TaskStatus::Done { .. } => {
-                p.machines.finished(&child);
                 out.moved = true;
                 p.attempt_failed(
                     &r,
@@ -497,7 +496,6 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 let on_host = p.machines.where_is(&child).flatten();
                 match on_host {
                     Some(host) if placement_refused(&why, &host) => {
-                        p.machines.finished(&child);
                         p.machines.mark_down(Some(&host), why.clone());
                         p.raise(
                             &r.repository,
@@ -518,7 +516,6 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                             p.wait_for_slot(&r, &cap)?;
                         }
                         None => {
-                            p.machines.finished(&child);
                             p.attempt_failed(
                                 &r,
                                 format!("the reviewer `{child}` failed: {why}"),
@@ -528,7 +525,6 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 }
             }
             TaskStatus::Unknown => {
-                p.machines.finished(&child);
                 out.moved = true;
                 p.attempt_failed(
                     &r,
@@ -538,6 +534,11 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
         }
     }
     p.desk.keep(p.host, &still);
+    // **And every reviewer that is no longer on the desk has freed its place** — the desk's own list,
+    // the desk's own rule, one line over. A place freed at each place a reviewer ENDS was the first
+    // cut, and it missed the one ending every successful review takes (a verdict handed in), so the
+    // pool ran down to nothing while the queue went on claiming. See [`ReviewHosts::keep`].
+    p.machines.keep(&still);
     // **A host that failed this pass is asked again next one** — a reboot is minutes, and a queue
     // that never retried would run on this machine for ever.
     p.machines.end_pass();

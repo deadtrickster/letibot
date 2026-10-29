@@ -34,6 +34,34 @@
 //! A stale snapshot is fine for what it is used for: spare cores move slowly, and a host that has
 //! gone down between two probes is caught by the placement itself, which falls back to this
 //! machine and says so ([`super::Pool::start_reviewer`]).
+//!
+//! # How many run at once, on the operator's box (MEASURED 2026-10-29)
+//!
+//! | machine | cores | load | reserve | spare | reviewers |
+//! |---|---|---|---|---|---|
+//! | `lab2x1` | 32 | 3.8 | 0 | 28.2 | `min(4, 7) = 4` |
+//! | `lubuntu1`, `lubuntu2`, `lubuntu3` | 32 | 0.1–0.7 | 0 | ~31 | `min(4, 7) = 4` each |
+//! | this machine | 18 | — | 0 | 18 | `min(4, 4) = 4` |
+//!
+//! **Twenty reviewers at once**, which is the default `reviewers_at_once` for a `host` queue. The
+//! fourteen rows waiting on the operator's box on 2026-10-29 are therefore **one wave instead of
+//! the seven** a limit of two made them; what one wave costs is [`super::start_reviewer`]'s doc
+//! (20.2 MB and ~3.5 s of transport, 22.5 s and 1.1 GB if the reviewer builds) plus the
+//! reviewer's own model time, which no measurement here covers.
+//!
+//! **The number is CPU-shaped and the model endpoint is the other resource**: twenty concurrent
+//! reviewers share one server, and `[queue] reviewers_at_once` is the knob if the server, rather
+//! than the machines, is what fills up.
+//!
+//! # The per-host cap is released by the DESK, not by a bookkeeper
+//!
+//! `placed` records who this daemon has where, and it is pruned by [`ReviewHosts::keep`] at the end
+//! of every pass against the children still on the desk — **the same list, in the same place, as
+//! the desk's own `keep`**. That is not tidiness: an earlier cut freed a place at each place a
+//! reviewer ENDED, and the normal ending — a verdict handed in ([`super::verdict`]) — was missed, so
+//! every completed review kept its place for the life of the daemon and the pool ran down to
+//! nothing. A rule that has to be repeated at every ending is a rule with a missing case; a
+//! reconciliation against the one list of live children has none.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,7 +155,9 @@ struct Inner {
     /// When the snapshot was taken.
     at: Option<Instant>,
     /// **The reviewers this daemon has placed, by child handle** — the machine each went to, so the
-    /// per-host cap counts this daemon's own work and a verdict frees the room it held.
+    /// per-host cap counts this daemon's own work. Pruned by [`ReviewHosts::keep`], which is the
+    /// desk's own list of live children: a place is freed by the reviewer being over, however it
+    /// ended.
     placed: BTreeMap<String, String>,
     /// **The machines that refused a placement in THIS pass** — skipped until the pass ends, so
     /// fourteen rows do not each pay the same timeout. Cleared by [`ReviewHosts::end_pass`].
@@ -237,7 +267,7 @@ impl ReviewHosts {
     }
 
     /// **Record that a reviewer went to a machine** — the per-host cap counts this daemon's own
-    /// work, and a handle is what frees it when the reviewer is collected.
+    /// work, and [`ReviewHosts::keep`] frees it when the reviewer is over.
     pub fn started(&self, child: &str, machine: &Machine) {
         let mut inner = self.lock();
         inner
@@ -245,9 +275,26 @@ impl ReviewHosts {
             .insert(child.to_string(), machine.name.clone().unwrap_or_default());
     }
 
-    /// **Record that a reviewer is over** — the room it held is free again.
-    pub fn finished(&self, child: &str) {
-        self.lock().placed.remove(child);
+    /// **Every reviewer that is no longer on the desk is over, and its place is free again.**
+    ///
+    /// `live` is the children the desk still holds — `ReviewDesk::keep`'s own list, computed in the
+    /// same pass and for the same reason. **One reconciliation, not a call at each ending**: a
+    /// reviewer ends in five places (a verdict, a death, a vanished child, a row that moved under
+    /// it, a row that is gone), and the first cut freed the place at four of them and missed the
+    /// one every successful review takes. That is how a pool runs down to nothing while the queue
+    /// goes on claiming: each completed review held a place for the life of the daemon.
+    ///
+    /// It cannot drift, either: an ending added later is covered without being told about this, and
+    /// a `?` that returns early out of the collect loop cannot skip it.
+    ///
+    /// **The one window it cannot see is a daemon restart**: `placed` is this process's, so after a
+    /// restart the pool believes the machines are empty until the reviewers the old process left
+    /// are collected or time out. It over-admits for that window rather than under-admitting for
+    /// ever — the rows themselves are in the store, and `recover_queue` and the review deadline are
+    /// what end the ones that outlived their daemon.
+    pub fn keep(&self, live: &[String]) {
+        let mut inner = self.lock();
+        inner.placed.retain(|child, _| live.contains(child));
     }
 
     /// **Which machine a child of this daemon is on**, when this pool placed it. `Some(None)` is

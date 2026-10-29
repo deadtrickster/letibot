@@ -125,9 +125,34 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     );
     assert_eq!(hosts.capacity(None), 0, "and it claims nothing more");
 
-    // **A verdict frees the room it held** — the cap is this daemon's own work, not a lease.
-    hosts.finished("child-0");
-    assert_eq!(hosts.capacity(None), 1);
+    // **A reviewer that is over frees the room it held** — the desk's list, which is what the pass
+    // hands to `keep`. This is the line the first cut got wrong: the place was freed at each place a
+    // reviewer ENDED and the normal ending (a verdict) was missed, so a pool ran down to nothing.
+    // Two places come back, one on each machine: `child-0` held one of `lab2x1`'s four and
+    // `child-fifth` held `lubuntu2`'s only one.
+    let live: Vec<String> = (1..capacity::PER_HOST_MAX)
+        .map(|n| format!("child-{n}"))
+        .collect();
+    hosts.keep(&live);
+    assert_eq!(
+        hosts.capacity(None),
+        2,
+        "`child-0` and `child-fifth` are over, so both their places are back"
+    );
+    assert!(
+        hosts.where_is("child-0").is_none(),
+        "and nothing remembers where it was"
+    );
+    assert!(
+        hosts.where_is("child-1").is_some(),
+        "while the reviewers still on the desk are still counted"
+    );
+    // **And the machine that was full takes one again** — the queue's claim limit is this number.
+    assert_eq!(
+        hosts.choose(None).and_then(|m| m.name).as_deref(),
+        Some("lab2x1"),
+        "the box with the most spare after the freed place"
+    );
 }
 
 /// **`reserve` is subtracted, and it is what makes a big box small** — the arithmetic the operator
