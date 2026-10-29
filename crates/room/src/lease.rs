@@ -139,7 +139,10 @@ pub struct CoordinatorLease {
 impl CoordinatorLease {
     /// A lease at `path`, owned by this process: `host/pid/<ns>`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self::owned_by(path, format!("{}/{}/{}", host_name(), std::process::id(), now_ns()))
+        Self::owned_by(
+            path,
+            format!("{}/{}/{}", host_name(), std::process::id(), now_ns()),
+        )
     }
 
     /// A lease at `path` with an owner the caller spells — the fixture's door, and the one a
@@ -239,7 +242,9 @@ impl CoordinatorLease {
             "{}\t{}\t{}\t{}\n",
             self.holder.owner, self.holder.pid, now, started
         );
-        let tmp = self.path.with_extension(format!("lease-{}", std::process::id()));
+        let tmp = self
+            .path
+            .with_extension(format!("lease-{}", std::process::id()));
         std::fs::write(&tmp, line)?;
         std::fs::rename(&tmp, &self.path)
     }
@@ -393,10 +398,8 @@ mod tests {
                 // box, and a shared directory would make one test's `Drop` another's mystery.
                 static NEXT: AtomicU64 = AtomicU64::new(0);
                 let n = NEXT.fetch_add(1, Ordering::SeqCst);
-                let p = std::env::temp_dir().join(format!(
-                    "letibot-room-lease-{}-{n}",
-                    std::process::id()
-                ));
+                let p = std::env::temp_dir()
+                    .join(format!("letibot-room-lease-{}-{n}", std::process::id()));
                 std::fs::create_dir_all(&p).expect("a scratch directory");
                 TempDir(p)
             }
@@ -424,13 +427,18 @@ mod tests {
         assert_eq!(first.acquire(1_000), Ok(Acquired::Fresh));
 
         let second = CoordinatorLease::owned_by(t.path().join("room.lease"), "box/2/200");
-        let held = second.acquire(1_000 + 1).expect_err("a live holder refuses");
+        let held = second
+            .acquire(1_000 + 1)
+            .expect_err("a live holder refuses");
         assert_eq!(held.holder.owner, "box/1/100");
         assert_eq!(held.holder.pid, std::process::id());
         // The sentence is the point: it names the holder, the file and what to do.
         let said = held.sentence();
         for wanted in ["box/1/100", "room.lease", "Stop that one", "1m 30s"] {
-            assert!(said.contains(wanted), "the refusal must say {wanted}: {said}");
+            assert!(
+                said.contains(wanted),
+                "the refusal must say {wanted}: {said}"
+            );
         }
     }
 
@@ -462,7 +470,10 @@ mod tests {
             other => panic!("expected a takeover, got {other:?}"),
         }
         // And the file now names the new owner.
-        assert_eq!(second.read().map(|h| h.owner), Some("box/2/200".to_string()));
+        assert_eq!(
+            second.read().map(|h| h.owner),
+            Some("box/2/200".to_string())
+        );
     }
 
     #[test]
@@ -505,7 +516,11 @@ mod tests {
         for junk in ["", "\n", "not a lease", "owner\tnotapid\t1\t2", "\t1\t2\t3"] {
             std::fs::write(&path, junk).unwrap();
             let lease = CoordinatorLease::owned_by(&path, "box/1/100");
-            assert_eq!(lease.read(), None, "junk must not read as a holder: {junk:?}");
+            assert_eq!(
+                lease.read(),
+                None,
+                "junk must not read as a holder: {junk:?}"
+            );
             assert_eq!(
                 lease.acquire(10),
                 Ok(Acquired::Fresh),
@@ -535,7 +550,10 @@ mod tests {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
             "a socket path cannot hold this: {key}"
         );
-        assert!(key.len() <= 33, "a unix socket path has a length limit: {key}");
+        assert!(
+            key.len() <= 33,
+            "a unix socket path has a length limit: {key}"
+        );
         assert_eq!(coordinator_session(&key), format!("s-room-{key}"));
     }
 }

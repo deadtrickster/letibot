@@ -46,7 +46,7 @@ use std::sync::{Arc, Mutex};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
 use crate::room::{Event, Room};
-use crate::wire::{Answer, Request, Response, ROOM_PROTOCOL_VERSION};
+use crate::wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};
 
 /// How often the clock runs by default: five seconds, eighteen passes per lease, so a claim whose
 /// beat stopped is taken back promptly and a beat that is one pass late is not mistaken for death.
@@ -212,8 +212,18 @@ impl Server {
         }
         // A connection whose peer is gone is already closed; this wakes the ones still reading so
         // their threads end rather than waiting for a client that will never write again.
-        for (_, conn) in self.inner.conns.lock().expect("the connections lock").iter() {
-            let _ = conn.writer.lock().expect("a writer").shutdown(std::net::Shutdown::Both);
+        for (_, conn) in self
+            .inner
+            .conns
+            .lock()
+            .expect("the connections lock")
+            .iter()
+        {
+            let _ = conn
+                .writer
+                .lock()
+                .expect("a writer")
+                .shutdown(std::net::Shutdown::Both);
         }
     }
 
@@ -273,12 +283,11 @@ impl Server {
                     Request::Hello { speaker, .. } => speaker.clone(),
                     _ => return,
                 };
-                let answer = me
-                    .inner
-                    .room
-                    .lock()
-                    .expect("the room lock")
-                    .answer_traced(&speaker, &hello, now_ms());
+                let answer = me.inner.room.lock().expect("the room lock").answer_traced(
+                    &speaker,
+                    &hello,
+                    now_ms(),
+                );
                 let mut w = writer;
                 if write_frame(&mut w, &answer.response).is_err() {
                     return;
@@ -361,7 +370,8 @@ impl Server {
                     // The lease's beat, on this thread: one process, one clock.
                     if now.saturating_sub(last_beat) >= LEASE_BEAT_EVERY_MS {
                         last_beat = now;
-                        if let Some(lease) = me.inner.lease.lock().expect("the lease lock").as_ref() {
+                        if let Some(lease) = me.inner.lease.lock().expect("the lease lock").as_ref()
+                        {
                             let _ = lease.beat(now);
                         }
                     }
@@ -429,7 +439,12 @@ impl Server {
                 if !mine {
                     continue;
                 }
-                let _ = write_to(conn, &Response::Event { event: event.clone() });
+                let _ = write_to(
+                    conn,
+                    &Response::Event {
+                        event: event.clone(),
+                    },
+                );
             }
         }
     }

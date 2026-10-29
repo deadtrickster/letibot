@@ -11211,11 +11211,7 @@ impl Harness {
         // composes: a layer may reword a room notice and may not delete it (it is a fact the model
         // is owed — somebody else's claim on a resource it also wants).
         let room = crate::room::wake::take(&self.cfg.session_id);
-        notices.extend(self.noticed_all(
-            letibot_plugin::notice::ROOM,
-            room,
-            serde_json::json!({}),
-        ));
+        notices.extend(self.noticed_all(letibot_plugin::notice::ROOM, room, serde_json::json!({})));
         // **And the children a restart brought back** — the operator's *"we should bring
         // subagents back … and restart automatically"*: the model is told, in one line each,
         // which came back and which could not. Counted with the queue's notices: both are facts

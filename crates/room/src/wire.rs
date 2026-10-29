@@ -287,41 +287,60 @@ impl Room {
                     threshold: ABANDON_THRESHOLD,
                 })
             }
-            Request::Post { id, tag, body } => Answer::verb(
-                id,
-                self.post(who, id, tag, body, now),
-                |item| Response::Posted { id: id.clone(), item },
-            ),
-            Request::Claim { id, tag } => Answer::verb(
-                id,
-                self.claim(who, id, tag, now),
-                |item| Response::Claimed { id: id.clone(), item },
-            ),
-            Request::ClaimItem { id, item } => Answer::verb(
-                id,
-                self.claim_item(who, id, *item, now),
-                |item| Response::Claimed { id: id.clone(), item },
-            ),
-            Request::Beat { id, item } => Answer::verb(
-                id,
-                self.beat(who, id, *item, now),
-                |item| Response::Beaten { id: id.clone(), item },
-            ),
-            Request::Waiting { id, item, text } => Answer::verb(
-                id,
-                self.waiting_on(who, id, *item, text, now),
-                |item| Response::Waited { id: id.clone(), item },
-            ),
-            Request::Done { id, item } => Answer::verb(
-                id,
-                self.done(who, id, *item, now),
-                |item| Response::Finished { id: id.clone(), item },
-            ),
-            Request::Abandon { id, item, why } => Answer::verb(
-                id,
-                self.abandon(who, id, *item, why, now),
-                |item| Response::Abandoned { id: id.clone(), item },
-            ),
+            Request::Post { id, tag, body } => {
+                Answer::verb(id, self.post(who, id, tag, body, now), |item| {
+                    Response::Posted {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Claim { id, tag } => Answer::verb(id, self.claim(who, id, tag, now), |item| {
+                Response::Claimed {
+                    id: id.clone(),
+                    item,
+                }
+            }),
+            Request::ClaimItem { id, item } => {
+                Answer::verb(id, self.claim_item(who, id, *item, now), |item| {
+                    Response::Claimed {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Beat { id, item } => {
+                Answer::verb(id, self.beat(who, id, *item, now), |item| {
+                    Response::Beaten {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Waiting { id, item, text } => {
+                Answer::verb(id, self.waiting_on(who, id, *item, text, now), |item| {
+                    Response::Waited {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Done { id, item } => {
+                Answer::verb(id, self.done(who, id, *item, now), |item| {
+                    Response::Finished {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Abandon { id, item, why } => {
+                Answer::verb(id, self.abandon(who, id, *item, why, now), |item| {
+                    Response::Abandoned {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
             Request::Dispute { id, item, says } => match self.dispute(who, id, *item, says, now) {
                 Ok(o) => {
                     let question = o

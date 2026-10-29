@@ -168,10 +168,9 @@ impl Coordinator {
         let now = letibot_room::server::now_ms();
         match lease.acquire(now) {
             Ok(Acquired::Fresh) => {}
-            Ok(Acquired::TookOver { from, why }) => eprintln!(
-                "harnessd: took the room's lease from {} — {why}",
-                from
-            ),
+            Ok(Acquired::TookOver { from, why }) => {
+                eprintln!("harnessd: took the room's lease from {} — {why}", from)
+            }
             Err(held) => return Err(held.sentence()),
         }
         let server = Server::serve(&socket, Room::new()).map_err(|e| {
@@ -203,8 +202,7 @@ impl Coordinator {
 
 impl Drop for Coordinator {
     fn drop(&mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
         self.server.stop();
         let _ = self.lease.release();
         if let Some(h) = self.tie_breaker.take() {
@@ -359,7 +357,10 @@ mod tests {
             "`decision: \"retry\"`",
             "Nothing moves until you answer",
         ] {
-            assert!(prompt.contains(wanted), "the prompt must say {wanted}: {prompt}");
+            assert!(
+                prompt.contains(wanted),
+                "the prompt must say {wanted}: {prompt}"
+            );
         }
     }
 

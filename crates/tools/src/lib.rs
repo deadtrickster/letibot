@@ -272,9 +272,9 @@ pub fn with_session_tools(
     // test's, a one-shot's — and the tool then says there is no coordinator behind it. The daemon
     // replaces this with the session's own link (`Harness::open`), which is the one that can post.
     if reg.get(builtins::room::TOOL).is_none() {
-        reg.register(Box::new(builtins::room::RoomTool::new(std::sync::Arc::new(
-            builtins::room::NoRoom,
-        ))))?;
+        reg.register(Box::new(builtins::room::RoomTool::new(
+            std::sync::Arc::new(builtins::room::NoRoom),
+        )))?;
     }
     Ok(reg)
 }

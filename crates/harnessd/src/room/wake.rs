@@ -63,9 +63,9 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
              locked and your own claim under it would be refused. Post under another tag if your \
              work does not need the same resource."
         ),
-        Event::Done { item, tag, by } => format!(
-            "[room] `{by}` finished #{item} under `{tag}` — the tag is free again."
-        ),
+        Event::Done { item, tag, by } => {
+            format!("[room] `{by}` finished #{item} under `{tag}` — the tag is free again.")
+        }
         Event::Abandoned {
             item,
             tag,
@@ -105,9 +105,9 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
             question,
             decision,
             by,
-        } => format!(
-            "[room] question #{question} about #{item} was answered by `{by}`: {decision}."
-        ),
+        } => {
+            format!("[room] question #{question} about #{item} was answered by `{by}`: {decision}.")
+        }
     })
 }
 

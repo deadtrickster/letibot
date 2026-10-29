@@ -179,7 +179,11 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
 /// disagreement is RETURNED and the caller puts it on the screen, because a file
 /// the operator wrote that silently did not take effect is the defect this whole
 /// feature is against.
-pub(crate) fn apply_main_model(cfg: &mut Config, model: &str, bound: Option<&str>) -> Option<String> {
+pub(crate) fn apply_main_model(
+    cfg: &mut Config,
+    model: &str,
+    bound: Option<&str>,
+) -> Option<String> {
     if let Some((provider, m)) = model.split_once('/') {
         cfg.provider = Some(crate::config::ProviderConfig {
             name: provider.to_string(),
@@ -380,6 +384,15 @@ fn usage() -> String {
       \x20                           queue news (a package worker must not be set\n\
       \x20                           to fixing a `main` nobody asked it about). The\n\
       \x20                           store watcher stays, so a head still moves\
+     \x20 --room                    be the BOX'S ROOM COORDINATOR: a whole daemon\
+     \x20                           whose only job is the room -- its own socket\
+     \x20                           under the data directory, NO store, no project,\
+     \x20                           and one session of its own (`s-room-<host>`,\
+     \x20                           reachable as `--session host`) that arbitrates\
+     \x20                           the queues. One per box: a second is refused by\
+     \x20                           a lease that names the live holder, and it will\
+     \x20                           not start without a model to arbitrate with\
+     \x20                           (`--model`, deepseek by default)\
      \x20 --reviewers host|vm     where this daemon's REVIEWERS run. `host` (the\
      \x20                           default) is a reviewer child on this machine, in\
      \x20                           a checkout of the head it judges -- as the\

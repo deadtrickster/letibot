@@ -58,10 +58,12 @@ pub struct NoRoom;
 
 impl RoomLink for NoRoom {
     fn call(&self, _verb: &str, _args: &Value) -> Result<String, String> {
-        Err("this session has no room: the box's coordinator is a daemon of its own (`harnessd \
+        Err(
+            "this session has no room: the box's coordinator is a daemon of its own (`harnessd \
              --room`), and this daemon was not started with one, so there is nothing to post to, \
              claim, or hold"
-            .to_string())
+                .to_string(),
+        )
     }
 
     fn beats_on_my_behalf(&self) -> bool {
@@ -239,7 +241,8 @@ fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
             ),
         ));
     }
-    link.call(&verb, args).map_err(|why| Invocation::failed(why.clone(), why))
+    link.call(&verb, args)
+        .map_err(|why| Invocation::failed(why.clone(), why))
 }
 
 fn nonempty(args: &Value, key: &str) -> bool {

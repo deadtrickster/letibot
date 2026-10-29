@@ -25,10 +25,8 @@ impl Scratch {
         // directory would make one test's cleanup another test's mystery.
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
-        let p = std::env::temp_dir().join(format!(
-            "letibot-room-{what}-{}-{n}",
-            std::process::id()
-        ));
+        let p =
+            std::env::temp_dir().join(format!("letibot-room-{what}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&p).expect("a scratch directory");
         Scratch(p)
     }
@@ -141,10 +139,22 @@ fn a_claim_is_a_lock_over_the_socket_and_the_refusal_names_the_holder() {
     post(&a, "p1", "ram", "8 GB");
 
     assert!(matches!(
-        call(&a, Request::Claim { id: "c1".into(), tag: "ram".into() }),
+        call(
+            &a,
+            Request::Claim {
+                id: "c1".into(),
+                tag: "ram".into()
+            }
+        ),
         Response::Claimed { .. }
     ));
-    match call(&b, Request::Claim { id: "c2".into(), tag: "ram".into() }) {
+    match call(
+        &b,
+        Request::Claim {
+            id: "c2".into(),
+            tag: "ram".into(),
+        },
+    ) {
         Response::Refused { why, .. } => {
             let said = why.to_string();
             assert!(said.contains("s-a"), "the refusal names the holder: {said}");
@@ -183,7 +193,13 @@ fn a_bell_goes_to_the_connections_the_event_is_about_and_not_to_a_reader() {
     let _ = wait_for(&eb, "its own post", Duration::from_secs(2));
     let _ = wait_for(&ea, "s-b's post", Duration::from_secs(2));
 
-    call(&a, Request::Claim { id: "c1".into(), tag: "ram".into() });
+    call(
+        &a,
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
+    );
     let claimed_by_b = wait_for(&eb, "the claim", Duration::from_secs(2));
     assert!(
         matches!(&claimed_by_b, Event::Claimed { by, .. } if by == "s-a"),
@@ -207,7 +223,13 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
     let (b, eb) = client(&server, "s-b");
     post(&a, "p1", "ram", "8 GB");
     post(&b, "p2", "ram", "2 GB");
-    call(&a, Request::Claim { id: "c1".into(), tag: "ram".into() });
+    call(
+        &a,
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
+    );
 
     // Drop `s-a`'s connection the way a dying daemon does: the socket closes.
     drop(a);
@@ -219,8 +241,13 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
         match eb.recv_timeout(Duration::from_millis(200)) {
             Ok(e) => {
                 heard.push(e.clone());
-                if matches!(&e, Event::Abandoned { why: letibot_room::Why::SessionGone { .. }, .. })
-                {
+                if matches!(
+                    &e,
+                    Event::Abandoned {
+                        why: letibot_room::Why::SessionGone { .. },
+                        ..
+                    }
+                ) {
                     break;
                 }
             }
@@ -240,7 +267,13 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
     }
 
     // And the item is claimable again immediately — the queue moved on.
-    match call(&b, Request::Claim { id: "c2".into(), tag: "ram".into() }) {
+    match call(
+        &b,
+        Request::Claim {
+            id: "c2".into(),
+            tag: "ram".into(),
+        },
+    ) {
         Response::Claimed { item, .. } => assert_eq!(item.id, 1, "the abandoned item is the head"),
         other => panic!("the queue moves on: {other:?}"),
     }
@@ -254,13 +287,19 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
 fn the_clock_takes_back_a_claim_whose_beat_stopped() {
     let scratch = Scratch::new("sweep");
     // A room whose lease is 200 ms, so the test does not wait out the real ninety seconds.
-    let server = Server::with_options(&scratch.socket(), Room::with_lease_ms(200), 50)
-        .expect("a socket");
+    let server =
+        Server::with_options(&scratch.socket(), Room::with_lease_ms(200), 50).expect("a socket");
     let (a, _ea) = client(&server, "s-a");
     let (b, eb) = client(&server, "s-b");
     post(&a, "p1", "ram", "8 GB");
     post(&b, "p2", "ram", "2 GB");
-    call(&a, Request::Claim { id: "c1".into(), tag: "ram".into() });
+    call(
+        &a,
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
+    );
 
     // No beats. The server's own clock is the one that notices.
     let mut stale = None;
@@ -288,11 +327,17 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
     let scratch = Scratch::new("beat");
     // A lease of 300 ms: a session that never beats loses its item inside the test's patience, and
     // one whose daemon beats keeps it. That difference IS the feature.
-    let server = Server::with_options(&scratch.socket(), Room::with_lease_ms(300), 100)
-        .expect("a socket");
+    let server =
+        Server::with_options(&scratch.socket(), Room::with_lease_ms(300), 100).expect("a socket");
     let (a, _ea) = client(&server, "s-a");
     post(&a, "p1", "ram", "8 GB");
-    call(&a, Request::Claim { id: "c1".into(), tag: "ram".into() });
+    call(
+        &a,
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
+    );
 
     // The turn runs — and the daemon, not the model, says so.
     let beat = a.start_beating();
@@ -319,7 +364,10 @@ fn the_daemon_beats_for_a_session_while_its_turn_runs() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(lost, "with the turn over and no beats, the room takes it back");
+    assert!(
+        lost,
+        "with the turn over and no beats, the room takes it back"
+    );
     server.stop();
 }
 
@@ -331,7 +379,11 @@ fn the_arbiter_hears_every_event_even_with_nothing_under_the_tag() {
     let (host, eh) = client(&server, "s-host");
     let (a, _ea) = client(&server, "s-a");
     post(&a, "p1", "ram", "8 GB");
-    match wait_for(&eh, "the arbiter's copy of the post", Duration::from_secs(2)) {
+    match wait_for(
+        &eh,
+        "the arbiter's copy of the post",
+        Duration::from_secs(2),
+    ) {
         Event::Posted { by, .. } => assert_eq!(by, "s-a"),
         other => panic!("{other:?}"),
     }
@@ -386,7 +438,11 @@ fn the_arbiter_hears_every_event_even_with_nothing_under_the_tag() {
         other => panic!("{other:?}"),
     }
     let items = server.items();
-    assert!(matches!(items[0].state, State::Dropped { .. }), "{:?}", items[0]);
+    assert!(
+        matches!(items[0].state, State::Dropped { .. }),
+        "{:?}",
+        items[0]
+    );
     server.stop();
 }
 
@@ -417,7 +473,9 @@ fn the_lease_refuses_a_second_coordinator_and_the_socket_is_not_bound() {
     // The second one is refused by the LEASE, before any socket exists — which is the order the
     // daemon must do it in, or a second room would be bound and served for a moment.
     let second = CoordinatorLease::owned_by(&path, "box/second/2");
-    let held = second.acquire(1_001).expect_err("two coordinators, one name");
+    let held = second
+        .acquire(1_001)
+        .expect_err("two coordinators, one name");
     assert!(held.sentence().contains("box/first/1"));
     assert!(!scratch.socket().exists());
 

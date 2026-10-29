@@ -45,10 +45,7 @@ pub fn socket_path() -> Option<PathBuf> {
         return Some(PathBuf::from(p));
     }
     let dir = crate::mergequeue::git::letibot_data_dir()?;
-    Some(letibot_room::socket_path(
-        &dir,
-        &letibot_room::host_key(),
-    ))
+    Some(letibot_room::socket_path(&dir, &letibot_room::host_key()))
 }
 
 /// **The coordinator's lease on this box** — the file that makes *one coordinator* true.

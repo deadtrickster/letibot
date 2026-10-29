@@ -40,7 +40,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use crate::item::Speaker;
 use crate::room::Event;
 use crate::server::now_ms;
-use crate::wire::{Request, Response, ROOM_PROTOCOL_VERSION};
+use crate::wire::{ROOM_PROTOCOL_VERSION, Request, Response};
 
 /// How long one round trip may take before the client calls the connection dead. Generous: the
 /// coordinator is a local process whose longest act is a `Mutex` on an in-memory map.
@@ -225,10 +225,7 @@ impl Client {
                 // **A third of the lease, or the room's own number, whichever is sooner.** A
                 // client that beats every five seconds against a five-second lease is a client
                 // that loses its item between two ticks.
-                let every = welcome
-                    .beat_every_ms
-                    .min(welcome.lease_ms / 3)
-                    .max(250);
+                let every = welcome.beat_every_ms.min(welcome.lease_ms / 3).max(250);
                 loop {
                     // Sleep first: a turn that begins by claiming an item must not beat before it
                     // holds anything, and the claim's own `beat_ms` is already `now`.
@@ -257,34 +254,42 @@ impl Client {
                 }
             })
             .ok();
-        Beat {
-            stop,
-            handle,
-        }
+        Beat { stop, handle }
     }
 
     // ===== The connection =====
 
-    fn open(&self) -> Result<(), ClientError> {        let stream = UnixStream::connect(&self.inner.path).map_err(|e| {
+    fn open(&self) -> Result<(), ClientError> {
+        let stream = UnixStream::connect(&self.inner.path).map_err(|e| {
             ClientError(format!(
                 "there is no room coordinator at {} ({e}) — the room is a daemon of its own, \
                  started with `harnessd --room`",
                 self.inner.path.display()
             ))
         })?;
-        let mut reader = BufReader::new(stream.try_clone().map_err(|e| ClientError(e.to_string()))?);
+        let mut reader =
+            BufReader::new(stream.try_clone().map_err(|e| ClientError(e.to_string()))?);
         let mut writer = stream;
+        // **A handshake that cannot hang its caller.** `Client::connect` runs inside
+        // `Harness::open`, so a coordinator that is up but wedged would otherwise block every
+        // session open on this box for ever. Two seconds is generous for a local process whose
+        // longest act is a mutex over an in-memory map; past it the session gets its sentence and
+        // opens without a room.
+        let _ = writer.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let _ = writer.set_write_timeout(Some(std::time::Duration::from_secs(2)));
         let hello = Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: self.inner.speaker.clone(),
         };
         write_frame(&mut writer, &hello)?;
-        let first = read_frame(&mut reader)?.ok_or_else(|| {
-            ClientError(format!(
-                "the room at {} closed the connection before saying `hello`",
-                self.inner.path.display()
-            ))
-        })?;
+        let first = read_frame(&mut reader)
+            .map_err(|e| ClientError(format!("reading from the room: {e}")))?
+            .ok_or_else(|| {
+                ClientError(format!(
+                    "the room at {} closed the connection before saying `hello`",
+                    self.inner.path.display()
+                ))
+            })?;
         match first {
             Response::Welcome {
                 lease_ms,
@@ -305,7 +310,9 @@ impl Client {
                 )));
             }
             Response::Bye { why } => {
-                return Err(ClientError(format!("the room closed the connection: {why}")));
+                return Err(ClientError(format!(
+                    "the room closed the connection: {why}"
+                )));
             }
             other => {
                 return Err(ClientError(format!(
@@ -313,6 +320,12 @@ impl Client {
                 )));
             }
         }
+        // **The timeout was the HANDSHAKE's, and it goes back now.** Socket options belong to the
+        // socket, not to one descriptor, so leaving it on would have the reader thread wake every
+        // two seconds with `WouldBlock` and read that as a closed connection — a client that
+        // disconnects itself twice a minute.
+        let _ = writer.set_read_timeout(None);
+        let _ = writer.set_write_timeout(None);
         let weak = Arc::downgrade(&self.inner);
         let reader_thread = std::thread::Builder::new()
             .name(format!("room-read-{}", self.inner.speaker.session))
@@ -322,7 +335,9 @@ impl Client {
                 // would hold its own connection open and the coordinator would never see the
                 // close — which is the one fact the whole liveness design rests on.
                 loop {
-                    let Some(me) = weak.upgrade().map(Client::from_shared) else { break };
+                    let Some(me) = weak.upgrade().map(Client::from_shared) else {
+                        break;
+                    };
                     match read_frame(&mut reader) {
                         Ok(Some(frame)) => match frame {
                             Response::Event { event } => (me.inner.wake)(&event),
@@ -342,6 +357,15 @@ impl Client {
                             break;
                         }
                         Err(e) => {
+                            // A read that timed out is not a connection that closed — the socket
+                            // has no read timeout after the handshake, so this is belt and braces
+                            // against one set by something else.
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                            ) {
+                                continue;
+                            }
                             me.drop_connection(&e.to_string());
                             break;
                         }
@@ -413,11 +437,9 @@ fn write_frame(w: &mut impl Write, request: &Request) -> Result<(), ClientError>
         .map_err(|e| ClientError(format!("writing to the room: {e}")))
 }
 
-fn read_frame(reader: &mut BufReader<UnixStream>) -> Result<Option<Response>, ClientError> {
+fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Response>> {
     let mut line = String::new();
-    let n = reader
-        .read_line(&mut line)
-        .map_err(|e| ClientError(format!("reading from the room: {e}")))?;
+    let n = reader.read_line(&mut line)?;
     if n == 0 {
         return Ok(None);
     }
@@ -427,5 +449,5 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> Result<Option<Response>, Cl
     }
     serde_json::from_str(line)
         .map(Some)
-        .map_err(|e| ClientError(format!("a frame from the room: {e}")))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
