@@ -608,29 +608,96 @@ pub fn uncommitted_work(wt: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// **The git directory a linked worktree's `.git` names** — a worktree's `.git` is a FILE of one
+/// line, `gitdir: <main checkout>/.git/worktrees/<name>`; the main checkout's own `.git` is a
+/// directory, and this answers `None` for it. That asymmetry is what [`is_worktree_of`] rests on.
+fn linked_gitdir(wt: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(wt.join(".git")).ok()?;
+    let rest = text.trim().strip_prefix("gitdir:")?.trim();
+    (!rest.is_empty()).then(|| PathBuf::from(rest))
+}
+
+/// **Whether `path` is a linked worktree of `repo`, and never the repository itself** — the rail
+/// under every removal the queues make.
+///
+/// A row's `worktree` column is text somebody wrote, and it is the only thing standing between a
+/// sweep and `rm -rf` of a checkout: the main checkout can never pass (its `.git` is a directory,
+/// not a file naming `<repo>/.git/worktrees/<name>`), and neither can another repository's tree.
+/// The spelling is compared both as written and resolved, because a Mac's `/var` and
+/// `/private/var` name one directory.
+pub fn is_worktree_of(path: &Path, repo: &Path) -> bool {
+    let Some(linked) = linked_gitdir(path) else {
+        return false;
+    };
+    let Some(main) = repo_of_worktree(repo) else {
+        return false;
+    };
+    let worktrees = main.join(".git").join("worktrees");
+    let resolved = std::fs::canonicalize(&worktrees).unwrap_or_else(|_| worktrees.clone());
+    linked.starts_with(&worktrees)
+        || linked.starts_with(&resolved)
+        || std::fs::canonicalize(&linked).is_ok_and(|p| p.starts_with(&resolved))
+}
+
+/// **Remove one worktree of `repo` and everything inside it** — the tree, and the cache a package
+/// keeps in its own tree (a private `target/`, which is what makes a review's tree weigh 32 GB;
+/// MEASURED 2026-10-29).
+///
+/// Refused, saying why, when the path is not a worktree of this repository ([`is_worktree_of`]) or
+/// when the tree holds uncommitted work — the daemon's own leftover logs are not the tree's work,
+/// but a note the child wrote is, and the branch may not carry it.
+///
+/// **A tree git can no longer read is kept, not removed.** A `worktree add` whose bookkeeping was
+/// pruned behind it (a `git worktree prune` after a move, a `rm -rf <repo>/.git/worktrees/<name>`)
+/// leaves a directory git answers `fatal: not a git repository` for, and whether that tree holds
+/// work cannot be told: this removes nothing it cannot check, and says which tree it was.
+pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), String> {
+    if !wt.exists() {
+        // The tree is gone; git's bookkeeping for it may not be.
+        let _ = git(repo, &["worktree", "prune"]);
+        return Ok(());
+    }
+    if !is_worktree_of(wt, repo) {
+        return Err(format!(
+            "{} is not a worktree of {} (its `.git` names no `worktrees` directory of this \
+             repository), so nothing was removed from it",
+            wt.display(),
+            repo.display()
+        ));
+    }
+    let dirty = uncommitted_work(wt)?;
+    if !dirty.is_empty() {
+        return Err(format!(
+            "the worktree {} holds uncommitted changes ({}), so it and `{branch}` are kept",
+            wt.display(),
+            dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    git(
+        repo,
+        &["worktree", "remove", "--force", &wt.to_string_lossy()],
+    )?;
+    let _ = git(repo, &["worktree", "prune"]);
+    Ok(())
+}
+
+/// **Delete one branch of `repo`, and treat "there is no such branch" as done** — a sweep runs on
+/// every pass, and the second pass must not fail where the first one succeeded.
+pub fn delete_branch(repo: &Path, branch: &str) -> Result<(), String> {
+    if branch_head(repo, branch).is_none() {
+        return Ok(());
+    }
+    git(repo, &["branch", "-D", branch]).map(|_| ())
+}
+
 /// Remove a branch's own worktree and the branch, after a landing — only when the tree holds
 /// nothing uncommitted (the daemon's own leftover logs are not the tree's work). `Err` says what
 /// was kept and why.
 pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Result<(), String> {
     if let Some(wt) = worktree {
-        let wt = Path::new(wt);
-        if wt.exists() {
-            let dirty = uncommitted_work(wt)?;
-            if !dirty.is_empty() {
-                return Err(format!(
-                    "the worktree {} holds uncommitted changes ({}), so it and `{branch}` are kept",
-                    wt.display(),
-                    dirty.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
-                ));
-            }
-            git(
-                repo,
-                &["worktree", "remove", "--force", &wt.to_string_lossy()],
-            )?;
-        }
-        let _ = git(repo, &["worktree", "prune"]);
+        remove_worktree(repo, Path::new(wt), branch)?;
     }
-    git(repo, &["branch", "-D", branch]).map(|_| ())
+    delete_branch(repo, branch)
 }
 
 /// **Remove a superseded branch's worktree and the branch, but only when there is nothing in them

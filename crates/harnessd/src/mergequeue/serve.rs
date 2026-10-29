@@ -176,6 +176,52 @@ pub struct RepoQueue {
     lease_ok: Arc<AtomicBool>,
 }
 
+/// **One terminal row's hold on a worktree and a branch** — the facts the resource sweep needs,
+/// whichever queue the row is in. A review row and the merge row it was approved into name the
+/// same tree, so the tree is examined once and both records get the note.
+struct Held<'a> {
+    branch: &'a str,
+    /// `''` when the row names no tree — then the sweep costs no `git` call at all.
+    worktree: &'a str,
+    target: &'a str,
+    /// The session that works in the tree; `''` when the row names none, which a merge row whose
+    /// review row is gone does.
+    session: &'a str,
+    /// What the record keeps, for the note: `` `landed_sha` 0f2d9550 ``.
+    keeps: String,
+}
+
+/// **What the sweep found at one tree** — what went, and what stayed with the reason it did. Two
+/// rows that name one tree share one of these, so the `git` work is done once and both records say
+/// the same thing happened.
+#[derive(Clone, Default)]
+struct Settled {
+    /// What went, as the note says it: `the worktree /x`, `` the branch `agent/y` ``.
+    released: Vec<String>,
+    /// What stayed: the kind of reason (which is the note's key) and the sentence for a person.
+    kept: Option<(&'static str, String)>,
+}
+
+/// **What a release says on the row's record** — one sentence, in the row's own terms: what went,
+/// when, and what the record still keeps. `None` when nothing went and nothing is kept, which is
+/// the row whose tree and branch were both already gone.
+fn release_note(found: &Settled, keeps: &str, now_ms: u64) -> Option<String> {
+    let at = letibot_claude::handover::iso_ts(now_ms);
+    let kept = found.kept.as_ref().map(|(_, why)| why.as_str());
+    match (found.released.is_empty(), kept) {
+        (true, None) => None,
+        (false, None) => Some(format!(
+            "resources released {at}: {}; the record keeps {keeps}",
+            found.released.join(" and ")
+        )),
+        (false, Some(why)) => Some(format!(
+            "resources released {at}: {}; resources kept: {why}",
+            found.released.join(" and ")
+        )),
+        (true, Some(why)) => Some(format!("resources kept {at}: {why}")),
+    }
+}
+
 /// **A gate in flight** — what it is for, so its verdict can be applied when it ends, and the
 /// thread running it.
 struct InFlight {
@@ -411,6 +457,9 @@ impl RepoQueue {
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
         worked |= self.settle_landed_by_hand()?;
+        // Beside the other sweeps, and after them: a row that went terminal in this pass has its
+        // resources released in the same one.
+        self.release_terminal_resources()?;
         if self.gate_in_flight() {
             // One gate per repository: the health of every target and the next landing wait for
             // it; the review queue above did not.
@@ -514,6 +563,16 @@ impl RepoQueue {
             return Ok(false);
         }
         self.store.tell_once(key, gate::now_ms())
+    }
+
+    /// **Said before, in this worker?** — the in-memory half of [`Self::first_time`], for a
+    /// question asked once per row per pass: a settled row must cost a hash lookup, not a store
+    /// query and two `git` calls.
+    fn said(&self, key: &str) -> bool {
+        self.rung
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(key)
     }
 
     /// **Forget what was said under `prefix`** — the state it was about is over. Answers how many
@@ -1047,6 +1106,278 @@ impl RepoQueue {
         Ok(moved)
     }
 
+    /// **A terminal row keeps its record and gives back its resources** — the sweep.
+    ///
+    /// MEASURED 2026-10-29 on this box, and it is why this exists: `review_queue` held **5
+    /// `approved`** and **52 `withdrawn`** rows that name a `worktree`, and **nine of those
+    /// directories were still there**; `~/Projects/letibot/worktrees` was **36 GB — 32 GB of it
+    /// ONE review's tree** (a checkout, and whatever a build had left inside it);
+    /// `~/Projects/stroppy-io/worktrees` was another **5.9 GB**. The only retirement was
+    /// [`Self::landed`]'s, and it fires only when the branch's head is still the head the row was
+    /// cut at and no live session holds the tree — so every `rejected`, `cannot_decide` and
+    /// superseded `withdrawn` row kept its tree for ever, a landing done by hand (`git merge
+    /// --ff-only`, which the operator does when the queue is slow) never entered that path at all,
+    /// and a branch that had moved since the row was cut was left in silence. A person cleared
+    /// eight of them by hand and took that directory from 36 GB to 95 MB: that is a sweep's job.
+    ///
+    /// **Terminal is the store's own answer** ([`ReviewState::is_open`], [`MergeState::is_open`]),
+    /// not a list of names: a `blocked` review is a row a person's `restart` moves, so its tree is
+    /// still the queue's business — and a blocked or rejected branch carries work the target does
+    /// not have, which keeps it in any case (below). And **an `approved` review whose landing is
+    /// still open is not terminal for the sweep**: `approved` is the REVIEW queue's terminal, the
+    /// merge queue has not started with it, and a landing with no branch cannot rebase. So the
+    /// work is released when the work is over, not when the first of the two queues is.
+    ///
+    /// **The record stays.** The row keeps its branch, its `base_sha`/`head_sha`/`reviewed_sha`/
+    /// `landed_sha`, its verdict and its reasons, and the release is written where a reader of the
+    /// row finds it — a move of the row's RECORD (`from == to`, [`Store::record_transition`]) that
+    /// says what went, when, and which sha the row still keeps. It is deliberately not a move of
+    /// the ROW: that rewrites `state_ms`, and a finished row's `state_ms` is what the pane's done
+    /// list is keyed on (`ui::panes::queue::RECENT_MS` is a day, so a two-day-old `withdrawn` row
+    /// would come back as just-finished) and what a project's ring is keyed on
+    /// ([`Self::ring_the_projects`], so a `cannot_decide` row would wake its project again).
+    ///
+    /// **What goes, and what stays**, in three rules:
+    ///
+    /// * a tree a live session works in is kept whatever else is true (R92.24) — and released by a
+    ///   later pass once that session has ended, which is the part a person used to do by hand;
+    /// * the branch decides the rest: it goes only when the target already has everything on it
+    ///   (`git merge-base --is-ancestor`), which is what a landing is whether the queue made it or
+    ///   a person did, and a tree with nothing uncommitted goes with it;
+    /// * anything else is kept — a branch that carries work, a tree with uncommitted changes, a
+    ///   tree that is not this repository's — said on the row's record and raised where a person
+    ///   reads it, because the branch may be the only copy of that work.
+    ///
+    /// Cheap: a row that names no worktree costs no `git` call at all, a tree that two rows name
+    /// is examined once, and a row the sweep has settled is not looked at again — `first_time`, so
+    /// not after a restart either.
+    fn release_terminal_resources(&self) -> Result<(), StoreError> {
+        let reviews = self.store.review_rows(Some(&self.key))?;
+        let merges = self.store.merge_rows(Some(&self.key))?;
+        // A merge row names no session of its own; the review row that opened it does, and a row
+        // whose review row is gone names none — nothing can be asked about it, and nothing is.
+        let session_of = |review_id: &str| {
+            reviews
+                .iter()
+                .find(|r| r.id == review_id)
+                .map(|r| r.session_id.as_str())
+                .unwrap_or("")
+        };
+        let landing_open = |review_id: &str| {
+            merges
+                .iter()
+                .any(|m| m.review_id == review_id && m.state.is_open())
+        };
+        // One examination per tree per pass: a review row and the merge row it was approved into
+        // name the same worktree and the same branch, and the tree is one thing.
+        let mut decided: HashMap<(String, String), Settled> = HashMap::new();
+        for m in &merges {
+            if m.state.is_open() || m.worktree.is_none() {
+                continue;
+            }
+            let keeps = match m.landed_sha.as_deref().filter(|s| !s.is_empty()) {
+                Some(landed) => format!("`landed_sha` {landed}"),
+                None => format!("`approved_sha` {}", m.approved_sha),
+            };
+            let held = Held {
+                branch: &m.branch,
+                worktree: m.worktree.as_deref().unwrap_or(""),
+                target: &m.target,
+                session: session_of(&m.review_id),
+                keeps,
+            };
+            self.release_one("merge", &m.id, m.state.as_str(), &held, &mut decided)?;
+        }
+        for r in &reviews {
+            if r.state.is_open() || r.worktree.is_none() || landing_open(&r.id) {
+                continue;
+            }
+            let keeps = match r.reviewed_sha.as_deref().filter(|s| !s.is_empty()) {
+                Some(judged) => format!(
+                    "`head_sha` {} (judged {judged}), `base_sha` {}",
+                    r.head_sha, r.base_sha
+                ),
+                None => format!("`head_sha` {}, `base_sha` {}", r.head_sha, r.base_sha),
+            };
+            let held = Held {
+                branch: &r.branch,
+                worktree: r.worktree.as_deref().unwrap_or(""),
+                target: &r.target,
+                session: &r.session_id,
+                keeps,
+            };
+            self.release_one("review", &r.id, r.state.as_str(), &held, &mut decided)?;
+        }
+        Ok(())
+    }
+
+    /// **What the sweep did with one row's tree**, and where it says so.
+    ///
+    /// Three keys, and they answer three questions. `released:<row>` is *there is nothing more to
+    /// do here* — written once the tree and the branch are both gone (or were never there), so a
+    /// settled row costs a hash lookup and no `git` call for the rest of the daemon's life. A row
+    /// whose BRANCH is kept is not settled — the target may move and take it — so it is looked at
+    /// again on the next pass, and `noted:<row>:<kind>` is what keeps its note to once. And
+    /// `kept:<tree>` is *a person has been told about this tree*, which is shared with the two
+    /// paths that keep a tree themselves ([`Self::landed`], [`Self::supersede_fix_branches`]): one
+    /// tree is one piece of news, however many rows name it and whoever says it first.
+    fn release_one(
+        &self,
+        queue: &str,
+        id: &str,
+        state: &str,
+        held: &Held<'_>,
+        decided: &mut HashMap<(String, String), Settled>,
+    ) -> Result<(), StoreError> {
+        let settled = format!("released:{}:{queue}:{id}:{state}", self.key);
+        if held.worktree.is_empty() || self.said(&settled) {
+            return Ok(());
+        }
+        let tree = (held.worktree.to_string(), held.branch.to_string());
+        let found = match decided.get(&tree) {
+            Some(found) => found.clone(),
+            None => {
+                let found = self.settle_tree(held);
+                decided.insert(tree, found.clone());
+                found
+            }
+        };
+        let now = gate::now_ms();
+        let Some(note) = release_note(&found, &held.keeps, now) else {
+            // Nothing was there: the tree and the branch are both gone already.
+            self.first_time(&settled)?;
+            return Ok(());
+        };
+        let key = match &found.kept {
+            Some((kind, _)) => format!("noted:{}:{queue}:{id}:{state}:{kind}", self.key),
+            None => settled.clone(),
+        };
+        if !self.first_time(&key)? {
+            return Ok(());
+        }
+        let me = self.me().to_string();
+        self.store
+            .record_transition(queue, id, &self.key, Some(state), state, &me, &note, now)?;
+        if let Some((_, why)) = &found.kept
+            && self.first_time(&format!("kept:{}:{}", self.key, held.worktree))?
+        {
+            // Said where a person reads it (R92.4), not only in the daemon's log — once per tree.
+            self.raise(
+                "queue_branch_kept",
+                format!("the queue's sweep of `{}`'s resources: {why}", held.branch),
+            );
+        }
+        Ok(())
+    }
+
+    /// **The decision about one tree** — what may go, and what stays with the reason it does.
+    ///
+    /// **The branch decides, and the tree follows it.** That is the rule this queue already
+    /// applies to a superseded fix (`git::retire_if_empty`: *a branch that carries nothing may go,
+    /// a branch that carries the fixer's work and its tree are kept*), and one queue may not hold
+    /// two rules for one tree: a sweep that removed the tree of a branch the mover had just said it
+    /// was keeping would leave two notes on one row saying opposite things. So a branch the target
+    /// already has carries nothing and takes its tree with it, and a branch that carries work keeps
+    /// both — the tree is where that work is continued, and it is the only copy of anything the
+    /// branch does not hold.
+    ///
+    /// A tree a live session works in is kept whatever the branch says (R92.24), and released by a
+    /// later pass once that session has ended.
+    fn settle_tree(&self, held: &Held<'_>) -> Settled {
+        let mut found = Settled::default();
+        let wt = Path::new(held.worktree);
+        let there = wt.exists();
+        if there && !held.session.is_empty() && self.env.door.session_live(held.session) {
+            found.kept = Some((
+                "live",
+                format!(
+                    "the worktree {} and `{}` are kept: the session `{}` that works in it is \
+                     still live, and the sweep releases them once it has ended",
+                    wt.display(),
+                    held.branch,
+                    held.session
+                ),
+            ));
+            return found;
+        }
+        if let Some((kind, why)) = self.branch_may_go(held) {
+            let with_tree = if there {
+                format!(" (its worktree {} is kept with it)", wt.display())
+            } else {
+                String::new()
+            };
+            found.kept = Some((kind, format!("{why}{with_tree}")));
+            return found;
+        }
+        if there {
+            match git::remove_worktree(&self.repo, wt, held.branch) {
+                Ok(()) => found
+                    .released
+                    .push(format!("the worktree {}", wt.display())),
+                Err(why) => {
+                    // A tree with work in it, when the branch itself is safe: the branch may not
+                    // carry what was never committed.
+                    found.kept = Some(("tree", why));
+                    return found;
+                }
+            }
+        }
+        if git::branch_head(&self.repo, held.branch).is_some() {
+            match git::delete_branch(&self.repo, held.branch) {
+                Ok(()) => found.released.push(format!("the branch `{}`", held.branch)),
+                Err(why) => found.kept = Some(("branch", why)),
+            }
+        }
+        found
+    }
+
+    /// **Whether a terminal row's branch may go** — `None` when it may, else the kind of reason it
+    /// stays and the sentence for a person.
+    ///
+    /// The test is the one a landing makes: *does the target already have everything on this
+    /// branch?* (`git merge-base --is-ancestor`). That is a landing by the queue and a landing by
+    /// hand alike, and it is what the operator's own `git merge --ff-only` mornings were.
+    fn branch_may_go(&self, held: &Held<'_>) -> Option<(&'static str, String)> {
+        let Some(head) = git::branch_head(&self.repo, held.branch) else {
+            return None; // already gone: nothing to keep, nothing to delete
+        };
+        let Some(tip) = git::branch_head(&self.repo, held.target) else {
+            return Some((
+                "target",
+                format!(
+                    "`{}` cannot be named in {}, so whether `{}` is on it cannot be told, and the \
+                     branch is kept",
+                    held.target,
+                    self.repo.display(),
+                    held.branch
+                ),
+            ));
+        };
+        match git::is_ancestor(&self.repo, &head, &tip) {
+            Ok(true) => None,
+            Ok(false) => {
+                let over = git::commits_over(&self.repo, &tip, &head)
+                    .map(|n| format!("{n} commit(s)"))
+                    .unwrap_or_else(|_| "commits".into());
+                Some((
+                    "carries",
+                    format!(
+                        "the branch `{}` is kept: it carries {over} over `{}` (at {tip}) that are \
+                         not on it, so the branch is the only copy of that work",
+                        held.branch, held.target
+                    ),
+                ))
+            }
+            Err(why) => Some((
+                "unknown",
+                format!(
+                    "whether `{}` is on `{}` could not be told ({why}), so the branch is kept",
+                    held.branch, held.target
+                ),
+            )),
+        }
+    }
+
     /// **The review of a tip the target no longer has** (R76 item 4, and the operator's ruling of
     /// 2026-10-26: *"a target review row is about ONE tip"*). Yesterday's four `red-main-<sha>`
     /// rows for `e51847ed`, `f35d19c0`, `54e5a372` and `0158b957` were one morning's tips of one
@@ -1170,11 +1501,15 @@ impl RepoQueue {
                 git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt))
             };
             if let Err(kept) = kept {
-                // Said where a person reads it (R92.4), not only in the daemon's log.
-                self.raise(
-                    "queue_branch_kept",
-                    format!("after withdrawing a superseded fix branch: {kept}"),
-                );
+                // Said where a person reads it (R92.4), not only in the daemon's log — and once
+                // per tree, which is the key the resource sweep reads too ([`Self::release_one`]).
+                let key = format!("kept:{}:{wt}", self.key);
+                if self.first_time(&key)? {
+                    self.raise(
+                        "queue_branch_kept",
+                        format!("after withdrawing a superseded fix branch: {kept}"),
+                    );
+                }
             }
         }
         Ok(moved)
@@ -2112,11 +2447,20 @@ impl RepoQueue {
                 None => git::retire_branch(repo, &row.branch, row.worktree.as_deref()),
             };
             if let Err(kept) = kept {
-                // Said where a person reads it (R92.4), not only in the daemon's log.
-                self.raise(
-                    "queue_branch_kept",
-                    format!("after landing `{}`: {kept}", row.branch),
+                // Said where a person reads it (R92.4), not only in the daemon's log — and once
+                // per tree, which is the key the resource sweep reads too ([`Self::release_one`]):
+                // one tree is one piece of news, whoever says it.
+                let key = format!(
+                    "kept:{}:{}",
+                    self.key,
+                    row.worktree.as_deref().unwrap_or("")
                 );
+                if self.first_time(&key)? {
+                    self.raise(
+                        "queue_branch_kept",
+                        format!("after landing `{}`: {kept}", row.branch),
+                    );
+                }
             }
         }
         Ok(())

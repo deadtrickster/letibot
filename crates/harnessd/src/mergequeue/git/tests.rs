@@ -107,6 +107,67 @@ fn a_test_never_reaches_the_real_landing_root() {
     guard_not_real(std::path::Path::new("/tmp/elsewhere"));
 }
 
+/// **The main checkout is never a worktree of itself, and never removed** — a row's `worktree`
+/// column is text somebody wrote, and it is the only thing between a sweep and `rm -rf` of a
+/// checkout. Another repository's tree is not this one's either.
+#[test]
+fn the_main_checkout_is_not_a_worktree_anybody_may_remove() {
+    let dir = TempDir::new("rail");
+    let repo = repo(&dir.0);
+    assert!(
+        !is_worktree_of(&repo, &repo),
+        "the repository's own `.git` is a directory, not a link into `worktrees`"
+    );
+    let kept = remove_worktree(&repo, &repo, "agent/none").unwrap_err();
+    assert!(kept.contains("is not a worktree of"), "{kept}");
+    assert!(repo.join("a.txt").exists(), "nothing was removed");
+
+    let other = TempDir::new("rail-other");
+    let other_repo = crate::mergequeue::serve::tests::repo(&other.0);
+    let (theirs, _, _) = branch(&other_repo, "theirs", "t.txt");
+    assert!(
+        !is_worktree_of(&theirs, &repo),
+        "a tree of another repository is not this one's to remove"
+    );
+
+    let (mine, _, _) = branch(&repo, "mine", "m.txt");
+    assert!(is_worktree_of(&mine, &repo));
+    remove_worktree(&repo, &mine, "agent/mine").unwrap();
+    assert!(!mine.exists(), "its own worktree goes");
+}
+
+/// **A tree git can no longer read is kept, not removed** — a `worktree add` whose bookkeeping was
+/// pruned behind it leaves a directory git answers `fatal: not a git repository` for, and whether
+/// it holds work cannot be told. Nothing is removed that cannot be checked, and the sentence says
+/// which tree it was, so a person can look.
+#[test]
+fn a_worktree_git_no_longer_reads_is_kept_and_said() {
+    let dir = TempDir::new("forgotten");
+    let repo = repo(&dir.0);
+    let (wt, _, _) = branch(&repo, "forgot", "f.txt");
+    std::fs::create_dir_all(wt.join("target")).unwrap();
+    std::fs::write(wt.join("target/cache"), "32 GB, in the story\n").unwrap();
+    std::fs::remove_dir_all(repo.join(".git").join("worktrees")).unwrap();
+    assert!(wt.exists(), "the directory is still there");
+    let kept = remove_worktree(&repo, &wt, "agent/forgot").unwrap_err();
+    assert!(kept.contains("not a git repository"), "{kept}");
+    assert!(wt.exists(), "and nothing was removed from it");
+    assert!(wt.join("target/cache").exists(), "the cache is still there");
+}
+
+/// **A tree with work in it is not removed, and the sentence names the file** — the branch may not
+/// carry what was never committed.
+#[test]
+fn a_dirty_worktree_is_refused_by_name() {
+    let dir = TempDir::new("refuse-dirty");
+    let repo = repo(&dir.0);
+    let (wt, _, _) = branch(&repo, "dirt", "d.txt");
+    std::fs::write(wt.join("draft.md"), "not committed\n").unwrap();
+    let kept = remove_worktree(&repo, &wt, "agent/dirt").unwrap_err();
+    assert!(kept.contains("draft.md"), "{kept}");
+    assert!(wt.exists());
+}
+
 /// **The daemon's own leftover logs do not keep a landed branch's tree** (R92.4): `.letibot/*.jsonl`
 /// that older builds wrote into the workspace are not the child's work; a note it wrote is.
 #[test]
@@ -125,6 +186,9 @@ fn a_tree_holding_only_the_daemons_logs_is_retired_and_one_with_work_is_kept() {
     assert!(uncommitted_work(&wt).unwrap().is_empty());
     retire_branch(&repo, "agent/logs", Some(&wt.to_string_lossy())).unwrap();
     assert!(!wt.exists());
+    // The second call is a no-op, not a failure: a sweep runs on every pass, and the pass after a
+    // release must not report one.
+    retire_branch(&repo, "agent/logs", Some(&wt.to_string_lossy())).unwrap();
 
     let (wt, _, _) = branch(&repo, "notes", "n.txt");
     std::fs::create_dir_all(wt.join(".letibot/notes")).unwrap();

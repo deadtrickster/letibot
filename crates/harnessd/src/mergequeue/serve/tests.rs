@@ -1459,6 +1459,10 @@ fn a_rejected_branch_that_moves_goes_back_to_review() {
     let w = World::new("rejected-moves");
     let (wt, base, head) = branch(&w.repo, "rj", "rj.txt");
     w.enqueue("rj", &wt, &base, &head);
+    // **The child that did the work is still there** — the reviewer's complaints went back to it
+    // and it is expected to answer them in its own tree, so the tree is not the sweep's to take
+    // (R92.24; the resource sweep keeps a tree a live session works in, and releases it later).
+    w.door.live.lock().unwrap().push("s-rj".into());
     let q = w.worker(Arc::new(GreenGate), "a");
     run(&q, 1);
     let s = w.store();
@@ -3138,6 +3142,286 @@ fn a_landed_branch_whose_session_is_live_keeps_its_tree_and_says_so() {
         "{}",
         said[0]
     );
+}
+
+// ===== The resources a terminal row gives back =====
+
+/// The sweep's own notes on one row's record, in order.
+fn release_notes(w: &World, queue: &str, id: &str) -> Vec<String> {
+    w.store()
+        .transitions(queue, id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.why)
+        .filter(|why| why.starts_with("resources released") || why.starts_with("resources kept"))
+        .collect()
+}
+
+/// A person's withdrawal of a row, as the verbs write it — the row is terminal before any pass.
+fn withdraw(w: &World, id: &str) {
+    let r = w.store().review_row(id).unwrap().unwrap();
+    assert!(
+        w.store()
+            .move_review(
+                id,
+                r.state,
+                ReviewState::Withdrawn,
+                &Move::new("operator:s-op", "withdrawn: the operator landed it by hand"),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+}
+
+/// **A withdrawn row gives back its tree and its branch, and keeps its record.**
+///
+/// The operator's own case, and most of the nine directories they cleared by hand: the branch was
+/// merged with `git merge --ff-only` (the queue was slow), so `landed`'s retirement never ran —
+/// it is only reached by a landing the QUEUE made. MEASURED 2026-10-29: 52 such rows, nine trees.
+#[test]
+fn a_withdrawn_row_gives_back_its_tree_and_branch_and_keeps_its_record() {
+    let w = World::new("release-withdrawn");
+    let (wt, base, head) = branch(&w.repo, "gone", "gone.txt");
+    // Landed by hand: everything the branch carries is on `main`, and nothing retired anything.
+    sh(&w.repo, &["merge", "--ff-only", "agent/gone"]);
+    w.enqueue("gone", &wt, &base, &head);
+    withdraw(&w, "gone");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+
+    let r = w.store().review_row("gone").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Withdrawn, "the record stays: {r:?}");
+    assert_eq!(r.branch, "agent/gone");
+    assert_eq!(r.base_sha, base, "and its shas");
+    assert_eq!(r.head_sha, head);
+    assert!(
+        r.worktree.is_some(),
+        "the row still says where the tree was"
+    );
+    assert!(!wt.exists(), "the tree is gone: {}", wt.display());
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/gone"),
+        None,
+        "and so is the branch"
+    );
+    let notes = release_notes(&w, "review", "gone");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("resources released"), "{}", notes[0]);
+    assert!(notes[0].contains(&wt.display().to_string()), "{}", notes[0]);
+    assert!(notes[0].contains("agent/gone"), "{}", notes[0]);
+    assert!(
+        notes[0].contains(&head) && notes[0].contains(&base),
+        "the note says which shas the record keeps: {}",
+        notes[0]
+    );
+}
+
+/// **A landing done by hand is a landing** — the row the queue itself withdraws as *already on
+/// `main`* gives its tree back in the same pass, which is the case `landed` could not reach.
+#[test]
+fn a_branch_landed_by_hand_is_released_like_a_landing() {
+    let w = World::new("release-byhand");
+    let (wt, base, head) = branch(&w.repo, "byh", "byh.txt");
+    w.enqueue("byh", &wt, &base, &head);
+    sh(&w.repo, &["merge", "--ff-only", "agent/byh"]);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+
+    let r = w.store().review_row("byh").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+    assert!(r.evidence.contains("already on `main`"), "{}", r.evidence);
+    assert!(!wt.exists(), "the tree goes with the withdrawal");
+    assert_eq!(git::branch_head(&w.repo, "agent/byh"), None);
+    assert_eq!(release_notes(&w, "review", "byh").len(), 1);
+}
+
+/// **A tree a live session works in is left alone — and released once that session ends**, which
+/// is what R92.24 asks for and what a person used to have to do by hand.
+#[test]
+fn a_terminal_rows_tree_a_live_session_holds_is_left_alone() {
+    let w = World::new("release-live");
+    let (wt, base, head) = branch(&w.repo, "live2", "l2.txt");
+    sh(&w.repo, &["merge", "--ff-only", "agent/live2"]);
+    w.enqueue("live2", &wt, &base, &head);
+    withdraw(&w, "live2");
+    w.door.live.lock().unwrap().push("s-live2".into());
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 2);
+
+    assert!(
+        wt.exists(),
+        "a live session's tree is not removed from under it"
+    );
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/live2"),
+        Some(head),
+        "and neither is the branch it has out"
+    );
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "said once, not once per pass: {said:?}");
+    assert!(
+        said[0].contains("s-live2") && said[0].contains("still live"),
+        "{}",
+        said[0]
+    );
+    assert_eq!(
+        release_notes(&w, "review", "live2").len(),
+        1,
+        "the record says it was kept"
+    );
+
+    // The session ends: the next pass releases what it held.
+    w.door.live.lock().unwrap().clear();
+    run(&q, 1);
+    assert!(!wt.exists(), "released once nobody is in it");
+    assert_eq!(git::branch_head(&w.repo, "agent/live2"), None);
+}
+
+/// **A tree with work in it is kept, with the reason on the row and a raised line** — the branch
+/// may not carry what was never committed, so both stay.
+#[test]
+fn a_dirty_tree_is_kept_and_says_why() {
+    let w = World::new("release-dirty");
+    let (wt, base, head) = branch(&w.repo, "dirty", "d.txt");
+    sh(&w.repo, &["merge", "--ff-only", "agent/dirty"]);
+    w.enqueue("dirty", &wt, &base, &head);
+    withdraw(&w, "dirty");
+    std::fs::write(wt.join("draft.md"), "not committed anywhere\n").unwrap();
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 2);
+
+    assert!(wt.exists(), "the tree is kept");
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/dirty"),
+        Some(head),
+        "and the branch with it"
+    );
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("uncommitted") && said[0].contains("draft.md"),
+        "{}",
+        said[0]
+    );
+    let notes = release_notes(&w, "review", "dirty");
+    assert_eq!(notes.len(), 1, "and the row says it: {notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+    assert!(notes[0].contains("draft.md"), "{}", notes[0]);
+}
+
+/// **A terminal landing whose branch carries work the target does not have keeps both, and says
+/// why** — the branch is the only copy of that work, so the tree it was worked in goes with it.
+/// This is the half of the sweep a merge row answers to (the review row that opened it names the
+/// same tree, and gets the same note).
+#[test]
+fn a_failed_landings_branch_and_tree_are_kept_and_said() {
+    let w = World::new("release-failed");
+    // `broken` is the file the fixture's gate refuses, so the landing's own gate fails.
+    let (wt, base, head) = branch(&w.repo, "f2", "broken");
+    w.enqueue("f2", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("f2", "test/a");
+    run(&q, 3);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Failed
+    );
+    assert!(wt.exists(), "the tree holds the work the branch carries");
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/f2"),
+        Some(head),
+        "and the branch is not on `main`"
+    );
+    let notes = release_notes(&w, "merge", &m);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+    assert!(
+        notes[0].contains("carries 1 commit") && notes[0].contains("agent/f2"),
+        "{}",
+        notes[0]
+    );
+    assert!(
+        notes[0].contains(&wt.display().to_string()),
+        "and it says where the tree is: {}",
+        notes[0]
+    );
+}
+
+/// **A merge row landed by hand gives its tree back too** — the row settles as `withdrawn` (the
+/// queue did not land it, so `landed` would claim a push that never ran), and the resources go
+/// with it: the operator's `git merge --ff-only` mornings, from the merge queue's side.
+#[test]
+fn a_merge_row_landed_by_hand_gives_back_its_tree() {
+    let w = World::new("release-byhand-merge");
+    let (wt, base, head) = branch(&w.repo, "hm", "hm.txt");
+    w.enqueue("hm", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("hm", "test/a");
+    // The queue cannot make its landing tree, so it lands nothing; the operator does it by hand.
+    let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().landing_root = Arc::new(|_| Err("no room".into()));
+    let q = RepoQueue::new(w.store(), w.repo.clone(), e);
+    sh(&w.repo, &["merge", "--ff-only", "agent/hm"]);
+    run(&q, 2);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Withdrawn
+    );
+    assert!(!wt.exists(), "the tree of a hand landing goes too");
+    assert_eq!(git::branch_head(&w.repo, "agent/hm"), None);
+    assert_eq!(release_notes(&w, "merge", &m).len(), 1);
+    assert_eq!(head, w.tip(), "the tip is the hand landing's");
+}
+
+/// **The sweep twice is the same as once** — the second pass writes nothing, releases nothing and
+/// says nothing, and the row's record keeps exactly one note.
+#[test]
+fn the_sweep_twice_is_the_same_as_once() {
+    let w = World::new("release-twice");
+    let (wt, base, head) = branch(&w.repo, "twice", "t.txt");
+    sh(&w.repo, &["merge", "--ff-only", "agent/twice"]);
+    w.enqueue("twice", &wt, &base, &head);
+    withdraw(&w, "twice");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let once = w.store().transitions("review", "twice").unwrap().len();
+    assert!(!wt.exists());
+    run(&q, 3);
+    let thrice = w.store().transitions("review", "twice").unwrap().len();
+    assert_eq!(once, thrice, "the passes after it write nothing");
+    assert_eq!(release_notes(&w, "review", "twice").len(), 1);
+    assert!(
+        w.door.warnings("queue_branch_kept").is_empty(),
+        "and nothing was raised about a tree that was released"
+    );
+}
+
+/// **A row whose `worktree` names the repository itself is never removed into it** — the column is
+/// text somebody wrote, and the rail is what keeps a wrong row from taking a checkout with it. The
+/// branch is already on `main` here, so the branch's own test says the tree may go: the only thing
+/// that stops the removal is the rail.
+#[test]
+fn a_row_naming_the_main_checkout_is_not_removed_into_it() {
+    let w = World::new("release-rail");
+    let (_, base, head) = branch(&w.repo, "rail", "r.txt");
+    w.enqueue("rail", &w.repo, &base, &head);
+    sh(&w.repo, &["merge", "--ff-only", "agent/rail"]);
+    withdraw(&w, "rail");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+
+    assert!(w.repo.join("a.txt").exists(), "the checkout is still there");
+    assert!(w.repo.join(".git").is_dir());
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/rail"),
+        Some(head),
+        "the branch is kept with the tree that would not go"
+    );
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("is not a worktree of"), "{}", said[0]);
 }
 
 // ===== The idle exit's queue half =====
