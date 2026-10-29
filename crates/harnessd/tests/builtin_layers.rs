@@ -105,7 +105,23 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
     let tmp = tempdir("table");
     let stack = builtin_stack(&tmp);
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
-    assert_eq!(layers, vec!["b-sessions"], "one layer, at the bottom");
+    // **The expectation is READ OFF THE TABLE, not written down here.** A second list of the
+    // binary's own layers is a list that drifts the moment a built-in is added — and it did, twice
+    // in one day: `builtin_layers` failed the landings of both `plugin-command-feeds` and
+    // `plugin-tool-mount` for a layer that was correctly there.
+    //
+    // **REVERSED, and that is the behaviour rather than the intent**: `register_builtin_bytes`
+    // stacks the table newest-first, so the last entry of the sorted table is the BOTTOM layer (a
+    // table of `b-sessions, b-todo` stacks as `b-todo, b-sessions`). `crates/builtins/build.rs`
+    // documents its sorted order as the precedence and the stack is the reverse of it — harmless
+    // while no two built-ins answer the same hook, and pinned here so the next layer that shares one
+    // finds out instead of quietly answering below its neighbour.
+    let mut built_in: Vec<String> = letibot_builtins::table()
+        .iter()
+        .map(|b| format!("b-{}", b.name))
+        .collect();
+    built_in.reverse();
+    assert_eq!(layers, built_in, "the binary's own layers, at the bottom");
 
     // **The real engine answered.** A `View` that parses is the proof that the module loaded, that
     // `rano_abi` was 1, and that the result block held a JSON document: everything before this
@@ -133,9 +149,17 @@ fn a_project_layer_of_the_same_name_masks_the_builtin() {
     let tmp = tempdir("mask");
     project_layer(&tmp, "sessions");
     let stack = builtin_stack(&tmp);
-    // Newest on top: the project's layer, then the binary's.
+    // Newest on top: the project's layer, then every one of the binary's — reversed for the reason
+    // the table assertion above spells out (`register_builtin_bytes` stacks newest-first).
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
-    assert_eq!(layers, vec!["p1", "b-sessions"]);
+    let mut want = vec![String::from("p1")];
+    let mut built_in: Vec<String> = letibot_builtins::table()
+        .iter()
+        .map(|b| format!("b-{}", b.name))
+        .collect();
+    built_in.reverse();
+    want.extend(built_in);
+    assert_eq!(layers, want);
 
     let r = stack.call("pane_sessions", &asked_with());
     assert_eq!(
