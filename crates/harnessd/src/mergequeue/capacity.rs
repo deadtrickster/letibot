@@ -183,10 +183,17 @@ pub fn branch_wait(own: Streak, others: &[Streak]) -> BranchWait {
     }
 }
 
-/// **Is a waiting row held back by a capacity wait?** — its `failure` leads with
-/// [`WAITING_FOR_SLOT`] and its not-before time is still ahead.
+/// **Is a waiting row held back by a wait it did not spend an attempt on?** — its `failure` leads
+/// with one of the two wait clauses ([`WAITING_FOR_SLOT`], or
+/// [`crate::mergequeue::review::WAITING_FOR_TREE`]) and its not-before time is still ahead.
+///
+/// Two clauses and one reader, because the row's `failure` is the only place a not-before time is
+/// written and the claim is the only place it is read: a busy VM slot and a tree that could not be
+/// made are different waits with the same shape.
 pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool {
-    failure.starts_with(WAITING_FOR_SLOT) && deadline_ms.is_some_and(|d| d > now_ms)
+    (failure.starts_with(WAITING_FOR_SLOT)
+        || failure.starts_with(super::review::WAITING_FOR_TREE))
+        && deadline_ms.is_some_and(|d| d > now_ms)
 }
 
 /// **The one line of a failure a person reads** — firecode's own `error:` sentence when it is

@@ -958,6 +958,10 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
 /// `mergequeue::serve` — which is why the rule is *its row is not waiting or reviewing* rather
 /// than a teardown at each ending. No clone is really made here: what is under test is which
 /// DIRECTORIES go, so three directories and three rows say it without a repository.
+///
+/// **The grace is named as ZERO, on purpose** — [`sweep_clones`]'s own grace is what keeps a tree
+/// that is still being written, and the next test is about it. This one asks only the row rule, so
+/// that a change to either can be seen as a change to that one.
 #[test]
 fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
     let dir = TempDir::new("review-sweep");
@@ -1045,8 +1049,9 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         clones: clones.clone(),
         slots: &Vec::new,
     };
-    // **One pass is enough, and it is the pass that also starts reviewers**: the sweep runs first.
-    serve(&pool).expect("a pass");
+    // **One sweep, with the grace named as zero**: the row rule is this test's subject, and the
+    // grace is the next one's.
+    sweep_clones_with(&pool, std::time::Duration::ZERO);
 
     assert!(
         !clones.join("review-withdrawn").exists(),
@@ -1072,4 +1077,396 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         clones.join("review-a-file").is_file(),
         "a file is not a directory, and is left alone"
     );
+}
+
+// ===== A tree that is still being written =====
+
+/// Make `path` look `secs` seconds old — the sweep's grace is read off the tree's own mtime, so a
+/// test that needs an old tree has to say so.
+fn age(path: &Path, secs: u64) {
+    let at = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+    let f = std::fs::File::open(path).expect("the tree");
+    f.set_times(std::fs::FileTimes::new().set_modified(at))
+        .expect("its mtime");
+}
+
+/// **A tree younger than [`CLONE_GRACE`] is left alone whatever the store says, and a tree in
+/// flight is not even a candidate** — the two rules that make the sweep safe by construction
+/// ([`sweep_clones`]), asserted apart from the row rule above.
+///
+/// This is the deterministic half of the operator's 2026-10-29 race. A row can leave
+/// `waiting`/`reviewing` while its clone is still being made — a person's veto, a block, a target
+/// that moved — and the store's answer at that instant is not evidence that the tree is nobody's.
+/// So a YOUNG tree of a withdrawn row is kept; only a tree older than the grace goes. The two
+/// spellings a clone in flight uses are named here exactly as [`git::clone_branch`] names them.
+#[test]
+fn a_young_tree_and_a_tree_in_flight_are_never_swept() {
+    let dir = TempDir::new("review-grace");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "gone".into(),
+                repository: "/the/repository".into(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: "s-gone".into(),
+                branch: "agent/gone".into(),
+                worktree: None,
+                base_sha: "base".into(),
+                head_sha: "head".into(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "gone",
+                ReviewState::Waiting,
+                ReviewState::Withdrawn,
+                &Move::new(ME, "a person vetoed it"),
+                2,
+            )
+            .unwrap(),
+        "the row must really be withdrawn"
+    );
+    let clones = dir.0.join(CLONES_DIR);
+    let tree = |name: &str| {
+        let p = clones.join(name);
+        std::fs::create_dir_all(&p).expect("a directory");
+        std::fs::write(p.join("a.txt"), "x").expect("a file in it");
+        p
+    };
+    // The row's own tree, and the two names a clone passes through on its way to it.
+    let complete = tree("review-gone");
+    let writing = tree(&format!("review-gone.tmp-{}-0", std::process::id()));
+    let replacing = tree(&format!("review-gone.old-{}-1", std::process::id()));
+    // And one nobody's row names at all, old enough to be certain about.
+    let orphan = tree("review-nobody");
+    age(&orphan, 3600);
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    // The REAL grace: this is the sweep the daemon runs.
+    sweep_clones(&pool);
+    assert!(
+        complete.exists(),
+        "a withdrawn row's tree, younger than the grace, is kept: it may still be being written"
+    );
+    assert!(
+        writing.exists() && replacing.exists(),
+        "and a tree in flight is never swept, whatever the store says about its row"
+    );
+    assert!(
+        !orphan.exists(),
+        "an old tree no row names is gone: the sweep still reclaims what a dead daemon left"
+    );
+
+    // **The grace is a delay and not an exemption**: age the row's own tree past it and it goes,
+    // and the two in-flight names follow once they are old enough to be certain debris.
+    age(&complete, 3600);
+    sweep_clones(&pool);
+    assert!(!complete.exists(), "a tree older than the grace is swept");
+    assert!(
+        writing.exists() && replacing.exists(),
+        "the in-flight names are still young"
+    );
+    age(&writing, 3600);
+    age(&replacing, 3600);
+    sweep_clones(&pool);
+    assert!(
+        !writing.exists() && !replacing.exists(),
+        "a clone that died mid-write is reclaimed once it is old enough"
+    );
+}
+
+/// **A real clone with the sweep running against it, and the row NOT live, is not disturbed** —
+/// the interleaving of the operator's 2026-10-29 notice, reproduced: `git clone` writing a tree
+/// while the review pass sweeps the directory it is writing into.
+///
+/// The row is withdrawn BEFORE the clone starts, which is the worst case the sweep can meet: the
+/// row rule says *nobody is on this tree*. What saves it is the two rules of [`sweep_clones`] —
+/// the clone is written under a `.tmp` name, and a tree younger than the grace is left alone. The
+/// assertion is the outcome a reviewer needs: the clone SUCCEEDS, and the tree at the row's name
+/// is a complete clone at the head the row named.
+#[test]
+fn the_sweep_does_not_disturb_a_clone_it_meets() {
+    use crate::mergequeue::serve::tests::{branch, repo, sh};
+
+    let dir = TempDir::new("review-sweep-clone");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "the-work", "b.txt");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "cloning".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: "s-cloning".into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: base,
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "cloning",
+                ReviewState::Waiting,
+                ReviewState::Withdrawn,
+                &Move::new(ME, "a person vetoed it while the clone was being made"),
+                2,
+            )
+            .unwrap(),
+        "the row must really be withdrawn"
+    );
+    let clones = dir.0.join(CLONES_DIR);
+    std::fs::create_dir_all(&clones).expect("the clone directory");
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    let one = clones.join("review-cloning");
+    let clone = {
+        let (repo, one, head) = (repo.clone(), one.clone(), head.clone());
+        std::thread::spawn(move || {
+            git::clone_branch(&repo, "agent/the-work", &head, &one).map(|()| one)
+        })
+    };
+    // Sweep until the clone is done, the way another daemon's pass would: every millisecond, with
+    // the daemon's own grace.
+    let mut sweeps = 0;
+    while !clone.is_finished() {
+        sweep_clones(&pool);
+        sweeps += 1;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let tree = clone
+        .join()
+        .expect("the clone thread")
+        .unwrap_or_else(|e| panic!("the clone was disturbed by the sweep after {sweeps} of them: {e}"));
+    sweep_clones(&pool);
+    assert!(
+        tree.exists(),
+        "a tree younger than the grace survives the pass that follows its own clone"
+    );
+    assert_eq!(
+        sh(&tree, &["rev-parse", "HEAD"]),
+        head,
+        "the tree is the head the row names"
+    );
+    assert_eq!(
+        sh(&tree, &["status", "--porcelain"]),
+        "",
+        "and it is complete: no half-written clone was left at the row's name"
+    );
+    let names: Vec<String> = std::fs::read_dir(&clones)
+        .expect("the clone directory")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["review-cloning".to_string()], "{names:?}");
+}
+
+// ===== A tree that could not be made =====
+
+/// **A clone that fails is a WAIT, not an attempt, and the next pass tries again** — decision 4's
+/// three attempts are for a review that cannot RUN, and a tree that could not be made says nothing
+/// about the branch (see [`Pool::wait_for_tree`]).
+///
+/// MEASURED against the operator's queue on 2026-10-29: *"a reviewer for
+/// `agent/a-one-line-citation-is-filled` could not start: git clone … fatal: could not open
+/// '…/tmp_pack_cgbKfF' for reading"* came out of the RAISE path, and spent one of three attempts
+/// on a lost race. Here the first attempt's clone really fails (the branch is not in the
+/// repository yet), and the second — after the branch exists — starts a reviewer, with `attempts`
+/// still 0 and nothing raised in between.
+#[test]
+fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
+    use crate::mergequeue::serve::tests::{repo, sh};
+
+    let dir = TempDir::new("review-tree-wait");
+    let repo = repo(&dir.0);
+    // The head the row names is a real commit, and the branch it names exists — until the moment
+    // the first clone is asked for.
+    let head = sh(&repo, &["rev-parse", "main"]);
+    sh(&repo, &["branch", "agent/the-work", &head]);
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "the-review".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: head.clone(),
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    let claim = |store: &Store| {
+        assert!(
+            store
+                .move_review(
+                    "the-review",
+                    ReviewState::Waiting,
+                    ReviewState::Reviewing,
+                    &Move::new(ME, "claimed").set("owner", ME).set("failure", ""),
+                    2,
+                )
+                .unwrap(),
+            "the fixture must really have claimed the row"
+        );
+    };
+    claim(&store);
+    // The branch goes away between the claim and the clone: `git clone --branch` refuses it.
+    sh(&repo, &["branch", "-D", "agent/the-work"]);
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[], heard.clone());
+    let events = {
+        let heard = heard.clone();
+        move |e: SessionEvent| {
+            if let SessionEvent::Warning { code, detail, .. } = e {
+                heard.raised.lock().unwrap().push((code, detail));
+            }
+        }
+    };
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let clones = dir.0.join(CLONES_DIR);
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, e| events(e),
+        deliver: &deliver,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    assert_eq!(serve(&pool).expect("a pass").started, 0, "no reviewer");
+
+    let row = store.review_row("the-review").unwrap().unwrap();
+    assert_eq!(row.state, ReviewState::Waiting, "{row:?}");
+    assert_eq!(row.attempts, 0, "no attempt was spent on it: {row:?}");
+    assert!(row.reviewer.is_none(), "{row:?}");
+    assert!(
+        row.failure.starts_with(WAITING_FOR_TREE),
+        "the row says it is waiting for its tree: {}",
+        row.failure
+    );
+    assert!(
+        row.failure.contains("git clone of `agent/the-work`"),
+        "and carries the clone's own words: {}",
+        row.failure
+    );
+    assert!(
+        capacity::held_until(&row.failure, row.deadline_ms, super::now_ms()),
+        "and the queue's claim is held until its not-before time: {row:?}"
+    );
+    assert!(
+        heard.raised("queue_blocked").is_empty(),
+        "nothing is raised: this is not a review that could not run — {:?}",
+        heard.raised("queue_blocked")
+    );
+    assert!(
+        started.items.lock().unwrap().is_empty(),
+        "and no reviewer was asked to start"
+    );
+
+    // The next pass, once the branch is back: the same row, the same head, a reviewer.
+    sh(&repo, &["branch", "agent/the-work", &head]);
+    claim(&store);
+    assert_eq!(serve(&pool).expect("a pass").started, 1, "a reviewer starts");
+    let (prompt, spec) = started.one();
+    let tree = Path::new(
+        &spec
+            .worktree
+            .as_ref()
+            .expect("a host reviewer is given a tree of its own")
+            .path,
+    );
+    assert_eq!(
+        sh(tree, &["rev-parse", "HEAD"]),
+        head,
+        "in a clone of the head the row names"
+    );
+    assert!(prompt.contains(&tree.display().to_string()), "{prompt}");
+    let row = store.review_row("the-review").unwrap().unwrap();
+    assert_eq!(row.state, ReviewState::Reviewing, "{row:?}");
+    assert_eq!(row.attempts, 0, "still no attempt spent: {row:?}");
+    assert!(row.reviewer.is_some(), "{row:?}");
 }

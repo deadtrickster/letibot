@@ -319,3 +319,98 @@ fn a_github_ssh_url_becomes_the_https_one_gh_answers_for() {
         assert_eq!(github_https(url).as_deref(), want, "{url}");
     }
 }
+
+// ===== A reviewer's clone, and the two processes that can race for its name =====
+
+/// **Two clones of ONE row leave exactly one complete tree, and neither fails** — the race behind
+/// the operator's notice of 2026-10-29 (see [`clone_branch`]): a second attempt at `review-<id>`
+/// used to `remove_dir_all` the tree the first attempt was still writing into, and git died on its
+/// own `.git/objects/pack/tmp_pack_*` with *"No such file or directory"*.
+///
+/// The property is not *who wins*: it is that BOTH callers succeed and the name holds one tree a
+/// reader can use — `rev-parse` answers the head the row names and `status` is clean, so the clone
+/// is complete and not a half-written one. Three rounds, because a race that has to be caught on
+/// the first try is a test that will be green for the wrong reason.
+#[test]
+fn two_clones_of_one_row_leave_one_complete_tree_and_neither_fails() {
+    let dir = TempDir::new("clone-race");
+    let repo = repo(&dir.0);
+    let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
+    let clones = dir.0.join("letibot-review-clones");
+    let one = clones.join("review-the-review");
+    for round in 0..3 {
+        let threads: Vec<_> = (0..2)
+            .map(|n| {
+                let (repo, one, head) = (repo.clone(), one.clone(), head.clone());
+                std::thread::spawn(move || {
+                    let said = clone_branch(&repo, "agent/the-work", &head, &one);
+                    (n, said)
+                })
+            })
+            .collect();
+        for t in threads {
+            let (n, said) = t.join().expect("the clone thread");
+            assert_eq!(said, Ok(()), "clone {n} of round {round} failed");
+        }
+        let names: Vec<String> = std::fs::read_dir(&clones)
+            .expect("the clone directory")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["review-the-review".to_string()],
+            "round {round}: exactly one tree, under the row's own name"
+        );
+        assert_eq!(sh(&one, &["rev-parse", "HEAD"]), head, "round {round}");
+        assert_eq!(
+            sh(&one, &["status", "--porcelain"]),
+            "",
+            "round {round}: a complete clone, not a half-written one"
+        );
+        assert!(one.join("b.txt").exists(), "round {round}");
+    }
+}
+
+/// **A tree at the name is REPLACED, not refused** — the second clone of a row may not fail
+/// because the first one is still there, and it may not hand the reviewer the first one's tree
+/// either: a reviewer that worked in it may have left files behind.
+#[test]
+fn a_second_clone_replaces_the_tree_rather_than_failing() {
+    let dir = TempDir::new("clone-replace");
+    let repo = repo(&dir.0);
+    let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
+    let one = dir.0.join("letibot-review-clones").join("review-the-review");
+    clone_branch(&repo, "agent/the-work", &head, &one).expect("the first clone");
+    std::fs::write(one.join("scratch.txt"), "left by a reviewer\n").expect("a file in the tree");
+    clone_branch(&repo, "agent/the-work", &head, &one).expect("the second clone");
+    assert!(
+        !one.join("scratch.txt").exists(),
+        "the reviewer's tree is a fresh clone, not the last one's leftovers"
+    );
+    assert_eq!(sh(&one, &["rev-parse", "HEAD"]), head);
+    assert_eq!(sh(&one, &["status", "--porcelain"]), "");
+}
+
+/// **A clone that cannot be made leaves NOTHING behind** — no `review-<id>.tmp-…` in the directory
+/// for the sweep to have to reason about, and the name free for the next attempt.
+#[test]
+fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
+    let dir = TempDir::new("clone-fails");
+    let repo = repo(&dir.0);
+    let (_wt, _base, head) = branch(&repo, "the-work", "b.txt");
+    let clones = dir.0.join("letibot-review-clones");
+    let one = clones.join("review-the-review");
+    let said = clone_branch(&repo, "agent/no-such-branch", &head, &one)
+        .expect_err("a branch that is not there cannot be cloned");
+    assert!(said.contains("git clone of `agent/no-such-branch`"), "{said}");
+    assert!(!one.exists(), "no tree at the row's name");
+    let names: Vec<String> = std::fs::read_dir(&clones)
+        .map(|d| {
+            d.flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(names.is_empty(), "and no debris beside it: {names:?}");
+}

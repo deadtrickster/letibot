@@ -23,6 +23,11 @@
 //! copy). Otherwise on the host, in the read-only `gatekeeper` seat, told the repository to run
 //! its commands in. A reviewer that cannot start is RAISED (decision 4) — `blocked`, at high
 //! severity — and never handed to a model to merge without the gate (defect 11).
+//!
+//! **Except when the tree could not be MADE.** A clone that failed is a disk's answer, not a
+//! judgement of the branch, so it is a WAIT: the row goes back to `waiting` with the clone's own
+//! words on it and spends no attempt ([`Pool::wait_for_tree`]), the way a review with no free VM
+//! slot does ([`capacity`]). Decision 4's three attempts are for a review that cannot RUN.
 
 use std::path::{Path, PathBuf};
 
@@ -150,13 +155,15 @@ impl Pool<'_> {
     fn blocked_sentence(&self, r: &ReviewRow, attempts: u32, last: &str) -> String {
         let history = self.store.transitions("review", &r.id).unwrap_or_default();
         // The counted failures are the moves from `reviewing` back to `waiting` that were not a
-        // capacity wait, since the count was last reset (a restart, a new head: a move INTO
-        // `waiting` from anywhere but `reviewing`).
+        // wait of their own (a capacity wait, a tree that could not be made), since the count was
+        // last reset (a restart, a new head: a move INTO `waiting` from anywhere but `reviewing`).
         let mut earlier: Vec<String> = Vec::new();
         for t in history.iter().rev() {
             let from = t.from_state.as_deref().unwrap_or("");
             if t.to_state == "waiting" && from == "reviewing" {
-                if !t.why.starts_with(capacity::WAITING_FOR_SLOT) {
+                if !t.why.starts_with(capacity::WAITING_FOR_SLOT)
+                    && !t.why.starts_with(WAITING_FOR_TREE)
+                {
                     earlier.push(t.why.clone());
                 }
             } else if (t.to_state == "waiting" && from != "waiting") || t.from_state.is_none() {
@@ -238,6 +245,68 @@ impl Pool<'_> {
         Ok(true)
     }
 
+    /// **The reviewer's tree could not be MADE** — the clone failed, or the finished clone could
+    /// not be put at its name. Not an attempt, and not a block: the row goes back to `waiting`
+    /// with the clone's own words on it and a not-before time ([`capacity::retry_after_ms`], the
+    /// same ladder a VM slot wait climbs), so the queue claims it again and the pass clones again.
+    ///
+    /// **Why this is a wait and not a raise.** Decision 4's three attempts are for a review that
+    /// cannot RUN — a reviewer that died, vanished, or answered without a verdict — and the rule
+    /// exists so a review that cannot run is raised instead of retried in silence. A clone that
+    /// failed is neither: a busy disk, a filesystem, and another daemon cloning the same row all
+    /// answer a second time, and spending one of three attempts on them is what turned a lost race
+    /// on 2026-10-29 into a branch that a person had to look at. MEASURED: the notice
+    /// *"a reviewer for `agent/a-one-line-citation-is-filled` could not start: git clone … fatal:
+    /// could not open '…/review-s-…-sub-1793298319066201000/.git/objects/pack/tmp_pack_cgbKfF'"*
+    /// came out of the raise path, for a tree that another process had removed.
+    ///
+    /// **It is unbounded, and that is the trade.** A row whose tree cannot be made for a reason
+    /// that will not pass (a repository that is gone) waits with the clone's words on it, visible
+    /// in the queue's own pane, rather than being blocked as *a review that could not run* — which
+    /// is a claim about the branch, and this is a claim about a disk. The ladder is what keeps it
+    /// from being a spin: a minute, then two, then five.
+    fn wait_for_tree(&self, r: &ReviewRow, why: String) -> Result<bool, StoreError> {
+        let nth = self.tree_waits(r) + 1;
+        // The clause leads, because that is what the queue's claim reads (`capacity::held_until`)
+        // to hold the row until its not-before time, and what [`Pool::tree_waits`] counts.
+        let said = format!(
+            "{WAITING_FOR_TREE}: the reviewer's tree could not be made, so the review waits and \
+             is tried again — no attempt is spent on it, and nothing about the branch was judged: \
+             {why}"
+        );
+        self.mv(
+            r,
+            ReviewState::Waiting,
+            Move::new(self.me, said.clone())
+                .owned_by(self.me)
+                .set("owner", "")
+                .clear("reviewer")
+                .set("deadline_ms", now_ms() + capacity::retry_after_ms(nth))
+                .set("failure", said),
+        )
+    }
+
+    /// **How many times in a row this row has waited for a tree** — newest back to the last other
+    /// outcome, counted the way [`capacity::streak`] counts a slot wait: a claim, a reviewer
+    /// started, or a note on a waiting row does not end the run of them.
+    fn tree_waits(&self, r: &ReviewRow) -> u32 {
+        let history = self.store.transitions("review", &r.id).unwrap_or_default();
+        let mut n = 0;
+        for t in history.iter().rev() {
+            let from = t.from_state.as_deref().unwrap_or("");
+            if t.to_state == "waiting" && t.why.starts_with(WAITING_FOR_TREE) {
+                n += 1;
+            } else if (t.to_state == "reviewing" && matches!(from, "waiting" | "reviewing"))
+                || (t.to_state == "waiting" && from == "waiting")
+            {
+                continue;
+            } else {
+                break;
+            }
+        }
+        n
+    }
+
     /// **The capacity streaks of the OTHER rows of `r`'s branch** that are still in line
     /// (`waiting` or `reviewing`) — what [`capacity::branch_wait`] reads.
     fn branch_streaks(&self, r: &ReviewRow) -> Result<Vec<capacity::Streak>, StoreError> {
@@ -291,12 +360,19 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 }
                 out.moved = true;
             }
-            Err(why) if capacity::vm_capacity(&why).is_some() => {
+            // **A tree that could not be made is a WAIT, not an attempt** — a clone that failed
+            // on a busy disk, on a filesystem, or on another daemon's clone of the same row says
+            // nothing about the branch. See [`Pool::wait_for_tree`].
+            Err(CouldNotStart::Tree(why)) => {
+                p.wait_for_tree(r, why)?;
+                out.moved = true;
+            }
+            Err(CouldNotStart::Runner(why)) if capacity::vm_capacity(&why).is_some() => {
                 let cap = capacity::vm_capacity(&why).unwrap_or_default();
                 p.wait_for_slot(r, &cap)?;
                 out.moved = true;
             }
-            Err(why) => {
+            Err(CouldNotStart::Runner(why)) => {
                 // **A reviewer that cannot start RAISES** (decision 4).
                 let why = format!("a reviewer for `{}` could not start: {why}", r.branch);
                 if p.mv(
@@ -415,6 +491,27 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
 /// this — which is the guard that keeps a fixture from pointing a sweep at a real directory.
 pub const CLONES_DIR: &str = "letibot-review-clones";
 
+/// **The clause a review waiting for its TREE leads its move (and `failure`) with** — what the
+/// queue's claim reads to hold the row until its not-before time, and what [`Pool::tree_waits`]
+/// counts. It is a wait of its own and never [`capacity::WAITING_FOR_SLOT`]: a busy disk is not a
+/// busy VM, and the two ladders are counted apart.
+pub const WAITING_FOR_TREE: &str = "waiting for the reviewer's tree";
+
+/// **How long a tree in the clone directory is left alone whatever the store says** — see
+/// [`sweep_clones`]. Ten minutes.
+///
+/// The number is the answer to one question: *how long can a tree be being written while the row
+/// it belongs to does not read as live?* A clone of this repository at a branch head MEASURED
+/// **1.2 s** (`git clone --no-local --single-branch`, 52 MB of tree, 226 MiB of `.git`, warm
+/// cache, 2026-10-29); on a box with two reviewers building, or with a cold cache, it is tens of
+/// seconds. Ten minutes is ~500× the measurement, and it is twice
+/// [`crate::mergequeue::serve::REVIEWER_START_GRACE_MS`] — the queue's own answer to *a reviewer
+/// should have started by now* — so anything still being written after it is a tree no reviewer
+/// will ever be started on. What the grace costs is only how long an orphan lingers: the pass runs
+/// every 30 s ([`crate::sessions::REVIEW_PASS_EVERY`]), so an orphan is reclaimed within twenty
+/// passes of being certain.
+pub const CLONE_GRACE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// **The per-review trees nobody is on any more** — [`start_reviewer`] makes one clone per review
 /// under [`Pool::clones`] (`review-<row id>`), for BOTH placements, and nothing used to remove one:
 /// MEASURED on the operator's box 2026-10-29, **eleven clones, 530 MB, the oldest four days old**.
@@ -434,14 +531,39 @@ pub const CLONES_DIR: &str = "letibot-review-clones";
 /// and `clones` is one global directory, so a sweep scoped to `p.me` would delete a live clone of
 /// another daemon's review.
 ///
-/// **Three refusals, each of which is a real way this could destroy something:**
+/// # What makes it safe by construction, and why the first cut was not
+///
+/// MEASURED 2026-10-29: a reviewer's `git clone` died on *"could not open
+/// '…/review-s-…/.git/objects/pack/tmp_pack_cgbKfF' for reading: No such file or directory"* — a
+/// clone whose directory this sweep had removed WHILE git was writing into it. The row was not
+/// live at that instant (a withdrawal, a block, a target that moved), and the tree was half-made.
+/// Three rules, and each of them alone would have stopped it:
+///
+/// * **A tree in flight is not a `review-<id>`.** [`git::clone_branch`] clones beside the name and
+///   renames into it, so the only name this sweep can ever see is a COMPLETE clone. The remainder
+///   after `review-` is the id only up to its first `.`, so `review-<id>.tmp-…` and
+///   `review-<id>.old-…` are read as trees of `<id>` and are never touched by the row rule.
+/// * **A tree younger than [`CLONE_GRACE`] is left alone**, whatever the store says — which is the
+///   belt under the brace: a row can leave `waiting`/`reviewing` while its clone is still being
+///   made (a person's veto, a blocked row, a target that moved), and the store's answer at that
+///   instant is not evidence that the tree is nobody's yet.
+/// * **Only a DIRECTORY is removed, a name that does not parse is left alone, and a store that
+///   will not answer is not evidence that a tree is nobody's** — as before.
+///
+/// **Four refusals, each of which is a real way this could destroy something:**
 /// * a directory that is not named [`CLONES_DIR`] is never swept — that refuses `std::env::temp_dir()`
 ///   itself (which three fixtures used to pass), a parent of it, and any directory a test or a
 ///   future caller might be pointed at;
-/// * only a DIRECTORY named `review-<id>` is removed, and only when `<id>` is not live; a file, or
-///   a name that does not parse, is left alone;
+/// * a path whose age cannot be read is kept;
+/// * a tree that is not a directory is left alone;
 /// * a store that will not answer is not evidence that a tree is nobody's.
 fn sweep_clones(p: &Pool) {
+    sweep_clones_with(p, CLONE_GRACE)
+}
+
+/// [`sweep_clones`] with the grace named — so a test can say *the row rule* and *the grace* apart,
+/// which is the only way either of them can be asserted on its own.
+fn sweep_clones_with(p: &Pool, grace: std::time::Duration) {
     if p.clones.file_name().is_none_or(|n| n != CLONES_DIR) {
         return;
     }
@@ -458,14 +580,34 @@ fn sweep_clones(p: &Pool) {
     };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(id) = name.strip_prefix("review-") else {
+        let Some(rest) = name.strip_prefix("review-") else {
             continue;
         };
-        if live.contains(id) || !e.path().is_dir() {
+        // **The id is what stands before the first dot** — `review-<id>.tmp-<pid>-<n>` is a tree
+        // being written and `review-<id>.old-…` one being replaced, and neither is swept by the
+        // row rule ([`git::clone_branch`]).
+        let id = rest.split('.').next().unwrap_or(rest);
+        if id.is_empty() || live.contains(id) {
             continue;
         }
-        let _ = std::fs::remove_dir_all(e.path());
+        let path = e.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // **Younger than the grace is kept, and an age that cannot be read is kept too**: the
+        // store's word about a row is not worth a tree that may still be being written.
+        if age_of(&path).is_none_or(|age| age < grace) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&path);
     }
+}
+
+/// How long ago `path`'s own entry last changed, or `None` when that cannot be read (an mtime in
+/// the future included — a clock that went backwards is not evidence of age).
+fn age_of(path: &Path) -> Option<std::time::Duration> {
+    let at = std::fs::metadata(path).ok()?.modified().ok()?;
+    std::time::SystemTime::now().duration_since(at).ok()
 }
 
 /// Start one reviewer: where it runs, on what tree, with which prompt.
@@ -490,7 +632,7 @@ fn sweep_clones(p: &Pool) {
 /// completion says so. Nothing can be lost that way — the clone is thrown away — and suppressing
 /// the check would need a field on `TaskSpec` that says *a tree the child may not commit into*,
 /// which is a change to the spawn and not to this decision.
-fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), String> {
+fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
     let mut spec = TaskSpec {
         role: "gatekeeper".into(),
@@ -505,7 +647,7 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), St
         r.branch.clone()
     };
     let dir = p.clones.join(format!("review-{}", r.id));
-    git::clone_branch(&repo, &what, &r.head_sha, &dir)?;
+    git::clone_branch(&repo, &what, &r.head_sha, &dir).map_err(CouldNotStart::Tree)?;
     let cwd = match p.placement {
         ReviewerPlacement::Vm => {
             // A VM is booted on the clone; inside it there is no absolute path to name.
@@ -537,8 +679,20 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), St
         ReviewKind::Branch => letibot_tools::gatekeeper::review_prompt(&req),
         ReviewKind::Target => red_target_prompt(&req, &r.target),
     };
-    let handle = p.runner.start(&prompt, &spec)?;
+    let handle = p.runner.start(&prompt, &spec).map_err(CouldNotStart::Runner)?;
     Ok((handle, req))
+}
+
+/// **Why a reviewer could not be started** — and the two arms are different KINDS of fact, which
+/// is the whole of it: one is a machine that answered, the other is a judgement about the branch.
+/// A [`CouldNotStart::Tree`] waits ([`Pool::wait_for_tree`]); a [`CouldNotStart::Runner`] either
+/// waits for a free VM slot ([`capacity`]) or is raised (decision 4).
+enum CouldNotStart {
+    /// The tree could not be MADE — a clone that failed, or a finished clone that could not be put
+    /// at its name: a busy disk, a filesystem, another daemon cloning the same row.
+    Tree(String),
+    /// The runner would not start the child — placement, firecode, the seat.
+    Runner(String),
 }
 
 /// **The red target's reviewer is told what its verdict MEANS** — the tip is broken; `reject`

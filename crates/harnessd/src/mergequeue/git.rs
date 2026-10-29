@@ -558,10 +558,57 @@ fn gh_authenticated() -> bool {
 /// in `dir`: what a VM is booted on instead of the workspace (72.8 GiB, refused by the 8 GiB
 /// ceiling, 8 of 21 reviews on 2026-10-11). History comes with it, so `git diff base...head`
 /// works inside.
+///
+/// # `dir` is made by a RENAME, and nothing writes into it
+///
+/// The clone is made BESIDE `dir` — `review-<id>.tmp-<pid>-<n>`, in `dir`'s own directory, so the
+/// rename cannot cross a filesystem — and moved onto the name only once git has finished. A
+/// reader ([`super::review::sweep_clones`], or a second clone of the same row) therefore sees
+/// either no tree at that name or a complete one, and no tree git is still writing can be caught
+/// half-made.
+///
+/// This is not tidiness. MEASURED 2026-10-29, from the queue's own words — a reviewer for
+/// `agent/a-one-line-citation-is-filled` that could not start:
+///
+/// ```text
+/// git clone of `agent/a-one-line-citation-is-filled`:
+///   fatal: could not open '…/letibot-review-clones/review-s-…-sub-1793298319066201000/.git/objects/pack/tmp_pack_cgbKfF'
+///          for reading: No such file or directory
+///   fatal: fetch-pack: invalid index-pack output
+/// ```
+///
+/// That is a clone whose own directory was removed under it: git wrote the pack, and the path was
+/// gone when git reopened it. Two removers could do it, and both wrote to this one name — this
+/// function's own `remove_dir_all(dir)` (a second attempt at the same row is not excluded: another
+/// daemon re-seats the row, claims it and clones into the same `review-<id>`), and the review
+/// pass's sweep. The sweep no longer touches a tree in flight
+/// ([`super::review::sweep_clones`]), and this function no longer has a window at all.
+///
+/// **A tree already at the name is REPLACED, and also by rename** — the old one is moved aside,
+/// the new one is moved in, and only then is the old one removed. It may not simply be kept: it is
+/// a previous attempt at the same row, and a reviewer that worked in it may have left files there.
 pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
-    if dir.exists() {
-        let _ = std::fs::remove_dir_all(dir);
+    let parent = dir.parent().unwrap_or(Path::new(""));
+    if !parent.as_os_str().is_empty() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("the reviewers' clone directory `{}`: {e}", parent.display()))?;
     }
+    let tmp = beside(dir, "tmp");
+    // A daemon killed mid-clone leaves one of these behind, and a reused pid would collide with it.
+    let _ = std::fs::remove_dir_all(&tmp);
+    if let Err(e) = clone_into(repo, branch, head, &tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    if let Err(e) = install(&tmp, dir) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// The clone itself, into a path nobody else knows about — [`clone_branch`]'s first half.
+fn clone_into(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result<(), String> {
     let out = Command::new("git")
         .args([
             "clone",
@@ -583,6 +630,64 @@ pub fn clone_branch(repo: &Path, branch: &str, head: &str, dir: &Path) -> Result
         ));
     }
     git(dir, &["checkout", "--quiet", "--detach", head]).map(|_| ())
+}
+
+/// **A name beside `dir` that no other attempt can be writing** — `<leaf>.<kind>-<pid>-<n>`, in
+/// `dir`'s own directory: a rename between two names in one directory is one filesystem's business
+/// and can never fail with `EXDEV`, whatever the caller's root is mounted as.
+fn beside(dir: &Path, kind: &str) -> PathBuf {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let leaf = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "review".to_string());
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.with_file_name(format!("{leaf}.{kind}-{}-{n}", std::process::id()))
+}
+
+/// **Put a finished clone at `dir`** — two renames, and never a write (see [`clone_branch`]).
+///
+/// The loop is not paranoia about this process: two clones of one row run in two DAEMONS, and the
+/// loser's rename finds the name taken. It moves the winner's tree aside, installs its own, and
+/// removes what it moved — so the name always holds a complete clone, and both callers succeed.
+fn install(tmp: &Path, dir: &Path) -> Result<(), String> {
+    for _ in 0..8 {
+        if !dir.exists() {
+            match std::fs::rename(tmp, dir) {
+                Ok(()) => return Ok(()),
+                // Somebody installed theirs between the look and the rename: go round, and this
+                // time move theirs aside first.
+                Err(_) if dir.exists() => continue,
+                Err(e) => {
+                    return Err(format!(
+                        "installing the reviewer's clone at `{}`: {e}",
+                        dir.display()
+                    ));
+                }
+            }
+        }
+        let aside = beside(dir, "old");
+        if std::fs::rename(dir, &aside).is_err() {
+            // It went away on its own; the next turn of the loop installs ours.
+            continue;
+        }
+        match std::fs::rename(tmp, dir) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&aside);
+                return Ok(());
+            }
+            Err(_) => {
+                // A third attempt beat us to the name: put the old tree back and go round.
+                let _ = std::fs::rename(&aside, dir);
+                continue;
+            }
+        }
+    }
+    Err(format!(
+        "installing the reviewer's clone at `{}`: the name kept changing under it (another \
+         daemon cloning the same row?)",
+        dir.display()
+    ))
 }
 
 /// **A file the daemon itself wrote into a workspace** — `.letibot/<name>.jsonl`, the logs older
