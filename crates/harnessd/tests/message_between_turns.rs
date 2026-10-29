@@ -943,10 +943,22 @@ fn a_message_to_a_child_between_turns_starts_its_turn() {
         1,
         "the child heard the parent's message exactly once: {rows:#?}"
     );
-    assert!(
-        rows[0].contains(&format!("message from your parent session `{parent_id}`")),
-        "the parent is NAMED in the words the child hears: {}",
-        rows[0]
+    // **The same bytes the mid-turn door writes**, so the two doors are one message — and the
+    // store holds them once, which is what a resume replays.
+    let said =
+        letibot_harnessd::harness::message_from_a_session(parent_id, MESSAGE, Some(parent_id));
+    assert_eq!(
+        rows[0], said,
+        "the parent is NAMED in the words the child hears, in `message_from_a_session`'s own bytes"
+    );
+    let stored = stored_user_rows(&path, &handle);
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|(s, t)| *s == Speaker::Agent && t.contains(MESSAGE))
+            .count(),
+        1,
+        "and the child's store holds it once: {stored:#?}"
     );
     assert!(
         !user_rows(&child)
@@ -1055,7 +1067,10 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
     // would have needed a third request, which this stub cannot serve.
     let rows = heard(&child, MESSAGE);
     assert_eq!(rows.len(), 1, "heard once, in the turn: {rows:#?}");
-    // EXPERIMENT: the exact words, and the store.
+    // **The row is the shared sentence's own bytes, and the store holds it once** — the two
+    // halves a later reader reads: a head draws the row, and a resume replays what the store
+    // has. A paraphrase here would be a second wording of one act, and a second stored row would
+    // be the duplication this feature must never produce.
     let said =
         letibot_harnessd::harness::message_from_a_session(parent_id, MESSAGE, Some(parent_id));
     assert_eq!(
@@ -1063,7 +1078,6 @@ fn a_message_to_a_running_child_lands_in_that_turn() {
         "the row is `message_from_a_session`'s own bytes, not a paraphrase of them"
     );
     let stored = stored_user_rows(&path, &handle);
-    eprintln!("--- stored user rows of {handle} ---\n{stored:#?}");
     assert_eq!(
         stored
             .iter()
