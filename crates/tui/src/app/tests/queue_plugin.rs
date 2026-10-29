@@ -518,3 +518,23 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
     }
     std::fs::remove_dir_all(&data).ok();
 }
+
+/// **The pane, printed** — a probe that writes what the layer draws at the two widths, so the
+/// answer can quote a frame rather than describe one. `#[ignore]` because it asserts nothing.
+#[test]
+#[ignore]
+fn probe_render_the_pane() {
+    for (w, h) in [(80, 24), (239, 61)] {
+        let mut a = a_head_with_a_queue();
+        *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+            "s1",
+            &std::env::temp_dir(),
+        ));
+        a.cfg.width = w;
+        let screen = a.screen(w, h);
+        eprintln!("===== {w}x{h} =====");
+        for row in screen {
+            eprintln!("|{}", row);
+        }
+    }
+}

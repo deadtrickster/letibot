@@ -396,17 +396,30 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
     }
 }
 
+/// **The cell of a C3 row, as rano's list draws it** — a cell that said nothing takes the row's
+/// role, which is the point of the untagged spelling: only a cell that means something else carries
+/// its own.
+fn tree_cell(c: &pv::Cell) -> Cell {
+    match c.role {
+        Some(x) => Cell::role(clean_line(&c.text), role(Some(x))),
+        None => Cell::new(clean_line(&c.text)),
+    }
+}
+
 /// **C3's `Row` as rano's one tree list draws it** — the plain function this port exists for:
 /// no drawing code, no terminal, just the row's own facts.
 ///
-/// **Two fields of the primitive are deliberately left empty, and each would be a lie if it
-/// were not.** C3's `detail` is prose *read whole on Enter* (`docs/plugins-slice1.md` C3),
-/// where rano's `Row::detail` is the faint line drawn **under** the row — the session picker's
-/// id, a job's redirected path. Mapping one onto the other would draw every row's whole prose
-/// beneath it and double a pane's height, so `detail` stays where the keys already read it (the
-/// walk's own [`Target`]) and the tree draws the row alone. And C3 has no fold, so `open` is
-/// `None` and the list reserves no fold column: a `-` that folds nothing is a promise this
-/// contract cannot keep.
+/// **`detail` is deliberately NOT rano's `Row::detail`.** C3's `detail` is prose *read whole on
+/// Enter* (`docs/plugins-slice1.md` C3), where rano's is the faint line drawn **under** the row;
+/// mapping one onto the other would draw every row's whole prose beneath it and double a pane's
+/// height. So C3's `detail` stays where the keys already read it (the walk's own [`Target`]) and
+/// the tree draws the row alone.
+///
+/// **`under` IS rano's `detail`**, and that is not the same field under another name: C3's `under`
+/// is defined as *the faint line(s) UNDER the row* — a reason, an address, a legend sentence —
+/// which is exactly what the list draws. A row that carries neither draws one line, as before.
+///
+/// `open` is `None` because the list reserves no fold column here (see [`tree_lines`]).
 fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
     TreeRow {
         // **Stop-ness is C3's `id`, and an empty one is not a stop** — the same field
@@ -417,18 +430,12 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
         number: None,
         open: None,
         role: Some(role(r.role)),
-        cells: r
-            .cells
-            .iter()
-            // **A cell that said nothing takes the row's role**, which is the point of the
-            // untagged spelling: only a cell that means something else carries its own.
-            .map(|c| match c.role {
-                Some(x) => Cell::role(clean_line(&c.text), role(Some(x))),
-                None => Cell::new(clean_line(&c.text)),
-            })
-            .collect(),
-        facts: Vec::new(),
-        detail: Vec::new(),
+        cells: r.cells.iter().map(tree_cell).collect(),
+        // **The right-hand column**, which C3 calls `facts` and the list calls the same — the
+        // age, the owner, the one verb that would move the row. Dropping them (as this function
+        // did) is a pane whose rows say a third of what the plugin answered.
+        facts: r.facts.iter().map(tree_cell).collect(),
+        detail: r.under.iter().map(|u| clean_line(u)).collect(),
         detail_column: None,
         actions: r
             .actions
@@ -439,7 +446,8 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
     }
 }
 
-/// **One `Tree` block's rows, drawn by rano's list** — in the order the pane's walk numbers them.
+/// **One `Tree` block's rows, drawn by rano's list** — in the order the pane's walk numbers them,
+/// and where each row's first line landed.
 ///
 /// `depth_first` is the block's rows as [`pv::rows_deep`] flattens them — the pane's OWN walk,
 /// which is what the arrows, Enter and a click read — so the drawing and the keys cannot come to
@@ -454,14 +462,32 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
 /// list its rows with the ids CLEARED, which suppressed the mark by throwing away the stop-ness
 /// the host's clicks read; the primitive grew the state so the host would not have to.
 ///
-/// One line per row, which is what makes the caller's splice exact: the list is given no title, no
-/// detail and no frame lines.
-fn tree_lines(depth_first: &[(usize, &pv::Row)], cursor: Option<usize>, w: usize) -> PaneLines {
+/// **A row may draw more than one line**, because C3's `under` is a list and each entry is a faint
+/// line beneath the row. So the answer is the lines AND `starts`, the index of each row's first
+/// line — the caller splices row `i`'s stop-ness and legend entry onto `starts[i]`, which is the
+/// only place that knows it. (This used to be `drawn[i]`, exact only while every row was one line,
+/// which is why `under` could not be drawn at all.)
+///
+/// One row is drawn per entry of `depth_first`, in order; the list is given no title and no frame
+/// lines, so `starts` is the whole of the mapping.
+fn tree_lines(
+    depth_first: &[(usize, &pv::Row)],
+    cursor: Option<usize>,
+    w: usize,
+) -> (PaneLines, Vec<usize>) {
     let rows: Vec<TreeRow> = depth_first
         .iter()
         .map(|&(depth, r)| tree_row(depth, r))
         .collect();
-    let drawn = rows.len();
+    // **Where each row's first line will land**, counted before the list draws: a row takes one
+    // line for itself plus one for each `under` entry. The list appends them in this order and
+    // draws nothing of its own (no title, no hint, no notes), so the count is the answer.
+    let mut starts = Vec::with_capacity(rows.len());
+    let mut at = 0usize;
+    for r in &rows {
+        starts.push(at);
+        at += 1 + r.detail.len();
+    }
     let list = TreeList {
         // The pane draws the panel's title itself; the list is the rows.
         title: String::new(),
@@ -483,8 +509,8 @@ fn tree_lines(depth_first: &[(usize, &pv::Row)], cursor: Option<usize>, w: usize
     // the middle of a dashboard does not: a board of three panels would carry three hints. This
     // pane's keys are the head's, said once in the bottom bar (`App::plugin_actions_hint`), and
     // the rows themselves the list owns.
-    content.lines.truncate(drawn);
-    content
+    content.lines.truncate(at);
+    (content, starts)
 }
 
 /// The severity's word and role, for the findings list and the summary line.
@@ -809,21 +835,30 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                     let stops_n = deep.iter().filter(|(_, r)| !r.id().is_empty()).count();
                     let here = (sel >= next && sel < next + stops_n).then(|| sel - next);
                     next += stops_n;
-                    let drawn = tree_lines(&deep, here, w);
-                    // **One drawn line per row**: the list is given no title, no detail column
-                    // and no frame lines, so a row's line and its index are the same number —
-                    // and that is what makes this splice exact rather than arithmetic over the
-                    // primitive's internals.
-                    for (i, line) in drawn.lines.into_iter().enumerate() {
-                        let row = deep[i].1;
-                        if row.id().is_empty() {
+                    let (drawn, starts) = tree_lines(&deep, here, w);
+                    // **One drawn line per row's FIRST line, and `starts[i]` says which** — a
+                    // row may carry faint lines under it (C3's `under`), so the row's index and
+                    // its first line's index are not the same number, and the mapping is the
+                    // drawing's rather than arithmetic over the primitive's internals.
+                    let drawn_lines = drawn.lines;
+                    let mut next_row = 0usize;
+                    for (i, line) in drawn_lines.into_iter().enumerate() {
+                        // Which row this line belongs to: the last whose `starts` is at or before
+                        // it. `starts` is ascending and one row per entry, so a cursor works.
+                        while next_row + 1 < starts.len() && starts[next_row + 1] <= i {
+                            next_row += 1;
+                        }
+                        let row = deep[next_row].1;
+                        let first = starts.get(next_row).copied() == Some(i);
+                        if !first || row.id().is_empty() {
                             out.push(line);
                         } else {
                             out.push_stop(line);
                         }
                         // A row whose first cell the legend documents answers on hover, exactly
                         // as a line does: the record is written where the row is drawn.
-                        if !view.legend.is_empty()
+                        if first
+                            && !view.legend.is_empty()
                             && let Some(label) = row.cells.first().map(|c| clean_line(&c.text))
                             && view.legend.contains_key(&label)
                         {
