@@ -124,7 +124,19 @@ pub(crate) struct Host {
     problem: Mutex<Option<String>>,
     /// The folder this host was built for; a head that moves to another one gets another stack.
     workspace: PathBuf,
+    /// **When this host next looks for a rebuilt layer**, on the head's clock.
+    ///
+    /// A pane the HEAD draws is a pane the daemon's `plugin load` cannot refresh: that applies the
+    /// layer to the DAEMON's stack, and this one is not it. So the head watches its own scopes —
+    /// the same `Stack::poll_changes` the daemon's hot-reload tick uses, a stat per layer — and a
+    /// `plugin build` (or a `plugin load`, whose gate builds first) is a pane that redraws with no
+    /// rebuild of either binary and no restart. See [`Host::reload_if_due`].
+    next_poll: u64,
 }
+
+/// **How often the head looks for a rebuilt layer** — the daemon's own `POLL_EVERY`, for the same
+/// reason: a stat per layer is free, and two seconds is the longest a person waits after saving.
+const POLL_MS: u64 = 2_000;
 
 #[derive(Default)]
 struct Cached {
@@ -193,6 +205,7 @@ impl Host {
             state: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(None),
             workspace,
+            next_poll: 0,
         }
     }
 
@@ -222,6 +235,50 @@ impl Host {
             state: Mutex::new(std::collections::BTreeMap::new()),
             problem: Mutex::new(problem),
             workspace: workspace.to_path_buf(),
+            next_poll: 0,
+        }
+    }
+
+    /// **Pick up a layer that was rebuilt on disk**, at most every [`POLL_MS`].
+    ///
+    /// This is the live-iteration loop for a pane the head draws, and it is the same mechanism the
+    /// daemon's hot-reload tick uses (`PluginHost::gate_now` → `Stack::poll_changes` +
+    /// `Stack::apply`), one step shorter: the head does not run the shadow gate, because the head
+    /// has no `Builder` and — the reason this is not a hole — it does not gate the session-scope
+    /// layers it DISCOVERS either (`Stack::discover` loads what is on disk at build time). A module
+    /// the operator rebuilt is the same trust as a module the operator wrote before the head
+    /// started; the gate is the daemon's `plugin load`, which is what a change should pass before
+    /// anybody believes it.
+    ///
+    /// **The cache goes with it.** It is keyed by the input, and the point of a reload is that the
+    /// same input now answers differently — keeping it would draw the old view until something
+    /// else changed the input, which reads as a reload that did not happen.
+    fn reload_if_due(&mut self, now_ms: u64) {
+        if now_ms != 0 && now_ms < self.next_poll {
+            return;
+        }
+        self.next_poll = now_ms.saturating_add(POLL_MS);
+        let candidates = self.stack.poll_changes();
+        if candidates.is_empty() {
+            return;
+        }
+        let mut applied = false;
+        for cand in candidates {
+            if self.stack.apply(cand).is_ok() {
+                applied = true;
+            }
+        }
+        if applied {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.key.clear();
+                cache.answer = None;
+            }
+            // A rebuilt layer is a NEW layer answering: whatever `state` the old one left behind
+            // was its own, and handing it to a different module is handing it an answer to a
+            // question it never asked.
+            if let Ok(mut state) = self.state.lock() {
+                state.clear();
+            }
         }
     }
 
@@ -379,6 +436,10 @@ impl App {
                 .unwrap_or(true);
             if stale {
                 *slot = Some(Host::build(&self.session_id, &workspace));
+            } else if let Some(host) = slot.as_mut() {
+                // **A layer rebuilt on disk is a pane that redraws** — the live loop, and the
+                // reason this pane is a plugin at all. See [`Host::reload_if_due`].
+                host.reload_if_due(self.now_ms);
             }
         }
         self.sessions_host.borrow()

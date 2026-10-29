@@ -409,3 +409,112 @@ fn enter_on_the_history_row_opens_the_fold_and_the_next_frame_draws_it() {
         "the finished row is drawn once the fold is open:\n{screen}"
     );
 }
+
+/// **The live loop, measured**: a `plugin.wasm` rebuilt in the session's own plugin directory is a
+/// pane that redraws — no rebuild of `harnessd`, no rebuild of `letibot-tui`, no restart.
+///
+/// This is the whole reason the pane is a plugin. It is also the one thing a test has to be careful
+/// about: the module here is the REAL built-in one (this binary's own `queue` layer, written to the
+/// session scope), so what reloads is a module the engine actually compiles and runs — not a fake.
+///
+/// The two answers differ in a way only the module can produce: the copy in the session scope is
+/// the built-in's bytes under a DIFFERENT manifest name, so a pane drawn after the reload is drawn
+/// by a layer whose id is the session's, not `b-queue`. The view is the same because the bytes are;
+/// what is asserted is that the layer the head is asking CHANGED without anybody restarting it.
+#[test]
+fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
+    // **A session-scope `queue` layer, written the way `plugin build` leaves it.**
+    let data = std::env::temp_dir().join(format!(
+        "letibot-live-loop-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let session = "s-live";
+    let layer = data.join("letibot/sessions").join(session).join("plugins/queue");
+    std::fs::create_dir_all(&layer).expect("the session's plugin dir");
+    let builtin = letibot_builtins::table()
+        .iter()
+        .find(|b| b.name == "queue")
+        .expect("this binary carries the queue layer");
+    std::fs::write(layer.join("plugin.wasm"), builtin.wasm).expect("the module");
+    std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
+    // **`XDG_DATA_HOME` is how `session_plugins_dir` finds it** — set for this test only, and put
+    // back at the end, because it is process-wide and a leaked one would point every other test's
+    // session scope at a temp directory.
+    let was = std::env::var_os("XDG_DATA_HOME");
+    // SAFETY: this test is the only one that touches it, and it restores it below.
+    unsafe { std::env::set_var("XDG_DATA_HOME", &data) };
+
+    let mut a = a_head_with_a_queue();
+    a.session_id = session.into();
+    // A head whose stack is built for this session, so the session scope is discovered.
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        session,
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("agent/one"),
+        "the session's layer draws the pane:\n{screen}"
+    );
+    // **The layer answering is the session's, not the built-in** — a session scope is above the
+    // built-in scope, so the id is `s1` and not `b-queue`. Its hash is taken here so the reload
+    // below has something to differ from.
+    let before: String;
+    {
+        let slot = a.plugin_host();
+        let host = slot.as_ref().expect("a host");
+        let layer = host
+            .reader(crate::app::queue_pane::HOOK, crate::app::queue_pane::FEED)
+            .expect("a queue layer");
+        assert_eq!(layer.id, "s1", "the session scope answers, above the built-in");
+        before = layer.sha256.clone();
+    }
+
+    // **Rewrite the module — the same bytes, a newer file.** `poll_changes` keys on the fingerprint
+    // (mtime and length), so a rewrite that lands in the same second still has to be noticed; the
+    // loop's own guarantee is that a REBUILT module is a different file.
+    let wasm = layer.join("plugin.wasm");
+    let mut bytes = std::fs::read(&wasm).expect("the module");
+    // **A custom section is what a rebuild changes that a module can carry and still be valid** —
+    // `0x00`, a length, a name and a payload, which every engine ignores. A trailing byte would be
+    // a module the loader refuses, and a reload test whose new module does not load measures the
+    // refusal rather than the loop.
+    bytes.extend_from_slice(&[0x00, 0x04, 0x01, 0x61, 0x00, 0x00]);
+    std::fs::write(&wasm, &bytes).expect("the rewritten module");
+
+    // **The clock passes, the pane is drawn again, and the layer is re-read.** Forward, and past
+    // the poll's interval — a clock that went backwards would be a head whose tick never fires,
+    // which is a thing to test somewhere else and not a thing to test here by accident.
+    let later = a.now_ms + 3_000;
+    a.clock(later);
+    a.redraw = true;
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("agent/one"),
+        "the pane still draws after the reload:\n{screen}"
+    );
+    {
+        let slot = a.plugin_host();
+        let host = slot.as_ref().expect("a host");
+        let layer = host
+            .reader(crate::app::queue_pane::HOOK, crate::app::queue_pane::FEED)
+            .expect("a queue layer");
+        // **The layer is no longer the bytes the built-in carries** — which is what a reload
+        // means, and it is asserted without a second hasher: the built-in's hash is read off the
+        // layer the binary installs, and the session layer's must differ from it now.
+        assert_ne!(
+            layer.sha256, before,
+            "the layer's bytes are the REBUILT module's, with no restart"
+        );
+    }
+
+    match was {
+        Some(v) => unsafe { std::env::set_var("XDG_DATA_HOME", v) },
+        None => unsafe { std::env::remove_var("XDG_DATA_HOME") },
+    }
+    std::fs::remove_dir_all(&data).ok();
+}
