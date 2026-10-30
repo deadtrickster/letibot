@@ -2230,13 +2230,22 @@ impl RepoQueue {
                 return Ok(());
             }
         };
-        let rebased = match git::rebase_in(&wt, &head, &tip) {
+        // **The base the branch was cut from**, as the store remembers it: the tip this row was last
+        // rebased onto, and the base its review recorded. Both survive the target being rewritten —
+        // which is what tells the branch's own commits from the old target's, and what a plain
+        // `git rebase` gets wrong once the merge base is a commit on the old target.
+        let cut_from = self
+            .store
+            .review_row(&row.review_id)
+            .ok()
+            .flatten()
+            .map(|r| r.base_sha)
+            .unwrap_or_default();
+        let bases = [row.onto_sha.clone().unwrap_or_default(), cut_from];
+        let rebased = match git::rebase_in(&wt, &head, &tip, &target, &bases) {
             Ok(sha) => sha,
             Err(e) => {
-                let why = format!(
-                    "`{}` does not rebase onto `{target}` at {tip}: {e}",
-                    row.branch
-                );
+                let why = e.sentence(&row.branch, &target, &tip);
                 // R92.28: said, where the repository's sessions hear it — a parked row nobody is
                 // told about is a branch that never lands.
                 self.raise("merge_conflict", super::notices::merge_conflict(row, &why));

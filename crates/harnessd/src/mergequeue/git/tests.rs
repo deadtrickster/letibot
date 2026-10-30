@@ -1,7 +1,7 @@
 //! The landing worktree's place, on temporary repositories.
 
 use super::*;
-use crate::mergequeue::serve::tests::{TempDir, branch, repo, sh};
+use crate::mergequeue::serve::tests::{TempDir, branch, commit, repo, sh};
 
 /// **Outside `.git`, and reused.** The operator, 2026-10-11: *"the merges and branches shoudlnt
 /// land into .git"*. The tree is made under the landing root, keyed by the repository; the second
@@ -507,4 +507,197 @@ fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
     ));
     // A tree git cannot read is not a tree with no commits in it.
     assert!(head_of(&not_a_repo).is_err());
+}
+
+// ===== The replay: the branch's own commits, and nothing else =====
+
+/// **A rewritten target must not be replayed onto itself.** `main` is rebuilt from an older commit,
+/// so `merge-base(branch, main)` is that older commit — a commit on the OLD main — and a plain
+/// `git rebase main` then replays the old main's two commits as well as the branch's one (and
+/// conflicts in `a.txt`, which the branch never touched). The replay is `--onto <main> <the fork>`,
+/// so exactly one commit is replayed and `range-diff` says the patch is unchanged.
+#[test]
+fn a_branch_with_one_commit_on_a_rewritten_main_replays_its_one() {
+    let dir = TempDir::new("rebase-rewritten");
+    let repo = repo(&dir.0);
+    commit(&repo, "a.txt", "old main one\n", "old main: a.txt says one");
+    let old_tip = commit(&repo, "a.txt", "old main two\n", "old main: a.txt says two");
+    // The branch: cut from the tip as it was, one commit, in a file of its own.
+    let (_wt, base, head) = branch(&repo, "one", "one.txt");
+    assert_eq!(base, old_tip, "cut from the tip as it was");
+    // The rewrite: main is rebuilt from the commit under the old main's two, and says something
+    // else in `a.txt`, so neither old commit is on it any more.
+    let root = sh(&repo, &["rev-parse", "HEAD~2"]);
+    sh(&repo, &["reset", "--hard", &root]);
+    let new_tip = commit(
+        &repo,
+        "a.txt",
+        "rewritten\n",
+        "rewritten main: a.txt says rewritten",
+    );
+    assert!(
+        !is_ancestor(&repo, &old_tip, &new_tip).unwrap(),
+        "the old tip is nobody's ancestor now"
+    );
+    let lwt = landing_worktree_in(&dir.0.join("landing"), &repo, &new_tip).unwrap();
+    // The base the row recorded, as the review row carries it.
+    let rebased = rebase_in(
+        &lwt,
+        &head,
+        &new_tip,
+        "main",
+        &[String::new(), base.clone()],
+    )
+    .expect("the branch's own commit replays");
+    assert_eq!(
+        commits_over(&lwt, &new_tip, &rebased),
+        Ok(1),
+        "one commit, not the old main's two as well"
+    );
+    assert_eq!(
+        sh(
+            &lwt,
+            &["log", "--format=%s", &format!("{new_tip}..{rebased}")]
+        ),
+        "work on one"
+    );
+    assert_eq!(
+        std::fs::read_to_string(lwt.join("a.txt")).unwrap(),
+        "rewritten\n",
+        "the branch did not resurrect the old main's line"
+    );
+    assert_eq!(
+        std::fs::read_to_string(lwt.join("one.txt")).unwrap(),
+        "one\n"
+    );
+    // **The patches are the branch's, before and after.**
+    let rd = sh(
+        &lwt,
+        &[
+            "range-diff",
+            "--no-color",
+            &format!("{base}..{head}"),
+            &format!("{new_tip}..{rebased}"),
+        ],
+    );
+    assert!(
+        !rd.is_empty() && rd.lines().all(|l| l.split_whitespace().nth(2) == Some("=")),
+        "range-diff must say every patch is the same: {rd}"
+    );
+    assert!(
+        patches_unchanged(&lwt, (&base, &head), (&new_tip, &rebased)).is_ok(),
+        "the code path agrees"
+    );
+}
+
+/// **The reflog alone finds the base once nothing else does** — the same branch with no recorded
+/// base: `main`'s reflog still names the tip it used to point at, which is the fork.
+#[test]
+fn a_rewritten_main_is_asked_for_the_tip_it_used_to_point_at() {
+    let dir = TempDir::new("rebase-reflog");
+    let repo = repo(&dir.0);
+    let old_tip = commit(&repo, "a.txt", "old main\n", "old main: a.txt says old");
+    let (_wt, base, head) = branch(&repo, "log", "log.txt");
+    assert_eq!(base, old_tip);
+    let root = sh(&repo, &["rev-parse", "HEAD~1"]);
+    sh(&repo, &["reset", "--hard", &root]);
+    let new_tip = commit(&repo, "a.txt", "rewritten\n", "rewritten main");
+    let lwt = landing_worktree_in(&dir.0.join("landing"), &repo, &new_tip).unwrap();
+    // Nothing recorded: the row has no `onto_sha` and the review no `base_sha`.
+    let rebased = rebase_in(&lwt, &head, &new_tip, "main", &[]).expect("the reflog names the base");
+    assert_eq!(commits_over(&lwt, &new_tip, &rebased), Ok(1));
+}
+
+/// **A branch that merged the old main into itself replays its own three commits and no others.**
+/// Its first-parent spine is `B3, merge, B2, merge, B1, fork, …`, and the commits those merges
+/// brought in are *not* the branch's: `git rebase --onto <main> <fork>` would replay them too and
+/// conflict in `m.txt`, so the branch's own list is replayed one commit at a time.
+#[test]
+fn a_branch_that_merged_the_old_main_in_replays_only_its_three_commits() {
+    let dir = TempDir::new("rebase-merged");
+    let repo = repo(&dir.0);
+    let root = sh(&repo, &["rev-parse", "main"]);
+    commit(&repo, "m.txt", "1\n", "old main 1");
+    let (wt, base, _head) = branch(&repo, "three", "b1.txt");
+    commit(&repo, "m.txt", "1\n2\n", "old main 2");
+    sh(&wt, &["merge", "--no-edit", "main"]);
+    commit(&wt, "b2.txt", "b2\n", "B2");
+    commit(&repo, "m.txt", "1\n2\n3\n", "old main 3");
+    sh(&wt, &["merge", "--no-edit", "main"]);
+    let head = commit(&wt, "b3.txt", "b3\n", "B3");
+    // The rewrite: main starts again from the base, and `m.txt` says something of its own.
+    sh(&repo, &["reset", "--hard", &root]);
+    let new_tip = commit(&repo, "m.txt", "rewritten\n", "rewritten main");
+    let lwt = landing_worktree_in(&dir.0.join("landing"), &repo, &new_tip).unwrap();
+    let rebased = rebase_in(
+        &lwt,
+        &head,
+        &new_tip,
+        "main",
+        &[String::new(), base.clone()],
+    )
+    .expect("its own three replay");
+    assert_eq!(
+        commits_over(&lwt, &new_tip, &rebased),
+        Ok(3),
+        "three, not the old main's commits the merges brought in"
+    );
+    assert_eq!(
+        sh(
+            &lwt,
+            &["log", "--format=%s", &format!("{new_tip}..{rebased}")]
+        ),
+        "B3\nB2\nwork on three"
+    );
+    // **range-diff says the branch's patches are the same.** The only patches it does not find on
+    // the other side are the old main's, which came in with the merges and are not the branch's to
+    // replay; every patch it does find is `=`, and none was invented.
+    let rd = sh(
+        &lwt,
+        &[
+            "range-diff",
+            "--no-color",
+            &format!("{base}..{head}"),
+            &format!("{new_tip}..{rebased}"),
+        ],
+    );
+    let marks: Vec<Option<&str>> = rd.lines().map(|l| l.split_whitespace().nth(2)).collect();
+    assert!(
+        marks.iter().all(|m| matches!(m, Some("=") | Some("<"))),
+        "no patch changed and none was added: {rd}"
+    );
+    assert_eq!(
+        marks.iter().filter(|m| **m == Some("=")).count(),
+        3,
+        "the branch's three patches are the same: {rd}"
+    );
+    assert!(patches_unchanged(&lwt, (&base, &head), (&new_tip, &rebased)).is_ok());
+}
+
+/// **A base nobody remembers is said, not guessed.** With the row recording nothing and the
+/// target's reflog gone, there is no way to tell the branch's own commit from the ones it sits on —
+/// so the row gets a sentence a person can act on instead of a conflict, and the landing tree is
+/// left where it was rather than half-rebased.
+#[test]
+fn a_branch_whose_base_nobody_remembers_is_refused_in_words() {
+    let dir = TempDir::new("rebase-lost-base");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "lost", "lost.txt");
+    let root = sh(&repo, &["rev-parse", "main"]);
+    sh(&repo, &["reset", "--hard", &root]);
+    let new_tip = commit(&repo, "a.txt", "rewritten\n", "rewritten main");
+    let lwt = landing_worktree_in(&dir.0.join("landing"), &repo, &new_tip).unwrap();
+    // The reflog is the only thing that could still name the base, and this repository has none.
+    std::fs::remove_dir_all(repo.join(".git/logs")).unwrap();
+    let e = rebase_in(&lwt, &head, &new_tip, "main", &[]).expect_err("no base, no guess");
+    let said = e.sentence("agent/lost", "main", &new_tip);
+    assert!(
+        said.contains("could not find the branch's own base"),
+        "{said}"
+    );
+    assert!(said.contains("rebase it by hand"), "{said}");
+    assert!(!said.contains("does not rebase"), "not a conflict: {said}");
+    assert_eq!(sh(&lwt, &["rev-parse", "HEAD"]), new_tip, "nothing ran");
+    assert_eq!(sh(&lwt, &["status", "--porcelain"]), "", "and no debris");
+    let _ = base;
 }

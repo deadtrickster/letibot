@@ -582,15 +582,238 @@ pub fn migrate_old_landing(repo: &Path) -> Option<String> {
     Some(said)
 }
 
-/// **Rebase `head` onto `onto` in the landing worktree**, detached; the rebased sha, or the
-/// conflict in git's words (the rebase aborted).
-pub fn rebase_in(worktree: &Path, head: &str, onto: &str) -> Result<String, String> {
-    git(worktree, &["checkout", "--detach", "--force", head])?;
-    if let Err(e) = git(worktree, &["rebase", onto]) {
-        let _ = git(worktree, &["rebase", "--abort"]);
-        return Err(e);
+/// **What a replay refused** — two facts the queue may not fold into one bare *conflict*: git
+/// refused a patch, or the queue refused to guess which commits were the branch's at all.
+#[derive(Debug)]
+pub enum RebaseError {
+    /// Git refused the replay: a commit of the branch's own does not apply to the new base. The
+    /// rebase was aborted and the landing tree is back on the branch's head.
+    Conflict(String),
+    /// **Nothing was replayed**, and the sentence says why — the branch's own base could not be
+    /// established, it carries no commit of its own over that base, or the replay would have
+    /// changed what it says. A person has to act, so it is not dressed up as a conflict git could
+    /// have resolved.
+    Refused(String),
+}
+
+impl RebaseError {
+    /// The row's sentence: what happened to `branch` on `target` at `tip`, in its own words.
+    pub fn sentence(&self, branch: &str, target: &str, tip: &str) -> String {
+        match self {
+            RebaseError::Conflict(said) => {
+                format!("`{branch}` does not rebase onto `{target}` at {tip}: {said}")
+            }
+            RebaseError::Refused(said) => {
+                format!("`{branch}` was not rebased onto `{target}` at {tip}: {said}")
+            }
+        }
     }
-    rev_parse(worktree, "HEAD").ok_or_else(|| "the rebased HEAD has no sha".to_string())
+}
+
+/// **Rebase the branch's own commits — and nothing else — onto `onto`**, in the landing worktree,
+/// detached; the rebased sha, or a [`RebaseError`].
+///
+/// A plain `git rebase <onto>` takes `merge-base(head, onto)` for its base, and once the target has
+/// been rewritten that base is a commit on the **old** target: the rebase then replays the old
+/// target onto the new one and the branch's own commit comes along for the ride. Measured
+/// 2026-10-30: one commit of `crates/tui` replayed six commits and conflicted in five files it had
+/// never touched. So the base is found first ([`fork_point`]) and the replay is
+/// `git rebase --onto <onto> <fork>`.
+///
+/// `bases` is what the row remembers of that base — the tip it was last rebased onto and the base
+/// it was cut from — and `target` is the ref whose reflog remembers the tips it used to point at,
+/// which is what still names the base once nothing else does.
+pub fn rebase_in(
+    worktree: &Path,
+    head: &str,
+    onto: &str,
+    target: &str,
+    bases: &[String],
+) -> Result<String, RebaseError> {
+    let fork = fork_point(worktree, head, target, bases)?;
+    let own = own_commits(worktree, &fork, head)?;
+    if own.is_empty() {
+        return Err(RebaseError::Refused(format!(
+            "`{head}` carries no commit of its own over {fork}, so there is nothing to replay onto \
+             {onto}; rebase it by hand"
+        )));
+    }
+    git(worktree, &["checkout", "--detach", "--force", head]).map_err(RebaseError::Conflict)?;
+    // When every non-merge commit in `fork..head` is one of the branch's own, the branch is linear
+    // over its base and `git rebase --onto` replays exactly that list — keeping git's own handling
+    // of a patch the target already has. A branch that merged the old target into itself is not
+    // linear: `--onto` would replay what came in with those merges too, so its own commits are
+    // replayed one at a time instead.
+    let in_range = commits_in(worktree, &fork, head, false)?;
+    if in_range.len() == own.len() {
+        if let Err(e) = git(worktree, &["rebase", "--onto", onto, &fork]) {
+            let _ = git(worktree, &["rebase", "--abort"]);
+            let _ = git(worktree, &["checkout", "--detach", "--force", head]);
+            return Err(RebaseError::Conflict(e));
+        }
+    } else if let Err(e) = replay_each(worktree, onto, head, &own) {
+        return Err(RebaseError::Conflict(e));
+    }
+    let Some(rebased) = rev_parse(worktree, "HEAD") else {
+        return Err(RebaseError::Refused(
+            "the rebased HEAD has no sha".to_string(),
+        ));
+    };
+    // **The patches are the branch's, before and after.** A replay that alters what the branch says
+    // is the failure all of the above exists to prevent, so it is measured rather than trusted.
+    if let Err(said) = patches_unchanged(worktree, (&fork, head), (onto, &rebased)) {
+        let _ = git(worktree, &["checkout", "--detach", "--force", head]);
+        return Err(RebaseError::Refused(format!(
+            "the replay onto {onto} would have changed what the branch says ({said}), so it is not \
+             landed"
+        )));
+    }
+    Ok(rebased)
+}
+
+/// **The commit the branch was cut from** — the newest base somebody remembers, on the branch's own
+/// first-parent spine.
+///
+/// The spine is the branch's own commits followed by the commits it sits on, and the fork is the
+/// first of those that is *known* to be a base: one of `bases` (the row's `onto_sha`, the base its
+/// review recorded) or a commit `refs/heads/<target>` has pointed at (its reflog, which survives the
+/// target being rewritten). `--first-parent` and not plain ancestry, because a branch that merged
+/// the target into itself has newer target commits in its ancestry than its own fork, and taking one
+/// of those would replay only the commits above the merge.
+///
+/// **There is no fallback to `merge-base(head, onto)`**: that is precisely the base the old target's
+/// history is reachable from, and replaying from it is the defect this exists for. A branch whose
+/// base nobody remembers is refused in words instead.
+fn fork_point(
+    repo: &Path,
+    head: &str,
+    target: &str,
+    bases: &[String],
+) -> Result<String, RebaseError> {
+    let mut known: Vec<String> = bases
+        .iter()
+        .map(|b| b.trim())
+        .filter(|b| !b.is_empty())
+        .map(str::to_string)
+        .collect();
+    // `rev-list -g` answers nothing (exit 0) for a ref with no reflog, which is a fact about the
+    // repository and not an error: the recorded bases above are then all there is.
+    if let Ok(log) = git(repo, &["rev-list", "-g", &format!("refs/heads/{target}")]) {
+        known.extend(
+            log.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string),
+        );
+    }
+    let spine = git(repo, &["rev-list", "--first-parent", head]).map_err(|e| {
+        RebaseError::Refused(format!("the history of `{head}` could not be read: {e}"))
+    })?;
+    for line in spine.lines() {
+        let at = line.trim();
+        if known.iter().any(|k| k == at) {
+            return Ok(at.to_string());
+        }
+    }
+    Err(RebaseError::Refused(format!(
+        "could not find the branch's own base; rebase it by hand — nothing `{head}` was cut from is \
+         remembered (neither the base the row recorded nor any commit `{target}` has pointed at is \
+         on `{head}`'s first-parent chain), and replaying the whole chain would replay `{target}`'s \
+         old history"
+    )))
+}
+
+/// **The branch's own commits**, oldest first: first-parent, merges aside, over `fork`.
+fn own_commits(repo: &Path, fork: &str, head: &str) -> Result<Vec<String>, RebaseError> {
+    commits_in(repo, fork, head, true)
+}
+
+/// Every commit in `fork..head` that is not a merge — `first_parent` narrows it to the branch's own
+/// spine (see [`fork_point`]); without it this is the set `git rebase --onto` would replay.
+fn commits_in(
+    repo: &Path,
+    fork: &str,
+    head: &str,
+    first_parent: bool,
+) -> Result<Vec<String>, RebaseError> {
+    let mut args = vec!["rev-list", "--no-merges", "--reverse"];
+    if first_parent {
+        args.push("--first-parent");
+    }
+    let range = format!("{fork}..{head}");
+    args.push(&range);
+    let out = git(repo, &args).map_err(|e| {
+        RebaseError::Refused(format!(
+            "the commits of `{head}` over {fork} could not be read: {e}"
+        ))
+    })?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// **Replay exactly these commits**, oldest first, on a detached `onto` — the path for a branch that
+/// merged the old target into itself, where `git rebase --onto` would replay the commits those
+/// merges brought in as well (measured: it conflicts in files the branch never touched).
+fn replay_each(worktree: &Path, onto: &str, head: &str, own: &[String]) -> Result<(), String> {
+    git(worktree, &["checkout", "--detach", "--force", onto])?;
+    for commit in own {
+        if let Err(e) = git(worktree, &["cherry-pick", commit]) {
+            if an_empty_pick(worktree) {
+                // The new base already carries this change: `git rebase` drops such a commit, and
+                // so does the queue.
+                let _ = git(worktree, &["cherry-pick", "--skip"]);
+                continue;
+            }
+            let _ = git(worktree, &["cherry-pick", "--abort"]);
+            let _ = git(worktree, &["checkout", "--detach", "--force", head]);
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+/// **A pick that came out empty** — the sequencer stopped on a commit and left a tree with nothing
+/// in it: no unmerged path, an index equal to `HEAD`. That is `git rebase`'s `--empty=drop` said in
+/// cherry-pick's dialect.
+fn an_empty_pick(repo: &Path) -> bool {
+    rev_parse(repo, "CHERRY_PICK_HEAD").is_some()
+        && git(repo, &["ls-files", "-u"])
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(false)
+        // `--quiet` exits 1 when the index differs from HEAD, which `git` reports as an `Err`.
+        && git(repo, &["diff", "--cached", "--quiet"]).is_ok()
+}
+
+/// **The replay did not change what the branch says** — `git range-diff` of the branch's own commits
+/// before and after: `=` is the same patch, and `<` a commit the new base already carries (git drops
+/// those, and did before this change too). Anything else — a patch altered, or one the branch never
+/// wrote — is the failure the caller must undo, and the line that said so is the answer.
+fn patches_unchanged(repo: &Path, before: (&str, &str), after: (&str, &str)) -> Result<(), String> {
+    if after.0 == after.1 {
+        // Every one of the branch's commits came out empty, so there is no series to compare and
+        // nothing the branch says has changed.
+        return Ok(());
+    }
+    let out = git(
+        repo,
+        &[
+            "range-diff",
+            "--no-color",
+            &format!("{}..{}", before.0, before.1),
+            &format!("{}..{}", after.0, after.1),
+        ],
+    )?;
+    for line in out.lines() {
+        // `1:  7c361a6 = 1:  20e25b1 subject` — the third field compares the two patches.
+        if !matches!(line.split_whitespace().nth(2), Some("=") | Some("<")) {
+            return Err(line.trim().to_string());
+        }
+    }
+    Ok(())
 }
 
 /// **Move `refs/heads/<target>` from `expect` to `new`, or learn that it moved** — git's own
