@@ -68,6 +68,13 @@ impl App {
             .collect()
     }
 
+    /// **Whether the board this head is holding is the session's own** — i.e. the `asks` settings
+    /// row has nothing left to say. See [`App::asks_board`]: until a board has been read, the
+    /// settings row is the only thing that knows a question was asked; after it, the board is.
+    pub(crate) fn board_read_here(&self) -> bool {
+        self.asks_board.as_deref() == Some(self.session_id.as_str())
+    }
+
     /// **The rows on this head's board that wait on the operator**, with the question and the
     /// options — open rows only (a done or struck-off row asks nobody anything), in board order.
     /// The same reading as the daemon's `operator_asks`, over the wire's copy of the board.
@@ -116,12 +123,17 @@ impl App {
             None => asks.into_iter().next(),
         };
         let Some(ask) = ask else {
-            self.say(if self.asks_setting.is_some() {
+            // **A board already read says `nothing`, not `still being read`** — the settings row
+            // may still quote a question the row no longer carries (see [`App::asks_board`]),
+            // and telling the operator to press alt-a again would be the same stale sentence
+            // twice.
+            let unread = self.asks_setting.is_some() && !self.board_read_here();
+            self.say(if unread {
                 "the board is still being read — alt-a again in a moment"
             } else {
                 "nothing is waiting on you"
             });
-            if self.asks_setting.is_some() && !self.queued.contains(&Action::ListTodos) {
+            if unread && !self.queued.contains(&Action::ListTodos) {
                 self.queued.push(Action::ListTodos);
             }
             self.redraw = true;

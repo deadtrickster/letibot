@@ -35,7 +35,7 @@
 //! the session is idle — R79's rule for an operator's words, which are never held.
 
 use letibot_sessionlog::question::QuestionAnswer;
-use letibot_tokencore::store::{TodoItem, operator_asks};
+use letibot_tokencore::store::{TodoItem, TodoNeed, TodoStatus, operator_asks};
 use letibot_tools::builtins::todo::{OperatorAsk, TodoBoard};
 
 /// **The reply, as a sentence** — what the row keeps and what the model is told after the
@@ -142,15 +142,121 @@ pub fn asked_words(row: &str, question: &str) -> String {
     )
 }
 
+/// **Why a question stopped waiting**, in the sentence the settled notice carries — so a reader
+/// can tell an ANSWER from a TAKE-BACK.
+///
+/// Three routes end a question and only one of them is a person's: the operator answered it
+/// ([`TodoNeed::Answered`] on the row), the model took it back having worked it out (`detach`,
+/// which is `todo_write`'s `Wait::Detach` and leaves the row with no operator edge), or the row
+/// itself stopped being open work (completed, dropped). The notice used to say the same four words
+/// for all of them — *"no longer waiting on you"* — which left the person who had been asked
+/// unable to tell whether their own answer had landed, and the model unable to tell whether its
+/// take-back had.
+///
+/// The tail is the sentence it always was, so nothing that reads the line breaks; the reason is
+/// put in front of it.
+pub fn settled_words(todos: &[TodoItem], row: &str, question: &str) -> String {
+    let tail = format!(
+        "for \"{}\" on `{}`",
+        question.trim(),
+        letibot_tokencore::store::todo_title(row)
+    );
+    let Some(item) = todos.iter().find(|t| t.content.trim() == row.trim()) else {
+        return format!("the row is gone, so nothing waits {tail}");
+    };
+    if item.needs.iter().any(|n| {
+        matches!(n, TodoNeed::Answered { question: asked, .. } if asked.trim() == question.trim())
+    }) {
+        return format!("answered — no longer waiting on you {tail}");
+    }
+    match item.status {
+        TodoStatus::Completed => format!("the row is done — no longer waiting on you {tail}"),
+        TodoStatus::Cancelled => format!("the row was dropped — no longer waiting on you {tail}"),
+        _ => format!("the model took its question back — no longer waiting on you {tail}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use letibot_tokencore::store::TodoBy;
 
     fn ask() -> OperatorAsk {
         OperatorAsk {
             content: "deploy".into(),
             question: "which db?".into(),
             options: vec!["postgres".into(), "sqlite".into()],
+        }
+    }
+
+    /// A row of the board in the state a route left it in.
+    fn row(status: TodoStatus, needs: Vec<TodoNeed>) -> TodoItem {
+        TodoItem {
+            content: "deploy".into(),
+            status,
+            by: TodoBy::Model,
+            when: None,
+            needs,
+        }
+    }
+
+    /// **A question that stopped waiting says which route took it** — the operator's ask, once
+    /// more: *"when question is resolved models are being able to cancel the ask"*. A take-back
+    /// and an answer both end the question, and the notice that says so has to tell them apart,
+    /// or the person who was asked cannot tell their own answer landed.
+    #[test]
+    fn a_question_that_stops_waiting_says_which_route_took_it() {
+        let asked = TodoNeed::Operator {
+            question: "which db?".into(),
+            options: vec!["postgres".into(), "sqlite".into()],
+        };
+        // The operator answered: the edge is the reply.
+        let answered = row(
+            TodoStatus::Pending,
+            vec![TodoNeed::Answered {
+                question: "which db?".into(),
+                reply: "the operator chose \"postgres\"".into(),
+            }],
+        );
+        // The model took it back: the edge is simply gone.
+        let taken_back = row(TodoStatus::Pending, Vec::new());
+        // And the row itself stopped being open work.
+        let done = row(TodoStatus::Completed, vec![asked.clone()]);
+        let dropped = row(TodoStatus::Cancelled, vec![asked.clone()]);
+        // A restatement that replaced the question is not an answer to the one that was asked.
+        let other = row(
+            TodoStatus::Pending,
+            vec![TodoNeed::Operator {
+                question: "which db, really?".into(),
+                options: vec!["postgres".into(), "sqlite".into()],
+            }],
+        );
+
+        for (case, board, expected) in [
+            ("answered", vec![answered], "answered — "),
+            (
+                "taken back",
+                vec![taken_back],
+                "the model took its question back — ",
+            ),
+            ("completed", vec![done], "the row is done — "),
+            ("dropped", vec![dropped], "the row was dropped — "),
+            (
+                "re-asked",
+                vec![other],
+                "the model took its question back — ",
+            ),
+            ("gone", Vec::new(), "the row is gone, so nothing waits "),
+        ] {
+            let said = settled_words(&board, "deploy", "which db?");
+            assert!(
+                said.starts_with(expected),
+                "{case}: expected {expected:?}, got {said:?}"
+            );
+            assert!(
+                said.ends_with("for \"which db?\" on `deploy`"),
+                "{case}: the question and the row are still named: {said:?}"
+            );
         }
     }
 

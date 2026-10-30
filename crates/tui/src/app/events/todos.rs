@@ -15,6 +15,9 @@ impl App {
             // lives.
             SessionEvent::TodosUpdated { todos } => {
                 self.todos = todos;
+                // **A published board is a board read** — [`App::asks_board`]: the hub this event
+                // arrives on is this session's, so the mark names the session the head is in.
+                self.asks_board = Some(self.session_id.clone());
                 // The board is the truth once it arrives: a row answered from here is either
                 // off it or — the answer refused — still asking, and asked again.
                 self.todo_answered.clear();

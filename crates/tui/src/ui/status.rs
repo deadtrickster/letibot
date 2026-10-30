@@ -211,8 +211,11 @@ impl App {
             return row_strings(&facts::warning(&said, w), self.cfg.palette());
         }
         // A board read and answered from here is the truth over the `asks` settings row, which
-        // was written before the answer.
-        let setting = if self.todo_answered.is_empty() {
+        // was written before the answer. **And a board read is the truth over it whether or not
+        // anything was answered from here** — the settings row is one sentence from attach time
+        // that nothing refreshes, so a question the model took back (or a row that completed)
+        // would otherwise be quoted from it for ever: see [`App::asks_board`].
+        let setting = if self.todo_answered.is_empty() && !self.board_read_here() {
             self.asks_setting.as_ref()
         } else {
             None
