@@ -156,14 +156,20 @@ pub struct App {
     /// lines]`'s two halves, each a click that opens its run's rows of that kind. See
     /// `app::runclick`.
     pub(crate) marker_rows: Vec<runclick::MarkerHit>,
-    /// **Which kind the open run lifts** — `None` is the whole run (`ctrl-t`), `Some` the kind a
-    /// click on one of its marker's clauses asked for.
-    pub(crate) run_show: Option<visibility::Show>,
-    /// **What a click lifted in the turn still running** — its marker's thinking or calls, drawn
-    /// open in the live pane, and carried to the run its rows land in at each round's end (the
-    /// operator: *"clicking on tool calls and thinking counters work only after they are
-    /// sealed"*). `None` is the pane as the rung draws it. See `app::runclick`.
-    pub(crate) live_open: Option<visibility::Show>,
+    /// **The one switch a click throws** — the kind a run is drawn lifted to, on the run
+    /// [`App::payload_sel`] names: a run of rows, or [`runclick::LIVE_RUN`] for the turn still
+    /// running. `None` is the whole run (`ctrl-t`), `Some` the kind a click on one of its
+    /// marker's clauses asked for.
+    ///
+    /// **One field and not two.** This was `run_show` (the rows) beside `live_open` (the pane),
+    /// and they were written by different doors: a click wrote both, `set_verbosity` cleared
+    /// `payload_sel` and neither of them, and `carry_live_open` re-applied `live_open` at every
+    /// round's end. The pane's half then had no panel to close it — the operator's *"when i
+    /// click on thinking counter it gets stuck … then all subsequent turns go with think open"* —
+    /// and the row's half was re-lifted by a boundary nobody pressed. See [`App::lifted`], which
+    /// is the one reader, and `app::runclick`'s `set_lift`/`drop_lift`, which are the only
+    /// writers.
+    pub(crate) lift: Option<visibility::Show>,
     /// **What this head holds of each ended job's output**, by handle — the second line of a
     /// completion notice and the tail its popup shows. Filled by a `ReadJobOutput` the window
     /// sends for a notice on the screen (once per job; see `App::ask_notice_tails`) and by any
@@ -1941,8 +1947,7 @@ impl App {
             note_cards: Vec::new(),
             card_rows: Vec::new(),
             marker_rows: Vec::new(),
-            run_show: None,
-            live_open: None,
+            lift: None,
             job_tails: Default::default(),
             term_fact: PaneFact::Unasked,
             term_ask: None,

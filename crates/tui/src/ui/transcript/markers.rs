@@ -216,12 +216,16 @@ pub(crate) fn run_open_at(
     let Some(id) = open.filter(|id| !id.is_empty()) else {
         return false;
     };
-    // **The live tail is addressed by a sentinel**, because there is no row to key it on:
-    // `App::newest_openable` returns this for it. A run with no row yet still has to open —
-    // *"a marker that cannot be opened is the elision this document refuses everywhere else"*
-    // — and what it opens is the turn's own live view, which is where that work is.
+    // **The live tail is not a row, and this is the question about a row.**
+    //
+    // It used to answer `live.work() > 0 && !live_tail_covered(..)` here — a value with no `row`
+    // in it — so a panel opened on the pane's own marker made EVERY row of the transcript read as
+    // *inside the open run*: the whole conversation was drawn at [`Visibility::lifted`] and
+    // `run_skips` was applied to rows the click was never about (a `thinking` click hid every
+    // tool row in the session). `App::run_is_open` asks *is the panel open* and answers the live
+    // tail itself; the walks ask *is this row of the open run* and the answer for a row is no.
     if id == LIVE_RUN {
-        return live.work() > 0 && !live_tail_covered(items, vis, bound);
+        return false;
     }
     let Some(start) = items.iter().position(|it| it.item_id == id) else {
         return false;
@@ -229,13 +233,15 @@ pub(crate) fn run_open_at(
     unseen_run_at(items, vis, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
 }
 
-/// **The run with no row yet** — the sentinel [`App::newest_openable`] returns for the work in
-/// flight, so the marker that stands for it can name a chord and that chord can reach it.
+/// **The run with no row yet** — the sentinel `App::payload_sel` carries for the work in flight, so
+/// the marker that stands for it can name a chord and that chord can reach it.
 ///
-/// Not an item id: an item id is minted by the daemon and this run has no item. A constant
-/// that cannot collide with one (`s-…`/`t…r…` ids are alphanumeric) and that reads as what it
-/// is in a debugger.
-pub const LIVE_RUN: &str = "<live>";
+/// **ONE constant, and it is `app::runclick`'s.** There used to be two — this one said `"<live>"`
+/// and the click path said `"\u{0}live"` — so a panel opened with `ctrl-t` was a run and a panel
+/// opened by a click on the same marker was not: `run_open_at` and `App::run_is_open` recognised
+/// only the first, and the second read as a ctrl-v window (the bar offered `page the result` for a
+/// window nobody draws). Two spellings of one state, which is this branch's whole subject.
+pub(crate) use crate::app::runclick::LIVE_RUN;
 
 /// **The newest run of invisible rows, by its first row** — what `ctrl-t` opens.
 ///

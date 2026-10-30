@@ -263,5 +263,5 @@ fn the_live_marker_clicks_before_the_turn_is_sealed() {
     let line: String = crate::app::keyhints::cells(&screen[y]).iter().collect();
     let x = line.find("tool call").expect("the clause") as u16;
     a.key(Key::Click { x, y: y as u16 });
-    assert_eq!(a.live_open, None);
+    assert_eq!(a.lift, None);
 }

@@ -98,6 +98,12 @@ impl App {
         // existed over there is how a switched head shows the right conversation
         // with the wrong facts attached to it.
         if !same_session {
+            // **The one switch goes with the session it was thrown in.** It names a run by an
+            // item id, and an id is per-transcript: carried across a switch it names another
+            // conversation's row, and the pane's half of it (`lifted`) would go on opening a
+            // thinking block nobody asked for in a session that never had one. See
+            // `app::runclick`.
+            self.drop_lift();
             self.call_targets.clear();
             self.call_ms.clear();
             self.call_edits.clear();

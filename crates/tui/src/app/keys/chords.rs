@@ -25,6 +25,17 @@ impl App {
             // cannot drift from the verb, because it IS the verb.
             k if k.show().is_some() => {
                 let s = k.show().expect("the guard just asked the same question");
+                // **The thinking is one verb and two spellings, so its chord is not `/verbosity`'s**
+                // — see [`App::set_thinking`]. At a rung that draws the thinking this ends in the
+                // very same `thinking=open|folded` (one writer, one preference file), and at a
+                // rung that hides it the fold is not on the screen at all: the openness there is
+                // the lift on a run, which is what a click on the marker's thinking clause
+                // throws — so `ctrl-r` closes what a click opened and opens what it closed.
+                // Before this the two were separate states and neither key could reach the
+                // other's, which is the operator's *"ctrl-r doesnt help"*.
+                if s == Show::Thinking {
+                    return ControlFlow::Break(self.flip_thinking());
+                }
                 let Some(next) = s.by_chord(self.visibility.level(s)) else {
                     return ControlFlow::Break(None);
                 };
@@ -77,7 +88,10 @@ impl App {
                 if self.payload_sel.is_some() {
                     self.payload_sel = None;
                     self.payload_page = 0;
-                    self.run_show = None;
+                    // **And the switch goes with the panel** — `drop_lift` takes both, so a run
+                    // this key opened cannot outlive the window that named it. (The two fields
+                    // this replaces were cleared here by hand and one of them was missed.)
+                    self.drop_lift();
                     // **And an open run closes.** It was opened by this key, so this key is
                     // what closes it — the same bargain every other window in this file
                     // makes, and without it the second press would open a payload window
@@ -85,7 +99,6 @@ impl App {
                     self.invalidate_history();
                 } else if let Some(id) = self.newest_openable() {
                     self.payload_sel = Some(id);
-                    self.run_show = None;
                     self.payload_page = 0;
                     self.payload_max.set(usize::MAX);
                 }

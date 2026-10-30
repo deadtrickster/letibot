@@ -4347,8 +4347,11 @@ fn the_thinking_count_equals_what_the_fold_draws() {
         1_100,
         testing::reasoning("r1", &thought),
     )));
-    // The marker, clicked — which is how a reader opens the working at this rung.
-    a.live_open = Some(Show::Thinking);
+    // The marker, clicked — which is how a reader opens the working at this rung. The click is
+    // what a person does; this writes what it writes: the one switch (`App::lift`) and the panel
+    // that carries its exit (`payload_sel`, by the live tail's sentinel).
+    a.lift = Some(Show::Thinking);
+    a.payload_sel = Some(crate::app::runclick::LIVE_RUN.to_string());
     let screen = a.screen(90, 40).join("\n");
     let counted = thinking_count(&screen).unwrap_or_else(|| panic!("no marker:\n{screen}"));
     assert!(

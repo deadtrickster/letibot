@@ -6291,9 +6291,13 @@ fn the_marker_opens_and_the_run_draws_its_own_rows() {
     // **The chord.** It opens the newest run — both rows here, since they are contiguous.
     a.key(Key::CtrlV);
     let open = a.screen(110, 40).join("\n");
+    // **The marker stays, and the rows come in under it.** It is the run's header now, and its
+    // clauses are the toggle that puts it back — a state that is set has its marker on the
+    // screen (requirement 4). It used to be replaced by the rows it stood for, which left the
+    // hint bar as the only thing naming the state.
     assert!(
-        !open.contains("[2 tool calls"),
-        "the marker is replaced by the run it stood for: {open}"
+        open.contains("[2 tool calls"),
+        "the marker is the header of the rows it opened: {open}"
     );
     assert!(
         open.contains("second output"),

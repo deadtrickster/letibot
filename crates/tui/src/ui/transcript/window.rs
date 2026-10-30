@@ -319,6 +319,10 @@ impl App {
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
         let echoes_on_screen = self.echoes_on_screen();
+        // **What a click lifted, read before the frame borrows the history.** It is one field
+        // (`App::lift`) read against the run `payload_sel` names — see `App::lifted`, which is
+        // the one reader — and it is taken here because `hist_lines` is lent to the frame below.
+        let lifted = self.lifted();
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
@@ -485,7 +489,7 @@ impl App {
                 superseded,
                 live_joins,
                 walk_carried_live,
-                self.live_open,
+                lifted,
             );
         }
 
@@ -854,7 +858,7 @@ impl App {
             spans,
             note_cards,
             visibility,
-            run_show,
+            lift,
             dismissed,
             absorbed,
             ..
@@ -1026,17 +1030,96 @@ impl App {
                     payload_sel.as_deref(),
                     *hist_upto,
                 );
-                let unseen = if open_run {
-                    None
-                } else {
-                    unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto)
-                };
+                // **The marker is drawn whether the run is OPEN or not** — R37 AMENDED's *"it
+                // opens"* read together with R29's rule that a disclosure carries the act that
+                // undoes it. An open run's marker is the HEADER of the rows it lifted: its
+                // clauses are the toggle that switches kind or puts it back (`App::open_marker`),
+                // and the hint bar's `esc folds the run back` is the second door. It used to be
+                // suppressed the moment the run opened, which left the state named by the hint
+                // bar alone — and a state whose marker is gone is the defect this file exists
+                // against, one key removed.
+                let unseen = unseen_run_at(items, *visibility, bound_prompts, live, *hist_upto);
                 // **No blank line in front of a marker.** It continues the sentence above
                 // it rather than standing as a row of its own, so the separator's blank —
                 // which exists to say *a new kind of thing starts here* — is the opposite
                 // of what it means. See [`hidden_run_marker`].
                 let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(items, start));
                 let tight = unseen.is_some() && joinable;
+                // **A row of an OPEN run draws itself under that header**, and a row the click's
+                // kind skips draws nothing (that is what `run_skips` is for). A CLOSED run's rows
+                // are not lexed at all, which is the whole point of the marker.
+                let absorbed_here =
+                    crate::app::one_event::is_absorbed(absorbed, notes, dismissed, *hist_upto);
+                let skipped =
+                    open_run && crate::app::runclick::run_skips(*lift, &items[*hist_upto]);
+                let (body_class, body) =
+                    if (open_run || unseen.is_none()) && !absorbed_here && !skipped {
+                        item_lines(
+                            &items[*hist_upto],
+                            &ItemCtx {
+                                cfg: &row_cfg,
+                                think: if open_run {
+                                    crate::app::runclick::run_think(*lift, think)
+                                } else {
+                                    think
+                                },
+                                tools: tool,
+                                raw,
+                                targets: call_targets,
+                                answered: &answered,
+                                subagents: &self.subagents,
+                                job_tails: &self.job_tails,
+                                drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
+                                elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
+                                edit: call_edits.get(&items[*hist_upto].item_id),
+                                decision: call_decisions.get(&items[*hist_upto].item_id),
+                                workspace: &self.wiring.workspace,
+                                bound: bound_prompts
+                                    .get(&items[*hist_upto].item_id)
+                                    .map(String::as_str),
+                                // **A bound row is being drawn, so its mark is never `queued`** —
+                                // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
+                                // walk above, and it is the one that drew the operator's own line:
+                                // *"my message | your line | and only then unqueued."*
+                                echo_mark: bound_prompts
+                                    .get(&items[*hist_upto].item_id)
+                                    .map(String::as_str)
+                                    .map(|t| echo_mark(unconfirmed, t, true))
+                                    .unwrap_or(QUEUED),
+                                echo_open,
+                                // **An open run lifts the rung for its own rows**, which is
+                                // what "it opens" means: the reader sees the very rows the
+                                // rung was hiding, with their own headlines, payloads and
+                                // diffs, rather than a second rendering of them.
+                                vis: if open_run {
+                                    Visibility::lifted()
+                                } else {
+                                    *visibility
+                                },
+                                diff_split,
+                                // Rebuilt per row inside the walk, so it cannot be hoisted
+                                // out of this borrow — it reads two fields the walk is
+                                // holding. **Closed for an open run**: that run is being
+                                // read whole, and opening a payload window inside a row that
+                                // is only on screen because the run is open would be two
+                                // unfoldings of one thing.
+                                payload_view: if open_run {
+                                    None
+                                } else {
+                                    payload_sel
+                                        .as_deref()
+                                        .filter(|id| !id.is_empty())
+                                        .map(|id| (id, *payload_page))
+                                },
+                                payload_newest: newest_payload.as_deref(),
+                                payload_max: Some(payload_max),
+                                window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
+                                replied_to: question_before(items, *hist_upto).as_deref(),
+                            },
+                        )
+                    } else {
+                        (RowClass::Other, Vec::new())
+                    };
                 let (class, rows) = match unseen {
                     Some((start, end)) if start == *hist_upto => {
                         // See the backward walk's note: the run holding the turn's
@@ -1079,83 +1162,35 @@ impl App {
                                     .rposition(|l| !l.trim().is_empty())
                                     .expect("the joined line came from one");
                                 hist_lines[at] = line;
-                                (RowClass::Other, Vec::new())
+                                // The header went onto the sentence above; the rows it
+                                // stands over still go in below it.
+                                (
+                                    if open_run {
+                                        body_class
+                                    } else {
+                                        RowClass::Other
+                                    },
+                                    body,
+                                )
                             }
-                            None => (RowClass::Activity, vec![painted]),
+                            None => {
+                                let mut rows = vec![painted];
+                                rows.extend(body);
+                                (
+                                    if open_run {
+                                        body_class
+                                    } else {
+                                        RowClass::Activity
+                                    },
+                                    rows,
+                                )
+                            }
                         }
                     }
-                    Some(_) => (RowClass::Other, Vec::new()),
-                    // R89: a row a warning's card stands for draws nothing.
-                    None if (crate::app::one_event::is_absorbed(
-                        absorbed, notes, dismissed, *hist_upto,
-                    )) || (open_run
-                        && crate::app::runclick::run_skips(*run_show, &items[*hist_upto])) =>
-                    {
-                        (RowClass::Other, Vec::new())
-                    }
-                    None => item_lines(
-                        &items[*hist_upto],
-                        &ItemCtx {
-                            cfg: &row_cfg,
-                            think: if open_run {
-                                crate::app::runclick::run_think(*run_show, think)
-                            } else {
-                                think
-                            },
-                            tools: tool,
-                            raw,
-                            targets: call_targets,
-                            answered: &answered,
-                            subagents: &self.subagents,
-                            job_tails: &self.job_tails,
-                            drawn_live: in_flight.contains(items[*hist_upto].item_id.as_str()),
-                            elapsed_ms: call_ms.get(&items[*hist_upto].item_id).copied(),
-                            edit: call_edits.get(&items[*hist_upto].item_id),
-                            decision: call_decisions.get(&items[*hist_upto].item_id),
-                            workspace: &self.wiring.workspace,
-                            bound: bound_prompts
-                                .get(&items[*hist_upto].item_id)
-                                .map(String::as_str),
-                            // **A bound row is being drawn, so its mark is never `queued`** —
-                            // see [`echo_mark`]. This was the same `_ => QUEUED` as its sibling
-                            // walk above, and it is the one that drew the operator's own line:
-                            // *"my message | your line | and only then unqueued."*
-                            echo_mark: bound_prompts
-                                .get(&items[*hist_upto].item_id)
-                                .map(String::as_str)
-                                .map(|t| echo_mark(unconfirmed, t, true))
-                                .unwrap_or(QUEUED),
-                            echo_open,
-                            // **An open run lifts the rung for its own rows**, which is
-                            // what "it opens" means: the reader sees the very rows the
-                            // rung was hiding, with their own headlines, payloads and
-                            // diffs, rather than a second rendering of them.
-                            vis: if open_run {
-                                Visibility::lifted()
-                            } else {
-                                *visibility
-                            },
-                            diff_split,
-                            // Rebuilt per row inside the walk, so it cannot be hoisted
-                            // out of this borrow — it reads two fields the walk is
-                            // holding. **Closed for an open run**: that run is being
-                            // read whole, and opening a payload window inside a row that
-                            // is only on screen because the run is open would be two
-                            // unfoldings of one thing.
-                            payload_view: if open_run {
-                                None
-                            } else {
-                                payload_sel
-                                    .as_deref()
-                                    .filter(|id| !id.is_empty())
-                                    .map(|id| (id, *payload_page))
-                            },
-                            payload_newest: newest_payload.as_deref(),
-                            payload_max: Some(payload_max),
-                            window_rows: screen_rows.saturating_sub(WINDOW_CHROME),
-                            replied_to: question_before(items, *hist_upto).as_deref(),
-                        },
-                    ),
+                    // A row of an open run — its header was drawn at the run's first row — and
+                    // a row of a closed one, which draws nothing.
+                    Some(_) => (body_class, body),
+                    None => (body_class, body),
                 };
                 // A row that rendered nothing gets no separator either. An
                 // assistant row whose text is `"\n\n\n"` and whose every call

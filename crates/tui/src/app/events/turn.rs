@@ -187,6 +187,23 @@ impl App {
                     turn_rows,
                     ..TurnPane::default()
                 });
+                // **A new round's pane starts at the default, and a new TURN drops any panel.**
+                //
+                // The operator's *"then all subsequent turns go with think open"*, and the brief's
+                // *"no latching across rounds"*. Two facts and not one:
+                //
+                // * **The pane's half goes on every boundary, unconditionally.** `TurnStarted` is
+                //   one event per ROUND, and the pane is that round's — a lift addressed at
+                //   [`runclick::LIVE_RUN`] belongs to the turn that is over and must not be read
+                //   against the next one. No heuristic decides this, because `same_turn` below is
+                //   a guess about `began_ms` (a wake turn arrives unstamped) and a state reset
+                //   must not rest on one.
+                // * **A panel on a run of ROWS is the reader's**, and only a new prompt — a new
+                //   subject — closes it. A further round of the same prompt leaves it where they
+                //   put it (`carry_live_open` moved its address there at the round's end).
+                if !same_turn || self.payload_sel.as_deref() == Some(runclick::LIVE_RUN) {
+                    self.drop_lift();
+                }
                 // A new turn takes the pane away from the previous one, so the
                 // previous one's rows now own everything they proposed. Same
                 // reason as the terminal states above: the history is cached —

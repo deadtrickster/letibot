@@ -506,18 +506,24 @@ fn the_raw_chord_is_its_own_key_and_reaches_nothing_else() {
     assert_eq!(a.tools, Fold::Folded, "ctrl-x moved the tool-output fold");
 }
 
-/// **And where the ladder cannot draw the result, the chord says why instead of lying** — the
+/// **And where the ladder cannot draw the result, the verb says why instead of lying** — the
 /// operator's rule for the whole rewrite: a state that changes nothing is worse than an
 /// unfinished one, because it lies about the screen.
 ///
-/// `read-edits` is `{edits: open}` and nothing else, so the thinking's chord there would be
-/// `thinking=open` with `tools=hidden` — no rung draws it, and the set must not be stored. The
-/// refusal has to name the switch AND the way back, which is one word of the same verb.
+/// `read-edits` is `{edits: open}` and nothing else, so `thinking=open` there would be with
+/// `tools=hidden` — no rung draws it, and the set must not be stored. The refusal has to name the
+/// switch AND the way back, which is one word of the same verb.
+///
+/// **This is the typed verb's arm, and it is the only one left with a refusal in it.** `ctrl-r`
+/// used to land here too and no longer does: at a rung that hides the thinking its openness is
+/// the lift on a run, which is what a click on the marker's thinking clause throws — so the chord
+/// opens that instead of explaining a ladder the reader never asked about
+/// (`a_click_on_thinking_and_ctrl_r_are_one_verb` in `markerclick`).
 #[test]
-fn the_thinking_chord_in_read_edits_says_why_rather_than_storing_it() {
+fn the_thinking_verb_in_read_edits_says_why_rather_than_storing_it() {
     let mut a = app();
     a.visibility = Visibility::of(Profile::READ_EDITS);
-    a.key(Key::CtrlR);
+    assert_eq!(a.command("verbosity thinking=open"), None);
     assert_eq!(
         a.visibility,
         Visibility::of(Profile::READ_EDITS),
