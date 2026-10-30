@@ -96,6 +96,7 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
         "/h/gate/x/run/step-0.pid",
         "/h/gate/x/run/step-0.out",
         "/h/gate/x/run/step-0.exit",
+        false,
     );
     assert!(
         script.contains(
@@ -116,8 +117,151 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
         "{script}"
     );
     // A step containing a quote of its own is written verbatim: nothing is spliced or escaped.
-    let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e");
+    let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", false);
     assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
+}
+
+/// **A step that must have a cgroup of its own is started in a transient delegated scope**, with the
+/// project's own text quoted once inside it — and the pid file, the subshell and `$?` stay where
+/// they were, because `systemd-run --scope` execs the command in place.
+#[test]
+fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
+    let script = launcher_script(
+        "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace",
+        "/h/gate/x/tree",
+        "/h/gate/x/target",
+        "/h/gate/x/run/step-0.pid",
+        "/h/gate/x/run/step-0.out",
+        "/h/gate/x/run/step-0.exit",
+        true,
+    );
+    assert!(
+        script.contains(
+            "( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c \
+             'LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace' ) > \
+             '/h/gate/x/run/step-0.out' 2>&1"
+        ),
+        "{script}"
+    );
+    // The pid is still the launcher's, which is still the process group's leader: the kill reaches
+    // the scope's command through the group it was forked into.
+    assert!(script.contains("echo $$ > '/h/gate/x/run/step-0.pid'"), "{script}");
+    assert!(
+        script.contains("echo $? > '/h/gate/x/run/step-0.exit'"),
+        "{script}"
+    );
+    // A quote in the step survives the extra layer: `sq` leaves and re-enters the quoting.
+    let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", true);
+    assert!(
+        quoted.contains("-- bash -c 'echo \"it'\\''s fine\"'"),
+        "{quoted}"
+    );
+}
+
+/// **The prefix is the project's, it is one assignment at the head of the line, and everything after
+/// it is left exactly as written.**
+#[test]
+fn the_demand_is_read_off_the_head_of_a_step_and_nothing_else_is_touched() {
+    assert_eq!(
+        apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast"),
+        Some("cargo test --workspace --no-fail-fast")
+    );
+    // Any value that `letibot_tokencore::apparatus::required` reads as *yes* is a demand.
+    assert_eq!(
+        apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=true make check"),
+        Some("make check")
+    );
+    // `0` is *no*, which is how a project says *not on this step* over an inherited value.
+    assert_eq!(apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=0 make check"), None);
+    // A step that makes no demand, and the three shapes that look like one.
+    assert_eq!(apparatus_prefix("cargo test --workspace"), None);
+    assert_eq!(apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=1"), None);
+    assert_eq!(apparatus_prefix(" env LETIBOT_REQUIRE_APPARATUS=1 make"), None);
+    assert_eq!(apparatus_prefix("echo LETIBOT_REQUIRE_APPARATUS=1"), None);
+    // The tail keeps its own spacing after the assignment, and nothing inside it is rewritten.
+    assert_eq!(
+        apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=1   sh -c 'a  b'"),
+        Some("sh -c 'a  b'")
+    );
+}
+
+/// **The three answers a machine can give, and the step that follows from each** — the whole of what
+/// a host gate does differently from the local one.
+#[test]
+fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
+    let step = "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace";
+    let bare = "cargo build --release --bins";
+    // Everything present, no scope needed: byte for byte the project's own step.
+    let fine = apparatus_from("cgroup=here\nbwrap=yes\n");
+    assert_eq!(plan_step(step, &fine).command, step);
+    assert!(!plan_step(step, &fine).dropped);
+    assert!(!plan_step(step, &fine).own_scope);
+    // No cgroup of its own, but a delegated scope gives one: the demand is MET, not dropped.
+    let scope = apparatus_from("cgroup=own-scope\nbwrap=yes\n");
+    let p = plan_step(step, &scope);
+    assert_eq!(p.command, step);
+    assert!(!p.dropped);
+    assert!(p.own_scope);
+    // Neither: the demand comes off THIS step, and the row will say so.
+    let none = apparatus_from("cgroup=no\nbwrap=yes\n");
+    let p = plan_step(step, &none);
+    assert_eq!(p.command, "cargo test --workspace");
+    assert!(p.dropped);
+    assert!(!p.own_scope);
+    assert_eq!(none.missing, vec![CGROUP_APPARATUS.to_string()]);
+    // A machine with no boundary drops it whatever its cgroups do — and a step that demands nothing
+    // is never wrapped, because the scope exists for the apparatus and not as a new habit.
+    let no_bwrap = apparatus_from("cgroup=own-scope\nbwrap=no\n");
+    assert_eq!(no_bwrap.missing, vec![BWRAP_APPARATUS.to_string()]);
+    assert!(plan_step(step, &no_bwrap).dropped);
+    assert!(!plan_step(step, &no_bwrap).own_scope);
+    assert_eq!(plan_step(bare, &scope).command, bare);
+    assert!(!plan_step(bare, &scope).own_scope);
+    // A probe that answered nothing at all is *absent*, not *present*: the safe reading, because a
+    // demand silently dropped is the defect this whole module exists for.
+    assert_eq!(apparatus_from("").missing.len(), 2);
+}
+
+/// **The line a person reads on the row** — it names the demand, what the machine has not got, and
+/// that a skipped apparatus test is not a pass. And a gate that did nothing to the demand says
+/// nothing, so a machine with everything reads as it always did.
+#[test]
+fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
+    let none = apparatus_from("cgroup=no\nbwrap=yes\n");
+    assert_eq!(none.evidence("lab", 5, &[], false), None);
+    let line = none
+        .evidence("lab", 5, &["LETIBOT_REQUIRE_APPARATUS=1 cargo test".to_string()], false)
+        .expect("a line");
+    assert!(line.starts_with("[gate on `lab`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"), "{line}");
+    assert!(line.contains(CGROUP_APPARATUS), "{line}");
+    assert!(line.contains("THIS IS NOT A PASS"), "{line}");
+    assert!(line.contains("SKIPPED"), "{line}");
+    // Wrapping is said too, and only when it happened.
+    let scope = apparatus_from("cgroup=own-scope\nbwrap=yes\n");
+    assert_eq!(scope.evidence("lab", 5, &[], false), None);
+    let line = scope.evidence("lab", 5, &[], true).expect("a line");
+    assert!(line.contains("delegated scope of its own"), "{line}");
+    assert!(line.contains("systemd-run --user --scope -p Delegate=yes"), "{line}");
+    assert!(!line.contains("NOT A PASS"), "{line}");
+}
+
+/// **The probe is an experiment, not an inspection** — it asks whether a directory can be MADE in
+/// this process's cgroup (`letibot_tools::exec::scope`'s `Cgroup2::probe` is exactly that), it tries
+/// a transient delegated scope before giving up, and it carries the marker a fixture answers on.
+#[test]
+fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
+    let script = apparatus_probe();
+    assert!(script.starts_with("# letibot-apparatus-probe"), "{script}");
+    assert!(script.contains("mkdir -p \"$own/letibot-probe.$$\""), "{script}");
+    assert!(script.contains("rmdir \"$own/letibot-probe.$$\""), "{script}");
+    assert!(
+        script.contains("systemd-run --user --scope -p Delegate=yes"),
+        "{script}"
+    );
+    assert!(script.contains("cgroup=own-scope"), "{script}");
+    assert!(script.contains("command -v bwrap"), "{script}");
+    // One line per fact, so the reader of a host's answer is not counting positions.
+    assert!(script.trim_end().ends_with("printf 'cgroup=%s\\nbwrap=%s\\n' \"$cgroup\" \"$bwrap\""), "{script}");
 }
 
 /// **A start is detached and a kill is a group kill with the local gate's numbers.**

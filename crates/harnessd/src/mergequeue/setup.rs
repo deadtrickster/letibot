@@ -86,10 +86,15 @@ pub fn builds_or_tests(command: &str) -> bool {
 /// [`names_a_missing_thing`] took that as the step naming something missing — so the tip went
 /// `blocked` (unjudged, nothing lands) instead of red. The note is a fact about the gate's harness
 /// on this platform and never about the code, so no classifier may read it.
-fn step_words(out: &str) -> impl Iterator<Item = &str> {
+///
+/// `[gate on …]` is the same rule for the host gate's two notes (`mergequeue::gate_host`): what a
+/// machine has not got, and that a step's demand was taken off it. Both are the GATE's words about
+/// the machine, and neither may be read as the step saying something about the code.
+pub(crate) fn step_words(out: &str) -> impl Iterator<Item = &str> {
     out.lines().filter(|l| {
         let t = l.trim_start();
         !(t.starts_with("[gate memory: ")
+            || t.starts_with("[gate on ")
             || t.starts_with("[step: ")
             || (t.starts_with('[') && t.ends_with("with its cgroup]")))
     })
@@ -306,6 +311,20 @@ mod tests {
         );
         assert_eq!(
             names_a_missing_thing("[gate memory: uncapped — No such file or directory]"),
+            None
+        );
+        // And the host gate's notes are the gate's too: what a machine has not got, and that a
+        // step's demand was taken off it, are not the step saying anything about the code.
+        assert_eq!(
+            step_words("[gate on lab2x1: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"]")
+                .count(),
+            0
+        );
+        assert_eq!(
+            names_a_missing_thing(
+                "[gate on lab2x1: this machine cannot meet it (a cgroup v2 subtree is not on \
+                 this machine)]"
+            ),
             None
         );
     }

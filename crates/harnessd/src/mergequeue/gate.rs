@@ -107,6 +107,33 @@ pub const GATE_MEMORY_DEFAULT: Amount = Amount::Fraction(0.5);
 /// Read like [`super::setup::GATE_SETUP_FAILED`]: the tip is UNJUDGED, not red.
 pub const GATE_KILLED: &str = "the gate's step was killed before it could judge the code";
 
+/// **The clause a target's evidence leads with when the step could not judge the code because the
+/// apparatus it DEMANDS is not on the machine it ran on** — the project's own
+/// `LETIBOT_REQUIRE_APPARATUS=1` prefix, refused on the far side of a host gate by
+/// `letibot_tokencore::apparatus::present`.
+///
+/// MEASURED 2026-10-30, `main` at `7becd144` with `[queue] gate_host = "lab2x1"`: **twenty-one
+/// targets failed with ONE sentence** — *LETIBOT_REQUIRE_APPARATUS is set, and a cgroup v2 subtree
+/// this user may write (the process-lifetime tree) is not on this machine* — and both queues were
+/// halted by a workspace called RED. Twenty-one targets with one cause is a fact about the MACHINE,
+/// not about the diff, and a gate that reds for a fact about the machine is a gate whose red is
+/// ignored (the same defect `apparatus::applies` was written for, one layer out).
+///
+/// So this is a [`RedCause`] of its own: the tip is UNJUDGED, not red. [`super::gate_host`] is what
+/// stops it happening at all — it drops the demand on a machine that cannot meet it, and says so in
+/// the row — and this is the net under that: a probe that has gone stale, or an apparatus the probe
+/// does not know, still cannot turn one machine's absence into a verdict about a branch.
+pub const APPARATUS_ABSENT: &str = "the gate could not run here";
+
+/// The two halves of the sentence `letibot_tokencore::apparatus::present_given` refuses with —
+/// *"LETIBOT_REQUIRE_APPARATUS is set, and `<what>` is not on this machine."* followed by *"This
+/// run does not accept a skip."*.
+///
+/// Two independent phrases rather than one, because the classifier below must not fire on a test
+/// that merely SAYS the words (this tree's own tests quote them): a refusal is both halves, and a
+/// rewording in `tokencore` has to break both to go unnoticed.
+const APPARATUS_SAID: (&str, &str) = (" is not on this machine", "does not accept a skip");
+
 /// **What a step killed at the gate's cap is said to be** — the cap, the peak, how it was known,
 /// and the line that raises it.
 pub(crate) fn killed_at_cap_words(step: &str, clause: &str, how: &str, leftover: usize) -> String {
@@ -325,6 +352,99 @@ pub enum RedCause {
     /// The step's leader was killed by a signal from outside the gate, far from its cap, before
     /// any code failed.
     KilledBySignal(i32),
+    /// **The step demanded apparatus this machine does not have** — `LETIBOT_REQUIRE_APPARATUS=1`
+    /// refused a skip, and the refusal is the whole of what the step says went wrong. The string is
+    /// the apparatus in the tree's own words (*"a cgroup v2 subtree this user may write (the
+    /// process-lifetime tree)"*). Twenty-one targets with one cause is a fact about the machine:
+    /// nothing was judged about the code (see [`APPARATUS_ABSENT`]).
+    ApparatusAbsent(String),
+}
+
+/// **The apparatus a `LETIBOT_REQUIRE_APPARATUS` refusal names**, out of the step's own words — or
+/// `None` when this output is not that refusal.
+///
+/// MEASURED 2026-10-30 on `lab2x1`, `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p
+/// letibot-harnessd --lib`: **sixteen of seventeen failures are one refusal**, printed as
+///
+/// ```text
+/// thread 'jobwatch::tests::a_subagent_settles_through_the_jobs_own_channel' (805) panicked at
+/// crates/tokencore/src/apparatus.rs:181:9:
+/// LETIBOT_REQUIRE_APPARATUS is set, and a process-lifetime tree (cgroup v2; process groups on
+/// macOS) is not on this machine.
+/// ```
+///
+/// — and the refusal is on the line AFTER the `panicked at` one, which a step run with
+/// `-- --nocapture` does not promise to keep adjacent. So the rule is a COUNT and not a pairing:
+/// every panic in the output must have a refusal to go with it. A genuine failure anywhere (an
+/// assertion, a compile error, a format diff) leaves a panic with no refusal behind it, and then
+/// the step judged the code whatever else it said.
+fn apparatus_absent(out: &str) -> Option<String> {
+    let (refused, skip) = APPARATUS_SAID;
+    if !out.contains(refused) || !out.contains(skip) {
+        return None;
+    }
+    let panics = out.matches("panicked at").count();
+    let refusals = out.matches(refused).count();
+    if refusals < panics {
+        return None;
+    }
+    let elsewhere = super::setup::step_words(out).any(|l| {
+        let t = l.trim_start();
+        t.starts_with("error[") || t.starts_with("error: could not compile") || t.starts_with("Diff in ")
+    });
+    if elsewhere {
+        return None;
+    }
+    // The apparatus, in the refusal's own words: `LETIBOT_REQUIRE_APPARATUS is set, and <what> is
+    // not on this machine.` A workspace run names several, so all of them are collected — the row
+    // says what the machine has not got, and one sentence per thing is what a reader acts on.
+    let mut said: Vec<String> = Vec::new();
+    for line in out.lines().filter(|l| l.contains(refused)) {
+        let Some(from) = line.find("is set, and ").map(|i| i + "is set, and ".len()) else {
+            continue;
+        };
+        let rest = &line[from..];
+        let Some(to) = rest.find(refused) else {
+            continue;
+        };
+        let what = rest[..to].trim().to_string();
+        if !what.is_empty() && !said.contains(&what) {
+            said.push(what);
+        }
+    }
+    if said.is_empty() {
+        said.push("apparatus it demands".to_string());
+    }
+    // One per line, because an apparatus NAME has commas and semicolons of its own —
+    // `a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2
+    // subtree)` — so no punctuation can tell *one name* from *two*.
+    Some(said.join("\n"))
+}
+
+/// **What a step that demanded absent apparatus is said to be** — the machine, what it has not got,
+/// and the two ways out. Never *red*: the code was not read.
+pub(crate) fn apparatus_absent_words(step: &str, what: &str, machine: Option<&str>) -> String {
+    let here = match machine {
+        Some(h) => format!("`{h}`"),
+        None => "this machine".to_string(),
+    };
+    // One thing missing reads as the brief's own sentence — *"the gate could not run here: a
+    // cgroup v2 subtree … is not on `lab2x1`"*; several read as a list, because "A; B is not" is
+    // not English. The names are newline-separated by [`apparatus_absent`] for this reason.
+    let names: Vec<&str> = what.split('\n').collect();
+    let absent = match names.as_slice() {
+        [one] => format!("{one} is not on {here}"),
+        many => format!("these are not on {here}: {}", many.join("; ")),
+    };
+    format!(
+        "{APPARATUS_ABSENT}: {absent}, and `{step}` demands it \
+         (`LETIBOT_REQUIRE_APPARATUS=1`), so the step refused to skip and nothing it would have \
+         judged was judged. This is a fact about the MACHINE and not about the code: the tip is \
+         UNJUDGED, not red, and the queue is not halted by it. Either provision the machine — \
+         `letibot_tokencore::apparatus` names each thing and what supplies it — or take the demand \
+         off the step for this machine, which the host gate does by itself and says in the row's \
+         evidence"
+    )
 }
 
 /// Output that shows a kill rather than a verdict: cargo's own sentence for a child (a rustc, a
@@ -353,6 +473,13 @@ fn red_cause(out: &str, exit: StepExit, memory: &StepMemory) -> RedCause {
             ));
         }
         _ => {}
+    }
+    // **The machine's absence, before the code's** — a `LETIBOT_REQUIRE_APPARATUS` refusal is a
+    // PANIC, and [`super::setup::shows_code_failing`] reads `panicked at` as the code failing, so
+    // the order here is the whole of the fix: twenty-one targets that all refused to skip are one
+    // fact about the machine (MEASURED 2026-10-30, see [`APPARATUS_ABSENT`]).
+    if let Some(what) = apparatus_absent(out) {
+        return RedCause::ApparatusAbsent(what);
     }
     match exit {
         StepExit::Signal(s) if !code_failed => RedCause::KilledBySignal(s),
@@ -624,6 +751,22 @@ pub(crate) fn judge(
                          judged nothing about the code — the tip is UNJUDGED, not red. Gate it \
                          again once whatever killed it is gone",
                         StepExit::Signal(sig).clause()
+                    ))),
+                ),
+                // **The machine, not the branch.** The step demanded apparatus this machine has
+                // not got, so it refused to skip and nothing it would have judged was judged. The
+                // row is `not_run` — a step that judged nothing is not a step that was green, and
+                // it is not a step that was red either — and the verdict is the gate's own.
+                RedCause::ApparatusAbsent(what) => (
+                    MergeGateOutcome::NotRun,
+                    output,
+                    Some(GateVerdict::Infra(apparatus_absent_words(
+                        step,
+                        &what,
+                        match &mem {
+                            StepMemory::Elsewhere(host) => Some(host.as_str()),
+                            _ => None,
+                        },
                     ))),
                 ),
             }
@@ -1298,6 +1441,113 @@ mod tests {
         assert_eq!(
             red_cause(ENDED_IN_WARNINGS, StepExit::Signal(9), &uncapped),
             RedCause::KilledBySignal(9)
+        );
+    }
+
+    /// **A step that refused to skip is the MACHINE's, not the branch's** — the measured case,
+    /// verbatim, from `lab2x1` on 2026-10-30: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast
+    /// -p letibot-harnessd --lib`, sixteen refusals and one genuine failure.
+    ///
+    /// Before this, `shows_code_failing` read the refusal's `panicked at` as the code failing and
+    /// the whole workspace went RED on both queues for one sentence about a missing cgroup.
+    #[test]
+    fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
+        let refusal = |test: &str, what: &str| {
+            format!(
+                "---- {test} stdout ----\n\nthread '{test}' (805) panicked at \
+                 crates/tokencore/src/apparatus.rs:181:9:\n\
+                 LETIBOT_REQUIRE_APPARATUS is set, and {what} is not on this machine.\n\n\
+                 This run does not accept a skip. Either run it where the apparatus is, or unset \
+                 LETIBOT_REQUIRE_APPARATUS to let it skip with a reason.\n\n"
+            )
+        };
+        let what = "a process-lifetime tree (cgroup v2; process groups on macOS)";
+        // A host gate's step is `Elsewhere`: no cgroup of this daemon's, so no cap to read — and
+        // that is the memory a host gate hands `red_cause`.
+        let elsewhere = || StepMemory::Elsewhere("lab2x1".into());
+        let out = format!(
+            "{}{}failures:\n    jobwatch::tests::a\n    supervise::tests::b\n\n\
+             test result: FAILED. 782 passed; 17 failed; 1 ignored; 0 measured; 0 filtered \
+             out; finished in 26.28s\n\n\
+             error: test failed, to rerun pass `-p letibot-harnessd --lib`\n\
+             error: 1 target failed:\n    `-p letibot-harnessd --lib`\n",
+            refusal("jobwatch::tests::a", what),
+            refusal("supervise::tests::b", what),
+        );
+        assert_eq!(
+            red_cause(&out, StepExit::Code(101), &elsewhere()),
+            RedCause::ApparatusAbsent(what.to_string())
+        );
+        // The verdict is the gate's own: unjudged, and the row is `not_run`.
+        let judged = judge(
+            "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace",
+            StepEnd::Red(out.clone(), StepExit::Code(101)),
+            StepMemory::Elsewhere("lab2x1".into()),
+            0,
+            Duration::from_secs(1800),
+        );
+        assert_eq!(judged.outcome, MergeGateOutcome::NotRun);
+        let Some(GateVerdict::Infra(why)) = judged.verdict else {
+            panic!("a machine's absence must not be a verdict about the code");
+        };
+        assert!(
+            why.starts_with(
+                "the gate could not run here: a process-lifetime tree (cgroup v2; process groups \
+                 on macOS) is not on `lab2x1`"
+            ),
+            "{why}"
+        );
+        assert!(why.contains("UNJUDGED, not red"), "{why}");
+        assert!(!why.starts_with(GATE_KILLED), "nothing was killed: {why}");
+
+        // **One genuine failure among the refusals is still red** — the count is what tells them
+        // apart, and a suite that also failed on its own must not be excused by the machine.
+        let mixed = format!(
+            "{}thread 'a_test' (99) panicked at src/x.rs:1:1:\nassertion failed: 1 == 2\n\n",
+            out
+        );
+        assert_eq!(red_cause(&mixed, StepExit::Code(101), &elsewhere()), RedCause::Code);
+        // And so is a compile error, whatever the refusals said.
+        let broken = format!("{out}\nerror[E0308]: mismatched types\n");
+        assert_eq!(red_cause(&broken, StepExit::Code(101), &elsewhere()), RedCause::Code);
+        // A run that only MENTIONS the words (a test of the message itself) is not a refusal.
+        assert_eq!(
+            red_cause(
+                "test result: ok. 1 passed\nassert!(!m.contains(\"is not on this machine\"));\n",
+                StepExit::Code(101),
+                &elsewhere()
+            ),
+            RedCause::Code
+        );
+    }
+
+    /// **Two apparatuses named by one step read as a list** — a workspace run refuses on more than
+    /// one, and the row says both rather than the first.
+    #[test]
+    fn the_row_names_every_apparatus_the_step_demanded() {
+        let out = "thread 'a' (1) panicked at crates/tokencore/src/apparatus.rs:181:9:\n\
+                   LETIBOT_REQUIRE_APPARATUS is set, and a cgroup v2 subtree this user may write \
+                   (the process-lifetime tree) is not on this machine.\n\n\
+                   This run does not accept a skip. Either run it where the apparatus is, or \
+                   unset LETIBOT_REQUIRE_APPARATUS to let it skip with a reason.\n\n\
+                   thread 'b' (2) panicked at crates/tokencore/src/apparatus.rs:181:9:\n\
+                   LETIBOT_REQUIRE_APPARATUS is set, and a vocabulary GGUF (/nope.gguf) is not on \
+                   this machine.\n\n\
+                   This run does not accept a skip.\n";
+        let RedCause::ApparatusAbsent(what) =
+            red_cause(out, StepExit::Code(101), &StepMemory::Elsewhere("lab2x1".into()))
+        else {
+            panic!("two refusals are still the machine's");
+        };
+        assert_eq!(
+            what,
+            "a cgroup v2 subtree this user may write (the process-lifetime tree)\n\
+             a vocabulary GGUF (/nope.gguf)"
+        );
+        let why = apparatus_absent_words("cargo test --workspace", &what, Some("lab2x1"));
+        assert!(
+            why.starts_with("the gate could not run here: these are not on `lab2x1`: a cgroup v2"),
+            "{why}"
         );
     }
 

@@ -70,6 +70,25 @@ const FAKE_SSH: &str = "#!/bin/bash\n\
      if [ $# -gt 1 ]; then exec \"$@\"; fi\n\
      exec bash -lc \"$1\"\n";
 
+/// The same fake ssh with one more job: **it answers the apparatus probe** from `$FAKE_APPARATUS`
+/// instead of running it. A real probe on this "host" would ask about the box the test happens to
+/// run on — a Mac answers *no cgroup, no bwrap*, and the assertion would then be about the machine
+/// and not about the fixture.
+const FAKE_SSH_ANSWERS: &str = "#!/bin/bash\n\
+     export HOME=\"$FAKE_HOME\"\n\
+     export PATH=\"$FAKE_PATH\"\n\
+     while [ $# -gt 0 ]; do\n\
+       case \"$1\" in\n\
+         -i|-o|-p|-l|-F|-e|-c) shift 2;;\n\
+         -*) shift;;\n\
+         *) break;;\n\
+       esac\n\
+     done\n\
+     shift\n\
+     if [ $# -gt 1 ]; then exec \"$@\"; fi\n\
+     case \"$1\" in *letibot-apparatus-probe*) printf '%s\\n' \"$FAKE_APPARATUS\"; exit 0;; esac\n\
+     exec bash -lc \"$1\"\n";
+
 impl Rig {
     fn new(name: &str, ssh_body: &str) -> Rig {
         let dir = std::env::temp_dir().join(format!(
@@ -137,6 +156,62 @@ impl Rig {
     fn landing(&self) -> PathBuf {
         git(&self.repo, &["checkout", "-q", "--detach", "agent/thing"]);
         self.repo.clone()
+    }
+
+    /// **What the "host" answers when it is asked what apparatus it has** — set before the gate
+    /// runs, read by [`FAKE_SSH_ANSWERS`]. Process-wide, which is why every test here holds
+    /// [`only_rig`].
+    fn answers(&self, said: &str) {
+        // SAFETY (Rust 2024's `unsafe` on `set_var`): one rig at a time (`ENV`), set before the gate
+        // starts, and read only by the fake ssh this test started.
+        unsafe { std::env::set_var("FAKE_APPARATUS", said) };
+    }
+
+    /// **A program the "host" will find on its `PATH`** — the fake ssh exports `$FAKE_PATH` as the
+    /// far side's `PATH`, so this is how a test stands a command in front of one the box has.
+    fn host_program(&self, name: &str, body: &str) -> PathBuf {
+        let path = self.dir.join("bin").join(name);
+        letibot_tools::testing::write_stub(&path, body);
+        let path_now = std::env::var("PATH").unwrap_or_default();
+        // SAFETY: as `answers` above — one rig, before the gate starts.
+        unsafe {
+            std::env::set_var(
+                "FAKE_PATH",
+                format!("{}:{path_now}", self.dir.join("bin").display()),
+            )
+        };
+        path
+    }
+
+    /// **The n-th launcher the host was asked to run** — the step, as the machine received it. The
+    /// "host" is a directory here, so a test can read what a real gate could only see in a row.
+    ///
+    /// Indexed by ORDER and not by the gate's own counter, because that counter is shared with the
+    /// bundle's temporary name: a first gate that sends a bundle starts its steps at 1 and a warm
+    /// one starts at 0, which is a fact about the transport and not about the step.
+    fn launcher(&self, n: usize) -> String {
+        let run = self
+            .dir
+            .join("home/letibot-remote/gate")
+            .join(letibot_harnessd::mergequeue::gate_host::dir_name(&self.repo))
+            .join("run");
+        let mut steps: Vec<(u64, PathBuf)> = std::fs::read_dir(&run)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let k = name.strip_prefix("step-")?.strip_suffix(".sh")?;
+                        Some((k.parse::<u64>().ok()?, e.path()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        steps.sort();
+        let Some((_, path)) = steps.get(n) else {
+            panic!("the host was asked to run {} step(s), not {n} + 1", steps.len());
+        };
+        std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
     fn gate(&self, steps: &[&str], seconds: u64) -> GateRun {
@@ -480,4 +555,178 @@ fn the_second_run_of_one_repository_is_warm() {
     let third = rig.gate(&["cat SECOND"], 120);
     assert_eq!(third.verdict, GateVerdict::Passed, "{third:#?}");
     assert_eq!(third.steps[0].output.lines().next(), Some("another"));
+}
+
+// -------------------------------------------------------------------------------------------
+// The demand a step makes of the MACHINE
+//
+// `LETIBOT_REQUIRE_APPARATUS=1` is the project's, and it is right: a test that skips must not read
+// as a pass. But it is a demand on the machine that runs the step, and the gate chooses that
+// machine. MEASURED 2026-10-30, `main` at `7becd144`, `[queue] gate_host = "lab2x1"`: the prefix
+// went to a host with no writable cgroup v2 subtree and **twenty-one targets went red with one
+// sentence**, halting both queues. These three tests are the three answers a machine can give.
+// -------------------------------------------------------------------------------------------
+
+/// **A machine that cannot meet the demand runs the step without it, and the row says so.**
+///
+/// The prefix comes off that ONE step — the rest of the project's line is byte for byte its own —
+/// and the evidence a person reads leads with the fact, because a skipped apparatus test that
+/// nobody is told about is a pass nobody can see through.
+#[test]
+fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() {
+    let _only = only_rig();
+    let rig = Rig::new("apparatus", FAKE_SSH_ANSWERS);
+    rig.answers("cgroup=no\nbwrap=yes\n");
+    let run = rig.gate(
+        &[
+            "echo the first step",
+            "LETIBOT_REQUIRE_APPARATUS=1 sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]'",
+        ],
+        120,
+    );
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    // **What the machine was actually asked to run**: the assignment is gone from the step's head
+    // and nothing else about it moved. (Asserted on the launcher rather than on the environment,
+    // because a gate run under `LETIBOT_REQUIRE_APPARATUS=1` would export it to every child anyway.)
+    let launcher = rig.launcher(1);
+    assert!(
+        launcher.contains("( sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]' )"),
+        "{launcher}"
+    );
+    assert!(!launcher.contains("LETIBOT_REQUIRE_APPARATUS=1"), "{launcher}");
+    // The row leads with the fact, and says it in the tree's own idiom.
+    let first = &run.steps[0].output;
+    assert!(
+        first.starts_with("[gate on `fake`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 2"),
+        "{first}"
+    );
+    assert!(
+        first.contains("a cgroup v2 subtree this user may write (the process-lifetime tree)"),
+        "{first}"
+    );
+    assert!(first.contains("THIS IS NOT A PASS"), "{first}");
+    // The step that made no demand is not touched, and no step is wrapped.
+    assert!(
+        rig.launcher(0).contains("( echo the first step )"),
+        "{}",
+        rig.launcher(0)
+    );
+}
+
+/// **A machine that HAS the apparatus runs the project's step exactly as it was written, and the
+/// row says nothing** — a gate on a box with everything is byte for byte what it was.
+#[test]
+fn a_machine_with_the_apparatus_runs_the_demand_as_the_project_wrote_it() {
+    let _only = only_rig();
+    let rig = Rig::new("hasapparatus", FAKE_SSH_ANSWERS);
+    rig.answers("cgroup=here\nbwrap=yes\n");
+    let run = rig.gate(
+        &["LETIBOT_REQUIRE_APPARATUS=1 echo 'the demand is on the step'"],
+        120,
+    );
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    let launcher = rig.launcher(0);
+    assert!(
+        launcher.contains("( LETIBOT_REQUIRE_APPARATUS=1 echo 'the demand is on the step' )"),
+        "{launcher}"
+    );
+    assert!(!launcher.contains("systemd-run"), "{launcher}");
+    let out = &run.steps[0].output;
+    assert!(out.starts_with("the demand is on the step"), "{out}");
+    assert!(!out.contains("TAKEN OFF"), "{out}");
+    assert!(!out.contains("delegated scope"), "{out}");
+}
+
+/// **A machine that has no cgroup of its own to give, but can make a delegated scope, gets the
+/// demand MET** — the step is started inside `systemd-run --user --scope -p Delegate=yes`, and the
+/// prefix stays where the project put it. That is option (a): the apparatus is established where
+/// the step runs rather than the demand dropped.
+#[test]
+fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
+    let _only = only_rig();
+    let rig = Rig::new("ownscope", FAKE_SSH_ANSWERS);
+    rig.answers("cgroup=own-scope\nbwrap=yes\n");
+    // A stand-in for `systemd-run`, on the fake host's `PATH`: it records that it was asked and
+    // runs what it was given, which is the contract the launcher depends on (the command's own
+    // words in the log, and its exit status). With no arguments it does nothing, which is what
+    // `write_stub`'s probe requires of every stub.
+    rig.host_program(
+        "systemd-run",
+        "#!/bin/sh\n\
+         [ $# -gt 0 ] || exit 0\n\
+         [ -n \"$FAKE_HOME\" ] && echo \"$@\" > \"$FAKE_HOME/systemd-run-was-asked\"\n\
+         while [ $# -gt 0 ]; do case \"$1\" in --) shift; break;; *) shift;; esac; done\n\
+         exec \"$@\"\n",
+    );
+    let run = rig.gate(
+        &["LETIBOT_REQUIRE_APPARATUS=1 echo 'the demand stayed'"],
+        120,
+    );
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    // The prefix is still on the step, and the step ran inside the scope.
+    let launcher = rig.launcher(0);
+    assert!(
+        launcher.contains(
+            "( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c \
+             'LETIBOT_REQUIRE_APPARATUS=1 echo '\\''the demand stayed'\\''' )"
+        ),
+        "{launcher}"
+    );
+    let asked = std::fs::read_to_string(rig.dir.join("home/systemd-run-was-asked"))
+        .expect("the scope was asked for");
+    assert!(asked.contains("-p Delegate=yes"), "{asked}");
+    // The row leads with what the gate did, and the step's own words follow it.
+    let out = &run.steps[0].output;
+    assert!(out.contains("\nthe demand stayed"), "{out}");
+    assert!(out.contains("delegated scope of its own"), "{out}");
+    assert!(!out.contains("TAKEN OFF"), "{out}");
+}
+
+/// **The net under all of it: a step that refuses to skip is UNJUDGED, not red** — whatever the
+/// probe said. Twenty-one targets failing with one sentence is a fact about the machine, and a
+/// gate that reds for it is a gate whose red is ignored.
+#[test]
+fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
+    let _only = only_rig();
+    let rig = Rig::new("refused", FAKE_SSH_ANSWERS);
+    // The machine claims to have everything, so the demand stays and the step refuses.
+    rig.answers("cgroup=here\nbwrap=yes\n");
+    let refusal = [
+        "thread 'a_test' panicked at crates/tools/tests/confine.rs:44:5:",
+        "LETIBOT_REQUIRE_APPARATUS is set, and a cgroup v2 subtree this user may write (the \
+         process-lifetime tree) is not on this machine.",
+        "This run does not accept a skip. Either run it where the apparatus is, or unset \
+         LETIBOT_REQUIRE_APPARATUS to let it skip with a reason.",
+        "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace",
+        "error: test failed, to rerun pass `--test confine`",
+        "error: 1 target failed:",
+        "    `-p letibot-tools --test confine`",
+    ];
+    let step = format!(
+        "LETIBOT_REQUIRE_APPARATUS=1 printf '%s\\n' {}; exit 101",
+        refusal
+            .iter()
+            .map(|l| format!("'{l}'"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    let run = rig.gate(&[&step], 120);
+    let GateVerdict::Infra(why) = &run.verdict else {
+        panic!("a refusal to skip must not be a verdict about the code: {run:#?}");
+    };
+    assert!(
+        why.starts_with("the gate could not run here: a cgroup v2 subtree this user may write"),
+        "{why}"
+    );
+    assert!(why.contains("`fake`"), "{why}");
+    assert!(why.contains("UNJUDGED, not red"), "{why}");
+    // The row is `not_run`: a step that judged nothing is neither green nor red.
+    assert_eq!(run.steps[0].outcome, MergeGateOutcome::NotRun, "{run:#?}");
+    // And the step's own words are kept, so a reader can see what it said.
+    assert!(
+        run.steps[0]
+            .output
+            .contains("LETIBOT_REQUIRE_APPARATUS is set"),
+        "{run:#?}"
+    );
 }

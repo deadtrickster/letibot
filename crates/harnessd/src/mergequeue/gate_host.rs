@@ -113,6 +113,194 @@ const KILL_BOUND: Duration = Duration::from_secs(30);
 /// machine rather than about the step.
 const SSH_TROUBLE: i32 = 255;
 
+/// **The variable a project's gate puts on a step to make an apparatus skip fatal** —
+/// `LETIBOT_REQUIRE_APPARATUS`, read by `letibot_tokencore::apparatus::required`. This repository's
+/// own step is `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture`.
+pub const APPARATUS_ENV: &str = "LETIBOT_REQUIRE_APPARATUS";
+
+/// **The two things a `LETIBOT_REQUIRE_APPARATUS` step can demand that a MACHINE either has or has
+/// not**, in the words the tree's own tests use (`crates/tools/tests/confine.rs`) — a vocabulary
+/// GGUF and a store fixture are data somebody puts on a box, and the net under this module
+/// ([`super::gate::APPARATUS_ABSENT`]) is what catches those.
+pub const CGROUP_APPARATUS: &str =
+    "a cgroup v2 subtree this user may write (the process-lifetime tree)";
+pub const BWRAP_APPARATUS: &str =
+    "a usable confinement boundary (bwrap, an unprivileged user namespace, a cgroup v2 subtree)";
+
+/// **What a machine can do about the apparatus a step DEMANDS** — asked once per gate, and only
+/// when a step carries the prefix.
+///
+/// MEASURED 2026-10-30, `main` at `7becd144` with `[queue] gate_host = "lab2x1"`: the prefix was
+/// carried over to a machine that has `bubblewrap` and no writable cgroup v2 subtree, and
+/// **twenty-one targets went red with one sentence** — the demand is a fact about the machine that
+/// wrote it (the operator's Mac, where the vocabulary and a delegated scope are), and the machine
+/// that runs the step is somebody else's. The prefix is the project's, and it is right; where it
+/// RUNS is the gate's, and a demand the machine cannot meet has to be met, dropped or said — never
+/// turned into a verdict about a branch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Apparatus {
+    /// **The machine has no cgroup of its own to give a step, but a transient DELEGATED scope
+    /// does** — `systemd-run --user --scope -p Delegate=yes`, the same scope the launcher starts
+    /// the daemon itself in. The gate starts the step inside one, which is option (a) of the two:
+    /// the demand is met rather than dropped.
+    pub own_scope: bool,
+    /// What this machine has not got, in the tree's own words. Empty when it has everything the
+    /// probe knows how to ask for.
+    pub missing: Vec<String>,
+}
+
+impl Apparatus {
+    /// **The line the first step's row carries when this gate did something to the project's
+    /// demand** — and nothing at all when it did not, so a gate on a machine that has everything
+    /// reads exactly as it did before.
+    fn evidence(
+        &self,
+        host: &str,
+        steps: usize,
+        dropped: &[String],
+        wrapped: bool,
+    ) -> Option<String> {
+        let mut said = Vec::new();
+        if !dropped.is_empty() {
+            said.push(format!(
+                "[gate on `{host}`: `{APPARATUS_ENV}=1` was TAKEN OFF {} of {steps} step(s) — \
+                 this machine cannot meet it ({}), so the tests that need it SKIPPED here and \
+                 THIS IS NOT A PASS for them; every other test in those steps ran as the project \
+                 wrote them, and each one that did not run printed its own SKIPPED line with the \
+                 reason. Give the machine the apparatus and the demand comes back by itself]",
+                dropped.len(),
+                self.missing.join("; "),
+            ));
+        }
+        if wrapped {
+            said.push(format!(
+                "[gate on `{host}`: each step was started in a delegated scope of its own \
+                 (`systemd-run --user --scope -p Delegate=yes`), because that is what gives a \
+                 step here the cgroup v2 subtree the project's step demands]"
+            ));
+        }
+        if said.is_empty() {
+            None
+        } else {
+            Some(said.join("\n"))
+        }
+    }
+}
+
+/// **The command with the project's apparatus demand taken off**, or `None` when the step makes
+/// none.
+///
+/// A gate step is one shell line, and the demand is the leading `LETIBOT_REQUIRE_APPARATUS=<value>`
+/// assignment — `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace …`. Everything after it is left
+/// byte for byte as the project wrote it: the gate's business is which MACHINE runs a step, never
+/// how the step is spelled.
+pub fn apparatus_prefix(step: &str) -> Option<&str> {
+    let rest = step.strip_prefix(APPARATUS_ENV)?.strip_prefix('=')?;
+    let end = rest.find(char::is_whitespace)?;
+    let (value, tail) = rest.split_at(end);
+    if value.is_empty() || value == "0" {
+        return None;
+    }
+    Some(tail.trim_start())
+}
+
+/// **One step as this machine will be asked to run it.**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Planned<'a> {
+    /// The command. The project's own text, unless [`Planned::dropped`].
+    pub command: &'a str,
+    /// The demand was taken off, because this machine cannot meet it.
+    pub dropped: bool,
+    /// Start it inside a transient delegated scope, so it has a cgroup of its own.
+    pub own_scope: bool,
+}
+
+/// **[`Planned`] for one step on one machine** — pure, so the three answers are a unit test.
+pub fn plan_step<'a>(step: &'a str, apparatus: &Apparatus) -> Planned<'a> {
+    let Some(command) = apparatus_prefix(step) else {
+        // A step that demands nothing is run exactly as it was written, and is not wrapped: the
+        // scope exists for the apparatus, not as a new habit.
+        return Planned {
+            command: step,
+            dropped: false,
+            own_scope: false,
+        };
+    };
+    if !apparatus.missing.is_empty() {
+        return Planned {
+            command,
+            dropped: true,
+            own_scope: false,
+        };
+    }
+    Planned {
+        command: step,
+        dropped: false,
+        own_scope: apparatus.own_scope,
+    }
+}
+
+/// **The apparatus question, as one shell script** — the whole of what a host is asked before its
+/// steps run.
+///
+/// It is an EXPERIMENT and not an inspection, which is the point: `letibot_tools::exec::scope`'s
+/// `Cgroup2::probe` succeeds when it can `mkdir` a directory in the cgroup the process is already
+/// in (or in the daemon's delegated scope), so the question is *can I make a directory here?* —
+/// asked by making one and removing it. A shell copy of the Rust predicate would be a second
+/// spelling of one rule, and the two would drift.
+///
+/// `cgroup=here` is the machine as it stands; `own-scope` is a machine where a transient delegated
+/// scope works and the plain session's cgroup is not writable; `no` is neither.
+pub fn apparatus_probe() -> String {
+    // A marker a fixture can recognise: `crates/harnessd/tests/gate_host.rs`'s fake ssh answers on
+    // it instead of running a probe about the box the test happens to run on.
+    const MARK: &str = "# letibot-apparatus-probe";
+    // The same two lines on both sides of `systemd-run`: the cgroup this process is in (the v2
+    // line of `/proc/self/cgroup` is `0::<path>`, and `${line#*:*:}` is the path — no `sed`, so the
+    // quoting stays one layer), and whether a directory can be made in it.
+    const ASK: &str = "line=$(cat /proc/self/cgroup); own=/sys/fs/cgroup${line#*:*:}; \
+         [ -n \"${line#*:*:}\" ] && mkdir -p \"$own/letibot-probe.$$\" 2>/dev/null && \
+         rmdir \"$own/letibot-probe.$$\"";
+    let mut s = String::new();
+    s.push_str(MARK);
+    s.push('\n');
+    s.push_str("cgroup=no\n");
+    s.push_str(&format!(
+        "if [ -d /sys/fs/cgroup ] && sh -c '{ASK}' 2>/dev/null; then cgroup=here\n"
+    ));
+    s.push_str(&format!(
+        "elif systemd-run --user --scope -p Delegate=yes --quiet -- sh -c '{ASK}' \
+         >/dev/null 2>&1; then cgroup=own-scope\n"
+    ));
+    s.push_str("fi\n");
+    s.push_str("bwrap=no; command -v bwrap >/dev/null 2>&1 && bwrap=yes\n");
+    s.push_str("printf 'cgroup=%s\\nbwrap=%s\\n' \"$cgroup\" \"$bwrap\"");
+    s
+}
+
+/// [`apparatus_probe`]'s answer, read — named fields, because a login shell is entitled to say
+/// something of its own before them.
+pub fn apparatus_from(said: &str) -> Apparatus {
+    let field = |key: &str| {
+        said.lines()
+            .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+    };
+    let cgroup = field("cgroup=").unwrap_or_default();
+    let mut missing = Vec::new();
+    if field("bwrap=").as_deref() != Some("yes") {
+        missing.push(BWRAP_APPARATUS.to_string());
+    }
+    let own_scope = match cgroup.as_str() {
+        "here" => false,
+        "own-scope" => true,
+        _ => {
+            missing.push(CGROUP_APPARATUS.to_string());
+            false
+        }
+    };
+    Apparatus { own_scope, missing }
+}
+
 /// **The gate, on `name`'s machine** — the whole of [`super::gate::run_gate`]'s host arm.
 ///
 /// Everything that can go wrong before the first step (a name that is not declared, a key that is
@@ -128,10 +316,22 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     if let Err(why) = remote.prepare(ctl, &mut cost) {
         return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
     }
+    // **The demand the step makes of the MACHINE is asked of the machine, once, before it runs.**
+    // A step that carries `LETIBOT_REQUIRE_APPARATUS=1` makes one, and where it can be met the gate
+    // meets it (a delegated scope of its own); where it cannot, the demand is taken off that step
+    // and the row says so — never carried over and left to fail as though the branch were bad.
+    let apparatus = remote.apparatus(steps);
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
+    let mut dropped: Vec<String> = Vec::new();
+    let mut wrapped = false;
     for step in steps {
+        let plan = plan_step(step, &apparatus);
+        if plan.dropped {
+            dropped.push(step.clone());
+        }
+        wrapped |= plan.own_scope;
         let started = now_ms();
-        let end = remote.run_step(step, ctl);
+        let end = remote.run_step(plan.command, plan.own_scope, ctl);
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(
             step,
@@ -149,6 +349,19 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
         });
         if last {
             break;
+        }
+    }
+    // **What this gate did to the project's demand, on the first row of the log** — the head of the
+    // evidence, because it is the sentence a person reads first: a step whose demand was taken off
+    // it ran without the tests that need that apparatus, and a skipped apparatus test is announced
+    // here or it is a pass nobody can see through.
+    if let Some(line) = apparatus.evidence(name, steps.len(), &dropped, wrapped) {
+        if let Some(first) = done.first_mut() {
+            first.judged.output = if first.judged.output.is_empty() {
+                line
+            } else {
+                format!("{line}\n{}", first.judged.output.trim_end())
+            };
         }
     }
     // **Where the time went, on the first row of the log.** A first gate on a host pays for a
@@ -525,10 +738,32 @@ impl Remote {
 
     // -- one step ---------------------------------------------------------------------------
 
+    /// **What this machine can do about the apparatus a step demands** — one call, and only when a
+    /// step carries the prefix, so a project whose gate demands nothing pays nothing.
+    ///
+    /// A probe that cannot answer changes **nothing**: the steps run exactly as the project wrote
+    /// them (today's behaviour), and the net under this module
+    /// ([`super::gate::APPARATUS_ABSENT`]) is what keeps a refusal from being read as red. Guessing
+    /// *absent* from a failed probe would take a demand off a machine that has everything, which is
+    /// the worse mistake of the two.
+    fn apparatus(&self, steps: &[String]) -> Apparatus {
+        if !steps.iter().any(|s| apparatus_prefix(s).is_some()) {
+            return Apparatus::default();
+        }
+        match self.call(
+            &format!("asking {} what apparatus it has", self.name),
+            &apparatus_probe(),
+            SETUP_BOUND,
+        ) {
+            Ok(said) => apparatus_from(&said),
+            Err(_) => Apparatus::default(),
+        }
+    }
+
     /// **One step on the host**: start it detached, poll it, and kill its group if it outlives the
     /// gate. The log arrives at the local path the local gate would have written, so the pane and
     /// the failure excerpt do not change.
-    fn run_step(&self, step: &str, ctl: &GateControl) -> StepEnd {
+    fn run_step(&self, step: &str, own_scope: bool, ctl: &GateControl) -> StepEnd {
         let n = self.next();
         let log = match tempfile_in(&self.local) {
             Ok(l) => l,
@@ -537,12 +772,19 @@ impl Remote {
         if let Err(e) = std::fs::File::create(&log) {
             return StepEnd::Infra(format!("{}: {e}", log.display()));
         }
-        let end = self.run_step_into(n, step, &log, ctl);
+        let end = self.run_step_into(n, step, own_scope, &log, ctl);
         let _ = std::fs::remove_file(&log);
         end
     }
 
-    fn run_step_into(&self, n: usize, step: &str, log: &Path, ctl: &GateControl) -> StepEnd {
+    fn run_step_into(
+        &self,
+        n: usize,
+        step: &str,
+        own_scope: bool,
+        log: &Path,
+        ctl: &GateControl,
+    ) -> StepEnd {
         let launcher = launcher_script(
             step,
             &self.tree,
@@ -550,6 +792,7 @@ impl Remote {
             &self.pid_path(n),
             &self.out_path(n),
             &self.exit_path(n),
+            own_scope,
         );
         let script = self.launcher_path(n);
         if let Err(why) = self.feed(
@@ -863,13 +1106,29 @@ pub fn launcher_script(
     pid: &str,
     out: &str,
     exit: &str,
+    own_scope: bool,
 ) -> String {
+    // **A step that needs a cgroup of its own gets one from systemd, not from this daemon**: the
+    // host's cgroup tree is the host's, and a transient delegated scope is the one shape that is
+    // the step's alone (`Delegate=yes` is what makes its directory the step's to write — the same
+    // scope the `letibot` launcher starts the daemon itself in). The subshell stays a subshell and
+    // the step stays the project's own text, quoted once: `systemd-run --scope` execs the command
+    // in place and answers with its exit status, so the pid file, the group kill and `$?` all mean
+    // what they meant before.
+    let run = if own_scope {
+        format!(
+            "exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c {}",
+            sq(step)
+        )
+    } else {
+        step.to_string()
+    };
     format!(
         "#!/bin/bash\n\
          echo $$ > '{pid}'\n\
          cd '{tree}' || exit 97\n\
          export CARGO_TARGET_DIR='{target}'\n\
-         ( {step} ) > '{out}' 2>&1\n\
+         ( {run} ) > '{out}' 2>&1\n\
          echo $? > '{exit}'\n"
     )
 }
