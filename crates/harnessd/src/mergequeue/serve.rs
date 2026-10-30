@@ -117,6 +117,17 @@ pub struct QueueEnv {
     pub me: LeaseClaim,
     pub gate: Arc<dyn GateRunner>,
     pub door: Arc<dyn QueueDoor>,
+    /// **The daemon's review desk** — who is reviewing what, and what they have handed in.
+    ///
+    /// The worker needs it for one question only: whether a reviewer whose session is gone has
+    /// already handed its verdict in, because a reviewer's LAST act is the submission and its turn
+    /// ending, and a session whose turn has ended is not live. Without it the worker called that
+    /// child *gone* and re-seated a row that had just been judged — the verdict then reached a pass
+    /// that found the row was no longer its reviewer's, and was discarded (measured 2026-10-29: nine
+    /// reviewers, eighteen `reviewing` transitions, no `approved`). `None` is a queue whose daemon
+    /// has no desk to ask (a fixture that serves rows without reviewers), and it answers as it did
+    /// before: no verdict is waiting that anybody could see.
+    pub desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     pub settings: SettingsFor,
     pub landing_root: LandingRootFor,
     pub gate_deadline: Duration,
@@ -128,12 +139,17 @@ pub struct QueueEnv {
 
 impl QueueEnv {
     /// The daemon's own: this daemon's identity, the local gate, thirty minutes, the project's
-    /// `leticode.toml`.
-    pub fn production(door: Arc<dyn QueueDoor>, landing_root: Option<PathBuf>) -> Self {
+    /// `leticode.toml` — and the desk its review session opens reviews on.
+    pub fn production(
+        door: Arc<dyn QueueDoor>,
+        landing_root: Option<PathBuf>,
+        desk: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
+    ) -> Self {
         QueueEnv {
             me: super::lease::this_daemon().clone(),
             gate: Arc::new(gate::LocalGate),
             door,
+            desk: Some(desk),
             settings: Arc::new(settings::for_repository),
             landing_root: Arc::new(move |_| {
                 landing_root.clone().ok_or_else(|| {
@@ -824,6 +840,25 @@ impl RepoQueue {
                             .as_deref()
                             .is_some_and(|c| !self.env.door.session_live(c));
                     let late = r.deadline_ms.is_some_and(|d| now > d);
+                    // **A reviewer that has handed its verdict in is not gone, whatever its
+                    // session says** — and the two questions are asked of the same two seconds.
+                    // A reviewer's last act is the submission (`review_verdict`, the daemon's
+                    // desk) and its turn ending; a session whose turn has ended is not live. So
+                    // `gone` alone called a reviewer that had just judged *"not alive … it
+                    // finished without handing a verdict in"* and re-seated the row — and the
+                    // verdict then reached the pass below (`review::serve`), which found the row
+                    // was no longer its reviewer's and threw the judgement away (measured
+                    // 2026-10-29: nine reviewers, eighteen `reviewing` transitions, not one
+                    // `approved`). The desk is PEEKED here, never taken: taking belongs to the
+                    // pass that can write it, and that pass is the one that decides a reviewer's
+                    // fate next. Nothing is deferred that has not judged — a reviewer that died
+                    // with nothing at the desk keeps its attempt, its re-seat and its honest
+                    // sentence — and a deferral cannot last: the daemon's own clock serves the
+                    // reviews this daemon holds (`sessions::REVIEW_PASS_EVERY`), so a verdict
+                    // waiting here is written by the next review pass whatever the row says.
+                    let handed_in = r.reviewer.as_deref().is_some_and(|c| {
+                        self.env.desk.as_ref().is_some_and(|d| d.verdict_waiting(c))
+                    });
                     if never_started {
                         let why = format!(
                             "no reviewer started for `{}` within {} s of the claim — the review \
@@ -833,7 +868,7 @@ impl RepoQueue {
                             self.env.reviewer_start_grace_ms / 1000
                         );
                         moved |= self.block(r, &why, settings)?;
-                    } else if gone || late {
+                    } else if (gone || late) && !handed_in {
                         let attempts = r.attempts + 1;
                         let child = r.reviewer.as_deref().unwrap_or("?");
                         let why = if gone {

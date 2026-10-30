@@ -12,10 +12,14 @@ use letibot_tokencore::store::{
     Approval, HealthState, LeaseClaim, LeaseOutcome, MergePriority, MergeState, Move, NewReview,
     ReviewKind, ReviewState, Store,
 };
+use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
+use letibot_tools::builtins::verdict::ReviewDesk;
+use letibot_tools::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission};
 
 use super::*;
 use crate::mergequeue::gate::{GateControl, GateRun, GateRunner, GreenGate, LocalGate};
 use crate::mergequeue::settings::QueueSettings;
+use crate::sessions::gatekeeper::ReviewerPlacement;
 
 // ===== Fixtures =====
 
@@ -192,10 +196,23 @@ pub(crate) fn env_with(
     who: &str,
     settings: QueueSettings,
 ) -> Arc<QueueEnv> {
+    env_with_desk(gate, door, who, settings, None)
+}
+
+/// [`env_with`], with the review desk the worker asks about a reviewer that is no longer alive —
+/// `None` for a queue whose daemon has no desk to ask (every test that starts no reviewer).
+pub(crate) fn env_with_desk(
+    gate: Arc<dyn GateRunner>,
+    door: Arc<Door>,
+    who: &str,
+    settings: QueueSettings,
+    desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
+) -> Arc<QueueEnv> {
     Arc::new(QueueEnv {
         me: me(who),
         gate,
         door,
+        desk,
         settings: Arc::new(move |_| Ok(settings.clone())),
         landing_root: test_landing_root(),
         gate_deadline: Duration::from_secs(60),
@@ -240,7 +257,18 @@ impl World {
         who: &str,
         settings: QueueSettings,
     ) -> RepoQueue {
-        let env = env_with(gate, self.door.clone(), who, settings);
+        self.worker_holding(gate, who, settings, None)
+    }
+    /// [`World::worker_with`], with a review desk the worker can ask — see
+    /// [`QueueEnv::desk`].
+    fn worker_holding(
+        &self,
+        gate: Arc<dyn GateRunner>,
+        who: &str,
+        settings: QueueSettings,
+        desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
+    ) -> RepoQueue {
+        let env = env_with_desk(gate, self.door.clone(), who, settings, desk);
         let store = self.store();
         assert!(matches!(
             store
@@ -522,7 +550,16 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
     let (wt, base, head) = branch(&w.repo, "slow", "s.txt");
     w.enqueue("slow", &wt, &base, &head);
     let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
-    Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_secs(1);
+    // **The deadline has to be longer than the gate's own SETUP, or the test measures the
+    // machine.** The clock starts in `start_gate`, and before the step's first line runs the gate
+    // makes its scratch directory and resolves the cgroup its step joins — and on a loaded box
+    // that is more than a second: MEASURED 2026-10-30, this test failed the landing gate of
+    // another branch (`crates/harnessd/src/mergequeue/serve/tests.rs:545`, `Result::unwrap()` on
+    // `Os { code: 2, kind: NotFound }` reading `sleeper.pid`) because the deadline had passed
+    // before the step existed to write it. Ten seconds is still six times shorter than the step's
+    // own sleep, so what the test is about — a step still running when the deadline passes — is
+    // unchanged; what is no longer asserted is that this box can start a shell in a second.
+    Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_secs(10);
     let store = w.store();
     store
         .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
@@ -541,8 +578,10 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
             .iter()
             .any(|s| s.outcome == letibot_tokencore::store::MergeGateOutcome::TimedOut)
     );
+    // The step writes this before it sleeps, so a `NotFound` here says the gate's setup outran
+    // the deadline above — not that the step ran and was killed.
     let pid: i32 = std::fs::read_to_string(&pidfile)
-        .unwrap()
+        .expect("the step started and wrote its pid before the deadline")
         .trim()
         .parse()
         .unwrap();
@@ -1707,6 +1746,294 @@ fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
     );
 }
 
+// ===== A reviewer whose verdict is waiting is not a dead reviewer =====
+
+/// The review queue's session, as `Harness::serve_reviews` passes it to the pool: the host a
+/// reviewer's desk entry is opened under.
+const QUEUE_SESSION: &str = "s-gatekeeper";
+
+/// A reviewers' host that starts nothing — every reviewer in this section is already at the desk,
+/// and what is under test is what the two loops make of the verdict it handed in.
+struct NoReviewers;
+
+impl TaskRunner for NoReviewers {
+    fn start(&self, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+        Err("no reviewer is started in this test".into())
+    }
+    fn collect(&self, _handle: &str, _timeout: Duration) -> TaskStatus {
+        TaskStatus::Running {
+            note: None,
+            child: None,
+        }
+    }
+}
+
+/// **One pass of the reviewers' host** — [`crate::mergequeue::review::serve`], over this fixture's
+/// store and desk, exactly as `Harness::serve_reviews` runs it: the queue's session is the host,
+/// this daemon's lease identity is the owner, and `deliver` answers as the real door does for a
+/// session this fixture does not hold.
+fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::review::Served {
+    let runner = NoReviewers;
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let deliver = |_: &str, _: &str| Err("no session is live in this fixture".to_string());
+    let pool = crate::mergequeue::review::Pool {
+        store,
+        runner: &runner,
+        desk,
+        host: QUEUE_SESSION,
+        me,
+        placement: ReviewerPlacement::Host,
+        events: &events,
+        warn: &|_: &str, e| events(e),
+        deliver: &deliver,
+        settings: &settings,
+        clones: std::env::temp_dir(),
+        slots: &Vec::new,
+    };
+    crate::mergequeue::review::serve(&pool).expect("a pass of the reviewers' host")
+}
+
+/// **A reviewer has started on `id` and handed its verdict in at the desk** — the two acts that
+/// belong to the child, and the state the queue's worker then has to read correctly. The row is
+/// left `reviewing` under that child and owned by `me`, which is what the claim wrote.
+///
+/// `tree` is the checkout the reviewer was given, and it is load-bearing rather than decoration:
+/// `review::verdict` asks whether that tree is still there before it writes a judgement (a verdict
+/// about a tree that is gone is not a verdict about the branch, so it is a WAIT). A fixture that
+/// named `""` there would hand the pass a reviewer whose tree does not exist, and the row would
+/// wait for a tree for ever — which is what this fixture did, and what the two tests below caught
+/// when `main` grew that rule (2026-10-30).
+fn a_reviewer_has_judged(
+    store: &Store,
+    desk: &ReviewDesk,
+    id: &str,
+    child: &str,
+    branch: &str,
+    tree: &Path,
+) {
+    assert!(
+        store
+            .move_review(
+                id,
+                ReviewState::Reviewing,
+                ReviewState::Reviewing,
+                &Move::new("pool", format!("reviewer {child} started")).set("reviewer", child),
+                gate::now_ms(),
+            )
+            .unwrap(),
+        "the fixture must be able to put a reviewer on the claimed row"
+    );
+    desk.opened(
+        QUEUE_SESSION,
+        child,
+        id,
+        ReviewRequest {
+            brief: "do the work".into(),
+            branch: branch.into(),
+            base_sha: "base".into(),
+            head_sha: String::new(),
+            cwd: tree.display().to_string(),
+        },
+    );
+    desk.submit(
+        child,
+        Submission {
+            decision: Decision::Accept,
+            reasons: vec!["the change does what the brief asked".into()],
+            looked_at: LookedAt {
+                files: vec!["vw.txt".into()],
+                commands: vec!["git diff base...HEAD".into()],
+            },
+        },
+    )
+    .expect("the reviewer's verdict is taken at the desk");
+}
+
+/// **A reviewer whose verdict is waiting at the desk is not `gone`** — the defect measured on the
+/// operator's daemon, 2026-10-29 evening.
+///
+/// A reviewer's last act is handing its verdict in (`review_verdict`, the daemon's desk) and its
+/// turn ending — and a session whose turn has ended is not live. So the queue's worker read *"the
+/// reviewer … is not alive in this daemon any more (it finished without handing a verdict in)"*
+/// eight seconds after that reviewer HAD handed one in, re-seated the row and counted an attempt
+/// for a review that had succeeded; the pass that then found the verdict (`review::serve`) found
+/// the row was no longer its reviewer's and threw the judgement away. Eighteen `reviewing`
+/// transitions and nine reviewers on one branch, and not one `approved`.
+///
+/// **The contract is BETWEEN the two loops, so both halves are here**: one pass of the worker
+/// leaves a judged row exactly where it is — `reviewing`, no attempt spent, the reviewer still
+/// named — and the next pass of the reviewers' host writes the verdict, and the row is `approved`.
+#[test]
+fn a_verdict_waiting_at_the_desk_is_not_a_dead_reviewer() {
+    let w = World::new("verdict-waiting");
+    let (wt, base, head) = branch(&w.repo, "vw", "vw.txt");
+    w.enqueue("vw", &wt, &base, &head);
+    let desk = Arc::new(ReviewDesk::new());
+    let q = w.worker_holding(
+        Arc::new(GreenGate),
+        "a",
+        QueueSettings::default(),
+        Some(desk.clone()),
+    );
+    run(&q, 1);
+    let s = w.store();
+    assert_eq!(
+        s.review_row("vw").unwrap().unwrap().state,
+        ReviewState::Reviewing,
+        "claimed by this worker"
+    );
+    a_reviewer_has_judged(&s, &desk, "vw", "sub-1", "agent/vw", &wt);
+    assert!(
+        w.door.live.lock().unwrap().is_empty(),
+        "and its session is gone, as a reviewer's is the moment its turn ends"
+    );
+
+    // **The worker's pass.** The row is judged, so it is not the worker's to re-seat: no attempt,
+    // no cleared reviewer, and no `waiting` transition at all.
+    run(&q, 1);
+    let r = s.review_row("vw").unwrap().unwrap();
+    assert_eq!(
+        r.state,
+        ReviewState::Reviewing,
+        "left under its reviewer: {r:?}"
+    );
+    assert_eq!(
+        r.attempts, 0,
+        "a review that succeeded spends no attempt: {r:?}"
+    );
+    assert_eq!(r.reviewer.as_deref(), Some("sub-1"), "{r:?}");
+    assert!(
+        s.transitions("review", "vw")
+            .unwrap()
+            .iter()
+            .all(|t| t.to_state != "waiting" || t.from_state.is_none()),
+        "nothing was re-seated: {:?}",
+        s.transitions("review", "vw").unwrap()
+    );
+
+    // **The reviewers' host's pass** — the same desk, one loop later: the verdict is taken and the
+    // row is `approved` at the head the claim read.
+    served(&s, &desk, "test/a");
+    let r = s.review_row("vw").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Approved, "the verdict landed: {r:?}");
+    assert_eq!(r.reviewed_sha.as_deref(), Some(head.as_str()), "{r:?}");
+    assert_eq!(r.verdict_by.as_deref(), Some("reviewer:sub-1"), "{r:?}");
+    assert_eq!(
+        r.attempts, 0,
+        "and it is still the same review, not a retry"
+    );
+    assert!(
+        !s.merge_rows(Some(&w.key())).unwrap().is_empty(),
+        "an accept puts the branch in the merge queue"
+    );
+}
+
+/// **A verdict handed in AT the deadline is still a verdict** — the `late` half of the same rule:
+/// a reviewer that ran past its deadline and handed its judgement in is stopped by nobody, because
+/// there is nothing left to stop it for.
+#[test]
+fn a_verdict_waiting_at_the_deadline_is_not_a_stopped_reviewer() {
+    let w = World::new("verdict-at-deadline");
+    let (wt, base, head) = branch(&w.repo, "vd", "vd.txt");
+    w.enqueue("vd", &wt, &base, &head);
+    let desk = Arc::new(ReviewDesk::new());
+    let q = w.worker_holding(
+        Arc::new(GreenGate),
+        "a",
+        QueueSettings::default(),
+        Some(desk.clone()),
+    );
+    run(&q, 1);
+    let s = w.store();
+    a_reviewer_has_judged(&s, &desk, "vd", "sub-1", "agent/vd", &wt);
+    // **Alive and past its deadline**: only the deadline is true, so this is the `late` branch and
+    // not the `gone` one. Its reviewer is held here so the two cannot be confused.
+    w.door.live.lock().unwrap().push("sub-1".into());
+    assert!(
+        s.move_review(
+            "vd",
+            ReviewState::Reviewing,
+            ReviewState::Reviewing,
+            &Move::new("pool", "still at it when the hour ran out").set("deadline_ms", 1u64),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+
+    run(&q, 1);
+    let r = s.review_row("vd").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Reviewing, "not stopped: {r:?}");
+    assert_eq!(r.attempts, 0, "and not counted: {r:?}");
+    assert_eq!(r.reviewer.as_deref(), Some("sub-1"), "{r:?}");
+
+    served(&s, &desk, "test/a");
+    let r = s.review_row("vd").unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Approved, "{r:?}");
+    assert_eq!(r.reviewed_sha.as_deref(), Some(head.as_str()));
+}
+
+/// **A reviewer that died with nothing at the desk is re-seated and counted, exactly as before** —
+/// the other half of the rule, and the reason the desk is PEEKED and not believed: an open review
+/// with no verdict in it is not a judgement. Without this, the fix above would be a row stuck
+/// `reviewing` for ever under a child that will never speak again.
+#[test]
+fn a_reviewer_that_died_without_handing_a_verdict_in_is_still_re_seated() {
+    let w = World::new("reviewer-gone-no-verdict");
+    let (wt, base, head) = branch(&w.repo, "gn", "gn.txt");
+    w.enqueue("gn", &wt, &base, &head);
+    let desk = Arc::new(ReviewDesk::new());
+    let q = w.worker_holding(
+        Arc::new(GreenGate),
+        "a",
+        QueueSettings::default(),
+        Some(desk.clone()),
+    );
+    run(&q, 1);
+    let s = w.store();
+    // The desk KNOWS this child — the queue's session opened a review on it — and nothing has been
+    // handed in: the reviewer died with its judgement unwritten. Its tree is the branch's worktree,
+    // as a host reviewer's is the checkout it was given.
+    desk.opened(
+        QUEUE_SESSION,
+        "sub-1",
+        "gn",
+        ReviewRequest {
+            brief: "do the work".into(),
+            branch: "agent/gn".into(),
+            base_sha: "base".into(),
+            head_sha: String::new(),
+            cwd: wt.display().to_string(),
+        },
+    );
+    assert!(!desk.verdict_waiting("sub-1"), "nothing was handed in");
+    assert!(
+        s.move_review(
+            "gn",
+            ReviewState::Reviewing,
+            ReviewState::Reviewing,
+            &Move::new("pool", "reviewer sub-1 started").set("reviewer", "sub-1"),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+
+    run(&q, 1);
+    let r = s.review_row("gn").unwrap().unwrap();
+    assert_eq!(r.attempts, 1, "the attempt is counted: {r:?}");
+    let why = s
+        .transitions("review", "gn")
+        .unwrap()
+        .into_iter()
+        .rfind(|t| t.to_state == "waiting")
+        .expect("the row was re-seated")
+        .why;
+    assert!(
+        why.contains("sub-1") && why.contains("not alive"),
+        "and the sentence is the honest one: {why}"
+    );
+}
+
 // ===== The reviewer is alive while it is OPENING =====
 
 /// **A model endpoint that says how big its window is, when the test says it may.**
@@ -1905,6 +2232,9 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
             registry: registry.clone(),
             store_path: db.clone(),
         }),
+        // Nothing here starts a reviewer through the desk; the queue is asked about a row whose
+        // child this daemon holds, and no verdict is waiting at any desk.
+        desk: None,
         settings: Arc::new(|_| Ok(QueueSettings::default())),
         landing_root: test_landing_root(),
         gate_deadline: Duration::from_secs(60),
@@ -2647,7 +2977,12 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
 
     cfg.serve_queues = false;
     let stop = Arc::new(AtomicBool::new(false));
-    let spawned = crate::mergequeue::spawn_for(&cfg, stop.clone(), Registry::new());
+    let spawned = crate::mergequeue::spawn_for(
+        &cfg,
+        stop.clone(),
+        Registry::new(),
+        Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+    );
     assert!(
         spawned.is_none(),
         "a --no-queue daemon starts no queue thread at all"
@@ -2672,8 +3007,13 @@ fn a_daemon_started_with_no_queue_on_a_worktree_never_takes_the_lease() {
     // assertions above are about the flag, not about a supervisor that could never claim here.
     cfg.serve_queues = true;
     let stop = Arc::new(AtomicBool::new(false));
-    let spawned = crate::mergequeue::spawn_for(&cfg, stop.clone(), Registry::new())
-        .expect("the queue's thread starts without --no-queue");
+    let spawned = crate::mergequeue::spawn_for(
+        &cfg,
+        stop.clone(),
+        Registry::new(),
+        Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
+    )
+    .expect("the queue's thread starts without --no-queue");
     let until = std::time::Instant::now() + Duration::from_secs(20);
     while w.store().queue_leases().unwrap().is_empty() {
         assert!(
@@ -3843,6 +4183,7 @@ fn a_one_shot_takes_no_lease() {
         &cfg,
         stop.clone(),
         letibot_sessionlog::registry::Registry::new(),
+        Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new()),
     );
     assert!(
         handle.is_none(),

@@ -162,6 +162,29 @@ impl ReviewDesk {
             .and_then(|o| o.handed.take())
     }
 
+    /// **Whether this child has handed a verdict in that no pass has taken yet** — a PEEK, and
+    /// deliberately not a take.
+    ///
+    /// It exists for the queue's OTHER loop. Two threads judge a reviewer's fate: the queue's own
+    /// worker, which re-seats a row whose reviewer is not alive in this daemon any more
+    /// (`RepoQueue::review_upkeep`), and the reviewers' host, which writes the verdict a child
+    /// handed in (`review::serve`). A reviewer's last act is handing the verdict in and its turn
+    /// ending — and a session whose turn has ended is not live — so *"not alive"* and *"has
+    /// judged"* are the same two seconds, and the worker read the first without knowing the
+    /// second: MEASURED 2026-10-29, the verdict at 17:54:14, the row re-seated at 17:54:22 as
+    /// *"the reviewer … is not alive in this daemon any more (it finished without handing a
+    /// verdict in)"*, and the verdict discarded by the pass that then found the row was no longer
+    /// its reviewer's. Nine reviewers and eighteen `reviewing` transitions on one branch, and not
+    /// one `approved`.
+    ///
+    /// So the worker asks this before it calls a finished reviewer gone. **Taking belongs to the
+    /// pass that can apply it** ([`ReviewDesk::take_verdict`], in `review::serve`): a peek here
+    /// leaves the submission exactly where it was, for that pass to write.
+    pub fn verdict_waiting(&self, child: &str) -> bool {
+        let open = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        open.iter().any(|o| o.child == child && o.handed.is_some())
+    }
+
     /// **Every review still in flight that THIS session opened**, oldest first — a snapshot, for
     /// the pass that walks them.
     ///
@@ -533,6 +556,37 @@ mod tests {
         assert!(
             desk.take_verdict("sub-1").is_none(),
             "and it is taken ONCE, so no pass can write it twice"
+        );
+    }
+
+    /// **A verdict that is waiting can be SEEN without being taken** — the queue's worker asks
+    /// this before it calls a finished reviewer gone, and the pass that writes the row must still
+    /// find its submission where it was.
+    #[test]
+    fn a_verdict_waiting_can_be_peeked_without_being_taken() {
+        let (desk, rt) = desk_with_a_review("sub-1");
+        assert!(
+            !desk.verdict_waiting("sub-1"),
+            "nothing has been handed in yet"
+        );
+        assert!(!desk.verdict_waiting("sub-2"), "and not by a stranger");
+        let mut sink = RecordingToolSink::new();
+        let r = rt.invoke("t1", &call(r#"{"verdict": "accept"}"#), &mut sink);
+        assert!(matches!(r.outcome, ToolOutcome::Ok), "{r:?}");
+
+        assert!(desk.verdict_waiting("sub-1"), "the verdict is waiting");
+        assert!(
+            desk.verdict_waiting("sub-1"),
+            "and asking again does not spend it"
+        );
+        assert!(!desk.verdict_waiting("sub-2"), "still nobody else's");
+        let taken = desk
+            .take_verdict("sub-1")
+            .expect("the pass that writes the row still finds it");
+        assert_eq!(taken.decision, Decision::Accept);
+        assert!(
+            !desk.verdict_waiting("sub-1"),
+            "and once taken there is nothing waiting"
         );
     }
 

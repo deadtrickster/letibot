@@ -286,6 +286,8 @@ fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
             me,
             gate: Arc::new(GreenGate),
             door: Arc::new(Quiet),
+            // No reviewer is started here, so no verdict can be waiting at a desk.
+            desk: None,
             settings: Arc::new(|_| Ok(Default::default())),
             landing_root: crate::mergequeue::serve::tests::test_landing_root(),
             gate_deadline: std::time::Duration::from_secs(60),
@@ -1224,6 +1226,9 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
                 registry: fx.registry.clone(),
                 store_path: fx.db.clone(),
             }),
+            // This queue starts no reviewer (the row is claimed and nobody serves it), so there
+            // is no desk to ask about a verdict.
+            desk: None,
             settings: Arc::new(|_| {
                 Ok(crate::mergequeue::settings::QueueSettings {
                     merge_via_session: true,
