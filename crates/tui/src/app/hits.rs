@@ -102,6 +102,18 @@ pub(crate) enum Target {
     /// off that row (`screen::drawn_span`), because the edge truncates from the right and the
     /// standings are the last thing on it.
     QueueStandings,
+    /// **A link the frame drew** (OSC 8) — the operator, 2026-10-30: *"why links are not clickable
+    /// and ghostty doesnt detect them either?"*. Its one stop is the index of the URL in
+    /// `App::link_targets`, and its rectangle is exactly the cells the link covers, read off the
+    /// finished row (`app::links::osc8_spans`) — so the margin beside it is not the link, and the
+    /// row under it keeps whatever target it had.
+    ///
+    /// It exists because the terminal cannot answer this one: the head takes the mouse
+    /// (`rano::term::Mouse::Any`), so Ghostty forwards the click instead of opening the link, and
+    /// the SGR protocol cannot even carry the Command key. A click here is this program opening
+    /// the URL, through the door it already has for a file and through the platform's opener for
+    /// anything else.
+    Link,
 }
 
 /// **One target on the last frame**: where it was, what it was, and which of its stops each
@@ -158,6 +170,7 @@ impl App {
         room: usize,
     ) {
         self.hits.clear();
+        self.link_targets.clear();
         self.plugin_legend_at.clear();
         let x = gutter;
         let rect = Rect {

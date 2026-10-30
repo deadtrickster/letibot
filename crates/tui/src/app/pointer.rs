@@ -48,12 +48,12 @@ pub(crate) struct Drag {
 }
 
 /// One piece of a frame row: an escape sequence, or one visible character and its width.
-enum Piece<'a> {
+pub(crate) enum Piece<'a> {
     Escape(&'a str),
     Cell(char, usize),
 }
 
-fn pieces(row: &str) -> Vec<Piece<'_>> {
+pub(crate) fn pieces(row: &str) -> Vec<Piece<'_>> {
     let mut out = Vec::new();
     let mut i = 0;
     let b = row.as_bytes();
@@ -248,6 +248,13 @@ impl App {
             | Target::QueueTab(_)
             | Target::GitField
             | Target::QueueStandings => Some(Hovered::one(
+                row,
+                Some((hit.rect.x, hit.rect.x + hit.rect.w)),
+            )),
+            // **A link lights exactly the cells it covers**, like the labels above and for the
+            // same reason: the rectangle was read off the row the link was drawn on, so the hand
+            // appears over the words and nowhere else.
+            Target::Link => Some(Hovered::one(
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),

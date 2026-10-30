@@ -1437,6 +1437,7 @@ mod groups;
 mod hits;
 mod jobcard;
 mod jobs;
+mod linkclick;
 mod markerclick;
 mod markerorder;
 mod misc;

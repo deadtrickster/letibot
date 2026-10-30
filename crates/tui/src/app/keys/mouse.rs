@@ -42,6 +42,10 @@ impl App {
             // edges and the header belong to no surface, so there is none that can have closed
             // under them between the frame and the click.
             Target::CountLabel(_) | Target::GitField | Target::QueueStandings => true,
+            // **A link is drawn by whatever screen is up** — the reply, a note, a pane — so the
+            // record is the frame's own and nothing can have closed under it. A link the frame
+            // no longer has is not in `link_targets`, which the click checks before it acts.
+            Target::Link => true,
             // **A panel's title is a door only while its pane is the one on the screen**: the
             // frame that recorded it may have been covered by another pane since.
             Target::PluginPanel => self.focused_surface() == Some(Surface::PluginPane),
@@ -115,6 +119,15 @@ impl App {
             // THIS session's repository, not on whatever scope the last `/queue all` left behind
             // — and a second click while the pane is up closes it, as the verb would.
             (Target::QueueStandings, _) => return ControlFlow::Break(self.command("queue")),
+            // **A link opens.** A `file://` link opens in the editor pane this head already opens
+            // files with, at the line it names; anything else is handed to the platform's opener
+            // (`Action::OpenUrl`), which is the only process that can open a URL from here — the
+            // head takes the mouse, so the terminal never gets the click to open itself. See
+            // [`App::open_link`] and `app::links`.
+            (Target::Link, Some(k)) => {
+                let url = self.link_targets.get(k).cloned();
+                return ControlFlow::Break(url.and_then(|u| self.open_link(&u)));
+            }
             // **An edit or write row opens its change in the diff popup** — the whole file with
             // the change inline; `ctrl-]` from there is the editor. A click elsewhere in the
             // conversation is nobody's and falls through.
@@ -246,6 +259,12 @@ impl App {
             return ControlFlow::Break(None);
         }
         const NOTCH: usize = 3;
+        // **A link is a click, not a wheel** — a notch over a URL is handed on with no position,
+        // so the transcript under the pointer still scrolls. A long reply is mostly URLs, and a
+        // wheel that stopped dead over one would be the worse defect.
+        if target == Target::Link {
+            return ControlFlow::Continue(());
+        }
         match target {
             Target::Surface(_) | Target::QueueTab(_) | Target::TodoWait | Target::PluginPanel => {
                 self.scroll_pane(up, NOTCH)
@@ -273,6 +292,9 @@ impl App {
             // A line of the window with no window up — `still_drawn` has already refused
             // this one, so it is here for the enum and not for a pointer that can reach it.
             | Target::PayloadLine => {}
+            // A link returned above, with the notch handed on: the arm is here because this
+            // match is exhaustive over the enum and a missing arm is a click swallowed.
+            Target::Link => {}
         }
         ControlFlow::Break(None)
     }

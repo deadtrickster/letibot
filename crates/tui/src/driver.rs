@@ -757,6 +757,17 @@ impl Link {
         }
 
         for a in actions {
+            // **A link opens whether or not the daemon is there** — the URL is the operator's
+            // desktop, not the session's, and this head is the process that has it. Taken ahead
+            // of the link-down and read-only arms below for the reason the stop is: neither of
+            // them has anything to say about a URL, and a click that did nothing because a
+            // socket had gone would be a link that is not clickable again.
+            if let Action::OpenUrl(url) = &a {
+                if let Err(why) = open_url(url) {
+                    app.say(&why);
+                }
+                continue;
+            }
             // **Nothing leaves a head whose link is down**, and it says so once rather
             // than failing once per action. Every write below would fail the same way,
             // and a batch of them would bury the one sentence that matters.
@@ -1013,6 +1024,10 @@ impl Link {
                     Action::OperatorShell { line } => {
                         self.client.operator_shell(app.seq, &line)?;
                     }
+                    // **Taken above, before the link-down and read-only arms** — a URL is not
+                    // the daemon's and the write that carries it never happens. Listed here
+                    // because this match is exhaustive over `Action`.
+                    Action::OpenUrl(_) => {}
                     // **`!term <command>` — the pane, opened with the terminal's own
                     // rectangle.**
                     //
@@ -1294,6 +1309,36 @@ impl Drop for Link {
         if self.reader.is_some() {
             self.close();
         }
+    }
+}
+
+/// **The platform's opener, for a link the operator clicked.**
+///
+/// `open` on macOS hands the URL to LaunchServices and exits; `xdg-open` is the same act on a
+/// Linux box. Waited for rather than spawned-and-forgotten — `open` returns as soon as the
+/// handler is started, and a child nobody reaps is a pid this head would keep until it exits.
+///
+/// The failure is a sentence and not a silence: a box with neither program is a box where a
+/// click on a link cannot do anything, and the operator is owed that in words rather than a
+/// link that looks broken (the operator's own report: *"why links are not clickable"*).
+fn open_url(url: &str) -> Result<(), String> {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(program)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+    {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("`{program}` refused `{url}` ({s})")),
+        Err(e) => Err(format!(
+            "no `{program}` on this box, so `{url}` was not opened: {e}"
+        )),
     }
 }
 

@@ -1298,6 +1298,10 @@ pub struct App {
     /// **The last frame's click targets** (R69) — see `app::hits`. Rebuilt by every frame and
     /// read by every click and every wheel step that knows where the pointer is.
     pub(crate) hits: Vec<Hit>,
+    /// **The URL behind each of the last frame's link targets** — a [`Target::Link`]'s stop is an
+    /// index into this, so a click answers with the URL the frame drew and not with a second read
+    /// of the row. Rebuilt with the frame by `App::draw_links`; see `app::links`.
+    pub(crate) link_targets: Vec<String>,
     /// **The last frame's key hints** — every `key label` on the glass, a button that types its
     /// key. See `app::keyhints`.
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
@@ -2213,6 +2217,7 @@ impl App {
             slash_out: None,
             surfaces: Vec::new(),
             hits: Vec::new(),
+            link_targets: Vec::new(),
             hint_rows: Vec::new(),
             injected: Vec::new(),
             pointer_at: None,
@@ -2504,6 +2509,7 @@ mod ghlinks;
 mod hits;
 pub(crate) mod keyhints;
 mod keys;
+pub(crate) mod links;
 mod notes;
 pub(crate) mod one_event;
 mod panes;
@@ -2535,6 +2541,7 @@ pub use editor::*;
 pub(crate) use events::*;
 pub(crate) use hits::*;
 pub use keys::*;
+pub(crate) use links::{link_path_lines, osc8_spans};
 pub(crate) use notes::*;
 pub(crate) use panes::*;
 pub(crate) use pick::*;

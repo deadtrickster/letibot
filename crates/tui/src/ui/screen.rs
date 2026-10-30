@@ -41,27 +41,9 @@ impl App {
         // **Every key hint on this frame is a button**, read back off the frame itself — see
         // `app::keyhints`. Before the links pass, which only adds escapes.
         self.scan_hints(&out);
-        // **Every `http(s)://` on the frame is a link** (OSC 8) where the terminal speaks it —
-        // the reply, the tool output, a note: one pass over the finished frame rather than one
-        // per renderer, so no renderer can be the one that forgot.
-        if self.features.links {
-            for l in out.iter_mut() {
-                if l.contains("://") {
-                    *l = rano::term::links::link_urls(l);
-                }
-            }
-            // **And every word naming something in the session's repository** — `#212`, a
-            // commit it has, a branch it has (`app::ghlinks`): only what the repository was read
-            // to hold, so nothing is linked on a guess.
-            if let Some(refs) = self.gh_refs.clone() {
-                let mut url_of = |w: &str| refs.url_of(w);
-                for l in out.iter_mut() {
-                    if let Some(linked) = rano::term::links::link_words(l, &mut url_of) {
-                        *l = linked;
-                    }
-                }
-            }
-        }
+        // **Every link on this frame is a link** (OSC 8) where the terminal speaks it, **and a
+        // target** — see `App::draw_links` and `app::links`.
+        self.draw_links(&mut out);
         if self.hold {
             // **The marker takes the hint bar's row.** It is one row that always exists, so the
             // freeze costs no height and reflows nothing — and it is the row that already talks
@@ -89,6 +71,73 @@ impl App {
         self.relight();
         self.paint_pointer(&mut out);
         out
+    }
+
+    /// **The links on a finished frame, drawn and recorded** (OSC 8).
+    ///
+    /// Three passes write them, and each is rano's own decision about what a link is:
+    /// * `rano::term::links::link_urls` — every `http(s)://` on the frame: the reply, the tool
+    ///   output, a note;
+    /// * [`link_path_lines`] — `path:line`, which rano's word grammar cannot see as one word
+    ///   (`app::links` says why the head does the split and rano still decides the URL);
+    /// * `rano::term::links::link_words` — the words naming something in the session's repository
+    ///   (`#212`, a commit, a branch — `app::ghlinks`): only what the repository was read to hold.
+    ///
+    /// Then **the frame is read back**, the way `scan_hints` reads the key hints back off it: a
+    /// link is whatever the frame drew as one, whichever renderer drew it, so the escape and the
+    /// click target cannot disagree — and a renderer that starts linking something later needs no
+    /// second record. One `Hit` per link, over the exact cells it covers, so the margin beside a
+    /// link is not the link and the row under it keeps whatever target it had.
+    ///
+    /// A wrapped link is two rows with two well-formed pairs — rano's span emitters reopen what
+    /// they close at a break — so each row's pair is its own target and both open the same URL.
+    fn draw_links(&mut self, out: &mut [String]) {
+        if !self.features.links {
+            self.link_targets.clear();
+            return;
+        }
+        let root = self.cfg.links.clone();
+        let refs = self.gh_refs.clone();
+        for l in out.iter_mut() {
+            // **The URLs first**, so a `path:line` inside one is not read as a file: the two
+            // passes under this one leave text inside a link already drawn alone, which is what
+            // makes `https://example.com/x:8080` a URL rather than a path called
+            // `example.com/x`.
+            if l.contains("://") {
+                *l = rano::term::links::link_urls(l);
+            }
+            if let Some(root) = root.as_deref()
+                && l.contains(':')
+                && let Some(linked) = crate::app::link_path_lines(l, root)
+            {
+                *l = linked;
+            }
+            if let Some(refs) = &refs {
+                let mut url_of = |w: &str| refs.url_of(w);
+                if let Some(linked) = rano::term::links::link_words(l, &mut url_of) {
+                    *l = linked;
+                }
+            }
+        }
+        for (y, row) in out.iter().enumerate() {
+            if !row.contains("\u{1b}]8;") {
+                continue;
+            }
+            for (from, to, url) in crate::app::osc8_spans(row) {
+                let k = self.link_targets.len();
+                self.link_targets.push(url);
+                self.hits.push(Hit {
+                    rect: Rect {
+                        x: from,
+                        y,
+                        w: to - from,
+                        h: 1,
+                    },
+                    target: Target::Link,
+                    stops: vec![(y, k)],
+                });
+            }
+        }
     }
 
     pub(crate) fn compose_screen(&mut self, term_w: usize, h: usize) -> Vec<String> {

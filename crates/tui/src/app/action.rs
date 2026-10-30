@@ -317,6 +317,15 @@ pub enum Action {
     OperatorShell {
         line: String,
     },
+    /// **A link the operator clicked, opened by the platform.** The one act in this enum that
+    /// the daemon knows nothing about: a URL is not a session's, and the head is the process with
+    /// the operator's desktop on it.
+    ///
+    /// It carries the URL the FRAME drew — `app::links` reads it back off the finished row, so
+    /// the words and the destination cannot disagree — and the driver hands it to `open` (macOS)
+    /// or `xdg-open` (elsewhere) and says so when neither is there. A `file://` link never
+    /// reaches this action: the head opens those in its own editor pane ([`App::open_link`]).
+    OpenUrl(String),
     /// **`!term <command>` — open the pane and run a screen program in it.**
     ///
     /// `line` travels verbatim, `!term` first, exactly as [`Action::OperatorShell`]'s does: the
