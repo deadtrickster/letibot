@@ -1115,6 +1115,44 @@ impl ExecBackend for FirecodeBackend {
         }
     }
 
+    /// **One `firecode in` for a page of files, not one per file.**
+    ///
+    /// The defect this closes: a VM-placed reviewer's repo-wide `grep` was a stream of
+    /// single-file reads, each its own `firecode in` (a client fork, the guest's
+    /// `socat`, a `bash -l`) at ~0.5 s apiece — a few hundred files meant several
+    /// minutes with no tool result until the last one, so the reviewer was
+    /// indistinguishable from a hang.
+    ///
+    /// [`batched_read_command`] prints every file as `<length>\n<base64>\n` behind a
+    /// `0x1e` marker, so the stream is self-delimiting whatever the file contains —
+    /// base64's alphabet cannot produce the marker and never wraps. A file the guest
+    /// cannot read is answered *in its own slot* ([`parse_batched_reads`]), exactly as
+    /// [`ExecBackend::read`] would have answered it, so a page never loses a match to a
+    /// file that is not there.
+    fn read_many(
+        &self,
+        paths: &[&str],
+    ) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let guest: Vec<String> = paths
+            .iter()
+            .map(|p| self.guest_path(p).display().to_string())
+            .collect();
+        let asked: Vec<&str> = guest.iter().map(|s| s.as_str()).collect();
+        let (bytes, exit) = self.guest(&batched_read_command(&asked))?;
+        if exit != 0 {
+            // The channel, not a file: the caller falls back to `read` per path.
+            return Err(BackendError::Io(format!(
+                "reading {} file(s) in the VM: exit {exit}: {}",
+                paths.len(),
+                String::from_utf8_lossy(&bytes).trim()
+            )));
+        }
+        parse_batched_reads(&bytes, paths)
+    }
+
     fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
         if !self.writable {
             return Err(BackendError::Unsupported(
@@ -1645,6 +1683,100 @@ fn parent_of(path: &str) -> &str {
         Some(i) if path.as_bytes()[i - 1] == b'/' => &path[..i + 1],
         Some(i) => &path[..i],
     }
+}
+
+/// The byte that opens each file's slot in [`batched_read_command`]'s stream.
+///
+/// ASCII `RS` (record separator), and it is safe for one reason: every byte after it
+/// up to the next one is base64, whose alphabet is `A-Z a-z 0-9 + / =` — the marker
+/// cannot occur in the data, so a file containing it (or NUL, or a newline, or a
+/// megabyte of anything) cannot be mistaken for a boundary.
+const READ_MARK: u8 = 0x1e;
+
+/// **One guest command that prints N files**, the shape [`parse_batched_reads`] reads
+/// back: per file, `0x1e`, the byte length, a newline, the file's base64 on one line.
+///
+/// Portable spelling on purpose — `base64 | tr -d '\n'` rather than GNU's `-w0` — so
+/// the same command can be run by this box's own `/bin/sh` in a test and by a Linux
+/// guest in a VM, and the test measures the bytes a real guest would produce. The
+/// length is trimmed for the same reason: **BSD `wc` pads its count with spaces**
+/// (`"       8"`), GNU's does not, and the `case` guard below would call the padded
+/// form a failure and report every file unreadable.
+///
+/// A file that is not readable is answered **in its slot** rather than left out, so
+/// the caller can tell *this file is gone* from *the call failed* — the two are a
+/// skipped candidate and a page that must be retried one path at a time.
+pub(crate) fn batched_read_command(paths: &[&str]) -> String {
+    let list = paths
+        .iter()
+        .map(|p| shell_quote(p))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "for f in {list}; do \
+           if [ -d \"$f\" ]; then printf '\\036d\\n'; continue; fi; \
+           n=$(wc -c < \"$f\" 2>/dev/null | tr -d '[:space:]') || n=; \
+           case \"$n\" in ''|*[!0-9]*) printf '\\036-\\n'; continue ;; esac; \
+           printf '\\036%s\\n' \"$n\"; \
+           base64 < \"$f\" 2>/dev/null | tr -d '\\n'; \
+           printf '\\n'; \
+         done"
+    )
+}
+
+/// [`batched_read_command`]'s stream, back into one answer per path, **in order**.
+///
+/// Each slot is what [`ExecBackend::read`] would have answered for that path — the
+/// bytes, or `IsADirectory`, or `NotFound` — so a caller that skips a failed read
+/// skips exactly the files it skipped before. Anything the guest wrote outside a slot
+/// (a `bash -l` banner, a warning) is dropped, and a stream that does not account for
+/// exactly one slot per path is an error for the CALL, which is the caller's signal to
+/// fall back to per-file reads rather than to lose matches.
+pub(crate) fn parse_batched_reads(
+    stream: &[u8],
+    paths: &[&str],
+) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+    // Everything before the first marker is the run-up, not a slot.
+    let mut slots = stream.split(|b| *b == READ_MARK);
+    slots.next();
+    let slots: Vec<&[u8]> = slots.collect();
+    if slots.len() != paths.len() {
+        return Err(BackendError::Io(format!(
+            "the VM answered {} file(s) for {} path(s)",
+            slots.len(),
+            paths.len()
+        )));
+    }
+    let mut out = Vec::with_capacity(paths.len());
+    for (slot, path) in slots.iter().zip(paths) {
+        let (header, body) = match slot.iter().position(|b| *b == b'\n') {
+            Some(nl) => (&slot[..nl], &slot[nl + 1..]),
+            None => (&slot[..], &[][..]),
+        };
+        let header = String::from_utf8_lossy(header);
+        let header = header.trim();
+        out.push(match header {
+            "d" => Err(BackendError::IsADirectory(path.to_string())),
+            "-" => Err(BackendError::NotFound(path.to_string())),
+            said => match said.parse::<usize>() {
+                Ok(len) => match decode_base64(body) {
+                    // The length is the check that the slot is whole: a short body is a
+                    // truncated read, and reporting it as the file's bytes would put a
+                    // half file in front of the matcher.
+                    Ok(b) if b.len() == len => Ok(b),
+                    Ok(b) => Err(BackendError::Io(format!(
+                        "{path}: read {} of {len} byte(s)",
+                        b.len()
+                    ))),
+                    Err(e) => Err(BackendError::Io(format!("{path}: {e}"))),
+                },
+                Err(_) => Err(BackendError::Io(format!(
+                    "{path}: the VM said {said:?} where a length belongs"
+                ))),
+            },
+        });
+    }
+    Ok(out)
 }
 
 fn run_id(bin: &Path, project: &Path) -> Option<String> {
@@ -2559,6 +2691,99 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// **The batched read is the files, whatever is in them** — the real command, run
+    /// by a real `/bin/sh` over real files, and the parser's answers read back.
+    ///
+    /// The command is spelled portably (`base64 | tr -d '\n'`) precisely so this test
+    /// can run the same bytes a Linux guest would print, on a box that is not one.
+    /// The nasty cases are the point: the marker byte itself, a NUL, a CR and a byte
+    /// that is not UTF-8 all sit inside a file and none of them can be mistaken for a
+    /// boundary; a zero-byte file is a file; a directory and a path that is not there
+    /// answer as `read` answers them.
+    #[test]
+    fn a_page_of_files_survives_the_round_trip_whatever_is_in_them() {
+        let root = tmp("batch-read");
+        let plain = root.join("plain.txt");
+        std::fs::write(&plain, "one\ntwo\n").unwrap();
+        let empty = root.join("empty.txt");
+        std::fs::write(&empty, b"").unwrap();
+        let nasty = root.join("nasty.bin");
+        let nasty_bytes: &[u8] = &[0, b'\n', 0x1e, 0xff, 0x1e, b'\r', 0x1e];
+        std::fs::write(&nasty, nasty_bytes).unwrap();
+        let dir = root.join("a-directory");
+        std::fs::create_dir_all(&dir).unwrap();
+        let gone = root.join("gone.txt");
+
+        let owned: Vec<String> = [&plain, &empty, &nasty, &dir, &gone]
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        let asked: Vec<&str> = owned.iter().map(|s| s.as_str()).collect();
+        let out = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(batched_read_command(&asked))
+            .output()
+            .expect("a shell to run the guest command");
+        assert!(
+            out.status.success(),
+            "the guest command failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let got = parse_batched_reads(&out.stdout, &asked).expect("one slot per path");
+        assert_eq!(got.len(), 5);
+        assert_eq!(
+            got[0].as_ref().unwrap(),
+            b"one\ntwo\n",
+            "the first file answers in the first slot"
+        );
+        assert_eq!(
+            got[1].as_ref().unwrap(),
+            b"",
+            "an empty file is a file of zero bytes, not a missing one"
+        );
+        assert_eq!(
+            got[2].as_ref().unwrap(),
+            nasty_bytes,
+            "a file holding the marker, a NUL, a CR and a non-UTF-8 byte"
+        );
+        assert!(
+            matches!(got[3].as_ref(), Err(BackendError::IsADirectory(_))),
+            "a directory answers as `read` answers it: {:?}",
+            got[3]
+        );
+        assert!(
+            matches!(got[4].as_ref(), Err(BackendError::NotFound(_))),
+            "a path that is not there answers as `read` answers it: {:?}",
+            got[4]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// **A stream that does not account for every path is the CALL's failure**, which is
+    /// the caller's signal to fall back — while a single short slot is that file's own
+    /// error and leaves its neighbours intact. Confusing the two would either lose a
+    /// page of matches or report a whole page unreadable because one file was.
+    #[test]
+    fn a_lost_slot_fails_the_call_and_a_short_slot_fails_only_its_file() {
+        // The guest printed one file for two paths (it was killed mid-page, say).
+        assert!(
+            parse_batched_reads(b"\x1e3\nYWJj\n", &["a", "b"]).is_err(),
+            "a page that came back short must fail the call, not answer for two files"
+        );
+        // A banner before the first marker is the run-up and is dropped; a slot that
+        // claims nine bytes and holds three is that file's error, and the next slot
+        // still answers.
+        let stream: &[u8] = b"a banner from bash -l\n\x1e9\nYWJj\n\x1e3\nZGVm\n";
+        let got = parse_batched_reads(stream, &["short", "fine"]).expect("two slots");
+        assert!(
+            matches!(got[0].as_ref(), Err(BackendError::Io(_))),
+            "a truncated body was handed to the matcher as the file: {:?}",
+            got[0]
+        );
+        assert_eq!(got[1].as_ref().unwrap(), b"def");
+    }
+
     #[test]
     fn the_confinement_wraps_a_job_as_firecode_in_with_the_cwd() {
         let c =
@@ -2670,5 +2895,72 @@ mod tests {
                 && !tree_call.contains("-maxdepth"),
             "the one command is not the whole tree: {tree_call}"
         );
+    }
+
+    /// **A page of files really is one round trip through the backend**, not merely
+    /// one command: the stub runs the guest command over the copy `up` made, and the
+    /// `in` call log is the count.
+    ///
+    /// This is the defect's own measurement at the seam the reviewer hit — one
+    /// `firecode in` per candidate file becomes one per page, and the bytes that come
+    /// back are the files'. The empty file and the path that is not there are in the
+    /// page on purpose: a batch that answered *something* for a missing file would
+    /// hand the matcher a file that is not there.
+    #[test]
+    fn a_page_is_one_in_call_and_its_slots_are_the_files() {
+        let root = tmp("batch-in");
+        let src = root.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for (name, body) in [
+            ("a.txt", "one\ntwo\n"),
+            ("b.txt", ""),
+            ("c.txt", "needle_here\n"),
+        ] {
+            std::fs::write(src.join(name), body).unwrap();
+        }
+        let cache = root.join("cache");
+        let calls = root.join("in-calls");
+        // The stub is the guest: it logs the call, then RUNS the command it was
+        // handed, so the bytes parsed below are the bytes a real VM would print.
+        let arms = format!(
+            "{HAPPY}\nin) echo \"$@\" >> '{calls}'; sh -c \"$6\" ;;",
+            calls = calls.display()
+        );
+        let bin = stub_firecode(&root.join("fc"), &arms);
+        let b = FirecodeBackend::up(&spec_with(&src, &cache, &bin)).unwrap();
+
+        let in_calls = || {
+            std::fs::read_to_string(&calls)
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let before = in_calls();
+        let got = b
+            .read_many(&["a.txt", "b.txt", "c.txt", "gone.txt"])
+            .expect("a page");
+        let log = std::fs::read_to_string(&calls).unwrap_or_default();
+        // `up` keeps talking to the VM for its own reasons (its door probe, its run
+        // record), so the claim is about the commands that read FILES: one that carries
+        // the page, and none of the old one-file shape.
+        let paged: Vec<&str> = log.lines().filter(|l| l.contains("for f in")).collect();
+        let per_file: Vec<&str> = log.lines().filter(|l| l.contains("base64 -w0 <")).collect();
+        assert_eq!(
+            (paged.len(), per_file.len()),
+            (1, 0),
+            "four files took {} page call(s) and {} per-file call(s) (in calls {before} -> {}):\n{log}",
+            paged.len(),
+            per_file.len(),
+            in_calls()
+        );
+        assert_eq!(got[0].as_ref().unwrap(), b"one\ntwo\n");
+        assert_eq!(got[1].as_ref().unwrap(), b"", "the empty file, not a miss");
+        assert_eq!(got[2].as_ref().unwrap(), b"needle_here\n");
+        assert!(
+            matches!(got[3].as_ref(), Err(BackendError::NotFound(_))),
+            "a path that is not there answered with bytes: {:?}",
+            got[3]
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

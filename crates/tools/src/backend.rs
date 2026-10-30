@@ -142,6 +142,32 @@ pub trait ExecBackend: Send + Sync {
 
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
+    /// **The same answers as [`Self::read`], for a whole page of paths, in one call** —
+    /// the seam a backend whose `read` is a round trip overrides.
+    ///
+    /// `grep` walks its candidates in pages ([`crate::builtins::grep`]) and asks for a
+    /// page at a time. Over the host that is a syscall either way, so the default **is**
+    /// the per-file loop and every existing backend keeps today's behaviour byte for
+    /// byte. Over firecode one `read` is one `firecode in` vsock call — measured at
+    /// ~0.5 s apiece — so a repository-sized `grep` was a few hundred of them: minutes
+    /// in which the tool had produced no result at all, and a reviewer in a VM read as
+    /// hung while it held the queue's slot.
+    ///
+    /// One entry per path, **in the order asked**, each exactly what [`Self::read`]
+    /// would have answered for that path — `Ok` with the bytes, or the error that path
+    /// raises (`NotFound`, `IsADirectory`, …). A path that cannot be read is *that
+    /// entry's* problem and never the call's.
+    ///
+    /// `Err` from the call as a whole means the channel failed and says nothing about
+    /// any path: a caller must fall back to [`Self::read`] rather than read it as N
+    /// unreadable files, which would silently drop matches.
+    fn read_many(
+        &self,
+        paths: &[&str],
+    ) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+        Ok(paths.iter().map(|p| self.read(p)).collect())
+    }
+
     /// Replace a file's contents.
     ///
     /// **Required to be atomic**, and that is part of the interface rather than an
@@ -1884,6 +1910,70 @@ mod tests {
         assert_eq!(few_find, few_loop);
         assert_eq!((cut_find, cut_loop), (true, true));
         assert_eq!(paths(&few_find), vec!["/w/a b", "/w/empty"]);
+    }
+
+    /// A backend whose `read` is counted and whose `read_many` is the **default**: the
+    /// shape of every backend that has not said its `read` is a round trip.
+    struct PerFileReads {
+        read_calls: AtomicUsize,
+    }
+
+    impl ExecBackend for PerFileReads {
+        fn run(&self, _cmd: &Command) -> Result<Output, BackendError> {
+            Err(BackendError::Unsupported("a fake runs nothing"))
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            self.read_calls.fetch_add(1, Ordering::SeqCst);
+            if path.ends_with("gone") {
+                return Err(BackendError::NotFound(path.to_string()));
+            }
+            Ok(format!("body of {path}").into_bytes())
+        }
+        fn write(&self, path: &str, _bytes: &[u8]) -> Result<(), BackendError> {
+            Err(BackendError::NotFound(path.to_string()))
+        }
+        fn list(&self, _path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            Ok(Vec::new())
+        }
+        fn stat(&self, _path: &str) -> Option<DirEntry> {
+            None
+        }
+        fn describe(&self) -> String {
+            "reads one file at a time".into()
+        }
+        fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+            None
+        }
+    }
+
+    /// **The default `read_many` is the per-file loop**, one `read` per path and the
+    /// same answers in the same order — a backend that has not overridden it keeps
+    /// today's behaviour, which is what makes this seam safe to add under `grep`.
+    ///
+    /// The measured contrast is [`crate::builtins::grep`]'s own test, where an
+    /// override turns one call per file into one call per page.
+    #[test]
+    fn the_default_read_many_is_the_per_file_loop() {
+        let b = PerFileReads {
+            read_calls: AtomicUsize::new(0),
+        };
+        let got = b
+            .read_many(&["/w/a", "/w/gone", "/w/b"])
+            .expect("the default cannot fail as a whole");
+        assert_eq!(
+            b.read_calls.load(Ordering::SeqCst),
+            3,
+            "one read per path: {got:?}"
+        );
+        assert_eq!(got[0].as_ref().unwrap(), b"body of /w/a");
+        assert!(
+            matches!(got[1].as_ref(), Err(BackendError::NotFound(_))),
+            "a path that cannot be read is that SLOT's answer, not the call's"
+        );
+        assert_eq!(got[2].as_ref().unwrap(), b"body of /w/b");
+        // And nothing is asked of the backend for nothing.
+        assert_eq!(b.read_many(&[]).expect("an empty page").len(), 0);
+        assert_eq!(b.read_calls.load(Ordering::SeqCst), 3);
     }
 }
 

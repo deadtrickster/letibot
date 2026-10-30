@@ -435,6 +435,29 @@ pub const FILE_CEILING: u64 = 16 * 1024 * 1024;
 /// not a daemon that stops answering heads.
 pub const BYTES_BUDGET: u64 = 512 * 1024 * 1024;
 
+/// How many candidate files one [`crate::backend::ExecBackend::read_many`] asks for —
+/// `grep`'s page, and [`crate::builtins::outline`]'s, because the number belongs to
+/// the seam and not to either tool.
+///
+/// **The measurement this exists for**: a VM-placed reviewer's repo-wide `grep` was one
+/// `firecode in` per candidate file — a client fork, the guest's `socat`, a `bash -l`,
+/// ~0.5 s apiece — so a few hundred files meant several minutes in which the tool had
+/// returned nothing, and the reviewer holding the queue's slot looked hung. 64 paths a
+/// page turns a few hundred round trips into a handful; the search itself stays on the
+/// host, so nothing the model reads changes.
+pub const READ_PAGE_FILES: usize = 64;
+
+/// And the other bound on a page: 64 paths of 16 MiB each ([`FILE_CEILING`]) would be
+/// a gigabyte held in memory and four thirds of that again on the wire. A page stops
+/// growing at this many **declared** bytes — the same numbers the budget below adds up
+/// — but always takes its first file, so a page is never empty and no file is skipped
+/// for being the one that did not fit.
+///
+/// [`crate::builtins::outline`] uses it too, and there it is the only size bound a
+/// file has: that tool has no per-file ceiling, so one large file is still read whole
+/// (as it always was) and never 64 of them at once.
+pub const READ_PAGE_BYTES: u64 = 16 * 1024 * 1024;
+
 /// What one rung of the ladder found, and over what.
 struct Scan {
     hits: Vec<Hit>,
@@ -491,73 +514,110 @@ fn search(
     let mut unreached = 0usize;
     let mut read_bytes = 0u64;
     let mut languages: Vec<&'static str> = Vec::new();
-    for (i, e) in files.iter().enumerate() {
-        if i > 0 && i % 500 == 0 {
-            // §8.5: progress is liveness. A walk over a large tree must produce it.
-            ctx.progress(format!("scanned {i} of {} files", files.len()));
+    // **A page at a time, not a file at a time.** The page is chosen by exactly the
+    // tests the one-at-a-time loop applied — the size ceiling, then the byte budget —
+    // so `skipped_large`, `unreached`, `scanned` and the hit list are what they always
+    // were; what changes is that a backend whose `read` is a round trip is asked once
+    // for a page instead of once per file. See [`READ_PAGE_FILES`].
+    let mut i = 0usize;
+    while i < files.len() {
+        let mut page: Vec<usize> = Vec::new();
+        let mut page_bytes = 0u64;
+        while i < files.len() && page.len() < READ_PAGE_FILES {
+            let e = files[i];
+            // The byte bound is tested before the progress line so that a page which
+            // breaks here does not print the same `scanned i of N` twice — once for the
+            // page that stopped and once for the page that starts with this file.
+            if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
+                break;
+            }
+            if i > 0 && i % 500 == 0 {
+                // §8.5: progress is liveness. A walk over a large tree must produce it.
+                ctx.progress(format!("scanned {i} of {} files", files.len()));
+            }
+            if e.bytes > FILE_CEILING {
+                skipped_large += 1;
+                i += 1;
+                continue;
+            }
+            if read_bytes >= BYTES_BUDGET {
+                unreached = files.len() - i;
+                break;
+            }
+            read_bytes += e.bytes;
+            page_bytes += e.bytes;
+            page.push(i);
+            i += 1;
         }
-        if e.bytes > FILE_CEILING {
-            skipped_large += 1;
-            continue;
-        }
-        if read_bytes >= BYTES_BUDGET {
-            unreached = files.len() - i;
+        if page.is_empty() {
+            // The budget ran out (or the list did). `unreached` is set if it was the
+            // budget, and nothing was read — which is what the loop did before.
             break;
         }
-        read_bytes += e.bytes;
-        let Ok(bytes) = ctx.backend.read(&e.path) else {
-            continue;
+        let paths: Vec<&str> = page.iter().map(|k| files[*k].path.as_str()).collect();
+        // One call for the page where the backend can do it. A call that FAILS is not
+        // N unreadable files: it says nothing about any path, so the page is retried
+        // one file at a time rather than losing every match in it.
+        let got = match ctx.backend.read_many(&paths) {
+            Ok(v) if v.len() == paths.len() => v,
+            _ => paths.iter().map(|p| ctx.backend.read(p)).collect(),
         };
-        if bytes.contains(&0) {
-            // Binary. Skipped rather than rendered as replacement characters.
-            continue;
-        }
-        scanned += 1;
-        if let Ok(l) = letibot_code::Language::of_path(&e.path)
-            && !languages.contains(&l.name())
-        {
-            languages.push(l.name());
-        }
-        let (text, _) = text_of(&bytes);
-        // One scan of the whole buffer rather than one engine call per line. The
-        // semantics are identical -- `line_hits` confirms every candidate against
-        // the line-scoped program -- and the measurement is the whole reason the
-        // matcher was replaced.
-        let remaining = max - hits.len();
-        let path = e.path.clone();
-        // Only when asked: collecting a file's lines is cheap but not free, and
-        // the common call passes no context at all.
-        let file_lines: Vec<&str> = if context > 0 {
-            text.lines().collect()
-        } else {
-            Vec::new()
-        };
-        let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
-            let region = if context > 0 {
-                let first = line_no.saturating_sub(context).max(1);
-                let last = (line_no + context).min(file_lines.len());
-                (first..=last)
-                    .map(|n| (n, file_lines[n - 1].to_string()))
-                    .collect()
+        for (slot, bytes) in page.iter().zip(got) {
+            let e = files[*slot];
+            let Ok(bytes) = bytes else {
+                continue;
+            };
+            if bytes.contains(&0) {
+                // Binary. Skipped rather than rendered as replacement characters.
+                continue;
+            }
+            scanned += 1;
+            if let Ok(l) = letibot_code::Language::of_path(&e.path)
+                && !languages.contains(&l.name())
+            {
+                languages.push(l.name());
+            }
+            let (text, _) = text_of(&bytes);
+            // One scan of the whole buffer rather than one engine call per line. The
+            // semantics are identical -- `line_hits` confirms every candidate against
+            // the line-scoped program -- and the measurement is the whole reason the
+            // matcher was replaced.
+            let remaining = max - hits.len();
+            let path = e.path.clone();
+            // Only when asked: collecting a file's lines is cheap but not free, and
+            // the common call passes no context at all.
+            let file_lines: Vec<&str> = if context > 0 {
+                text.lines().collect()
             } else {
                 Vec::new()
             };
-            hits.push(Hit {
-                path: path.clone(),
-                line_no,
-                line: line.to_string(),
-                region,
+            let truncated = pattern.line_hits(&text, remaining, |line_no, line| {
+                let region = if context > 0 {
+                    let first = line_no.saturating_sub(context).max(1);
+                    let last = (line_no + context).min(file_lines.len());
+                    (first..=last)
+                        .map(|n| (n, file_lines[n - 1].to_string()))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                hits.push(Hit {
+                    path: path.clone(),
+                    line_no,
+                    line: line.to_string(),
+                    region,
+                });
             });
-        });
-        if truncated {
-            return Scan {
-                hits,
-                scanned,
-                truncated: true,
-                skipped_large,
-                unreached,
-                languages,
-            };
+            if truncated {
+                return Scan {
+                    hits,
+                    scanned,
+                    truncated: true,
+                    skipped_large,
+                    unreached,
+                    languages,
+                };
+            }
         }
     }
     Scan {
@@ -1014,5 +1074,243 @@ mod context_tests {
             .render();
         assert!(r.contains("parse_args"), "{r}");
         assert!(r.lines().count() < 200, "a match returned the world:\n{r}");
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use letibot_transcript::ToolCall;
+
+    use crate::backend::{
+        BackendError, Command, DirEntry, ExecBackend, HostBackend, Output, tempdir::TempDir,
+    };
+    use crate::builtins::retrieval::Unavailable;
+    use crate::events::RecordingToolSink;
+    use crate::runtime::ToolRuntime;
+
+    /// **A repository-sized candidate list**, because the defect is about the count of
+    /// round trips and a four-file fixture cannot show it.
+    const FILES: usize = 200;
+
+    /// The file that matches, so the ladder stops at the rung the model asked for and
+    /// the call count measures the search rather than three relaxations of it.
+    const HIT: usize = 7;
+
+    fn tree(dir: &std::path::Path) {
+        for i in 0..FILES {
+            let body = if i == HIT {
+                format!("first line\nneedle_here on line two of {i}\nthird line\n")
+            } else {
+                format!("filler {i}\nnothing to see here\n")
+            };
+            std::fs::write(dir.join(format!("f{i:03}.txt")), body).expect("fixture file");
+        }
+    }
+
+    #[derive(Default)]
+    struct Counts {
+        /// How many times the backend was asked for ONE file.
+        reads: AtomicUsize,
+        /// How many times it was asked for a PAGE.
+        batches: AtomicUsize,
+    }
+
+    /// **A backend over a real tree that counts how it was asked**, and can be told to
+    /// behave like a substrate whose `read` is a round trip (`batched`), to lose one
+    /// file inside a page (`vanish`), or to fail the batch call itself (`fail`).
+    struct Counting {
+        inner: HostBackend,
+        batched: bool,
+        vanish: Option<String>,
+        fail: bool,
+        counts: Arc<Counts>,
+    }
+
+    impl ExecBackend for Counting {
+        fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
+            self.inner.run(cmd)
+        }
+        fn read(&self, path: &str) -> Result<Vec<u8>, BackendError> {
+            self.counts.reads.fetch_add(1, Ordering::SeqCst);
+            self.inner.read(path)
+        }
+        fn write(&self, path: &str, bytes: &[u8]) -> Result<(), BackendError> {
+            self.inner.write(path, bytes)
+        }
+        fn list(&self, path: &str) -> Result<Vec<DirEntry>, BackendError> {
+            self.inner.list(path)
+        }
+        fn stat(&self, path: &str) -> Option<DirEntry> {
+            self.inner.stat(path)
+        }
+        fn describe(&self) -> String {
+            self.inner.describe()
+        }
+        fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+            None
+        }
+        fn read_many(
+            &self,
+            paths: &[&str],
+        ) -> Result<Vec<Result<Vec<u8>, BackendError>>, BackendError> {
+            if !self.batched {
+                // The trait's default, spelled out: one `read` per path.
+                return Ok(paths.iter().map(|p| self.read(p)).collect());
+            }
+            self.counts.batches.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(BackendError::Io("the VM went away mid-page".into()));
+            }
+            Ok(paths
+                .iter()
+                .map(|p| match &self.vanish {
+                    // A candidate the walk listed and the read no longer finds.
+                    Some(v) if v == p => Err(BackendError::NotFound((*p).to_string())),
+                    _ => self.inner.read(p),
+                })
+                .collect())
+        }
+    }
+
+    /// One `grep` call over the tree, and the counts it cost.
+    fn grep_over(
+        batched: bool,
+        vanish: Option<usize>,
+        fail: bool,
+        args: &str,
+    ) -> (String, usize, usize) {
+        let dir = TempDir::new();
+        tree(dir.path());
+        let counts = Arc::new(Counts::default());
+        let backend = Counting {
+            inner: HostBackend::new(dir.path()).expect("fixture root"),
+            batched,
+            vanish: vanish.map(|i| format!("f{i:03}.txt")),
+            fail,
+            counts: Arc::clone(&counts),
+        };
+        let registry = crate::read_only_tools(Arc::new(Unavailable)).expect("built-ins register");
+        let rt = ToolRuntime::new(registry, Box::new(backend));
+        let mut sink = RecordingToolSink::new();
+        let call = ToolCall {
+            id: "call_1".into(),
+            name: "grep".into(),
+            arguments: args.to_string(),
+        };
+        let rendered = rt.invoke("turn_1", &call, &mut sink).render();
+        (
+            rendered,
+            counts.reads.load(Ordering::SeqCst),
+            counts.batches.load(Ordering::SeqCst),
+        )
+    }
+
+    const ASK: &str = r#"{"pattern":"needle_here"}"#;
+
+    /// **The measurement this whole seam exists for**: a repository-sized candidate
+    /// list costs one round trip per FILE without the batched read and one per PAGE
+    /// with it — 200 files, 64 a page.
+    ///
+    /// Both numbers are asserted, because either alone proves nothing: 0 batch calls
+    /// is what a backend that ignored the seam looks like, and 200 reads with 4 batches
+    /// would be a paging loop that still went back for every file.
+    #[test]
+    fn a_page_of_files_is_one_call_and_a_file_is_one_call() {
+        let (one_at_a_time, reads, batches) = grep_over(false, None, false, ASK);
+        assert_eq!(
+            (reads, batches),
+            (FILES, 0),
+            "one `read` per candidate file, and no page asked for"
+        );
+        assert!(
+            one_at_a_time.contains("needle_here"),
+            "the search found nothing to compare:\n{one_at_a_time}"
+        );
+
+        let (paged, reads, batches) = grep_over(true, None, false, ASK);
+        let pages = FILES.div_ceil(super::READ_PAGE_FILES);
+        assert_eq!(
+            (reads, batches),
+            (0, pages),
+            "one call per page of {} files ({FILES} files, {pages} pages) and none per file",
+            super::READ_PAGE_FILES
+        );
+        assert_eq!(
+            paged, one_at_a_time,
+            "the paged search and the one-at-a-time search must render the same result"
+        );
+    }
+
+    /// **A page's batch call failing loses no match**: the page is retried one file at
+    /// a time, and the result is the one the per-file path produced.
+    #[test]
+    fn a_failed_page_falls_back_to_one_file_at_a_time() {
+        let (reference, _, _) = grep_over(false, None, false, ASK);
+        let (fell_back, reads, batches) = grep_over(true, None, true, ASK);
+        assert_eq!(fell_back, reference, "the fallback lost or changed a match");
+        assert_eq!(batches, FILES.div_ceil(super::READ_PAGE_FILES));
+        assert_eq!(
+            reads, FILES,
+            "every file was re-read one at a time after the page failed"
+        );
+    }
+
+    /// **How the files were read cannot be told from the answer** — the whole result,
+    /// rendered, is the same either way for every shape the tool has: a plain hit, a
+    /// hit with `context`, a `glob` that keeps a handful of the candidates, a cap that
+    /// truncates mid-tree, and a term that is nowhere (which climbs the ladder and
+    /// searches the tree more than once).
+    ///
+    /// This is the assertion the package asked for — *byte-identical to the current
+    /// behaviour* — and it is a test rather than an intention: every one of these goes
+    /// through the same paging loop, so a page boundary that changed the ordering, the
+    /// caps or the truncation would show up here as a diff.
+    #[test]
+    fn the_answer_does_not_depend_on_how_the_files_were_read() {
+        let shapes = [
+            ASK,
+            r#"{"pattern":"needle_here","context":2}"#,
+            r#"{"pattern":"line","glob":"f00*.txt"}"#,
+            r#"{"pattern":"filler","max_matches":3}"#,
+            r#"{"pattern":"quokka_sentinel"}"#,
+        ];
+        for args in shapes {
+            let (one_at_a_time, _, _) = grep_over(false, None, false, args);
+            let (paged, _, _) = grep_over(true, None, false, args);
+            assert_eq!(
+                paged, one_at_a_time,
+                "the paged search answered differently for {args}"
+            );
+        }
+    }
+
+    /// **A file that is gone is skipped, exactly as it was**: the rest of the page's
+    /// matches still come back, and nothing says the search failed.
+    #[test]
+    fn a_file_that_vanished_inside_a_page_is_skipped_and_not_the_page() {
+        let (reference, _, _) = grep_over(false, None, false, ASK);
+        // The matching file is the one that vanished: the answer is the honest miss,
+        // not an error, and not a hit from a page that gave up.
+        let (gone_hit, _, _) = grep_over(true, Some(HIT), false, ASK);
+        assert!(
+            !gone_hit.contains("needle_here on line two"),
+            "a file that could not be read was searched anyway:\n{gone_hit}"
+        );
+        // And the miss is honest about its denominator: 199 files were opened, not 200,
+        // so the file the page could not read is not claimed as searched. This is the
+        // per-file path's own behaviour — an unreadable candidate never counted.
+        assert!(
+            gone_hit.contains("199 file(s)"),
+            "an unreadable candidate was counted as searched:\n{gone_hit}"
+        );
+        // And a file that vanishes AROUND the hit does not cost the hit.
+        let (other_gone, _, _) = grep_over(true, Some(0), false, ASK);
+        assert_eq!(
+            other_gone, reference,
+            "an unreadable neighbour changed the answer"
+        );
     }
 }
