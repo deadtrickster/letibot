@@ -66,7 +66,10 @@
 //! A poll that is not answered is therefore **retried, not a verdict**: the question is idempotent
 //! (its answer is `tail -c +<offset>`, so nothing is lost by asking again) and a miss says nothing
 //! about the code. What ends a step is its own deadline, or a poll that reaches no machine at all
-//! — which is the breaker's judgement, not this module's guess.
+//! — which is the breaker's judgement, not this module's guess. Three missed polls in a row are
+//! ninety seconds of a machine that will not fork a shell, and that is where the breaker
+//! ([`letibot_tools::rpc::BREAKER_THRESHOLD`]) stops answering: the step is then UNJUDGED — a
+//! retry, never a red branch.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -77,8 +80,8 @@ use letibot_tools::remote::{Hosts, Paths, Ssh, expand_root};
 use letibot_tools::rpc;
 
 use super::gate::{
-    Done, GateControl, GateRun, GateVerdict, StepEnd, StepExit, StepMemory, assemble, judge,
-    now_ms, read_tail, tempfile_in,
+    Done, GateControl, GateRun, GateVerdict, StepEnd, StepExit, StepMemory, assemble, clause_of,
+    judge, now_ms, read_tail, tempfile_in,
 };
 use super::git;
 
@@ -123,7 +126,7 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     };
     let mut cost = Cost::default();
     if let Err(why) = remote.prepare(ctl, &mut cost) {
-        return infra(steps, format!("{why}{}", cost.said(&remote)));
+        return infra(steps, format!("{why}{}", cost.said(&remote, ctl.budget)));
     }
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
     for step in steps {
@@ -152,7 +155,7 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     // transport and a build cache that are nobody's code, and a reader looking at a row that says
     // *twenty minutes* has to be able to see which of the two it was.
     if let Some(first) = done.first_mut() {
-        let note = cost.line(&remote);
+        let note = cost.line(&remote, ctl.budget);
         first.judged.output = if first.judged.output.is_empty() {
             note
         } else {
@@ -573,6 +576,7 @@ impl Remote {
         // run*. What a miss says is *the machine was busy*; what ends a step is its own deadline.
         let mut missed: u32 = 0;
         let mut last_miss = String::new();
+        let mut last_within = POLL_BOUND;
         loop {
             if Instant::now() >= ctl.deadline {
                 self.kill(n);
@@ -580,6 +584,7 @@ impl Remote {
                     read_tail(log),
                     missed,
                     &last_miss,
+                    last_within,
                 ));
             }
             if ctl.stop.load(Ordering::Relaxed) {
@@ -599,6 +604,7 @@ impl Remote {
             // A poll never outlives the gate: the last one before the deadline is bounded by what
             // is left of it, so the verdict arrives when the deadline says and not a bound later.
             let within = POLL_BOUND.min(ctl.deadline.saturating_duration_since(Instant::now()));
+            last_within = within;
             match self.poll(n, offset, within) {
                 Ok(poll) => {
                     missed = 0;
@@ -745,7 +751,11 @@ struct Cost {
 
 impl Cost {
     /// One line for the gate's log: what arrived, how long it took, and what the host had room for.
-    fn line(&self, r: &Remote) -> String {
+    ///
+    /// `budget` is the gate's own `[queue]` `gate_deadline`, said beside the transport so a reader
+    /// can tell *the tree took two seconds of a half hour* from *the tree took most of it* — a
+    /// first gate on a host pays the transport out of the same clock its steps run on.
+    fn line(&self, r: &Remote, budget: Duration) -> String {
         let at = |v: Option<u64>| match v {
             Some(ms) => format!("{:.2} s", ms as f64 / 1000.0),
             None => "not reached".to_string(),
@@ -757,23 +767,24 @@ impl Cost {
             "warm"
         };
         format!(
-            "[gate on {}: the repository {}, the checkout {}, the tree {} — {:.2} s of transport; \
-             build cache {cache}; {}]",
+            "[gate on {}: the repository {}, the checkout {}, the tree {} — {:.2} s of transport \
+             out of the gate's {}; build cache {cache}; {}]",
             r.name,
             at(self.repo_ms),
             at(self.checkout_ms),
             at(self.tree_ms),
             transport as f64 / 1000.0,
+            clause_of(budget),
             free_words(r.free_kb),
         )
     }
 
     /// The same line as a paragraph on a failure, or nothing at all when no phase was measured.
-    fn said(&self, r: &Remote) -> String {
+    fn said(&self, r: &Remote, budget: Duration) -> String {
         if self.repo_ms.is_none() && self.checkout_ms.is_none() && self.tree_ms.is_none() {
             return String::new();
         }
-        format!("\n\n{}", self.line(r))
+        format!("\n\n{}", self.line(r, budget))
     }
 }
 
@@ -781,7 +792,10 @@ impl Cost {
 fn free_words(kb: Option<u64>) -> String {
     match kb {
         Some(kb) if kb >= 1024 * 1024 => {
-            format!("{:.1} GiB free on that filesystem", kb as f64 / (1024.0 * 1024.0))
+            format!(
+                "{:.1} GiB free on that filesystem",
+                kb as f64 / (1024.0 * 1024.0)
+            )
         }
         Some(kb) => format!("{:.1} MiB free on that filesystem", kb as f64 / 1024.0),
         None => "free space unknown there".to_string(),
@@ -790,14 +804,19 @@ fn free_words(kb: Option<u64>) -> String {
 
 /// **The step's tail, and what the gate was doing when its deadline came** — a verdict has to say
 /// that the last minutes of it were spent asking a question nobody answered.
-fn said_with_misses(tail: String, missed: u32, last: &str) -> String {
+///
+/// `bound` is the bound the LAST poll was given, which is [`POLL_BOUND`] or what was left of the
+/// gate when it was asked — the sentence names the clock that actually ran out, because *not
+/// answered within 30 s* and *not answered within the last 4 s of the gate* are different facts
+/// about a machine.
+fn said_with_misses(tail: String, missed: u32, last: &str, bound: Duration) -> String {
     if missed == 0 {
         return tail;
     }
     format!(
         "{tail}\n\n[gate: {missed} poll(s) in a row were not answered within {} s while this step \
          ran — the last said: {last}]",
-        POLL_BOUND.as_secs()
+        bound.as_secs()
     )
 }
 
@@ -1019,6 +1038,9 @@ fn tail(text: &str, cap: usize) -> String {
 // One bounded call
 // ---------------------------------------------------------------------------------------------
 
+/// One bounded call's answer, as the far side gave it — `Debug` because a test that expects a miss
+/// prints the answer it got instead, and a panic saying `Answer` is not much of a sentence.
+#[derive(Debug)]
 struct Answer {
     out: Vec<u8>,
     err: Vec<u8>,
@@ -1071,7 +1093,8 @@ fn run(
     let pass = rpc::before(host).map_err(|why| Missed::gone(format!("{what}: {why}")))?;
     let began = Instant::now();
     let ended = {
-        let _slot = rpc::enter(host, within).map_err(|why| Missed::slow(format!("{what}: {why}")))?;
+        let _slot =
+            rpc::enter(host, within).map_err(|why| Missed::slow(format!("{what}: {why}")))?;
         match fed {
             Some(bytes) => rpc::run_bounded_fed(program, argv, within, bytes),
             None => rpc::run_bounded(program, argv, within),

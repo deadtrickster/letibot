@@ -388,6 +388,9 @@ fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold(
     assert!(note.contains("the repository "), "{note}");
     assert!(note.contains("the checkout "), "{note}");
     assert!(note.contains("the tree "), "{note}");
+    // The transport is said beside the budget it is paid out of, so *two seconds* reads as cheap
+    // and not as *most of the gate* — this rig gives the gate two minutes.
+    assert!(note.contains("out of the gate's 2 min"), "{note}");
     assert!(note.contains("build cache COLD"), "{note}");
     assert!(!note.contains("not reached"), "{note}");
     // The second gate reuses the cache it made, and the note says so rather than claiming another

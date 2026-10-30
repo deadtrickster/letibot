@@ -1350,14 +1350,68 @@ And **the poll is a second**: a step that finishes in 146 ms reports as ~0.8 s i
 gate learns it finished at the next poll — the same order as the local gate's 100 ms, one machine
 further away.
 
-### The deadline, and a host that cannot be reached
+**The gate says where the time went, on its first row.** Every gate writes one line into the first
+step's log, so a row that says *thirty-seven seconds* is not read as a slow machine:
+
+```text
+[gate on lab2x1: the repository 1.28 s, the checkout 0.15 s, the tree 0.14 s — 1.42 s of transport
+ out of the gate's 30 min; build cache COLD — this gate made it, so the first step below pays for
+ the whole dependency tree; 209.7 GiB free on that filesystem]
+```
+
+Measured on lab2x1 on 2026-10-30 with this line in place, one step
+(`cargo build --offline --bins -p letibot-harnessd`), the gate's directory removed between the two
+runs:
+
+| | transport | the step | in all |
+|---|---|---|---|
+| **the first gate, nothing on the host** | 1.42 s (1.28 bundle, 0.15 checkout, 0.14 tree) | **35.7 s** (cold `target/`) | **37.5 s** |
+| **the second gate of the same tree** | 0.21 s (nothing to send) | 1.2 s (warm `target/`) | **2.0 s** |
+
+So a first gate on a host is **transport plus a cold build**, and the transport is four percent of
+it. `COLD` in that line is asked of the host *before* the gate's own `mkdir` touches `target/`, so
+it says whether THIS gate makes the cache rather than guessing from a size.
+
+### Two clocks, and a host that cannot be reached
+
+A gate on a host is under **two** bounds and they are not the same number, which cost the queue a
+halt on 2026-10-30:
+
+* **The step's** — `[queue]`'s `gate_deadline`, thirty minutes unless set. It is the only thing that
+  may end a step, and a first gate on a host needs all of it.
+* **One poll's** — `POLL_BOUND`, thirty seconds. It asks *can this machine fork a shell and answer*,
+  and on a box whose own build holds every core the answer can take many seconds.
+
+The first real gate on `lab2x1` ran `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace` on 25 of
+its 32 cores; one poll took longer than the **ten** seconds a poll was then allowed, and a step four
+minutes in was killed and reported as *the gate could not run* — which wrote the target `blocked`
+and stopped both queues behind a healthy host.
+
+So **a poll that is not answered is asked again, not a verdict.** The question is idempotent (its
+answer is `tail -c +<offset>`, so nothing is lost by asking twice), a miss says *the machine was
+busy*, and only the step's own deadline — or a poll that reaches no machine at all, which is the
+breaker's judgement — may end a step. A verdict that does time out names the budget it ran out of
+(`the gate's own deadline passed (30 min)`), and a step whose last minutes were spent asking a
+question nobody answered says so, with the bound the last poll was given.
+
+**A gate that could not run is not a verdict about the code.** `GateVerdict::Infra` — a host that
+did not answer, a key that is not installed, a tree that would not arrive — writes the target back
+to **`gating`** with the sentence that stopped it, and the tip is gated again by itself once a
+minute has passed (`UNJUDGED_RETRY_MS`). It is *not* `blocked`: `blocked` is for a tip nobody can
+judge at all (no declared `Merge gate`, a landing tree that cannot be made) and it stops both
+queues. A branch whose own landing gate could not run goes back in line the same way and with the
+same window, so a host that is down costs the queue a minute per attempt rather than a `/queue
+restart`. The window is there because the worker's pass loop goes again at once when it worked:
+without it, a broken `gate_host` would be one ssh attempt per second, for ever. The one `Infra` that
+stays `blocked` is a step killed at the gate's memory cap — that step RAN, so re-running it with the
+same cap kills it the same way.
 
 Every call is bounded by `rpc::run_bounded` and goes through the same breaker (`rpc::before`) the
 rest of the fleet path uses, so **a host that is down is a verdict in the first second**, not a
 hang: `GateVerdict::Infra` with a sentence — *"… did not reach lab2x1: ssh exited 255, which is a
 connection or authentication failure and never a remote command's own status — Connection refused.
-Nothing was judged — the tip is UNJUDGED, not red"* — which the queue writes as `blocked`, and the
-next pass gates it again when the host is back.
+Nothing was judged — the tip is UNJUDGED, not red"* — and the next pass gates it again when the
+host is back.
 
 Each step is started **detached, under `setsid`, with a pid file**, and polled once a second: one
 round trip answers both *how is it* and *what has it written since*, so the log arrives at the same

@@ -138,7 +138,24 @@ pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
 
 /// **`target_unjudged`** (R92.27): the gate could not be read, the landing tree could not be
 /// made ready, or a step could not run — nothing about the code was judged.
+///
+/// Two causes, and the sentence has to say which. A gate whose *setup* is broken waits for
+/// somebody to fix it, so the verb is `/queue regate`. A gate that could not run **on a declared
+/// host** (`UNJUDGED_RETRY`) is the queue's own retry: it is gated again by itself once the window
+/// is out, and telling a model to regate a slow machine would be asking it to do the queue's work.
 pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
+    if h.evidence.starts_with(super::serve::UNJUDGED_RETRY) {
+        return format!(
+            "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing was judged about the code and the \
+             queue is NOT halted by it — it is gated again by itself on a later pass, so there is \
+             nothing to do; `/queue regate {}` only makes that sooner.",
+            h.target,
+            h.sha,
+            key,
+            first_line(&h.evidence),
+            h.target
+        );
+    }
     format!(
         "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until it is gated again — \
          once the cause is gone, `/queue regate {}`.",

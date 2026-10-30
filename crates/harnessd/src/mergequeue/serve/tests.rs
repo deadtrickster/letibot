@@ -2411,19 +2411,13 @@ struct CouldNotRunGate {
 impl CouldNotRunGate {
     fn new() -> (CouldNotRunGate, Arc<std::sync::atomic::AtomicUsize>) {
         let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        (
-            CouldNotRunGate {
-                runs: runs.clone(),
-            },
-            runs,
-        )
+        (CouldNotRunGate { runs: runs.clone() }, runs)
     }
 }
 
 impl GateRunner for CouldNotRunGate {
     fn run(&self, _wt: &Path, steps: &[String], _ctl: &GateControl) -> GateRun {
-        self.runs
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.runs.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         GateRun {
             steps: steps
                 .iter()
@@ -2527,7 +2521,11 @@ fn a_landing_gate_that_could_not_run_goes_back_in_line_and_waits() {
     let row = w.store().merge_row(&m).unwrap().unwrap();
     assert_eq!(row.state, MergeState::Queued, "{row:?}");
     assert!(row.evidence.starts_with(UNJUDGED_RETRY), "{}", row.evidence);
-    assert!(row.evidence.contains("goes back in line"), "{}", row.evidence);
+    assert!(
+        row.evidence.contains("goes back in line"),
+        "{}",
+        row.evidence
+    );
     let attempts = runs.load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(attempts, 1, "one attempt, then the window");
     run(&q, 2);

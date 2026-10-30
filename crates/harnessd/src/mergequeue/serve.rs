@@ -2326,14 +2326,23 @@ impl RepoQueue {
                 // **The branch was not judged, and nothing about it is in doubt** — so it goes back
                 // in line rather than being parked `blocked` behind a host that was slow to
                 // answer. `land_next` keeps it out of the next passes until its window is out.
-                self.raise(
-                    "queue_blocked",
-                    format!(
-                        "`{}` was not judged: {w}. Nothing lands until its gate can run, and it \
-                         goes back in line and is gated again",
-                        row.branch
-                    ),
-                );
+                //
+                // Said ONCE per row and tip, not once per attempt: the window re-gates the row
+                // every minute, and a host down for an hour must not be sixty identical warnings.
+                let once = self.first_time(&format!(
+                    "unjudged:{}:{}:{}",
+                    self.key, row.id, row.approved_sha
+                ))?;
+                if once {
+                    self.raise(
+                        "queue_blocked",
+                        format!(
+                            "`{}` was not judged: {w}. Nothing lands until its gate can run, and it \
+                             goes back in line and is gated again",
+                            row.branch
+                        ),
+                    );
+                }
                 self.gating_to(
                     row,
                     MergeState::Queued,

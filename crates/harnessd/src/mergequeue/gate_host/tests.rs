@@ -394,6 +394,66 @@ fn an_unreachable_host_is_a_sentence_about_the_machine() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A call that ran out of this box's clock is asked again; a call that never started is not** —
+/// the distinction the whole host gate now rests on, as a value.
+///
+/// A poll that is not answered in time says *the machine was busy forking a shell*, and the answer
+/// it will give is still true when it comes, so it is [`Missed::slow`] and the step goes on. A call
+/// that could not be started says nothing will ever answer, so it is [`Missed::gone`] and the step
+/// is UNJUDGED. Reading the first as the second is what killed a four-minute step on lab2x1 and
+/// halted the queue on 2026-10-30.
+#[test]
+fn a_call_that_ran_out_of_the_clock_is_slow_and_one_that_never_started_is_gone() {
+    let slow = run(
+        "asking how `lab` is doing",
+        "unit-gate-slow-clock",
+        Path::new("/bin/sleep"),
+        &["5".to_string()],
+        Duration::from_secs(1),
+        None,
+        false,
+    )
+    .expect_err("a sleep that outlives its bound is a miss");
+    assert!(!slow.unreached, "the clock, not the machine: {}", slow.why);
+    assert!(
+        slow.why.contains("did not answer within 1 s"),
+        "{}",
+        slow.why
+    );
+    let gone = run(
+        "asking how `lab` is doing",
+        "unit-gate-gone-clock",
+        Path::new("/nonexistent/ssh"),
+        &[],
+        Duration::from_secs(1),
+        None,
+        false,
+    )
+    .expect_err("a program that is not there is a miss");
+    assert!(gone.unreached, "nothing will ever answer: {}", gone.why);
+}
+
+/// **The sentence a deadline carries names the bound the last poll was given** — the last poll
+/// before a gate's deadline is bounded by what is left of it, and a verdict that says *not answered
+/// within 30 s* about a poll that was given four is a sentence about the wrong clock.
+#[test]
+fn the_deadline_sentence_names_the_bound_the_last_poll_was_given() {
+    let quiet = said_with_misses("the tail".into(), 0, "never", POLL_BOUND);
+    assert_eq!(
+        quiet, "the tail",
+        "a step whose polls all answered says nothing"
+    );
+    let said = said_with_misses(
+        "the tail".into(),
+        3,
+        "asking how `lab` is doing did not answer within 4 s",
+        Duration::from_secs(4),
+    );
+    assert!(said.starts_with("the tail\n\n[gate: 3 poll(s)"), "{said}");
+    assert!(said.contains("not answered within 4 s"), "{said}");
+    assert!(said.contains("did not answer within 4 s"), "{said}");
+}
+
 /// The directory one repository gets on a host is the one it gets on this box.
 #[test]
 fn the_host_directory_is_named_like_the_landing_directory() {
