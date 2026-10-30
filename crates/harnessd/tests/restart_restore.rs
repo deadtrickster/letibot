@@ -1085,7 +1085,15 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     assert!(!notice.contains("Nothing above is running now"), "{notice}");
     assert!(warnings(&d.hub(), "restart_reminded").is_empty());
     assert!(warnings(&d.hub(), "restart_restored").is_empty());
-    assert_eq!(warnings(&d.hub(), "restart_nothing").len(), 1);
+    assert!(
+        warnings(&d.hub(), "restart_nothing").is_empty(),
+        "one line, and it is the row"
+    );
+    assert!(
+        user_rows(&d.hub()).iter().any(|r| r.contains("nothing was running")),
+        "the row says it: {:?}",
+        user_rows(&d.hub())
+    );
     let store = Store::open(&dir.store()).unwrap();
     for h in ["j900", "j610", "j624", "j2437"] {
         assert_eq!(job_state(&store, h), "lost at restart", "{h}");
@@ -1572,7 +1580,18 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         letibot_harnessd::restart::span(Duration::from_millis(back.saturating_sub(stopped))),
         letibot_harnessd::subagent_record::utc(stopped)
     );
-    assert_eq!(warnings(&hub, "restart_nothing"), vec![sentence.clone()]);
+    // **One line, and it is the row.** The sentence used to be published as a card *and* written
+    // as a row, which drew one restart twice (the operator: *"i need only one restart
+    // notification"*); the row is the copy both readers can use, so the card is gone.
+    assert!(
+        warnings(&hub, "restart_nothing").is_empty(),
+        "no card: the row is the line"
+    );
+    assert!(
+        user_rows(&hub).iter().any(|r| r == &sentence),
+        "the whole sentence, as a row: {:?}",
+        user_rows(&hub)
+    );
     assert!(warnings(&hub, "restart_restored").is_empty());
     assert!(warnings(&hub, "restart_reminded").is_empty());
 

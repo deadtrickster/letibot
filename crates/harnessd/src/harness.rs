@@ -11940,14 +11940,12 @@ impl Harness {
             crate::restart::Outcome::Nothing,
         );
         eprintln!("  {sid} · restart: nothing was running — {text}");
-        self.hub.publish(SessionEvent::Warning {
-            code: crate::restart::Outcome::Nothing.code().into(),
-            detail: crate::restart::warning_detail(&text, &[]),
-            compaction: None,
-        });
+        // **One line, not two.** The sentence is written as a transcript row
+        // ([`Harness::say_without_a_turn`]), which the person sees where the rest of the
+        // conversation is and the model reads at its next turn. Publishing it as a hub warning as
+        // well drew it twice for one restart — the operator: *"i need only one restart
+        // notification"* — and the row is the copy that both readers can use.
         if let Err(e) = self.say_without_a_turn(&text) {
-            // The operator's line is published above either way; a model that could not be told
-            // is said here rather than swallowed.
             eprintln!("  {sid} · restart: the notice was not recorded ({e})");
         }
         Some(text)

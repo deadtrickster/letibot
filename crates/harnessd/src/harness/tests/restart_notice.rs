@@ -53,6 +53,15 @@ fn opened_by_a_later_daemon(dir: &Scratch, id: &str) -> Option<Harness> {
     let gguf = crate::vocab_gguf()?;
     let path = dir.store();
     let store = Store::open(&path).expect("a store");
+    // **A daemon has to have stopped here.** The guard is a fact about the box rather than an
+    // inference from a session's creation time (a seeded session is older than this daemon while
+    // nothing restarted), so a fixture that wants the restart said must leave a stopped life.
+    store
+        .life_started("d-the-earlier-one", 1)
+        .expect("the earlier daemon began");
+    store
+        .life_stopped("d-the-earlier-one", 2)
+        .expect("the earlier daemon stopped");
     store
         .put_session(&SessionRecord {
             id: id.into(),
