@@ -872,57 +872,124 @@ pub fn follow_checkouts(repo: &Path, target: &str, old: &str, new: &str) -> Resu
 /// **What a push came to** — the row keeps the sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pushed {
-    /// Pushed to `origin`.
+    /// Pushed to `origin` — the sentence says whose credential answered.
     Yes(String),
     /// The repository has no `origin`: nothing to push to, which is the local case.
     NoRemote,
-    /// The push failed, in git's words.
+    /// The push failed: git's words, and whose credential was offered when it was `gh`'s.
     Failed(String),
+}
+
+/// The helper `gh` installs for git, named on the command line rather than inherited.
+const GH_HELPER: &str = "!gh auth git-credential";
+
+/// **The words git is given for one push**, and whether `gh`'s helper is among them.
+///
+/// Apart from [`push`] because the argv is the whole of *whose credential answers*, and a test can
+/// check it without a network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PushPlan {
+    /// After `git -C <repo>`: the `-c` words first, then `push`, the destination, the refspec.
+    args: Vec<String>,
+    /// True when `gh`'s helper is named — every sentence below is built from this.
+    gh: bool,
+}
+
+fn push_plan(url: &str, target: &str, sha: &str, gh_logged_in: bool) -> PushPlan {
+    let refspec = format!("{sha}:refs/heads/{target}");
+    match github_https(url).filter(|_| gh_logged_in) {
+        // **The empty `helper=` first, or the named one is never asked**: `credential.helper` is a
+        // list, and a configured helper earlier in it answers first. An empty value resets it.
+        Some(https) => PushPlan {
+            args: vec![
+                "-c".into(),
+                "credential.helper=".into(),
+                "-c".into(),
+                format!("credential.helper={GH_HELPER}"),
+                "push".into(),
+                https,
+                refspec,
+            ],
+            gh: true,
+        },
+        None => PushPlan {
+            args: vec!["push".into(), "origin".into(), refspec],
+            gh: false,
+        },
+    }
+}
+
+/// The row's sentence for a push that happened — which way it went, and whose credential answered.
+fn pushed_said(sha: &str, target: &str, plan: &PushPlan) -> String {
+    if plan.gh {
+        format!(
+            "pushed {sha} to origin/{target} over https on gh's credential (`{GH_HELPER}`, \
+             inherited helpers cleared)"
+        )
+    } else {
+        format!("pushed {sha} to origin/{target} on whatever credential git's own config holds")
+    }
+}
+
+/// The row's sentence for a push that was refused: git's own words, plus — when `gh` answered —
+/// that it did, so *no access for this account* is not read as *no credential at all*.
+fn failed_said(e: &str, plan: &PushPlan) -> String {
+    if plan.gh {
+        format!(
+            "{e} — the credential offered was gh's (`{GH_HELPER}`, inherited helpers cleared), so \
+             this refusal is about the account gh is logged in as, not a missing credential"
+        )
+    } else {
+        e.to_string()
+    }
 }
 
 /// **Push `sha` to `origin`'s `target`** — a fast-forward or a refusal, never a force.
 ///
-/// **A GitHub remote is pushed over https, on `gh`'s credential**, when `gh` is installed and
-/// authenticated: this box has no ssh key for github (`git push origin` answers
-/// `git@github.com: Permission denied (publickey)`) while `gh auth git-credential` is what
-/// serves https. MEASURED 2026-10-28: every landing's push failed that way and
-/// `install-gate-build` was skipped with it (decision 7: nothing is installed that is not where
-/// it was pushed), while the operator's own `gh` pushes kept the remote current. The operator's
-/// rule: *"if gh is authenticated then for github remotes we must use it, not raw git"*.
-/// Another remote, or a `gh` that is not logged in, keeps the old `origin` push and its own
-/// failure message — a credential is not assumed.
+/// **Every GitHub remote is pushed on `gh`'s credential, by name, whenever `gh` is logged in** —
+/// both spellings of the remote, and an https one included. MEASURED 2026-10-28: this box has no
+/// ssh key for github (`git@github.com: Permission denied (publickey)`) while `gh` is
+/// authenticated, so every landing's push failed and `install-gate-build` was skipped with it
+/// (decision 7: nothing is installed that is not where it was pushed). The operator's rule:
+/// *"if gh is allowed and authenticated it must be used for github"*.
+///
+/// An https remote is not evidence that `gh` answers it: what answers is whatever
+/// `credential.helper` git's config holds (osxkeychain, a stale token, another account) — MEASURED
+/// on the operator's Mac, where a control run without the clearing word was answered by
+/// osxkeychain's token and the named helper was never called. So the helper is named and the
+/// inherited list cleared; the url stays https, which is what gh's helper answers for. Another
+/// remote, or a `gh` that is not logged in, keeps the old `origin` push and git's own failure.
 pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
     let Ok(url) = git(repo, &["remote", "get-url", "origin"]) else {
         return Pushed::NoRemote;
     };
-    let url = url.trim().to_string();
-    let (dest, how) = match github_https(&url).filter(|_| gh_authenticated()) {
-        Some(https) => (https, " over https, on `gh`'s credential"),
-        None => ("origin".to_string(), ""),
-    };
-    let refspec = format!("{sha}:refs/heads/{target}");
-    match git(repo, &["push", &dest, &refspec]) {
-        Ok(_) => Pushed::Yes(format!("pushed {sha} to origin/{target}{how}")),
-        Err(e) => Pushed::Failed(e),
+    let plan = push_plan(url.trim(), target, sha, gh_authenticated());
+    let args: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+    match git(repo, &args) {
+        Ok(_) => Pushed::Yes(pushed_said(sha, target, &plan)),
+        Err(e) => Pushed::Failed(failed_said(&e, &plan)),
     }
 }
 
-/// **The https url `gh`'s credential helper answers for**, when `url` is github's ssh form;
-/// `None` for anything else (an https url needs no translation, and another host is not ours).
+/// **The https url of a GitHub remote, whatever spelling it arrived in** — the form `gh`'s
+/// credential helper answers for. `None` for another host, or a url naming no repository.
 ///
-/// Both spellings matter: `git@github.com:owner/repo.git` is what a clone prints, and
-/// `ssh://git@github.com[:port]/owner/repo.git` is what a `--push` url or a forwarded agent
-/// sometimes writes. The path keeps its `.git` and gains one when it is missing, which is the
-/// form both GitHub and gh's helper are happy with.
+/// `git@github.com:owner/repo.git` is what a clone prints and `ssh://git@github.com[:port]/…` is
+/// what a `--push` url or a forwarded agent writes; both are translated, and an
+/// `https://github.com/…` url is already the answer and comes back as it stands (gaining `.git`
+/// when it is missing). Being https does NOT mean `gh` answers it — see [`push`].
 pub fn github_https(url: &str) -> Option<String> {
     let url = url.trim();
-    let (host, path) = if let Some(rest) = url.strip_prefix("git@") {
-        rest.split_once(':')?
-    } else if let Some(rest) = url.strip_prefix("ssh://") {
-        let rest = rest.split_once('@').map_or(rest, |(_, after)| after);
+    // A scheme separates host from path with `/`; scp's `git@host:path` with `:`.
+    let (with_scheme, rest) = match url.split_once("://") {
+        Some((_, after)) => (true, after),
+        None => (false, url.strip_prefix("git@")?),
+    };
+    let rest = rest.split_once('@').map_or(rest, |(_, after)| after);
+    let (host, path) = if with_scheme {
         rest.split_once('/')?
     } else {
-        return None;
+        rest.split_once(':')?
     };
     let host = host.split(':').next().unwrap_or(host);
     let path = path.trim_start_matches('/');
