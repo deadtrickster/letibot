@@ -19,7 +19,7 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+        .map_err(|e| format!("git {}: {e}", words(args)))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     } else {
@@ -27,8 +27,23 @@ pub fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         if msg.is_empty() {
             msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
         }
-        Err(format!("git {}: {msg}", args.join(" ")))
+        Err(format!("git {}: {msg}", words(args)))
     }
+}
+
+/// A command's words on one line — an argument holding a space is quoted, so a credential
+/// helper's `!gh auth git-credential` cannot read as three arguments in a failure message.
+fn words(args: &[&str]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.contains(' ') {
+                format!("'{a}'")
+            } else {
+                (*a).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The sha a revision names, or `None` when git cannot name it.

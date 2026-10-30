@@ -748,6 +748,15 @@ fn a_github_push_names_ghs_helper_and_clears_the_inherited_ones() {
         assert!(plan.gh, "{url}");
     }
 
+    // The failure row a person reads keeps the helper as ONE word, not three.
+    let plan = push_plan("git@github.com:o/r.git", "main", sha, true);
+    let rendered: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+    assert!(
+        words(&rendered).contains("-c 'credential.helper=!gh auth git-credential'"),
+        "{}",
+        words(&rendered)
+    );
+
     for (url, gh) in [
         ("git@github.com:o/r.git", false),
         ("https://github.com/o/r.git", false),
