@@ -107,12 +107,6 @@ impl App {
         }
     }
 
-    /// **Why nothing moved on a `mine` line** — the one sentence `enter`, `→`, `←` and a click
-    /// all answer with, so a row that cannot fold cannot come to say four different things.
-    pub(crate) fn say_mine_always_open(&mut self) {
-        self.say("mine is always open — the conversations you opened are what this list is for");
-    }
-
     /// Take a submitted line while the mode picker is up: a row number, or a
     /// mode name — exact, or a prefix only one mode shares.
     ///

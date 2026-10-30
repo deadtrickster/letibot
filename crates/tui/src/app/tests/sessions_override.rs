@@ -37,17 +37,37 @@ fn the_project_with_the_override() -> PathBuf {
     project
 }
 
-/// A daemon with a conversation of the operator's and a one-shot's leftovers — the two kinds the
-/// override treats differently.
+/// A daemon with a conversation of the operator's, a one-shot's leftovers and a package's — the
+/// kinds the tree draws as top-level sessions, beside the `system` branch the override hides.
 fn a_head_with_a_one_shot() -> App {
     let mut a = app();
     let mut shot = brief("s-shot", "one prompt, one answer", false);
     shot.origin = letibot_sessionlog::SessionOrigin::OneShot;
     let mut package = brief("s-pkg", "make me a landing page", false);
     package.origin = letibot_sessionlog::SessionOrigin::Package;
+    let mut reviewer = brief(
+        "s-gatekeeper-0123456789ab-sub-1",
+        "You are the gatekeeper. review it",
+        false,
+    );
+    reviewer.parent_session_id = Some(letibot_sessionlog::gatekeeper_session_for_key(
+        "0123456789ab",
+    ));
+    let mut queue = brief(
+        &letibot_sessionlog::gatekeeper_session_for_key("0123456789ab"),
+        "the review queue",
+        false,
+    );
+    queue.origin = letibot_sessionlog::SessionOrigin::Queue;
     a.apply(hello(
         "s-habr",
-        vec![brief("s-habr", "the habr article", false), shot, package],
+        vec![
+            brief("s-habr", "the habr article", false),
+            shot,
+            package,
+            queue,
+            reviewer,
+        ],
         Hub::new("s-habr").snapshot(),
     ));
     a.push_surface(Surface::Picker);
@@ -55,9 +75,9 @@ fn a_head_with_a_one_shot() -> App {
 }
 
 /// **The project's layer answers, above the built-in, and the drawing is the project's** — the
-/// group is renamed, its rows are gone, and every other row is the built-in's.
+/// `system` branch is renamed, its rows are gone, and every other row is the built-in's.
 #[test]
-fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
+fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
     let project = the_project_with_the_override();
     let mut stack = Stack::discover(
         None,
@@ -104,35 +124,26 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
         stack, workspace,
     ));
 
-    let drawn = a.picker_lines(100);
-    let text = drawn.join("\n");
+    // **The branch the project hid is not drawn** — and its legend is the project's own words,
+    // which is how a reader can tell the layer answered rather than the built-in.
+    let text = a.picker_lines(100).join("\n");
     assert!(
-        text.contains("leftovers (0)"),
-        "the project's name for the group:\n{text}"
+        text.contains("the harness's own (0)"),
+        "the project's name for the branch:\n{text}"
     );
     assert!(
-        text.contains("this project keeps no such rows on its list"),
+        text.contains("this project keeps no system agents on its list"),
         "and its own legend:\n{text}"
     );
     assert!(
-        !text.contains("one prompt, one answer"),
-        "the one-shot the project hid is not drawn:\n{text}"
+        !text.contains("reviewers ("),
+        "the rows the project hid are not drawn:\n{text}"
     );
-    // **Everything else is the built-in's**: the conversation, the other group, and the numbers.
+    // **Everything else is the built-in's**: the project's line and its conversations.
+    assert!(text.contains("letibot (5)"), "{text}");
     assert!(text.contains("the habr article"), "{text}");
-    assert!(text.contains("packages (1)"), "{text}");
 
-    // **And it still works as a list**: the numbers are the built-in's numbering less the hidden
-    // row, and Enter takes the session a number names.
-    // The package's own group opens like any other, and the row under it is still the built-in's.
-    a.set_row_fold("packages", true);
-    let drawn = a.picker_lines(100).join("\n");
-    assert!(
-        drawn.contains("make me a landing page"),
-        "the package's row is drawn once its group is open:\n{drawn}"
-    );
-    // **The cursor is a row, not a line**: the index `picker_sel` counts is the drawn LIST's
-    // stops, so it is found in that list rather than in the screen that draws it.
+    // **And it still works as a list**: Enter takes the session a number names.
     a.picker_sel = a
         .picker_rows()
         .iter()
@@ -140,15 +151,19 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
         .expect("the package's row");
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-pkg".into())));
 
-    // **And the hidden row is out of the numbering too**: a number is a place in the list that was
-    // drawn, so the package is `2` here — where the built-in would have numbered a one-shot `2`
-    // and the package `3`.
+    // **And the hidden rows are out of the numbering too**: a number is a place in the list that
+    // was drawn, so the three conversations are 1, 2 and 3.
     assert_eq!(
         a.pick("2"),
-        Some(Action::Switch("s-pkg".into())),
-        "the second session drawn is the package's conversation"
+        Some(Action::Switch("s-shot".into())),
+        "the second session drawn is the one-shot's conversation"
     );
-    assert_eq!(a.pick("3"), None, "and there is no third");
+    assert_eq!(
+        a.pick("3"),
+        Some(Action::Switch("s-pkg".into())),
+        "and the third is the package's"
+    );
+    assert_eq!(a.pick("4"), None, "and there is no fourth");
     std::fs::remove_dir_all(&project).ok();
 }
 
@@ -182,11 +197,11 @@ fn a_layer_that_uses_an_undeclared_act_falls_back() {
     ));
     let text = a.picker_lines(100).join("\n");
     assert!(
-        text.contains("one-shots (1)"),
+        text.contains("system (2)"),
         "the layer's view is refused, so the head's own list is drawn:\n{text}"
     );
     assert!(
-        !text.contains("leftovers (0)"),
+        !text.contains("the harness's own (0)"),
         "and the refused view is not what a person sees:\n{text}"
     );
     std::fs::remove_dir_all(&project).ok();

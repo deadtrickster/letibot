@@ -3,13 +3,7 @@
 
 use crate::app::*;
 use crate::ui::render::row_strings;
-use crate::ui::*;
-use letibot_sessionlog::registry::short_id;
-use rano::agent::picker::{
-    SessionGroup as PickGroup, SessionItem, SessionPicker, SessionRow as PickRow, SettingPicker,
-    SettingValue,
-};
-use rano::agent::tree_list::Fold;
+use rano::agent::picker::{SettingPicker, SettingValue};
 
 impl App {
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
@@ -29,12 +23,9 @@ impl App {
     /// session selected the third and every id line selected the next one (R67 item 2).
     pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
         // **The list is the plugin's when there is one** (`app::sessions_pane`, the built-in
-        // `sessions` layer); the head's own `SessionPicker` is the way out, and it draws exactly
-        // the rows and the frame this one does.
-        let content = match self.sessions_list(w) {
-            Some(list) => list.content,
-            None => self.session_picker().content(w),
-        };
+        // `sessions` layer); the head's own tree is the way out, and it draws through the same
+        // primitive with the same frame — one door, `App::picker_list`.
+        let content = self.picker_list(w).content;
         let stops = &content.stop_rows;
         let spans = stops
             .iter()
@@ -49,138 +40,6 @@ impl App {
             })
             .collect();
         (row_strings(&content.lines, self.cfg.palette()), spans)
-    }
-
-    /// **The session list's facts, in rano's words** — through the ONE enumeration
-    /// ([`App::session_rows`]): a sub-session indented under the conversation that spawned it,
-    /// a conversation with children carrying the fold every tree in this head uses (`-` open,
-    /// `+` folded), and the numbering rano's own.
-    ///
-    /// **A group's line is a [`SessionItem::Group`], not a session with an empty id.** It used
-    /// to be faked as one, and the fake cost the list its one honest sentence: the picker's
-    /// footer said *enter switches* over a row where Enter folds, because the footer was
-    /// written once for the list rather than read off the row the cursor is on. Group rows and
-    /// session rows now carry their own action, and rano's list draws whichever one the cursor
-    /// is on.
-    ///
-    /// **A number is the n-th SESSION**, which is rano's rule and the one
-    /// [`App::session_at_number`] reads: a group's line takes no number, because a number is
-    /// something you type to go somewhere.
-    pub(crate) fn session_picker(&self) -> SessionPicker {
-        let rows = self.session_rows();
-        let groups = self.session_groups();
-        // **The family view is one group by construction** — a head standing in a child draws the
-        // parent and its siblings, and none of them is grouped (`session_rows`). So the fold glyph
-        // there answers *has this row children* and the group filter below would answer *none*: a
-        // `+` over three rows that are on the screen.
-        let family = self.parent_session().is_some();
-        let kids_of = |id: &str| {
-            self.sessions
-                .iter()
-                .filter(|s| s.parent_session_id.as_deref() == Some(id))
-                .count()
-        };
-        SessionPicker {
-            rows: rows
-                .iter()
-                .map(|row| {
-                    // **A group's own line** — `subagents (14)`, its fold, and the legend
-                    // sentence under it. It is a stop like every other row (so the cursor, the
-                    // key and the drawing are one enumeration), and it has no session: `enter`
-                    // on it opens or closes the group, which is why it carries no id of one.
-                    let Some(i) = row.idx else {
-                        return SessionItem::Group(PickGroup {
-                            name: row.group.title().to_string(),
-                            // **The count is the group's own**, and it is the whole reason the
-                            // line exists: *fourteen subagents* is one number to read instead of
-                            // fourteen rows to scroll past.
-                            count: groups.iter().filter(|g| **g == row.group).count(),
-                            // **`mine` is never folded** — its rows are why the list is open —
-                            // and it says so in DATA (`Fold::Fixed`) rather than by claiming to
-                            // be open: a group written `open: true` was one rano drew a `-` on
-                            // and wrote *enter folds it away* about, on a row where Enter does
-                            // nothing. Every other group folds, and one this head is standing in
-                            // opens itself — `group_open`'s rule, the same rule `session_rows`
-                            // enumerated by.
-                            fold: if row.group.is_mine() {
-                                Fold::Fixed
-                            } else if self.group_open(row.group, &groups) {
-                                Fold::Open
-                            } else {
-                                Fold::Closed
-                            },
-                            // What the group IS, one line: the header is a word like `packages`
-                            // and a reader cannot be expected to know what a package is.
-                            note: row.group.legend().to_string(),
-                        });
-                    };
-                    let s = &self.sessions[i];
-                    // **The fold glyph is about the tree inside a group**, and only for a session
-                    // whose children are in the group it was drawn in: a child of another group's
-                    // conversation is drawn as a root here, and a `-` over it would promise rows
-                    // this list does not hold.
-                    let children = (kids_of(&s.session_id) > 0
-                        && (family
-                            || self.sessions.iter().enumerate().any(|(k, c)| {
-                                c.parent_session_id.as_deref() == Some(s.session_id.as_str())
-                                    && groups.get(k) == Some(&row.group)
-                            })))
-                    .then(|| {
-                        self.family_open(&s.session_id, row.depth)
-                            || self.expanded.iter().any(|e| *e == s.session_id)
-                    });
-                    let stored = s.stored_items as usize;
-                    SessionItem::Session(PickRow {
-                        depth: row.depth,
-                        // **A paused session says so on its row** (`/nag pause`): rano's row has
-                        // no field for it, and the name is the one cell every width keeps — so a
-                        // session whose board is silent on purpose is told from one whose clock
-                        // broke without attaching to it.
-                        name: {
-                            let name = if s.title.is_empty() {
-                                short_id(&s.session_id)
-                            } else {
-                                s.title.clone()
-                            };
-                            // **A subagent's name leads its row** — `fix-login · <its brief>` —
-                            // the slug its parent and its branch call it by.
-                            let name = if s.slug.trim().is_empty() {
-                                name
-                            } else {
-                                format!("{} · {name}", s.slug)
-                            };
-                            // **And a session waiting on YOU says so**, louder and first: a
-                            // person who is being waited on has to be able to see it from the
-                            // list, without attaching to every session to find out.
-                            let name = match s.waits_on_operator {
-                                0 => name,
-                                1 => format!("{name} · WAITING ON YOU"),
-                                n => format!("{name} · WAITING ON YOU ({n})"),
-                            };
-                            if s.nags_paused.is_some() {
-                                format!("{name} · nags paused")
-                            } else {
-                                name
-                            }
-                        },
-                        session_id: s.session_id.clone(),
-                        here: s.session_id == self.session_id,
-                        children,
-                        generating: s.status.running,
-                        live: s.live,
-                        rows: if stored > 0 { stored } else { s.status.items },
-                        heads: s.status.heads,
-                        model: s.wiring.model.clone(),
-                        workspace: if s.wiring.workspace.is_empty() {
-                            String::new()
-                        } else {
-                            self.tilde_path(&s.wiring.workspace)
-                        },
-                    })
-                })
-                .collect(),
-            selected: self.picker_sel,
-        }
     }
 
     /// **The setting card** — one renderer for every setting a reader chooses from (R38).

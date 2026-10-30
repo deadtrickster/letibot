@@ -3,9 +3,9 @@
 //!
 //! Copy this directory into `<project>/.letibot/plugins/sessions/` (the `plugin.wasm` beside this
 //! file is what the host loads; `cargo build --offline --release --target wasm32-unknown-unknown`
-//! rebuilds it) and open the session list: the `one-shots` group is renamed to `leftovers`, says
-//! what this project thinks of them, and stops listing them. Everything else — the order, the
-//! other groups, the rows, the numbers, the keys — is exactly what the built-in answered.
+//! rebuilds it) and open the session list: the `system` branch is renamed to `the harness's own`,
+//! says what this project thinks of it, and stops listing it. Everything else — the order, the
+//! projects, the rows, the numbers, the keys — is exactly what the built-in answered.
 //!
 //! # Why `below` is the whole point
 //!
@@ -24,13 +24,19 @@
 use letibot_guest_abi as abi;
 use serde_json::{Value, json};
 
-/// The group this project renames and empties, by the id the built-in gives it.
-const GROUP: &str = "one-shots";
+/// **The branch this project hides** — `system (N)`, the harness's own agents under a project.
+///
+/// Matched by the WORDS of its line rather than by its id, because the id is a path
+/// (`<project>/system`) and this layer is one project's: a constant id would be a constant path.
+const SYSTEM: &str = "system (";
 
 /// The name it is drawn under here, and the line that says why.
-const RENAMED: &str = "leftovers (0)";
-const LEGEND: &str =
-    "what a `--prompt` run left behind — this project keeps no such rows on its list";
+const RENAMED: &str = "the harness's own (0)";
+const LEGEND: &str = "this project keeps no system agents on its list";
+
+/// **The id the renamed line takes.** The host keys its fold state by id, so a rename that kept
+/// the old one would fold under a name nobody can see.
+const RENAMED_ID: &str = "no-system-agents";
 
 /// **One call**: the first time, ask below with the same request; the second time, edit.
 fn answer(bytes: &[u8]) -> Option<String> {
@@ -49,19 +55,23 @@ fn answer(bytes: &[u8]) -> Option<String> {
 /// different build of the built-in still moves through here unchanged, which is what keeps this
 /// example from being a fork.
 fn edit(mut view: Value) -> Option<Value> {
-    // The group's position, read before anything is written: a list this layer has no business
+    // The branch's position, read before anything is written: a list this layer has no business
     // with is answered back exactly as it arrived.
-    let Some(at) = rows(&view)?
-        .iter()
-        .position(|r| r.get("id").and_then(Value::as_str) == Some(GROUP))
-    else {
+    let Some(at) = rows(&view)?.iter().position(|r| {
+        r.get("cells")
+            .and_then(Value::as_array)
+            .and_then(|c| c.first())
+            .and_then(|c| c.get("text"))
+            .and_then(Value::as_str)
+            .is_some_and(|t| t.starts_with(SYSTEM))
+    }) else {
         return Some(view);
     };
     let rows = rows_mut(&mut view)?;
-    // **The group's line**: a new name, a new id (the host keys its fold state by id, so a
+    // **The branch's line**: a new name, a new id (the host keys its fold state by id, so a
     // rename that kept the old one would fold under a name nobody can see), and a legend that
     // says what this project decided.
-    rows[at]["id"] = json!("leftovers");
+    rows[at]["id"] = json!(RENAMED_ID);
     rows[at]["cells"] = json!([{"text": RENAMED, "role": "strong"}]);
     rows[at]["under"] = json!([LEGEND]);
     // **And its rows go** — every row after it that is deeper than the group's own line, up to the
@@ -116,18 +126,23 @@ pub extern "C" fn pane_sessions(ptr: i32, len: i32) -> i32 {
 mod tests {
     use super::*;
 
-    /// A view shaped like the built-in's: two groups, one row under the second.
+    /// A view shaped like the built-in's: a project's line, a session under it, and the `system`
+    /// branch with one group and one row.
     fn builtin_view() -> Value {
         json!({
             "title": "sessions in this daemon",
             "panels": [{"id": "sessions", "summary": [{"tree": {"rows": [
-                {"id": "mine", "cells": ["mine (1)"], "open": "fixed", "enter": {"fold": true}},
+                {"id": "/p/letibot", "cells": [{"text": "letibot (3)", "role": "strong"}],
+                 "open": "open", "enter": {"fold": true}},
                 {"id": "s-a", "cells": ["the habr article"], "number": 1, "depth": 1,
                  "enter": {"switch": "s-a"}},
-                {"id": "one-shots", "cells": ["one-shots (1)"], "open": false,
-                 "enter": {"fold": true}},
-                {"id": "s-shot", "cells": ["one prompt, one answer"], "number": 2, "depth": 1,
-                 "enter": {"switch": "s-shot"}},
+                {"id": "/p/letibot/system", "cells": [{"text": "system (2)", "role": "strong"}],
+                 "depth": 1, "open": "open", "enter": {"fold": true}},
+                {"id": "/p/letibot/system/reviewers",
+                 "cells": [{"text": "reviewers (2)", "role": "strong"}],
+                 "depth": 2, "open": false, "enter": {"fold": true}},
+                {"id": "s-review", "cells": ["You are the gatekeeper. review it"],
+                 "number": 2, "depth": 3, "enter": {"switch": "s-review"}},
             ]}}]}],
         })
     }
@@ -141,20 +156,24 @@ mod tests {
         assert_eq!(asked, json!({"below": request}));
     }
 
-    /// **The second call keeps everything and changes the one group**: the name, the legend, and
+    /// **The second call keeps everything and changes the one branch**: the name, the legend, and
     /// the rows not drawn — and not one other row is touched.
     #[test]
-    fn it_renames_the_group_and_hides_its_rows() {
+    fn it_renames_the_branch_and_hides_its_rows() {
         let edited = edit(builtin_view()).expect("an edit");
         let rows = edited["panels"][0]["summary"][0]["tree"]["rows"]
             .as_array()
             .expect("rows")
             .clone();
         let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
-        assert_eq!(ids, vec!["mine", "s-a", "leftovers"], "{rows:#?}");
-        let group = &rows[2];
-        assert_eq!(group["cells"][0]["text"], "leftovers (0)");
-        assert_eq!(group["under"][0], LEGEND);
+        assert_eq!(
+            ids,
+            vec!["/p/letibot", "s-a", "no-system-agents"],
+            "{rows:#?}"
+        );
+        let branch = &rows[2];
+        assert_eq!(branch["cells"][0]["text"], "the harness's own (0)");
+        assert_eq!(branch["under"][0], LEGEND);
         // The other rows are the built-in's own, byte for byte.
         assert_eq!(
             rows[1],
@@ -162,10 +181,12 @@ mod tests {
         );
     }
 
-    /// **A list with no such group is left alone** — the edit is an edit, not a requirement.
+    /// **A list with no such branch is left alone** — the edit is an edit, not a requirement.
     #[test]
-    fn a_list_without_the_group_is_untouched() {
-        let view = json!({"panels": [{"summary": [{"tree": {"rows": [{"id": "mine"}]}}]}]});
+    fn a_list_without_the_branch_is_untouched() {
+        let view = json!({"panels": [{"summary": [{"tree": {"rows": [
+            {"id": "/p/letibot", "cells": [{"text": "letibot (1)", "role": "strong"}]},
+        ]}}]}]});
         assert_eq!(edit(view.clone()), Some(view));
     }
 }

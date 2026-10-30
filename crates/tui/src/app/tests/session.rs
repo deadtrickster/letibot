@@ -219,25 +219,25 @@ fn a_bare_term_line_after_a_detach_attaches_back_to_the_same_run() {
     );
 }
 
-/// **A sub-session is listed, reachable and switchable — under the `subagents` group since
-/// 2026-10-26.**
+/// **A sub-session is listed, reachable and switchable — folded under the session that spawned
+/// it.**
 ///
 /// *"yes subagents are not even scratch session they are session, just sub sessions"*, and
 /// *"why readonly? subagent session is more like you driving others via tmux"*. Two sites used to
 /// drop every row with a parent — `Hello` and `Sessions` — so a session a head can post to, and
 /// get an answer from, was thrown away on the way in. What that filter was protecting against was
-/// noise, and the answer to noise is a fold with a count on it (the operator, later: *"otherwise
+/// noise, and the answer to noise is a fold on the parent's row (the operator, later: *"otherwise
 /// im lost in subagents"*).
 ///
 /// Four properties, and the third is the one a two-enumerations regression would break:
 ///
 /// * **Kept**: both rows are in `sessions` after a `Hello`.
-/// * **One line by default**: `mine (1)` and the conversation, then `subagents (1)` folded — a
-///   daemon with thirty children costs one row here.
-/// * **The listing and the keys agree**: opening the group with `→` on its line puts the child on
-///   the screen *and* under the cursor's enumeration, so `enter` switches to the row that was
-///   drawn — both read from [`App::session_rows`].
-/// * **`←` folds the group back**, on its line.
+/// * **One line by default**: the project's line and the conversation, and the child folded away —
+///   a daemon with thirty children costs one row here.
+/// * **The listing and the keys agree**: opening the parent with `→` puts the child on the screen
+///   *and* under the cursor's enumeration, so `enter` switches to the row that was drawn — both
+///   read from [`App::session_rows`].
+/// * **`←` on the child folds it back into its parent.**
 #[test]
 fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     let mut child = brief("s-child", "the child", false);
@@ -256,34 +256,30 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     );
     a.push_surface(Surface::Picker);
 
-    // **One line per group and the child folded away**, which is the whole reason the default is
-    // not noisy: `mine (1)` with the conversation under it, then `subagents (1)` on its own.
+    // **The project's line and the conversation, the child folded away** — the whole reason the
+    // default is not noisy.
     let folded: Vec<String> = a
         .session_rows()
         .iter()
         .map(|r| match r.idx {
             Some(i) => a.sessions[i].title.clone(),
-            None => format!("[{}]", r.group.title()),
+            None => format!("[{}]", r.node.title()),
         })
         .collect();
-    assert_eq!(folded, vec!["[mine]", "root", "[subagents]"], "{folded:?}");
+    assert_eq!(folded, vec!["[letibot (2)]", "root"], "{folded:?}");
     let closed = a.screen(100, 30).join("\n");
     assert!(
         !closed.contains("the child"),
-        "a folded group's child was drawn anyway:\n{closed}"
-    );
-    assert!(
-        closed.contains("subagents (1)"),
-        "the group line carries its count, which is what replaces the rows:\n{closed}"
+        "a folded session's child was drawn anyway:\n{closed}"
     );
 
-    // **The fold, on the group's line** — the cursor starts on the session this head is in, so
-    // set it on the group and open it. Expanding is a fold, not a daemon action.
+    // **The fold, on the parent's row** — the cursor starts on the session this head is in, so
+    // set it on that row and open it. Expanding is a fold, not a daemon action.
     a.picker_sel = a
         .session_rows()
         .iter()
-        .position(|r| r.idx.is_none() && r.group == letibot_sessionlog::SessionGroup::Subagents)
-        .expect("the subagents line");
+        .position(|r| r.idx.is_some_and(|i| a.sessions[i].session_id == "s-root"))
+        .expect("the conversation's row");
     assert_eq!(a.key(Key::Right), None, "expanding is not a daemon action");
     let open = a.screen(100, 30).join("\n");
     assert!(
@@ -303,7 +299,7 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     };
     assert!(
         mark_at("the child") > mark_at("root"),
-        "the child is not indented under its group's tree:\n{picked}"
+        "the child is not indented under its parent:\n{picked}"
     );
     assert_eq!(
         a.key(Key::Enter),
@@ -311,14 +307,14 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
         "Enter on a sub-session must be an ordinary attach"
     );
 
-    // **`←` on the child row closes the TREE EDGE it sits on** — the group stays open, and the
-    // child's own count is the group line's numbers, which is the half a fold must not lose.
-    assert_eq!(a.session_rows().len(), 4, "the group and its tree are open");
+    // **`←` on the child row closes the TREE EDGE it sits on** — the parent stays open in the
+    // project, and the child goes back under it.
+    assert_eq!(a.session_rows().len(), 3, "the project and its tree are open");
     a.key(Key::Left);
     assert_eq!(
         a.session_rows().len(),
-        3,
-        "left did not fold the child back into its parent inside the group"
+        2,
+        "left did not fold the child back into its parent"
     );
 }
 
@@ -1909,9 +1905,9 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
         Hub::new("s").snapshot(),
     ));
     assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
-    // The cursor starts on the session this head is in, so the mark and the
-    // bold name are on the same row until an arrow moves it.
-    assert_eq!(a.picker_sel, 0);
+    // The cursor starts on the session this head is in — the row under the project's line, which
+    // is the first row and the one Enter folds.
+    assert_eq!(a.picker_sel, 1);
     let row = a
         .screen(110, 24)
         .into_iter()
@@ -1920,7 +1916,7 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     assert!(row.contains('▸'), "the mark is what enter takes: {row}");
     a.key(Key::Down);
     a.key(Key::Down);
-    assert_eq!(a.picker_sel, 2);
+    assert_eq!(a.picker_sel, 3);
     let row = a
         .screen(110, 24)
         .into_iter()
@@ -1930,9 +1926,13 @@ fn the_picker_moves_with_arrows_and_enter_takes_the_marked_row() {
     // Up wraps past the top; Up again wraps in from the bottom.
     a.key(Key::Up);
     a.key(Key::Up);
+    assert_eq!(a.picker_sel, 1);
+    // **One more Up is the project's line**, which is a stop of its own — Enter folds it — and the
+    // one after that is the last session again.
+    a.key(Key::Up);
     assert_eq!(a.picker_sel, 0);
     a.key(Key::Up);
-    assert_eq!(a.picker_sel, 2);
+    assert_eq!(a.picker_sel, 3);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
@@ -1961,14 +1961,16 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
     };
-    // The session header takes row 0, the picker's title and blank two more: "one" is y=3,
-    // its id line y=4, "two" y=5, and "three" y=7.
-    assert_eq!(at("two"), 5, "{frame:#?}");
+    // The session header takes row 0, the picker's title and blank two more, then the project's
+    // line and its legend: "one" is y=5, its id line y=6, "two" y=7. Two rows per session, which
+    // is the arithmetic the handler used to get wrong. The header names this session too, so the
+    // first row is found by its number rather than by its title.
+    assert_eq!(at("two"), at("1  one") + 2, "{frame:#?}");
     a.key(Key::Click {
         x: 10,
         y: at("two"),
     });
-    assert_eq!(a.picker_sel, 1, "y=5 is the second session's row");
+    assert_eq!(a.picker_sel, 2, "that row is the second session's");
     let row = a
         .screen(110, 24)
         .into_iter()
@@ -1980,26 +1982,29 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
     );
     // **The id line under a session picks THAT session**, not the next one.
     a.key(Key::Click { x: 8, y: at("s3") });
-    assert_eq!(a.picker_sel, 2, "a click on three's id line picks three");
+    assert_eq!(a.picker_sel, 3, "a click on three's id line picks three");
     a.key(Key::Click {
         x: 0,
         y: at("1  one"),
     });
-    assert_eq!(a.picker_sel, 0);
-    // A click on the footer, or into the blank space under the list, moves nothing.
+    assert_eq!(a.picker_sel, 1);
+    // A click on the footer, or on a line of it that is nobody's row, moves nothing.
     a.key(Key::Click {
         x: 4,
         y: at("enter switches"),
     });
-    assert_eq!(a.picker_sel, 0);
-    a.key(Key::Click { x: 4, y: 15 });
-    assert_eq!(a.picker_sel, 0);
+    assert_eq!(a.picker_sel, 1);
+    a.key(Key::Click {
+        x: 4,
+        y: at("switching does not stop anything"),
+    });
+    assert_eq!(a.picker_sel, 1);
     // Select and confirm stay two acts: the click only moves the mark.
     a.key(Key::Click {
         x: 4,
         y: at("three"),
     });
-    assert_eq!(a.picker_sel, 2);
+    assert_eq!(a.picker_sel, 3);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }
 
@@ -2019,7 +2024,9 @@ fn the_picker_scrolls_its_cursor_into_view_and_clicks_follow() {
     for _ in 0..15 {
         a.key(Key::Down);
     }
-    assert_eq!(a.picker_sel, 15);
+    // The project's line is row 0, so the fifteenth Down from the seeded cursor is the sixteenth
+    // row of the list.
+    assert_eq!(a.picker_sel, 16);
     let frame = a.screen(110, 16);
     let y = frame
         .iter()
@@ -2029,7 +2036,7 @@ fn the_picker_scrolls_its_cursor_into_view_and_clicks_follow() {
     // A click two sessions up in the scrolled frame picks that session.
     let up = frame.iter().position(|l| l.contains("name13")).unwrap() as u16;
     a.key(Key::Click { x: 10, y: up });
-    assert_eq!(a.picker_sel, 13);
+    assert_eq!(a.picker_sel, 14);
 }
 
 /// **A provider switch reaches a head that was already attached.**
@@ -2403,7 +2410,10 @@ fn slash_sessions_opens_the_picker_the_way_ctrl_s_does() {
         assert_eq!(sent, Some(Action::ListSessions), "{open}");
         assert!(a.is_open(Surface::Picker), "{open}");
         assert!(a.pick.is_none(), "{open} closes the setting card");
-        assert_eq!(a.picker_sel, 1, "{open} seeds the cursor on this session");
+        assert_eq!(
+            a.picker_sel, 2,
+            "{open} seeds the cursor on this session, under the project's line"
+        );
     }
 }
 

@@ -4,6 +4,7 @@
 use super::*;
 use crate::ui::render::dur_human;
 use letibot_sessionlog::client::Unreadable;
+use letibot_sessionlog::origin::SessionOrigin;
 use letibot_sessionlog::registry::short_id;
 use letibot_sessionlog::view::Warned;
 
@@ -319,32 +320,35 @@ impl App {
     /// **Two questions, two lists.** A head standing in a CONVERSATION draws the whole daemon,
     /// in groups (§ below); a head standing in a subagent draws its family (the last section).
     ///
-    /// # The whole daemon, in groups
+    /// # The whole daemon, as a tree of projects
     ///
-    /// The operator, 2026-10-26: *"in session view the automatic sessions must be grouped
-    /// somehow, so my vs auto. otherwise im lost in subagents."* A daemon holds one conversation
-    /// of theirs and thirty rows of work it did for that conversation, and one list ordered by
-    /// *when something last happened* put a reviewer above the thing they were doing.
+    /// The operator, 2026-10-31: *"i want /sessions to show me the tree - top level nodes are
+    /// projects, then next level are top-level sessions for that projects, then their subsessions
+    /// for worktrees etc. gatekeepers and reviewers and all other system agents are under
+    /// `<project>/<system>/<gatekeepers>`"*. It replaces the five groups this list was drawn in
+    /// (`mine`, `subagents`, `review queue`, …), which answered *mine vs the harness's* by putting
+    /// the harness's work in folds that hid WHICH conversation it belonged to.
     ///
-    /// So the list is **`mine` first, then one line per automatic kind** — `subagents (14)`,
-    /// `review queue (3)`, `packages (6)`, `one-shots (2)` — each folded until it is opened, and
-    /// each row drawn under exactly one of them. [`SessionGroup`] and
-    /// `letibot_sessionlog::group_of` are the rule; this function is where it becomes rows.
+    /// So a row is one of four things and [`Node`] is the whole vocabulary: a **project**
+    /// ([`project_of`] — a workspace root, with any worktree mapped back to the repository that
+    /// owns it), the **`system`** branch inside one, a **group** inside that (`gatekeepers`,
+    /// `reviewers`, `keepers`), or a **session**.
     ///
-    /// **`mine` is never folded**: the operator's own conversations are what the list is for.
-    /// An automatic group opens itself when this head is standing in one of its rows, because a
-    /// picker that hides where you are cannot answer *where am I*.
+    /// **A session hangs under the project of the ROOT of its chain.** Its own workspace can be a
+    /// review clone, a worktree or another machine, and the tree it hangs from is what says where
+    /// it belongs; only a session nobody spawned is placed by its own workspace.
     ///
-    /// **A group with no rows draws no line.** A list whose every fold says `(0)` teaches a
-    /// reader to skip folds, which is the opposite of what the counts are for.
+    /// **A branch with no rows draws no line** — a project with no system agent has no `system`
+    /// node, and a fold saying `(0)` is a fold a reader learns to skip.
     ///
-    /// # Inside a group the tree still nests
+    /// # Where a system agent is decided
     ///
-    /// A child sits under the session that spawned it **when that session is in the same group
-    /// and is expanded** — `parent_session_id` is already on every row, so nothing had to be
-    /// added to the wire for this. A child whose parent is in ANOTHER group (a `task` child of
-    /// the operator's own conversation) is a root of its group's tree, because its parent is not
-    /// on that list — and the count on the group's line is what accounts for it.
+    /// By its own row first, then by its chain ([`App::system_kind`]): the review queue's session
+    /// is a **gatekeeper**; a row whose brief was cut from the review prompt, whose origin is the
+    /// queue, or whose chain reaches the queue's session is a **reviewer**; a brief cut from the
+    /// notes keeper's prompt is a **keeper**. A row with none of those marks is a session like any
+    /// other — a group named after nothing is worse than a row drawn where it looks like it
+    /// belongs.
     ///
     /// # What the filter this replaces was protecting against
     ///
@@ -369,6 +373,10 @@ impl App {
     /// that same edge from the outside, so ctrl-s inside a child answers *where am I* and *who is
     /// next to me* with one list — while ctrl-s in a conversation still answers *what does this
     /// daemon hold* under the collapse rule above. Two questions, one enumeration per question.
+    ///
+    /// **And the nodes on the way to where you are are open**, whatever the operator last said
+    /// about them: the project, its `system` branch and the group this head's session is drawn
+    /// in. A picker that hides where you are cannot answer *where am I*.
     pub(crate) fn session_rows(&self) -> Vec<SessionRow> {
         // The chain from the current session up to its root, by id — so the way back to where you
         // are is always on the screen.
@@ -385,91 +393,194 @@ impl App {
         // family view stays ungrouped on purpose — it is already a list of two or three rows
         // around the one the operator is standing in, and folds over it would be a second way to
         // hide the answer to *where am I* (see this function's docstring).
-        if let Some(parent) = self.parent_session() {
-            if let Some(i) = self.sessions.iter().position(|s| s.session_id == parent) {
+        //
+        // **A parent this daemon does not hold is no family at all** — the head is standing in a
+        // child whose parent is gone, and the tree it belongs to is still the answer to *where am
+        // I*. A family view with no parent in it drew nothing at all.
+        if let Some(parent) = self.parent_session()
+            && let Some(i) = self.index_of(&parent)
+        {
+                let id = self.sessions[i].session_id.clone();
+                let kids = self.children_in(&id, None);
+                let force = self.family_open(&parent, 0);
                 out.push(SessionRow {
                     idx: Some(i),
                     depth: 0,
-                    group: SessionGroup::Mine,
+                    node: Node::Session,
+                    open: kids.then(|| force || self.children_open(&id, &path)),
                 });
-                self.push_children(
-                    &mut out,
-                    &parent,
-                    1,
-                    &path,
-                    self.family_open(&parent, 0),
-                    InGroup {
-                        group: None,
-                        of: &[],
-                    },
-                );
-            }
+                self.push_children(&mut out, &parent, 1, &path, force, None);
             return out;
         }
-        // **The whole daemon, in groups** — see [`crate::app::session_rows`]'s docstring for the
-        // rule and `letibot_sessionlog::origin` for what each group is.
-        let of = self.session_groups();
-        // **A group line exists to SEPARATE, so one group draws none.** A daemon whose every
-        // session is the operator's own — a fresh folder, which is most of them — would otherwise
-        // open on a `mine` header over the only rows there are: chrome with nothing to tell apart,
-        // and one keystroke of scrolling bought with nothing.
-        let kinds = SessionGroup::ALL.iter().filter(|g| of.contains(g)).count();
-        for group in SessionGroup::ALL {
+        let place = self.placements();
+        let projects = self.projects(&place);
+        let here = self.here_nodes(&place);
+        for project in &projects {
             let members: Vec<usize> = (0..self.sessions.len())
-                .filter(|&i| of[i] == group)
+                .filter(|&i| place[i].project == project.key)
                 .collect();
-            // **No empty fold.** A group the daemon has nothing for is a line saying zero, and a
-            // list whose every fold says `(0)` is a list that teaches a reader to skip them.
-            if members.is_empty() {
-                continue;
-            }
-            // **With no header there is no fold to open**, so the one group's rows are simply
-            // the list — a lone closed group would draw nothing at all.
-            let open = kinds == 1 || self.group_open(group, &of);
-            if kinds > 1 {
-                out.push(SessionRow {
-                    idx: None,
-                    depth: 0,
-                    group,
-                });
-            }
+            let node = Node::Project {
+                key: project.key.clone(),
+                name: project.name.clone(),
+                count: members.len(),
+            };
+            let open = self.node_open(&node, &here);
+            out.push(SessionRow {
+                idx: None,
+                depth: 0,
+                node,
+                open: Some(open),
+            });
             if !open {
                 continue;
             }
-            // With no header the rows are the whole list, so they sit at depth 0.
-            let depth = usize::from(kinds > 1);
+            // **The project's own tree** — the sessions nobody spawned, and their children at any
+            // depth. A child whose parent is not on this list (a session whose parent is gone) is
+            // a root here, which is the honest reading: an orphan is not a subagent.
+            let branch = Branch {
+                project: &project.key,
+                system: None,
+                place: &place,
+            };
             for &i in &members {
-                // **A session is drawn ONCE**, under the group it is in. Inside a group its own
-                // tree still nests — a child of a child sits under its parent — but a child whose
-                // parent is in ANOTHER group (a `task` child of the operator's conversation) is a
-                // root of this group's tree, because its parent is not on this list.
-                let under = self.sessions[i]
-                    .parent_session_id
-                    .as_deref()
-                    .and_then(|p| self.sessions.iter().position(|s| s.session_id == p))
-                    .filter(|&p| of[p] == group);
-                if under.is_some() {
+                if place[i].system.is_some() || self.parent_on_list(i).is_some() {
                     continue;
                 }
+                self.push_session(&mut out, i, 1, &path, false, Some(branch));
+            }
+            // **The `system` branch**, when this project has one.
+            let system: Vec<usize> = members
+                .iter()
+                .copied()
+                .filter(|&i| place[i].system.is_some())
+                .collect();
+            if system.is_empty() {
+                continue;
+            }
+            let node = Node::System {
+                key: system_key(&project.key),
+                count: system.len(),
+            };
+            let open = self.node_open(&node, &here);
+            out.push(SessionRow {
+                idx: None,
+                depth: 1,
+                node,
+                open: Some(open),
+            });
+            if !open {
+                continue;
+            }
+            for kind in SystemKind::ALL {
+                let group: Vec<usize> = system
+                    .iter()
+                    .copied()
+                    .filter(|&i| place[i].system == Some(kind))
+                    .collect();
+                if group.is_empty() {
+                    continue;
+                }
+                let node = Node::Group {
+                    key: group_key(&project.key, kind),
+                    kind,
+                    count: group.len(),
+                };
+                let open = self.node_open(&node, &here);
                 out.push(SessionRow {
-                    idx: Some(i),
-                    depth,
-                    group,
+                    idx: None,
+                    depth: 2,
+                    node,
+                    open: Some(open),
                 });
-                self.push_children(
-                    &mut out,
-                    &self.sessions[i].session_id,
-                    depth + 1,
-                    &path,
-                    false,
-                    InGroup {
-                        group: Some(group),
-                        of: &of,
-                    },
-                );
+                if !open {
+                    continue;
+                }
+                let branch = Branch {
+                    project: &project.key,
+                    system: Some(kind),
+                    place: &place,
+                };
+                for &i in &group {
+                    // **A row is drawn once**, under its parent when that parent is in this same
+                    // group; a reviewer whose parent is the operator's own conversation is a root
+                    // of `reviewers`, because its parent is not on this branch.
+                    if self
+                        .parent_on_list(i)
+                        .is_some_and(|p| place[p].system == Some(kind) && place[p].project == project.key)
+                    {
+                        continue;
+                    }
+                    self.push_session(&mut out, i, 3, &path, false, Some(branch));
+                }
             }
         }
         out
+    }
+
+    /// **One session's row and, when it is open, its children** — the recursive half of the tree,
+    /// shared by the project branch and the `system` groups so a row is drawn the same way in both.
+    ///
+    /// `force` is the family view's rule for its first level and nothing else, so a session row's
+    /// `open` and the rows drawn under it are one answer: a `+` over rows that are on the screen is
+    /// the one thing this list must not say.
+    fn push_session(
+        &self,
+        out: &mut Vec<SessionRow>,
+        i: usize,
+        depth: usize,
+        path: &[String],
+        force: bool,
+        branch: Option<Branch<'_>>,
+    ) {
+        let id = self.sessions[i].session_id.clone();
+        let kids = self.children_in(&id, branch);
+        let open = force || self.children_open(&id, path);
+        out.push(SessionRow {
+            idx: Some(i),
+            depth: depth.min(MAX_INDENT),
+            node: Node::Session,
+            open: kids.then_some(open),
+        });
+        if open {
+            self.push_children(out, &id, depth + 1, path, false, branch);
+        }
+    }
+
+    /// **Whether a session's own children are on the list** — the operator opened it, or the chain
+    /// to where this head is standing runs through it.
+    fn children_open(&self, id: &str, path: &[String]) -> bool {
+        self.expanded.iter().any(|e| e == id) || self.child_on_path(id, path)
+    }
+
+    /// Whether one of `id`'s children is on the chain to the current session.
+    fn child_on_path(&self, id: &str, path: &[String]) -> bool {
+        self.sessions.iter().any(|s| {
+            s.parent_session_id.as_deref() == Some(id)
+                && path.iter().any(|p| *p == s.session_id)
+        })
+    }
+
+    /// **Whether a session has a child drawn in `branch`** — the fact the fold glyph is made of: a
+    /// `+` over a row whose children are in another branch opens nothing.
+    fn children_in(&self, id: &str, branch: Option<Branch<'_>>) -> bool {
+        self.sessions.iter().enumerate().any(|(k, s)| {
+            s.parent_session_id.as_deref() == Some(id)
+                && branch.is_none_or(|b| b.holds(k))
+        })
+    }
+
+    /// **The index of a session's parent, when that parent is on this list.** `None` for a session
+    /// nobody spawned and for one whose parent this daemon does not hold — the two cases in which
+    /// the row is a root of the tree it is drawn in.
+    fn parent_on_list(&self, i: usize) -> Option<usize> {
+        self.sessions[i]
+            .parent_session_id
+            .as_deref()
+            .and_then(|p| self.index_of(p))
+    }
+
+    fn index_of(&self, id: &str) -> Option<usize> {
+        self.sessions.iter().position(|s| s.session_id == id)
     }
 
     /// **A path with `$HOME` written as `~`**, against THIS head's home and not the environment's.
@@ -507,45 +618,135 @@ impl App {
             .nth(n.checked_sub(1)?)
     }
 
-    /// **Which group each session in the daemon's list is in** — one answer per draw, from the
-    /// one rule (`letibot_sessionlog::group_of`), so the folds, the counts, the rows and the keys
-    /// cannot disagree about a session.
+    /// **Where each session of the daemon's list is drawn** — its project, and the `system` group
+    /// it belongs in when it is one of the harness's own agents.
     ///
     /// A `Vec` parallel to `self.sessions` rather than a map: every reader indexes the other one
     /// anyway, and a map keyed by id would be a second way to spell *which session is this row*.
-    pub(crate) fn session_groups(&self) -> Vec<SessionGroup> {
-        let rows: Vec<GroupRow<'_>> = self
+    pub(crate) fn placements(&self) -> Vec<Placement> {
+        let own: Vec<Project> = self
             .sessions
             .iter()
-            .map(|s| GroupRow {
-                id: &s.session_id,
-                parent: s.parent_session_id.as_deref(),
-                origin: s.origin,
-                // **A brief carries no seat**, so a reviewer is known here by the brief its title
-                // was cut from — the same gap `App::fold_subagents` fills the same way.
-                role: None,
-                title: &s.title,
-            })
+            .map(|s| project_of(&s.wiring.workspace))
             .collect();
-        self.sessions
-            .iter()
-            .map(|s| letibot_sessionlog::group_of(&rows, &s.session_id))
+        (0..self.sessions.len())
+            .map(|i| Placement {
+                // **The ROOT of the chain decides**, because a child's workspace can be a review
+                // clone or a worktree or another machine — what says where it belongs is the tree
+                // it hangs from, and only a session nobody spawned is placed by its own path.
+                project: own[self.root_of(i)].key.clone(),
+                system: self.system_kind(i),
+            })
             .collect()
     }
 
-    /// **Whether a group's rows are on the list** — `mine` always, the four automatic kinds only
-    /// when the operator opened them or when this head is standing in one.
+    /// **The session at the top of this one's chain** — itself for a session nobody spawned.
+    fn root_of(&self, i: usize) -> usize {
+        let mut at = i;
+        for _ in 0..MAX_CHAIN {
+            match self.parent_on_list(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        at
+    }
+
+    /// **Which system agent this session is, if it is one** — its own row's marks first, then the
+    /// chain's.
     ///
-    /// The second half is the rule that outranks the fold: a picker that hides where you are is a
-    /// picker that cannot answer *where am I*, which is the one question the header above it
-    /// exists to answer — and it is why a group this head is in opens itself.
-    pub(crate) fn group_open(&self, group: SessionGroup, of: &[SessionGroup]) -> bool {
-        if group.is_mine() || self.open_groups.contains(&group) {
+    /// Three marks, and the order is the point: the review queue's own session is a gatekeeper and
+    /// not a reviewer, and everything hanging from it — a review, a review of a review — is a
+    /// reviewer, which is the same rule `letibot_sessionlog::origin` groups the queue's work by.
+    fn system_kind(&self, i: usize) -> Option<SystemKind> {
+        let mut at = i;
+        for _ in 0..MAX_CHAIN {
+            let s = &self.sessions[at];
+            let here = at == i;
+            if letibot_sessionlog::is_gatekeeper_session(&s.session_id) {
+                return Some(if here {
+                    SystemKind::Gatekeeper
+                } else {
+                    SystemKind::Reviewer
+                });
+            }
+            if s.origin == SessionOrigin::Queue {
+                return Some(if here && s.parent_session_id.is_none() {
+                    SystemKind::Gatekeeper
+                } else {
+                    SystemKind::Reviewer
+                });
+            }
+            // **A brief carries no seat**, so a reviewer is known here by the brief its title was
+            // cut from — the same gap `App::fold_subagents` fills the same way.
+            if s.title.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX) {
+                return Some(SystemKind::Reviewer);
+            }
+            if s.title.starts_with(letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX) {
+                return Some(SystemKind::Keeper);
+            }
+            match self.parent_on_list(at) {
+                Some(parent) => at = parent,
+                None => break,
+            }
+        }
+        None
+    }
+
+    /// **The projects this daemon holds, in the order it lists them** — the top level of the tree.
+    pub(crate) fn projects(&self, place: &[Placement]) -> Vec<Project> {
+        let mut out: Vec<Project> = Vec::new();
+        for p in place {
+            if !out.iter().any(|q| q.key == p.project) {
+                out.push(Project {
+                    key: p.project.clone(),
+                    name: String::new(),
+                });
+            }
+        }
+        // **The name, and the whole path only when two projects would read alike** — the ask, and
+        // the one case it cannot be met in: two checkouts called `letibot` are two rows a reader
+        // cannot tell apart, so both say where they are.
+        let names: Vec<String> = out.iter().map(|p| project_name(&p.key)).collect();
+        let shared: Vec<bool> = names
+            .iter()
+            .map(|n| names.iter().filter(|m| *m == n).count() > 1)
+            .collect();
+        for (i, p) in out.iter_mut().enumerate() {
+            p.name = if shared[i] {
+                self.tilde_path(&p.key)
+            } else {
+                names[i].clone()
+            };
+        }
+        out
+    }
+
+    /// **The nodes on the way to where this head is standing** — the project, its `system` branch
+    /// and the group, so a list that hides where you are cannot happen.
+    fn here_nodes(&self, place: &[Placement]) -> Vec<String> {
+        let Some(i) = self.index_of(&self.session_id) else {
+            return Vec::new();
+        };
+        let p = &place[i];
+        let mut out = vec![p.project.clone(), system_key(&p.project)];
+        if let Some(kind) = p.system {
+            out.push(group_key(&p.project, kind));
+        }
+        out
+    }
+
+    /// **Whether a node's rows are on the list** — the operator's answer when they have given one,
+    /// then the nodes on the way to where this head is standing, then the node's own default.
+    pub(crate) fn node_open(&self, node: &Node, here: &[String]) -> bool {
+        let key = node.key();
+        if let Some(open) = self.picker_folds.get(key) {
+            return *open;
+        }
+        if here.iter().any(|h| h == key) || self.expanded.iter().any(|e| e == key) {
             return true;
         }
-        of.iter()
-            .enumerate()
-            .any(|(i, g)| *g == group && self.sessions[i].session_id == self.session_id)
+        node.default_open()
     }
 
     /// **Whether a row's children are on the list because this head is standing among them.**
@@ -577,29 +778,22 @@ impl App {
         depth: usize,
         path: &[String],
         force: bool,
-        in_group: InGroup<'_>,
+        branch: Option<Branch<'_>>,
     ) {
         let open = force || self.expanded.iter().any(|e| e == parent);
         for (i, s) in self.sessions.iter().enumerate() {
             if s.parent_session_id.as_deref() != Some(parent) {
                 continue;
             }
-            // **A row belongs to exactly one group**, so a child of another group's session is
-            // not drawn under it — it is a root where it is drawn (see `session_rows`).
-            if let Some(group) = in_group.group
-                && in_group.of.get(i) != Some(&group)
-            {
+            // **A row belongs to exactly one branch**, so a child of another branch is not drawn
+            // under it — it is a root where it is drawn (see `session_rows`).
+            if branch.is_some_and(|b| !b.holds(i)) {
                 continue;
             }
             if !open && !path.iter().any(|p| *p == s.session_id) {
                 continue;
             }
-            out.push(SessionRow {
-                idx: Some(i),
-                depth,
-                group: in_group.group.unwrap_or(SessionGroup::Mine),
-            });
-            self.push_children(out, &s.session_id, depth + 1, path, false, in_group);
+            self.push_session(out, i, depth, path, false, branch);
         }
     }
 
@@ -1548,35 +1742,257 @@ pub(crate) struct DaemonSeat {
     pub(crate) protocol: u32,
 }
 
-/// **The group a tree is being drawn in** — `group: None` in the family view, which groups nothing.
+/// **The branch of the tree a walk is inside** — the project, and the `system` group when the walk
+/// is under `system`. `None` is the family view, which walks one conversation's tree and nothing
+/// else.
 ///
-/// One argument rather than two, and one type rather than a pair: `of` answers *which group is
-/// each session in* for the list being drawn, and it is only meaningful together with the group
-/// whose tree is being walked — passing the wrong slice with the wrong group is a mistake a caller
-/// cannot make when they travel as one value.
+/// One value rather than two arguments: the placements and the branch they are read against are
+/// only meaningful together, and a caller cannot pass the wrong slice for the branch it is walking.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct InGroup<'a> {
-    pub(crate) group: Option<SessionGroup>,
-    pub(crate) of: &'a [SessionGroup],
+pub(crate) struct Branch<'a> {
+    pub(crate) project: &'a str,
+    pub(crate) system: Option<SystemKind>,
+    pub(crate) place: &'a [Placement],
+}
+
+impl Branch<'_> {
+    /// Whether session `i` is drawn in this branch — a child of another branch is a root of its
+    /// own, never a row here.
+    fn holds(&self, i: usize) -> bool {
+        self.place.get(i).is_some_and(|p| {
+            p.project == self.project && p.system == self.system
+        })
+    }
+}
+
+/// **Where one session is drawn** — the project, and the `system` group it belongs in when it is
+/// one of the harness's own agents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) project: String,
+    pub(crate) system: Option<SystemKind>,
+}
+
+/// **A project: the top level of the tree** — a workspace root, shown by its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Project {
+    /// The path the project is, and the key its fold state is kept under.
+    pub(crate) key: String,
+    /// What the row says: the folder's name, or the whole path when two projects would read alike.
+    pub(crate) name: String,
+}
+
+/// **One of the harness's own agents** — the groups under a project's `system` branch.
+///
+/// The three are the marks this tree can actually read off a session row; a row carrying none of
+/// them is drawn as the session it looks like, because a group named after nothing is worse than a
+/// row where it belongs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SystemKind {
+    /// The review queue's own session, one per project (`s-gatekeeper-<key>`).
+    Gatekeeper,
+    /// A review's own child, and anything it spawned.
+    Reviewer,
+    /// The notes keeper, which repairs memory and runs nothing.
+    Keeper,
+}
+
+impl SystemKind {
+    pub(crate) const ALL: [SystemKind; 3] = [
+        SystemKind::Gatekeeper,
+        SystemKind::Reviewer,
+        SystemKind::Keeper,
+    ];
+
+    /// The word on the group's line, and the last part of its fold key.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            SystemKind::Gatekeeper => "gatekeepers",
+            SystemKind::Reviewer => "reviewers",
+            SystemKind::Keeper => "keepers",
+        }
+    }
+
+    /// One line saying what the group is — a fold whose contents a reader has to guess at is a fold
+    /// they will not open.
+    pub(crate) fn legend(self) -> &'static str {
+        match self {
+            SystemKind::Gatekeeper => "the review queue's own session, one per project",
+            SystemKind::Reviewer => "a review's own child, and anything it spawned",
+            SystemKind::Keeper => "the notes keeper, which repairs memory and runs nothing",
+        }
+    }
+}
+
+/// **What a row of the session list is** — a session, or one of the three lines the tree is built
+/// from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Node {
+    Project {
+        key: String,
+        name: String,
+        count: usize,
+    },
+    System {
+        key: String,
+        count: usize,
+    },
+    Group {
+        key: String,
+        kind: SystemKind,
+        count: usize,
+    },
+    Session,
+}
+
+impl Node {
+    /// **The key this node's fold state is kept under** — a path for a project, `…/system` and
+    /// `…/system/<group>` below it. Session ids begin `s-`, so the two can never collide.
+    pub(crate) fn key(&self) -> &str {
+        match self {
+            Node::Project { key, .. } | Node::System { key, .. } | Node::Group { key, .. } => key,
+            Node::Session => "",
+        }
+    }
+
+    /// What the line says: the name, and how many rows it hides.
+    pub(crate) fn title(&self) -> String {
+        match self {
+            Node::Project { name, count, .. } => format!("{name} ({count})"),
+            Node::System { count, .. } => format!("system ({count})"),
+            Node::Group { kind, count, .. } => format!("{} ({count})", kind.title()),
+            Node::Session => String::new(),
+        }
+    }
+
+    /// The faint line under a node, saying what it is.
+    pub(crate) fn legend(&self) -> &'static str {
+        match self {
+            Node::Project { .. } => "a workspace root, and every session that runs in it",
+            Node::System { .. } => "the sessions the harness runs for itself",
+            Node::Group { kind, .. } => kind.legend(),
+            Node::Session => "",
+        }
+    }
+
+    /// **How a node stands before anybody has folded it** — a project and its `system` branch are
+    /// open (the tree is what the operator asked to see), a group inside `system` is folded, which
+    /// is what keeps twelve reviewers from burying the work.
+    pub(crate) fn default_open(&self) -> bool {
+        !matches!(self, Node::Group { .. })
+    }
 }
 
 /// **One row of the session picker** — see [`App::session_rows`], which is the only thing that
 /// builds one.
 ///
-/// Three facts rather than a bare `usize`, because the list is NESTED **and GROUPED**: which
-/// session it is (or that it is a group's own line), how deep it sits, and which group it was
-/// drawn in. Deriving any of them at the drawing site instead is exactly how the drawing and the
-/// keys become two enumerations again — the defect `todos_stops` exists to record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Four facts rather than a bare `usize`, because the list is a TREE: which session it is (or
+/// which node of the tree it is), how deep it sits, and whether its own rows are under it.
+/// Deriving any of them at the drawing site instead is exactly how the drawing and the keys become
+/// two enumerations again — the defect `todos_stops` exists to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionRow {
-    /// Index into `App::sessions`, or **`None` for a group's own line** — a stop with an act of
-    /// its own (`enter` folds it) and no session to switch to.
+    /// Index into `App::sessions`, or **`None` for a node's own line** — a stop with an act of its
+    /// own (`enter` folds it) and no session to switch to.
     pub(crate) idx: Option<usize>,
-    /// 0 for a group's line and for the top of a tree; deeper inside a tree.
+    /// 0 for a project, deeper inside the tree.
     pub(crate) depth: usize,
-    /// The group this row was drawn under — for a session row, the group it is IN; for a group's
-    /// line, the group it heads.
-    pub(crate) group: SessionGroup,
+    /// What this row is: a session, or one of the tree's own lines.
+    pub(crate) node: Node,
+    /// **Whether this row's rows are drawn under it** — `None` for a row that has none in this
+    /// branch, `Some(open)` for one that folds. The glyph and the enumeration are this one answer.
+    pub(crate) open: Option<bool>,
+}
+
+/// How far up a parent chain this tree will walk before it decides the chain loops. A child is
+/// always created after its parent, so a real chain is short; this is a store somebody edited.
+const MAX_CHAIN: usize = 64;
+
+/// **How far in a row is drawn.** The renderer caps the indent at three steps (rano's tree list,
+/// and a name pushed four steps in is off the right edge), and the built-in `sessions` layer caps
+/// at the same number — one picture, two drawings.
+const MAX_INDENT: usize = 3;
+
+/// **The project a workspace belongs to** — the top level of the session list, and the one rule a
+/// worktree needs so that it is not a project of its own.
+///
+/// A session's workspace is whatever the daemon serves: a checkout, a `task_start` child's worktree
+/// beside it (`~/Projects/letibot/worktrees/agent-x`), a worktree inside it
+/// (`.claude/worktrees/agent-x`), or a repository in an org folder of several
+/// (`~/Projects/stroppy-io/worktrees/stroppy/agent-x`). All four name the same kind of thing — a
+/// repository — and `letibot_tools::builtins::task::worktree_home` is the rule that put the worktree
+/// there, read backwards here: the folder above `worktrees` is the project, and the repository
+/// inside it is the one whose name matches it.
+///
+/// **Textual on purpose.** The same rule has to run in a wasm guest that cannot read a disk (the
+/// built-in `sessions` layer draws this tree too), so it is a fact about the path and not about
+/// what is at the end of it.
+pub(crate) fn project_of(workspace: &str) -> Project {
+    let path = workspace.trim_end_matches('/');
+    if path.is_empty() {
+        return Project {
+            key: String::new(),
+            name: NO_WORKSPACE.to_string(),
+        };
+    }
+    let segs: Vec<&str> = path.split('/').collect();
+    let Some(at) = segs.iter().rposition(|s| *s == WORKTREES) else {
+        return named(path);
+    };
+    let above = segs[..at].join("/");
+    // `…/.claude/worktrees/agent-x` — the worktrees folder is the repository's own, so what
+    // precedes `.claude` IS the project.
+    if segs.get(at.wrapping_sub(1)) == Some(&".claude") {
+        let repo = segs[..at - 1].join("/");
+        return named(&repo);
+    }
+    let after = &segs[at + 1..];
+    match after.len() {
+        // `…/worktrees/<repository>/agent-x` — one folder per repository, for an org folder of
+        // several, so the repository is named here.
+        n if n >= 2 => named(&format!("{above}/{}", after[0])),
+        // `…/letibot/worktrees/agent-x` — the folder is named after the repository inside it.
+        1 => {
+            let name = above.rsplit('/').next().unwrap_or_default();
+            named(&format!("{above}/{name}"))
+        }
+        // `…/worktrees` itself: nothing below it to name a repository by.
+        _ => named(&above),
+    }
+}
+
+/// A project from its key, with the name a person reads.
+fn named(key: &str) -> Project {
+    Project {
+        key: key.to_string(),
+        name: project_name(key),
+    }
+}
+
+/// **What a project is called**: the folder's name, which is what the operator asked for — *"shown
+/// by its name, not its full path"*.
+fn project_name(key: &str) -> String {
+    if key.is_empty() {
+        return NO_WORKSPACE.to_string();
+    }
+    key.rsplit('/').next().unwrap_or(key).to_string()
+}
+
+/// What a session with no workspace at all is drawn under — a daemon too old to say, or a session
+/// whose row predates the column. It is a name, not a group invented for nothing.
+const NO_WORKSPACE: &str = "(no workspace)";
+
+/// The folder `task_start` puts a worktree in, spelled once.
+const WORKTREES: &str = "worktrees";
+
+/// The fold key of a project's `system` branch.
+pub(crate) fn system_key(project: &str) -> String {
+    format!("{project}/system")
+}
+
+/// The fold key of one group under `system`.
+pub(crate) fn group_key(project: &str, kind: SystemKind) -> String {
+    format!("{}/system/{}", project, kind.title())
 }
 
 /// **The live panes, as a person reads them**: `1 `!term mc`, 2 `!term nano``.

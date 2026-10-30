@@ -154,7 +154,8 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     assert!(said.contains("drawn from below it"), "{said}");
     assert!(a.take_sessions_failure().is_none(), "and only once");
 
-    // **Switching still works**: the second session, which is the third row.
+    // **Switching still works**: the second session, which is the third row — the project's line
+    // is the first.
     a.picker_sel = 2;
     assert_eq!(
         a.key(Key::Enter),
@@ -192,14 +193,16 @@ fn a_broken_builtin_falls_to_the_plain_list() {
         plain.iter().any(|l| l.contains("the habr article")),
         "the head's own list is drawn: {plain:?}"
     );
-    // And it is the SAME drawing the head would draw with no plugin at all.
-    let own =
-        crate::ui::render::row_strings(&a.session_picker().content(100).lines, a.cfg.palette());
-    assert_eq!(plain, own);
+    // **And it is the head's own TREE**: a project's line, and both conversations under it. The
+    // way out draws the same shape the layer does, through the same primitive.
+    assert!(
+        plain.iter().any(|l| l.contains("letibot (2)")),
+        "the project's line is drawn: {plain:?}"
+    );
 
-    // **The keys act on the rows that were drawn.** One line per session, two sessions: the
-    // second row is the second session.
-    a.picker_sel = 1;
+    // **The keys act on the rows that were drawn.** The project's line, then the two sessions: the
+    // third row is the second session.
+    a.picker_sel = 2;
     assert_eq!(
         a.key(Key::Enter),
         Some(Action::Switch("s-other".into())),
@@ -248,7 +251,7 @@ fn an_answer_that_is_not_a_list_falls_to_the_plain_list() {
             .any(|l| l.contains("the habr article")),
         "and the head's own list is what is drawn"
     );
-    a.picker_sel = 1;
+    a.picker_sel = 2;
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-other".into())));
     std::fs::remove_dir_all(&tmp).ok();
 }

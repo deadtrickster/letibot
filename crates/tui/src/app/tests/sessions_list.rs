@@ -107,8 +107,8 @@ fn golden(name: &str, now: String) -> String {
     })
 }
 
-/// **The picker as it opens** — `mine` above every fold, the four automatic kinds closed, and the
-/// facts on each row.
+/// **The picker as it opens** — the project's line, its conversations, and the `system` branch
+/// with one folded line per group.
 #[test]
 fn the_session_list_looks_like_this_as_it_opens() {
     let a = the_daemon();
@@ -117,23 +117,35 @@ fn the_session_list_looks_like_this_as_it_opens() {
     // The picture is not an empty one: a golden regenerated from a head that drew nothing would
     // pass for ever.
     assert!(now.contains("the habr article"), "{now}");
-    assert!(now.contains("subagents (3)"), "{now}");
+    assert!(now.contains("system ("), "{now}");
+    assert!(now.contains("reviewers (1)"), "{now}");
 }
 
 /// **The same daemon with every fold opened** — the rows a reader sees after pressing → on each
-/// group's line, and the nesting inside a group.
+/// line, and the nesting inside a group.
 #[test]
 fn the_session_list_looks_like_this_with_every_fold_open() {
     let mut a = the_daemon();
-    // **The folds are the drawn list's**, keyed by row id — the head's own `open_groups` is the
-    // way out's state, and `set_row_fold` keeps both in step (`app::sessions_pane`).
-    for group in letibot_sessionlog::SessionGroup::ALL {
-        a.set_row_fold(group.title(), true);
+    // **The folds are the drawn list's**, keyed by row id — the head's own tree reads the same
+    // state, and `set_row_fold` keeps both in step (`app::sessions_pane`). Opening a project puts
+    // rows on the list that were not there to open, so the walk runs until it adds nothing.
+    for _ in 0..4 {
+        let keys: Vec<String> = a
+            .session_rows()
+            .iter()
+            .map(|r| match r.idx {
+                Some(i) => a.sessions[i].session_id.clone(),
+                None => r.node.key().to_string(),
+            })
+            .collect();
+        for key in keys {
+            a.set_row_fold(&key, true);
+        }
     }
-    a.set_row_fold("s-habr", true);
     let now = drawn(&a, 100);
     assert_eq!(golden("sessions-list-open.txt", now.clone()), now);
     assert!(now.contains("read the repo"), "{now}");
+    assert!(now.contains("review it"), "{now}");
 }
 
 /// **The drawn picture does not depend on the runner's `HOME`.** The rows say `~/Projects/letibot`
@@ -182,7 +194,6 @@ fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
         "one stop per row that can be acted on"
     );
     let plugins = crate::ui::render::row_strings(&list.content.lines, a.cfg.palette());
-    let own =
-        crate::ui::render::row_strings(&a.session_picker().content(100).lines, a.cfg.palette());
+    let own = crate::ui::render::row_strings(&a.session_list(100).content.lines, a.cfg.palette());
     assert_eq!(own, plugins, "the plugin's list is the head's list");
 }

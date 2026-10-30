@@ -1843,27 +1843,28 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     // And nothing was expanded to make that true — the rule is the view's, not the
     // operator's act.
     assert!(a.expanded.is_empty());
-    // **A conversation whose children are in ANOTHER group carries no fold at all.** Since
-    // 2026-10-26 the whole-daemon list is grouped (`session_rows`), so a `mine` conversation's
-    // subagents are under `subagents (N)` and not under it — and a `+`/`-` glyph on its row would
-    // promise rows this list does not hold. What the operator gets instead is the group's count.
+    // **The conversation's own children are folded under it**, and the glyph is what says they
+    // exist. Before the tree they were in a `subagents` group beside the conversation and the row
+    // carried no glyph at all — the tree keeps them where the operator looks for them.
     let mut a = app();
     a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
     a.key(Key::CtrlS);
     let screen = a.screen(100, 30).join("\n");
     let parent = screen
         .lines()
-        .find(|l| l.contains("parent"))
+        .find(|l| l.contains("parent") && (l.contains("+ ") || l.contains("- ")))
         .unwrap_or_else(|| panic!("the parent's row is on the list:\n{screen}"));
     assert!(
-        !parent.contains("+ ") && !parent.contains("- "),
-        "a conversation whose children are in another group draws no fold over them: {parent}"
-    );
-    assert!(
-        screen.contains("subagents ("),
-        "and the group line is what says they exist:\n{screen}"
+        parent.contains('+'),
+        "a conversation whose children are folded away says so: {parent}"
     );
     assert!(!screen.contains("audit the store"), "{screen}");
+    // And the fold is what draws them.
+    a.set_row_fold("s", true);
+    assert!(
+        a.screen(100, 30).join("\n").contains("audit the store"),
+        "the child is drawn once the parent is opened"
+    );
 }
 
 /// **Tab unfolds — and enter does not.** The operator, after using the pane: *"i also

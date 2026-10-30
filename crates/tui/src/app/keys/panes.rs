@@ -292,9 +292,8 @@ impl App {
                     return ControlFlow::Continue(());
                 };
                 let Some(act) = row.enter.clone() else {
-                    // **A row with no act on Enter says why it has none** rather than looking
-                    // broken: `mine` is always open, and that is the whole of the answer.
-                    self.say_mine_always_open();
+                    // **A row with no act on Enter** — there is none in this tree, and a key that
+                    // said nothing would be a key that looked broken.
                     return ControlFlow::Break(None);
                 };
                 ControlFlow::Break(self.perform(&row.id, &act))
@@ -347,18 +346,17 @@ impl App {
         }
     }
 
-    /// **→ and ← on the session picker: a conversation with sub-sessions opens and closes**, the
-    /// two gestures a tree uses everywhere — and the reason a collapsed default can afford to be
+    /// **→ and ← on the session picker: a row with rows under it opens and closes**, the two
+    /// gestures a tree uses everywhere — and the reason a collapsed default can afford to be
     /// collapsed. **A child's ← closes its PARENT**, so `←` means *back up the tree* rather than
     /// nothing at all on the row you just arrived at.
     ///
-    /// # What ← means on a row that has no parent on this list
+    /// # What ← means on a row whose parent is not on this list
     ///
-    /// Since the list is grouped (`App::session_rows`), a `task` child of the operator's own
-    /// conversation is drawn as a ROOT of the `subagents` tree: its parent is in `mine` and is not
-    /// on this group's list. The edge it sits on is the GROUP, so that is what ← closes — *back out
-    /// of the tree you are in*, which is the gesture, one level up. A `mine` conversation is its
-    /// own tree's top and closes itself, exactly as it always did.
+    /// A `task` child whose parent this daemon does not hold is drawn as a ROOT of its project's
+    /// tree, and the edge it sits on is then the nearest row above it that folds — its project, or
+    /// its group under `system` — so that is what ← closes: *back out of the tree you are in*,
+    /// which is the gesture, one level up.
     fn picker_fold(&mut self, open: bool) -> ControlFlow<Option<Action>> {
         // **A row that folds is the row's own act, with this key's direction** — the layer says
         // which rows fold (`enter: {fold: true}`), the head keeps the state, and `→`/`←` are the
@@ -374,7 +372,6 @@ impl App {
             // **A row with no act on Enter, that also cannot fold**, says why rather than
             // appearing to swallow the key.
             None if row.session.is_none() => {
-                self.say_mine_always_open();
                 return ControlFlow::Break(None);
             }
             _ => {}

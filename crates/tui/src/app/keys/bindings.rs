@@ -543,28 +543,18 @@ impl App {
             // picker's footer is a function of the row the cursor is on, and this head used to
             // spell that function a second time here, which is how the two drifted apart.
             //
-            // **Two sources, one shape.** When the built-in `sessions` layer draws the list
-            // (`app::sessions_pane`) the words are the row's own `enter` act, read by
-            // [`App::list_says`]; when the head draws its own list they are rano's
-            // (`SessionPicker::hint_text`, bf3fa48), whose FIRST segment is this binding's.
+            // **Two sources, one shape.** Whichever list is drawn — the built-in `sessions`
+            // layer's answer or the head's own tree (`app::sessions_pane`, one door) — the words
+            // are the row's own `enter` act, read by [`App::list_says`].
             //
-            // **`mine` is the row where Enter says nothing** — it carries no act at all, so the
-            // binding is dropped from the bar. A key that does nothing and says nothing is a
-            // broken key; a key that does nothing and is not offered is the truth.
-            (Surface::Picker, Act::Open) => {
-                if let Some(list) = self.sessions_list(self.picker_width()) {
-                    list.selected(self.picker_sel)
-                        .and_then(|row| self.list_says(row))
-                        .map(str::to_string)
-                } else {
-                    self.session_picker()
-                        .hint_text()
-                        .as_deref()
-                        .and_then(|said| said.split(" · ").next())
-                        .and_then(|first| first.strip_prefix("enter "))
-                        .map(str::to_string)
-                }
-            }
+            // **A row with no act drops the binding from the bar.** A key that does nothing and
+            // says nothing is a broken key; a key that does nothing and is not offered is the
+            // truth.
+            (Surface::Picker, Act::Open) => self
+                .picker_list(self.picker_width())
+                .selected(self.picker_sel)
+                .and_then(|row| self.list_says(row))
+                .map(str::to_string),
             // **Said only on a row that waits on something** — `w` is not on the bar over a
             // row it would do nothing on.
             (Surface::Todos, Act::WaitsOn) => self.selected_wait().map(|w| match w {

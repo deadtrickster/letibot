@@ -66,6 +66,11 @@ const HINT: [&str; 5] = [
 const NOTE: &str = "switching does not stop anything: a turn keeps running in the session you \
                     left, and it is still there when you come back.";
 
+/// What the list says when the daemon holds nothing — the same sentence the built-in layer answers
+/// with, so an empty list is one picture whichever of the two drew it.
+const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
+                     recorded log and has no daemon to ask.";
+
 /// One row the list drew, as the keys read it.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Listed {
@@ -628,11 +633,28 @@ impl App {
 
     /// The daemon's session list as the feed spells it — one object per session, every field the
     /// list's rows are made of.
+    ///
+    /// **The tree's two facts are computed HERE and not by the layer.** `project` and `system` are
+    /// what a row's place in the tree is decided by ([`App::session_rows`]), and they are facts
+    /// about the whole list — a project's name depends on the other projects, and a reviewer is
+    /// known by the chain it hangs from. A guest that recomputed them would be a second opinion
+    /// about where a session goes, which is the one thing the layer must not have: it decides what
+    /// a row SAYS, the head decides where it sits.
     fn sessions_feed(&self) -> Value {
+        let place = self.placements();
+        let projects = self.projects(&place);
+        let name_of = |key: &str| {
+            projects
+                .iter()
+                .find(|p| p.key == key)
+                .map(|p| p.name.clone())
+                .unwrap_or_default()
+        };
         let sessions: Vec<Value> = self
             .sessions
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(i, s)| {
                 json!({
                     "id": s.session_id,
                     "title": s.title,
@@ -653,6 +675,11 @@ impl App {
                     // a row of a session list is read for. Off the daemon's own brief, which reads
                     // the store's row (`SessionBrief::moved_ms`).
                     "moved_ms": s.moved_ms,
+                    // **Where it sits**: the project's key and the name to draw, and the `system`
+                    // group when it is one of the harness's own agents.
+                    "project": place[i].project,
+                    "project_name": name_of(&place[i].project),
+                    "system": place[i].system.map(|k| k.title()),
                 })
             })
             .collect();
@@ -697,7 +724,11 @@ impl App {
         match act {
             RowAct::Switch { session } => self.switch_to(session.clone()),
             RowAct::Fold { .. } => {
-                let open = !self.picker_folds.get(id).copied().unwrap_or(false);
+                // **The new state is the opposite of what is DRAWN**, not of what the fold map
+                // holds: a project and its `system` branch open by default and have no entry
+                // until somebody folds one, so reading the map alone turned the first click into
+                // a second "open".
+                let open = !matches!(self.drawn_open(id), Some(Fold::Open));
                 self.set_row_fold(id, open);
                 None
             }
@@ -727,42 +758,194 @@ impl App {
     /// **The list's rows, for the keys** — the plugin's when there is one, the head's own
     /// otherwise, as one shape.
     pub(crate) fn picker_rows(&self) -> Vec<Listed> {
-        if let Some(list) = self.sessions_list(self.picker_width()) {
-            return list.rows;
-        }
+        self.picker_list(self.picker_width()).rows
+    }
+
+    /// **The list being drawn** — the layer's answer when there is one, the head's own tree when
+    /// there is not. One door, because the drawing, the keys, the click map and `/switch N` must
+    /// all be reading the same list.
+    pub(crate) fn picker_list(&self, w: usize) -> List {
+        self.sessions_list(w)
+            .unwrap_or_else(|| self.session_list(w))
+    }
+
+    /// **The head's own list, drawn from [`App::session_rows`]** — the way out when no layer
+    /// answers, and the same rano primitive the layer's answer is drawn through, so the two
+    /// pictures cannot come to differ.
+    pub(crate) fn session_list(&self, w: usize) -> List {
+        let rows = self.session_rows();
+        let mut tree: Vec<TreeRow> = Vec::with_capacity(rows.len());
+        let mut listed: Vec<Listed> = Vec::with_capacity(rows.len());
         let mut number = 0;
-        self.session_rows()
-            .iter()
-            .map(|r| match r.idx {
+        for r in &rows {
+            let open = r
+                .open
+                .map(|o| if o { Fold::Open } else { Fold::Closed });
+            match r.idx {
                 Some(i) => {
                     // **A number is the n-th SESSION**, which is what the drawn list writes beside
                     // the row and what `/switch N` reads — one enumeration, here.
                     number += 1;
-                    Listed {
-                        id: self.sessions[i].session_id.clone(),
+                    let id = self.sessions[i].session_id.clone();
+                    tree.push(TreeRow {
+                        id: Some(id.clone()),
+                        depth: r.depth,
+                        number: Some(number),
+                        open,
+                        cells: vec![TreeCell::role(
+                            self.row_name(i),
+                            if id == self.session_id {
+                                rano::style::Role::Strong
+                            } else {
+                                rano::style::Role::Plain
+                            },
+                        )],
+                        facts: self.session_row_facts(i),
+                        detail: vec![self.row_under(i)],
+                        detail_column: None,
+                        actions: vec![TreeAction::new("enter", "switches")],
+                        ..TreeRow::default()
+                    });
+                    listed.push(Listed {
+                        id: id.clone(),
                         session: Some(i),
                         number: Some(number),
-                        enter: Some(RowAct::switch(self.sessions[i].session_id.clone())),
-                        open: None,
-                    }
+                        enter: Some(RowAct::switch(id)),
+                        open,
+                    });
                 }
-                None => Listed {
-                    id: r.group.title().to_string(),
-                    session: None,
-                    number: None,
-                    // **`mine` is the row Enter cannot act on** and it carries no act, so the bar
-                    // cannot offer a fold that does not happen.
-                    enter: (!r.group.is_mine()).then(RowAct::fold),
-                    open: if r.group.is_mine() {
-                        Some(Fold::Fixed)
-                    } else if self.open_groups.contains(&r.group) {
-                        Some(Fold::Open)
+                None => {
+                    // **A node's line is a stop with an act of its own** — `enter` folds it — and
+                    // it carries no number, because a number is somewhere to go.
+                    let key = r.node.key().to_string();
+                    let words = if r.open == Some(true) {
+                        "folds it away"
                     } else {
-                        Some(Fold::Closed)
-                    },
-                },
-            })
-            .collect()
+                        "unfolds it"
+                    };
+                    tree.push(TreeRow {
+                        id: Some(key.clone()),
+                        depth: r.depth,
+                        number: None,
+                        open,
+                        cells: vec![TreeCell::role(
+                            r.node.title(),
+                            rano::style::Role::Strong,
+                        )],
+                        facts: Vec::new(),
+                        detail: vec![r.node.legend().to_string()],
+                        detail_column: None,
+                        actions: vec![TreeAction::new("enter", words)],
+                        ..TreeRow::default()
+                    });
+                    listed.push(Listed {
+                        id: key,
+                        session: None,
+                        number: None,
+                        enter: Some(RowAct::fold()),
+                        open,
+                    });
+                }
+            }
+        }
+        let list = TreeList {
+            title: TITLE.to_string(),
+            rows: tree,
+            selected: Some(self.picker_sel),
+            empty: EMPTY.to_string(),
+            fold_column: true,
+            detail_column: 6,
+            margin: 2,
+            hint: HINT.iter().map(|h| (*h).to_string()).collect(),
+            notes: vec![NOTE.to_string()],
+        };
+        List {
+            rows: listed,
+            content: list.content(w.max(20)),
+        }
+    }
+
+    /// **A session's name on its row** — its slug when it has one, `WAITING ON YOU` when it is
+    /// waiting, and paused nags when they are. The layer's `name_of` is this same sentence, and
+    /// the two are held together by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
+    fn row_name(&self, i: usize) -> String {
+        let s = &self.sessions[i];
+        let name = if s.title.is_empty() {
+            letibot_sessionlog::registry::short_id(&s.session_id).to_string()
+        } else {
+            s.title.clone()
+        };
+        let name = if s.slug.trim().is_empty() {
+            name
+        } else {
+            format!("{} · {name}", s.slug)
+        };
+        let name = match s.waits_on_operator {
+            0 => name,
+            1 => format!("{name} · WAITING ON YOU"),
+            n => format!("{name} · WAITING ON YOU ({n})"),
+        };
+        if s.nags_paused.is_some() {
+            format!("{name} · nags paused")
+        } else {
+            name
+        }
+    }
+
+    /// The right-hand column of a session's row: what it IS, in one run of facts.
+    fn session_row_facts(&self, i: usize) -> Vec<TreeCell> {
+        let s = &self.sessions[i];
+        let mut facts: Vec<String> = Vec::new();
+        if s.status.running {
+            facts.push("generating".into());
+        }
+        if !s.live {
+            facts.push("on disk".into());
+        }
+        let rows = if s.stored_items > 0 {
+            s.stored_items as usize
+        } else {
+            s.status.items
+        };
+        if rows > 0 {
+            facts.push(format!("{rows} rows"));
+        }
+        if s.status.heads > 0 {
+            facts.push(format!(
+                "{} head{}",
+                s.status.heads,
+                if s.status.heads == 1 { "" } else { "s" }
+            ));
+        }
+        if !s.wiring.model.is_empty() {
+            facts.push(s.wiring.model.clone());
+        }
+        if facts.is_empty() {
+            return Vec::new();
+        }
+        vec![TreeCell::role(
+            facts.join(" · "),
+            if s.status.running {
+                rano::style::Role::Pending
+            } else {
+                rano::style::Role::Faint
+            },
+        )]
+    }
+
+    /// The faint line under a session's row: the full id, and the workspace when there is one —
+    /// for a stored session the only thing on the row that says what the conversation was about.
+    fn row_under(&self, i: usize) -> String {
+        let s = &self.sessions[i];
+        if s.wiring.workspace.is_empty() {
+            s.session_id.clone()
+        } else {
+            format!(
+                "{}  {}",
+                s.session_id,
+                self.tilde_path(&s.wiring.workspace)
+            )
+        }
     }
 
     /// **The width the list is measured at when it is not being drawn** — the frame's own, so a
@@ -780,34 +963,32 @@ impl App {
         rows.get(self.picker_sel.min(rows.len() - 1)).cloned()
     }
 
+    /// **How a row of the drawn list stands** — `Some(Fold::Open)`/`Closed` for a row that folds,
+    /// `None` for one that does not. Read by [`App::perform`] so a fold flips what the screen says
+    /// rather than what the map happens to hold.
+    fn drawn_open(&self, id: &str) -> Option<Fold> {
+        self.picker_rows()
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.open)
+    }
+
     /// **Open or close a row that folds** — one door for Enter, the arrows and a click, so a fold
     /// is one act however it was asked for.
     ///
-    /// The state is the head's (`picker_folds`, keyed by row id), and it is ALSO written into the
-    /// head's own lists — `open_groups` and `expanded` — so the way out (a head whose layer is
-    /// broken) starts from the state the person left, rather than from the default.
+    /// The state is the head's (`picker_folds`, keyed by row id) for the list that is DRAWN, and
+    /// it is ALSO written into `expanded` — the head's own tree reads that one, so the way out (a
+    /// head whose layer is broken) starts from the state the person left rather than from the
+    /// default.
     pub(crate) fn set_row_fold(&mut self, id: &str, open: bool) {
         self.picker_folds.insert(id.to_string(), open);
-        if let Some(group) = SessionGroup::ALL.iter().find(|g| g.title() == id) {
-            if !group.is_mine() {
-                let at = self.open_groups.iter().position(|g| g == group);
-                match (open, at) {
-                    (true, None) => self.open_groups.push(*group),
-                    (false, Some(at)) => {
-                        self.open_groups.remove(at);
-                    }
-                    _ => {}
-                }
+        let at = self.expanded.iter().position(|e| e == id);
+        match (open, at) {
+            (true, None) => self.expanded.push(id.to_string()),
+            (false, Some(at)) => {
+                self.expanded.remove(at);
             }
-        } else {
-            let at = self.expanded.iter().position(|e| e == id);
-            match (open, at) {
-                (true, None) => self.expanded.push(id.to_string()),
-                (false, Some(at)) => {
-                    self.expanded.remove(at);
-                }
-                _ => {}
-            }
+            _ => {}
         }
         self.redraw = true;
     }

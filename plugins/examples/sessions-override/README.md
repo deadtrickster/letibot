@@ -9,14 +9,15 @@ cp plugins/examples/sessions-override/plugin.toml \
    plugins/examples/sessions-override/plugin.wasm .letibot/plugins/sessions/
 ```
 
-Open the session list (`ctrl-s`). The `one-shots` group is drawn as **`leftovers (0)`**, says why,
-and lists nothing. Everything else — the order, the other groups, the rows, the numbers, the keys —
-is what the built-in answered, because this layer never re-implements the list: it asks for the
-layer below (`{"below": <the request>}`) and edits two lines of the answer.
+Open the session list (`ctrl-s`). The project's `system` branch — the harness's own agents — is
+drawn as **`the harness's own (0)`**, says why, and lists nothing. Everything else — the order, the
+projects, the rows, the numbers, the keys — is what the built-in answered, because this layer never
+re-implements the list: it asks for the layer below (`{"below": <the request>}`) and edits two
+lines of the answer.
 
 | file | is |
 |---|---|
-| `src/lib.rs` | the layer: ask below on the first call, edit the group on the second |
+| `src/lib.rs` | the layer: ask below on the first call, edit the branch on the second |
 | `plugin.toml` | what it reads (`feeds = ["sessions"]`) and what its rows may ask the host to do (`actions = ["switch", "fold"]`) |
 | `plugin.wasm` | the built module, committed so the example runs without a wasm toolchain |
 
