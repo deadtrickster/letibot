@@ -183,6 +183,16 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         "restart_jobs_only_warning.txt",
         &warning_detail(&text, &[said::job("j46", 0)]),
     );
+
+    // **A restart with nothing to restore** — the operator, 2026-10-30: *"mb always tell agent
+    // about restart? with the current time lol"*. One sentence, no list, and its own code.
+    let text = notice(
+        &header(&quick, BACK, RESTORE_WITHIN, Outcome::Nothing),
+        &[],
+        Outcome::Nothing,
+    );
+    pin("restart_nothing_notice.txt", &text);
+    pin("restart_nothing_warning.txt", &warning_detail(&text, &[]));
 }
 
 /// **The `prefix_stale` sentence pg-noop's head drew as a wall** — seated 09-20 17:51, a tool

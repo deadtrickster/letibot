@@ -24,6 +24,10 @@ const LATE_NOTICE: &str = include_str!("fixtures/restart_late_notice.txt");
 const LATE_WARNING: &str = include_str!("fixtures/restart_late_warning.txt");
 const JOBS_ONLY_NOTICE: &str = include_str!("fixtures/restart_jobs_only_notice.txt");
 const JOBS_ONLY_WARNING: &str = include_str!("fixtures/restart_jobs_only_warning.txt");
+/// **A restart with nothing to restore** — the daemon came back, says when, and nothing was
+/// running. Its own code (`restart_nothing`) because it is its own sentence.
+const NOTHING_NOTICE: &str = include_str!("fixtures/restart_nothing_notice.txt");
+const NOTHING_WARNING: &str = include_str!("fixtures/restart_nothing_warning.txt");
 /// **The operator's paste, as the daemon before this build wrote it** — *"down for 0s …
 /// estimated from nothing (no record said when)"*. A head attached to an older daemon still
 /// reads it; not pinned, because no daemon from this build writes it.
@@ -77,6 +81,13 @@ fn every_restart_reads_as_its_one_line() {
             PASTED_WARNING,
             PASTED_NOTICE,
             "restarted · stop time unknown · reminded: 1 job · click for details",
+        ),
+        (
+            "a restart with nothing to restore",
+            "restart_nothing",
+            NOTHING_WARNING,
+            NOTHING_NOTICE,
+            "restarted · down 4s · click for details",
         ),
     ] {
         let w = warning_restart(warning).unwrap_or_else(|| panic!("{what}: the warning parses"));
@@ -167,6 +178,28 @@ fn the_restart_notice_is_one_session_line_and_opens_whole() {
         assert!(holds(&whole, first), "the popup lost the header: {whole}");
         assert!(holds(&whole, "To run it again: `bash {"), "{whole}");
     }
+}
+
+/// **The empty restart is one `session ·` line too**, and the colon in its sentence does not end
+/// the notice: the card splits a row only where another notice follows, and nothing follows this.
+#[test]
+fn an_empty_restart_notice_is_one_session_line() {
+    let mut a = with_notice(NOTHING_NOTICE);
+    let screen = a.screen(200, 40);
+    let joined = screen.join("\n");
+    assert_eq!(
+        rows_with(&screen, "session · restarted · down 4s · click for details").len(),
+        1,
+        "{joined}"
+    );
+    assert_eq!(a.notice_rows.len(), 1, "{:?}", a.notice_rows);
+    let (y, _) = a.notice_rows[0];
+    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
+    let whole = popup_text(&mut a);
+    assert!(
+        holds(&whole, NOTHING_NOTICE),
+        "the popup lost the sentence: {whole}"
+    );
 }
 
 /// **A narrow screen cuts the line** — it never wraps.

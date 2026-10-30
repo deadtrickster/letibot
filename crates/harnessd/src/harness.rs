@@ -11657,11 +11657,36 @@ impl Harness {
             let _ = store.put_job(&sid, &lost);
             let _ = store.deliver_job(&sid, &job.handle);
         }
+        // **A restart is SAID, whatever the store holds** — the operator, 2026-10-30, after one
+        // restart had told the model something and the next had said nothing: *"mb always tell
+        // agent about restart? with the current time lol"*. That is a clock and not a courtesy:
+        // the model's sense of time went through a stop and a start, and only this daemon knows
+        // when. A session that existed before this daemon started was held by a daemon that is
+        // gone — which is the whole of what `came_back` asks, and it is asked of the session ROW
+        // because a session with nothing running has no other record to ask.
+        let came_back = store
+            .session(&sid)
+            .ok()
+            .flatten()
+            .is_some_and(|s| (s.created_ms.max(0) as u64) < back_ms);
+        // **Once per (session, restart)** — `queue_told` is the store's own "said once" table and
+        // the key names the daemon, so a session this daemon opens twice says it once, and the
+        // NEXT daemon says it again because it is a different restart. Spent on the first open
+        // whatever that open says, so an empty reopen cannot say what the first one already did.
+        // A store that cannot record it is treated as *not yet said*: a sentence said twice is
+        // dull, and one never said is the defect this exists for.
+        let already_said = came_back
+            && !store
+                .tell_once(&format!("restart:{sid}:{me}"), back_ms)
+                .unwrap_or(true);
         if runs.is_empty() && monitors.is_empty() && jobs.is_empty() && settled.is_empty() {
             if retire_helpers {
                 let _ = self.subagents.resume_recorded(RestoreMode::Remind);
             }
-            return None;
+            if !came_back || already_said {
+                return None;
+            }
+            return self.say_nothing_was_running(&store, back_ms);
         }
 
         // **How long the daemon was down**: from the latest stop among the daemons these records
@@ -11842,6 +11867,109 @@ impl Harness {
         });
         self.restart_notices.push(text.clone());
         Some(text)
+    }
+
+    /// **A restart with nothing to restore, said anyway** — the operator, 2026-10-30: *"mb always
+    /// tell agent about restart? with the current time lol"*. The sentence is
+    /// [`crate::restart::nothing_running`]'s; this is the reading behind it and the door it takes.
+    ///
+    /// # Which daemon stopped, from a session with no work in it
+    ///
+    /// The stop is dated from the daemons the session's OWN rows name, whatever state those rows
+    /// are in: a monitor it retired, a child that finished, the last job it ran. A session that
+    /// names nobody — created, never used, nothing run in it — has no record that could date a
+    /// stop, and the sentence says `unknown` rather than borrowing the newest stop in the store,
+    /// which belongs to whichever daemon on this box stopped last and is a claim about another
+    /// folder's process.
+    ///
+    /// # The door, and why it is not the one a restore takes
+    ///
+    /// There is nothing to continue, so the sentence is filed and the model reads it when it next
+    /// reads ([`Harness::say_without_a_turn`]): **no wake, no turn**. A restore is the opposite —
+    /// a resumed child is work to continue — and keeps the turn it has always had.
+    fn say_nothing_was_running(&mut self, store: &Store, back_ms: u64) -> Option<String> {
+        let sid = self.cfg.session_id.clone();
+        let mut instances: Vec<(String, u64)> = Vec::new();
+        let mut note =
+            |instance: &str, at: u64| match instances.iter_mut().find(|(i, _)| i == instance) {
+                Some((_, t)) => *t = (*t).max(at),
+                None => instances.push((instance.to_string(), at)),
+            };
+        for m in store.monitors_of(&sid).unwrap_or_default() {
+            note(&m.instance, m.updated_ms);
+        }
+        for r in store.subagent_runs_of(&sid).unwrap_or_default() {
+            note(&r.instance, r.updated_ms);
+        }
+        // The newest job row is one query, and it is the row a session that ran nothing since
+        // its last `bash` names its daemon by.
+        if let Some(last) = store.jobs(&sid).unwrap_or_default().last()
+            && let Some(ctx) = store.job_context(&sid, &last.handle).ok().flatten()
+        {
+            note(&ctx.instance, ctx.started_ms);
+        }
+        let stop = crate::restart::Stopped::latest(
+            instances
+                .iter()
+                .map(|(i, at)| crate::restart::stop_of(store, i, *at)),
+        );
+        let text = crate::restart::header(
+            &stop,
+            back_ms,
+            self.cfg.restore_within,
+            crate::restart::Outcome::Nothing,
+        );
+        eprintln!("  {sid} · restart: nothing was running — {text}");
+        self.hub.publish(SessionEvent::Warning {
+            code: crate::restart::Outcome::Nothing.code().into(),
+            detail: crate::restart::warning_detail(&text, &[]),
+            compaction: None,
+        });
+        if let Err(e) = self.say_without_a_turn(&text) {
+            // The operator's line is published above either way; a model that could not be told
+            // is said here rather than swallowed.
+            eprintln!("  {sid} · restart: the notice was not recorded ({e})");
+        }
+        Some(text)
+    }
+
+    /// **Tell this session's model something without starting a turn** — the door the empty
+    /// restart takes (`crate::restart`), and the two states it has to tell apart.
+    ///
+    /// * **A turn is running** → the step boundary of THAT turn (`self.injected`, the queue the
+    ///   harness's own nudges ride): the model reads the sentence in the turn already open, and
+    ///   nothing is preempted.
+    /// * **Idle** → a transcript row, which the model reads at its next turn — whenever that is.
+    ///   **No wake**: a wake is a model call, and a call spent to say *"the daemon came back at
+    ///   21:28"* is a call spent on a sentence. What the line is for is closing a gap in the
+    ///   model's sense of time, and that gap is closed whenever it next reads.
+    ///
+    /// A row rather than an injection in the idle case, deliberately: an injection is read at a
+    /// step boundary and there is no step boundary to wait for, while a row is in the transcript
+    /// whether or not a turn ever runs — the same reason [`Harness::note_to_model`] queues rather
+    /// than speaks.
+    fn say_without_a_turn(&mut self, text: &str) -> Result<(), HarnessError> {
+        let Some(text) = self.noticed(letibot_plugin::notice::RESEAT, text, serde_json::json!({}))
+        else {
+            return Ok(());
+        };
+        if self.prompt_in_flight.load(Ordering::SeqCst) {
+            self.injected
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(text);
+            return Ok(());
+        }
+        self.record_notice(&text)
+    }
+
+    /// **A turn is running, as far as this test is concerned** — the one state
+    /// [`Harness::say_without_a_turn`] branches on that a test cannot reach by running a turn: a
+    /// turn holds the harness for its whole life, so nothing else can call in while one is in
+    /// flight. See `tests::restart_notice`.
+    #[cfg(test)]
+    pub(crate) fn hold_a_turn_open_for_test(&self, open: bool) {
+        self.prompt_in_flight.store(open, Ordering::SeqCst);
     }
 
     /// **Monitors this daemon recorded that are no longer live** are closed in the store, so a

@@ -1,0 +1,1 @@
+[restart] the daemon came back at 2026-10-12 08:10:56 UTC (down 4s, stopped at 2026-10-12 08:10:52 UTC): nothing was running

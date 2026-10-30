@@ -12,8 +12,15 @@
 //! restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
 //! restarted · down ~3h12m · reminded: 1 subagent, 1 monitor, 1 job · click for details
 //! restarted · stop time unknown · reminded: 1 job · click for details
+//! restarted · down 1s · click for details
 //! session · restarted · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
 //! ```
+//!
+//! **The fourth is a restart with nothing to restore** (`restart_nothing`): the daemon came back
+//! and says when, and there is no list under it. The operator, 2026-10-30: *"mb always tell agent
+//! about restart? with the current time lol"* — so that sentence is its own opening
+//! (`[restart] the daemon came back at … (down 1s, stopped at …): nothing was running`) and the
+//! line it draws has no counts in it.
 //!
 //! The hub warning (`restart_restored` / `restart_reminded`, `restart::warning_detail` in
 //! harnessd) is a header line and one `  - KIND NAME: VERDICT` line per thing; the session notice
@@ -38,6 +45,10 @@ use crate::ui::transcript::line_cards::{CLICK, Card, SessionKind, WarningKind};
 const OPENS: &str = "[restart] the daemon ";
 /// A known down time: `… was down for 4m12s (stopped at …; back at …) — …`.
 const DOWN_FOR: &str = "[restart] the daemon was down for ";
+/// **A restart with nothing to restore**: `… came back at 21:28:20 (down 1s, stopped at …):
+/// nothing was running`. Its return time leads it, so the down time is a clause rather than the
+/// opening — see `restart::nothing_running`.
+const CAME_BACK: &str = "[restart] the daemon came back at ";
 /// An unknown one: `… restarted at …; when the previous one stopped is unknown …`.
 const UNKNOWN: &str = "when the previous one stopped is unknown";
 /// What the daemons before this build said for an unknown stop.
@@ -141,6 +152,22 @@ impl Restart {
 
 /// **The header line, read** — `None` for an opening this head does not know.
 fn down_of(header: &str) -> Option<Down> {
+    // **The empty restart**, whose down time is a clause after the return time: `(down 1s,
+    // stopped at …)` or `(down unknown, and no record says …)`.
+    if let Some(r) = header.strip_prefix(CAME_BACK) {
+        let down = r.split_once("(down ")?.1;
+        let span = down.split([',', ')']).next()?;
+        if span == "unknown" {
+            return Some(Down::Unknown);
+        }
+        if span.is_empty() || span.contains(' ') || !span.ends_with(['s', 'm']) {
+            return None;
+        }
+        return Some(Down::Known {
+            span: span.to_string(),
+            estimated: down.contains(", estimated from "),
+        });
+    }
     if let Some(r) = header.strip_prefix(DOWN_FOR) {
         let (span, rest) = r.split_once(" (")?;
         if span.is_empty() || span.contains(' ') || !span.ends_with(['s', 'm']) {
@@ -166,10 +193,11 @@ fn empty(down: Down) -> Restart {
     }
 }
 
-/// **A `restart_restored` / `restart_reminded` warning's detail, read.**
+/// **A `restart_restored` / `restart_reminded` / `restart_nothing` warning's detail, read.**
 pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
     let mut lines = detail.lines();
-    let mut r = empty(down_of(lines.next()?)?);
+    let head = lines.next()?;
+    let mut r = empty(down_of(head)?);
     let mut any = false;
     for l in lines {
         let Some(said) = l.strip_prefix("  - ") else {
@@ -198,7 +226,10 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
         }
         any = true;
     }
-    any.then_some(r)
+    // **A header with nothing under it is a card only for the empty restart**, which has no list
+    // to have: every other opening is a list that came back empty, and a shape this head cannot
+    // count is left to the popup rather than drawn as *"restarted"* and nothing else.
+    (any || head.starts_with(CAME_BACK)).then_some(r)
 }
 
 /// **A session's `[restart] …` notice, read** — the model's words for the same counts.
@@ -258,7 +289,7 @@ pub(crate) const SESSION: SessionKind = SessionKind {
 
 /// **And its hub warnings.**
 pub(crate) const WARNING: WarningKind = WarningKind {
-    codes: &["restart_restored", "restart_reminded"],
+    codes: &["restart_restored", "restart_reminded", "restart_nothing"],
     read: warning_card,
 };
 

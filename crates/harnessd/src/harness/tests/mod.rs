@@ -43,5 +43,6 @@ mod misc;
 mod operator_ask;
 mod prefix_on_open;
 mod questions;
+mod restart_notice;
 mod store_writes;
 mod workspace;
