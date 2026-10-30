@@ -550,7 +550,16 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
     let (wt, base, head) = branch(&w.repo, "slow", "s.txt");
     w.enqueue("slow", &wt, &base, &head);
     let mut e = env(Arc::new(LocalGate), w.door.clone(), "a");
-    Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_secs(1);
+    // **The deadline has to be longer than the gate's own SETUP, or the test measures the
+    // machine.** The clock starts in `start_gate`, and before the step's first line runs the gate
+    // makes its scratch directory and resolves the cgroup its step joins — and on a loaded box
+    // that is more than a second: MEASURED 2026-10-30, this test failed the landing gate of
+    // another branch (`crates/harnessd/src/mergequeue/serve/tests.rs:545`, `Result::unwrap()` on
+    // `Os { code: 2, kind: NotFound }` reading `sleeper.pid`) because the deadline had passed
+    // before the step existed to write it. Ten seconds is still six times shorter than the step's
+    // own sleep, so what the test is about — a step still running when the deadline passes — is
+    // unchanged; what is no longer asserted is that this box can start a shell in a second.
+    Arc::get_mut(&mut e).unwrap().gate_deadline = Duration::from_secs(10);
     let store = w.store();
     store
         .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
@@ -569,8 +578,10 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
             .iter()
             .any(|s| s.outcome == letibot_tokencore::store::MergeGateOutcome::TimedOut)
     );
+    // The step writes this before it sleeps, so a `NotFound` here says the gate's setup outran
+    // the deadline above — not that the step ran and was killed.
     let pid: i32 = std::fs::read_to_string(&pidfile)
-        .unwrap()
+        .expect("the step started and wrote its pid before the deadline")
         .trim()
         .parse()
         .unwrap();
