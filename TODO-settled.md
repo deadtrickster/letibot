@@ -1321,3 +1321,486 @@ the row alone.
 gitignored, and the corpus is the operator's).
 
 **Still open?** `git log --oneline -S"gate:boundary" -- crates/tools/src/adjudicate.rs`.
+---
+
+# Settled 2026-10-30 — the twenty entries that said "BUILT on `<branch>`, not merged"
+
+Every one of those branches is gone (`git rev-parse` answers nothing for all twenty), so none of
+them was a queue anybody could pick from. Each entry was re-checked **in the tree**, not against
+its own prose: the behaviour is here when a type, a function, a key or a warning code is here, and
+the strongest evidence is a test that already exists — the ones marked **RUN** were run for this
+pass (private `CARGO_TARGET_DIR`, `--offline`). Where an entry stated a `done when`, that is the
+standard it is judged by; where it did not, its own "what landed" list is.
+
+The entries as filed — every measurement, every argument, the whole record — are in `TODO.md` at
+commit `4fb39324`, which is where to read them; this is their verdict, what main has, and what the
+entry listed as left (kept so it is not lost, and so the next reader does not re-measure it).
+
+Of the twenty: **nineteen settled, one still open (R98), none could-not-establish.**
+
+---
+
+## Store busy — a session must never die of `database is locked` — **SETTLED 2026-10-30: every write outlasts a busy lock, and `persist` waits instead of dying**
+
+*The entry claimed:* a child died on `sqlite: database is locked`; `store-lock-robust` fixed it by
+retrying single-statement writes and `BEGIN IMMEDIATE` transactions with backoff, chunking
+`append_items`, and making `Harness::persist` wait.
+
+**Main has it.** `crates/tokencore/src/store/busy.rs` — `is_busy_sql`, `backoff` (50 ms doubling),
+`retry_busy`/`retry_store`/`retry_sql`, `BUSY_RETRY_TOTAL` (exported at `store.rs:94`);
+`Store::write_tx` (`store.rs:4468`); `Store::append_items` with `APPEND_CHUNK = 64` and one
+`BEGIN IMMEDIATE` per chunk (`store.rs:3269`, `:3327`); `Harness::persist`'s wait, which says
+`store_busy_wait` at most every two minutes (`harness.rs:16320`, `:16424`).
+
+Two of the entry's four "still open" items are closed as well: the re-render copy now goes through
+`append_items` (`harness.rs:5713-5726` — the comment there names the 2026-10-12 six-and-a-half
+minute write lock), and `crates/turn/tests/restore.rs` no longer copies the live store (a
+`LiveView`; the doc at `:69-86` records why the copy was wrong).
+
+**Tests — RUN:** `store::busy::tests::an_append_outlasts_a_lock_held_past_the_busy_timeout`,
+`store::busy::tests::a_long_copy_commits_in_chunks_and_lands_every_row`,
+`store::subagents::tests::every_write_outlasts_a_lock_held_past_the_busy_timeout` (8 passed,
+0 failed).
+
+*Left:* `synchronous = FULL` is still the store's deliberate choice (`store.rs:63`, `:1930`) —
+`NORMAL` was the operator's call and was not taken; and there is no harness-level test that drives
+`persist` through a >90 s busy store (the store-level tests cover the retry).
+
+---
+
+## R61 — Review and merge are two queues — **SETTLED 2026-10-30: two tables, one lease per repository, a verdict bound to a head**
+
+*The entry claimed:* review and merge were one row served by every daemon's worker; the branch
+built two queues, a per-repository lease, conditional moves with history, a verdict bound to the
+commit it judged, a deadline'd gate and a pane.
+
+**Main has it.** `crates/tokencore/src/store/queues.rs`: `review_queue` (`:61`), `merge_queue` with
+its `repository` column, `queue_transition` (append-only by trigger), `queue_lease`, and `Move`
+restricted to `REVIEW_SETTABLE` (`:620`). `crates/harnessd/src/mergequeue/`: `serve.rs` (the
+per-repository worker and its supervisor), `lease.rs`, `verbs.rs`, `desk.rs`, `gate.rs`,
+`gate_host.rs`, `review.rs`, `notices.rs`, `capacity.rs`, `carry.rs`, `setup.rs`. The pane:
+`crates/tui/src/app/tests/queue.rs` (two tabs, lease age, health, time in state).
+
+**Tests:** `serve::tests::a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review`
+(`serve/tests.rs:914` — R61's own done-when),
+`a_target_that_moves_during_the_gate_is_rebased_onto_and_gated_again` (`:533`),
+`the_landing_pushes_then_installs_and_a_failed_push_installs_nothing` (`:819`),
+`a_new_lease_holder_recovers_what_the_old_one_held_and_the_old_one_stops` (`:2595`).
+
+*Left:* a refusal whose root session this daemon does not hold is raised
+`refusal_undelivered` and nothing resumes it later; the pane's per-row history is the snapshot's
+last 60 moves (the full history is in `queue_transition`); and the entry's three "confirm" items
+are the tree's behaviour now and still unconfirmed by the operator — `/queue clean|rm` withdraw
+rather than delete, `red_target` defaults to `fix`, a landed branch is deleted with `git branch
+-D` when its head and worktree are clean.
+
+---
+
+## R86 — A reviewer with no free VM slot is not an attempt — **SETTLED 2026-10-30: a capacity refusal is a wait, and a block names its attempts**
+
+*The entry claimed:* three reviewers at one head died on firecode's tap shortage and spent R61's
+whole attempt budget in three minutes; `review-capacity-and-block-reason` made a capacity refusal
+a wait that counts no attempt, and made `queue_blocked`/`queue_needs_human` say what each attempt
+was.
+
+**Main has it.** `crates/harnessd/src/mergequeue/capacity.rs` — `vm_capacity` (`:78`, the two
+phrases and the zero-taps guard), `retry_after_ms` (`:117`, 1/2/5 then every 5 min), `streak`,
+`branch_wait`, `gist`, `decisive_reason`, `undecided_heads`. The warnings:
+`queue_waiting_for_vm` (Routine) and `queue_vm_slots_exhausted` (Failure) in
+`crates/sessionlog/src/warning.rs:480-481`, and the head's card rows
+(`crates/tui/src/ui/transcript/review_card.rs:207-208`).
+
+**Tests:** `mergequeue/review/capacity_tests.rs` —
+`a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_frees` (`:295`),
+`a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines` (`:369`),
+`a_real_placement_failure_still_counts_and_the_block_names_each_attempt` (`:539`),
+`three_could_not_decide_verdicts_are_named_with_their_heads_and_the_decisive_reason` (`:586`).
+
+*Left:* the timer is the only trigger — a VM the daemon knows has ended does not wake the row;
+and `notices.rs`'s parked-row text for a model reads `failure`, which now carries the full blocked
+sentence.
+
+---
+
+## R68 — One session lifecycle, one owner per session, one turn tail — **SETTLED 2026-10-30: the three classes are gone, with the tests that caught them**
+
+*The entry claimed:* a child's hub had two readers, nothing was ever released, the turn tails had
+diverged and busy traffic starved the idle work; `r68-lifecycle` removed the classes.
+
+**Main has it.** `letibot_sessionlog::hub::Owner` (`hub.rs:707`) and `Hub::try_command`, which
+answers `None` for a hub it does not own (`:2220`); `Registry::remove` (`registry.rs:1865`);
+`ChildSessionGuard` (`harness.rs:19140`); `Config::child_park_after` (`config.rs:838`, default
+600 s) with `Sessions::park_idle_children`; `crates/harnessd/src/turn_tail.rs`, the one tail every
+door and `serve_child` call, with `tests/turn_tail.rs` asserting one list against five daemon doors
+and a child's prompt.
+
+**Tests:** `registry::the_worker_never_takes_a_command_off_a_hub_owned_by_its_own_thread`
+(`registry.rs:2772`), `session_lifecycle::a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only`
+(`tests/session_lifecycle.rs:411`), `fifty_finished_subagents_leave_no_thread_and_no_registry_entry`
+(`:574`), `a_message_to_a_parked_child_reopens_it_from_the_store` (`:703`).
+
+*Left:* the `report(session, code, detail)` sink was never built — stderr-only `eprintln!` and
+`let _` sites remain; and R68.7's retry storm is quiet rather than gone: the gatekeeper's open is
+still retried on every review pass, and the failure is said once per distinct reason
+(`sessions.rs:3406-3431`, `gatekeeper_said`).
+
+---
+
+## R69 — One surface stack, hit-testing against what was drawn, per-surface key tables — **SETTLED 2026-10-30: the three are in, and `!term` mouse mode with them**
+
+*The entry claimed:* draw order, key order and hint order were three hand-written lists that
+disagreed, and each clickable surface did its own hit-testing; `r69-surfaces` replaced them with
+one stack, one hit record per frame and one binding table per surface.
+
+**Main has it.** `crates/tui/src/app/surface.rs` (the stack, `drawn()`, `owns_enter`),
+`app/hits.rs` (the frame's `(Rect, Target, rows→stops)` and the one click router),
+`app/keys/bindings.rs` (`Binding`, `Surface::bindings`, the bar and help generated from them),
+`tests/input_loop.rs` (real bytes through the driver).
+
+**Tests:** `app::tests::surfaces::{with_two_panes_open_the_keys_reach_the_one_drawn (surfaces.rs:30),
+a_pane_under_the_editor_does_not_swallow_the_composers_enter (:94),
+the_queue_pane_owns_enter_even_when_it_is_empty (:113)}`, plus `app/tests/hits.rs`,
+`app/tests/bindings.rs` and `tests/input_loop.rs`.
+
+The entry's one **not started** item — `!term` mouse mode — is in main:
+`letibot_vt::Screen::mouse()` (`vt/src/screen.rs:413`) records `?9/1000/1002/1003` and `?1006`, and
+`TermPane::mouse` (`tui/src/app/term_pane.rs:368-400`) decides each report against it.
+**Test:** `pane::a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane`
+(`app/tests/pane.rs:1149`).
+
+*Left:* the modal cards (allow-all confirmation, new-todo, password, the `!term close` ask, the
+prompt, the key ask) are still first in `App::key` and not on the stack — a second mechanism, and
+by the entry's own note one the defect class does not reach.
+
+---
+
+## R70 — Split the largest inline test blocks into sibling files — **SETTLED 2026-10-30: every block past the rule's size is a sibling file**
+
+*The entry claimed:* the biggest inline `mod tests` blocks moved to `<module>/tests.rs` or a topic
+split, with the test count identical before and after.
+
+**Main has it.** `crates/tools/src/adjudicate/tests/` (mod + boundary, breaker, card, gate, grants,
+history, memory, outcomes), `crates/tools/src/builtins/todo/tests/`,
+`crates/harnessd/src/harness/tests/` (16 files: card_fixtures, children, citations, context,
+delivery, fallback, intent, jobs, misc, operator_ask, prefix_on_open, questions, restart_notice,
+store_writes, workspace), `crates/harnessd/src/sessions/idle_nag.rs`.
+
+*Left:* 29 inline blocks still over 40 % of their file, all under 700 lines. The entry's own rule
+was "past ~800 lines or ~40 % moves", and nothing past 800 is left inline; a sibling file for a
+100–370-line block in a file under 900 lines buys little, which is what the entry said.
+
+---
+
+## R71 — A model that stops because "my context is full" when it is not gets told so — **SETTLED 2026-10-30: the claim is checked against the daemon's measurement and answered with the numbers**
+
+*The entry claimed:* models stop with "my context is at the wall" on a guess; `r71-context-check`
+detects the claim by similarity, checks it against the session's real fill, and slaps it once per
+claim with the numbers.
+
+**Main has it.** `crates/harnessd/src/context_claim.rs` (`FLOOR = 0.25` at `:150`, the calibration
+table in the module doc, `LOG`/`REPEATED`), `Harness::context_fill` (`harness.rs:15838`) — the one
+function that reads the fill, through R72's `measure_resident`, so the line quotes what the head
+shows — the notice in `run_rounds` (no tool calls) and on the step-boundary queue, and
+`<workspace>/.letibot/context-claims.jsonl`.
+
+**Tests:** `crates/harnessd/tests/context_claim.rs` — the leticl 11:48 sentence at low fill gets
+the line with the numbers and a second round runs; the same at the wall ends in one round with
+nothing said; a repeat after the line is one `context_claim_repeated` warning, not a second line.
+
+*Left:* the floor is in-sample and wants tuning from `context-claims.jsonl`; 16 of the 79 labelled
+positives sit under it (four with no owner in the window, the rest long subordinate clauses) and
+want a second tier, embeddings.
+
+---
+
+## R72 — The wall is judged in a number nobody sees — **SETTLED 2026-10-30: one count, the provider's, said once with its unit**
+
+*The entry claimed:* the head said 740k, the wall said 937k and a restart said 3.45M for one
+context; `r72-wall-units` made the resident size the provider's last measurement plus what was
+appended since, and printed one unit on every line.
+
+**Main has it.** `WallAnchor` (`harness.rs:17007`), `sent_since` (`:17127`), `roll_resident`
+(`:17183`), `Harness::measure_resident` (`:8154`), `recovered_scale` returning the stored pair
+whenever the stored ledger is not longer; `crates/harnessd/src/wall.rs` — `WallControl`
+(Armed → Awaiting → Escalating → Stuck, and release on a measured count under window − 2×headroom)
+with the ladder `Ordinary → SmallerTail → Sliced`.
+
+**Tests:** `harness::tests::context::{a_reasoning_heavy_history_meets_the_wall_at_the_providers_count
+(harness/tests/context.rs:81), a_restart_after_a_notice_recovers_the_providers_count_and_does_not_compact
+(:137), a_fork_rebases_the_count_and_a_local_session_counts_the_ledger (:181),
+the_compacted_line_is_one_unit_said_once (:269)}`; `wall.rs`'s own tests (the live pg-noop case
+replayed); `tests/wall_refusal.rs`.
+
+*Left:* no replay of `s-1791151788256943467`'s last rounds from the store (the tests are built from
+the logged numbers); which reasoning a provider counts is assumed, not measured, and a per-provider
+measurement would settle it; a restart after a compaction and before any round comes back unscaled;
+no metered end-to-end test (a `ProviderConfig` cannot be pointed at the canned server); a single
+tool result larger than the whole window is still appended whole.
+
+---
+
+## R76 — A red target nobody's model hears, a gate in the daemon's own memory, and no way out — **SETTLED 2026-10-30: items 1–5 and 6–7 are all in main**
+
+*The entry claimed:* a `target_red` went out as a warning no model reads, the model had no queue
+tool, nothing re-gated, a rewritten target left a review of a commit that no longer existed, a gate
+that could not judge was called RED, and a gate step ran in the daemon's cgroup.
+
+**Main has it.** `RepoQueue::ring_the_projects` (`serve.rs:650`) and
+`Harness::queue_emergency_notices` (`mergequeue/notices.rs`, the failing step first); the `queue`
+tool (`crates/tools/src/builtins/queue.rs`) over `mergequeue::desk::SessionQueue` (`desk.rs:78`)
+with `status`/`regate`/`restart`/`withdraw`/`propose_target`; `verbs::regate` and
+`verbs::regate_at_start` (`verbs.rs:638`); `mergequeue::setup::setup_failure` (`setup.rs:162`).
+Items 6–7 as well: `exec::SiblingScope` (`tools/src/exec/scope.rs:751`), `[memory] gate`
+(`mergequeue/gate.rs`), `crates/harnessd/tests/gate_memory.rs`, and `[memory] default`/`ceiling` in
+a `leticode.toml` over the user's over the box's (`crates/leticode-config/src/lib.rs:597-663`).
+
+**Tests:** `serve::tests::{a_red_target_and_a_blocked_review_ring_the_project_once_each (:1499),
+a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue (:1398),
+an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one (:1317),
+a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_nothing (:1207)}`,
+`desk::tests::the_model_reads_regates_withdraws_and_only_proposes_the_target` (`desk.rs:824`).
+
+*Left:* nobody held → nobody told (a ring finds only root sessions this daemon holds, and there is
+no cheap "roots by workspace" read); "once" is per daemon, so a restart tells again; the setup
+heuristic is words (a gate declaring a setup exit code was not done); `propose_target` is a warning
+plus a history row, not an answerable card; the gate's cap is box-wide (no per-project
+`[memory] gate`); and the learned per-command default was not built.
+
+---
+
+## R87 — A gate killed by its cap read as RED, and the alert reached a session that has nothing to do with letibot — **SETTLED 2026-10-30: unjudged is its own verdict, and an alert reaches its repository**
+
+*The entry claimed:* a step that died at 96.8 % of its cap with no failing code was recorded RED
+and raised at emergency severity on every hub, including a session about RSS usage.
+
+**Main has it.** `red_cause` (`mergequeue/gate.rs:652`) decides before a step is called red
+(`oom_kill > 0`, peak ≥ 95 % with no failing code, a leader ended by a signal, else red); both
+kills are `GateVerdict::Infra` with `GATE_KILLED` rows naming the cap, the peak and the key, and
+every row now ends `[step: exit code N]` / `[step: killed by signal N]`. The scope:
+`mergequeue::repository_of_workspace` (`mergequeue.rs:754`), `QueueDoor::announce_to`
+(`serve.rs:84`), `publish_for_repository` (`mergequeue.rs:863`).
+
+**Tests:** `gate.rs::{the_measured_death_near_the_cap_is_killed_at_the_cap_not_red (:2284),
+an_oom_kill_counted_in_the_cgroup_is_killed_at_the_cap_whatever_the_output_says (:2328),
+a_step_killed_by_a_signal_is_unjudged_and_its_row_says_the_signal (:2501)}`;
+`serve/tests.rs::{a_target_whose_gate_was_killed_at_its_cap_is_unjudged_not_red (:2830),
+a_daemon_above_a_repository_neither_takes_its_lease_nor_shows_its_red (:3010),
+a_repositorys_alert_reaches_its_sessions_and_the_board_and_not_the_home_session (:3162)}`.
+
+*Left:* what signalled cargo at 00:51:10 is still unknown — the next occurrence carries the signal
+on its row; and the cap default the entry recommended (*the larger of half of what is free and the
+last green run's peak + 25 %*) was the operator's decision and was not taken.
+
+---
+
+## R88 — A worktree child finishes with its work outside its branch — **SETTLED 2026-10-30: the brief, the end-of-turn check and the settlement all name the branch**
+
+*The entry claimed:* seven children in one night ended with their work uncommitted, and the parent
+found out by looking; `child-commits-before-done` put the deliverable in the brief, checked
+`git status --porcelain` at the end of a turn, and put the salvage line at the top of every
+settlement.
+
+**Main has it.** `letibot_tools::builtins::task::worktree_brief` (`task.rs:682`, appended to every
+child with a fresh worktree), `harness::deliverable::EndOfWork` (`harness/deliverable.rs:128`) in
+the round loop beside the intent nudge and the context-claim check, `Harness::set_deliverable`
+(`harness.rs:14091`), and `AnswerOnce` carrying the deliverable so every ending has the line.
+The build cache moved out of the tree entirely: `harness::worktree_build_env` sets
+`CARGO_TARGET_DIR` through the session's own environment.
+
+**Evidence in the hand:** this session's own brief is that text — *"[the deliverable] You work in
+the worktree … commit your work to it as you go and before you finish."* **Tests:**
+`crates/harnessd/src/harness/deliverable.rs`'s (clean → no nudge, dirty → one nudge, the two
+printed commands leave the branch holding the work, every ending through `AnswerOnce`),
+`crates/harnessd/tests/worktree_build_cache.rs` (an empty `git status --porcelain`, a tracked
+`.cargo/config.toml` kept byte for byte, `CARGO_TARGET_DIR` in a `bash` call).
+
+*Left:* not exercised end to end with a model (the loop's arm is three lines over `EndOfWork`,
+which is tested); a CONFINED child does not get `CARGO_TARGET_DIR` — the main tree's `target/` is
+outside its view — so it builds cold, as it effectively did before.
+
+---
+
+## R85 — A daemon restart brings back subagents and monitors, and reminds the model of jobs — **SETTLED 2026-10-30: schema 26's records and the restart door are in main**
+
+*The entry claimed:* a restart lost every running child and every monitor; `subagents-survive-restart`
+recorded each child, monitor and job context, and brought them back under `--restore-within`.
+
+**Main has it.** `crates/harnessd/src/restart.rs`, `subagent_record.rs`,
+`Config::restore_within` (`config.rs:851`, default `restart::RESTORE_WITHIN` = 3600 s), the
+`task_resume` tool (`tools/src/builtins/task.rs:2168`), `restart_restored`/`restart_reminded` on
+the hub (`harness.rs:11558`), and the store's `subagent_run`/`session_monitor`/`job_context`/
+`daemon_life` (`crates/tokencore/src/store/subagents.rs`).
+
+**Tests:** `crates/harnessd/tests/restart_restore.rs` —
+`a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_parent` (`:450`),
+`past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back` (`:1170`),
+`a_grandchild_comes_back_when_its_parent_does` (`:1272`),
+`monitors_are_rearmed_and_jobs_reminded_and_the_reminder_is_a_turn` (`:1642`),
+`an_empty_restart_is_said_once_and_starts_no_turn` (`:1532`).
+
+*Left, as the entry listed them (all limits, not defects):* a daemon of an older build left no
+rows; a VM child that worked on a copy is reported, not resumed; a re-armed monitor's TTL starts
+again; monitor re-arm runs without the permission gate; the queue's reviewers are not recorded.
+
+---
+
+## R77 — An operator's todo lands last and the nag never names it — **SETTLED 2026-10-30: the operator's row is the one the check names, and the first check says so**
+
+*The entry claimed:* an operator row added at the end of a board was never the row a plan-check
+named — the model was told "(N more open)"; `r77-operator-todos` ranked the operator's ready rows
+first and said *"the operator added"* on the first check.
+
+**Main has it.** `todo::the_row_to_name` (`crates/tools/src/builtins/todo.rs:1003`, `:1689` region:
+operator's ready rows first, then the model's sticky `chosen`, then the head of the ready set);
+`OPERATOR_ADD_NAG_AFTER` = 10 s (`sessions.rs:133`) with `TodoNagClock::operator_added`
+(`sessions/idle_nag.rs:902`) and `sessions::the_operator_added` telling an add from a re-push; the
+pure `nag_notice` read plus `Harness::nag_said_as`, so the ladder counts the PLAN and not the
+wording.
+
+**Tests:** `crates/harnessd/tests/child_nag.rs::a_childs_check_names_the_operators_row_first`
+(`:614`), and the board/nag tests under `crates/tools/src/builtins/todo/tests/`.
+
+*Left:* a later re-arm (a HELLO re-push, a turn ending) after an add sets the full window and so
+pushes the 10 s deadline back; "told" is the sticky choice in memory, so after a restart the first
+check of an already-named operator row says "the operator added" once more; placement (the board's
+snapshot order) was not changed, by choice — ranking in the check is the fix.
+
+---
+
+## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **SETTLED 2026-10-30: a routine completion is held and batched; only what the plan waits on interrupts**
+
+*The entry claimed:* every completion was delivered the moment it landed, so a model working on X
+was handed "job j975 ended" as the next thing to do; `r79-batched-delivery` decided delivery by
+relevance and batched the rest into one `[meanwhile]` note.
+
+**Main has it.** `crates/harnessd/src/delivery.rs` — `decide` (`:200`) over `Facts`,
+`HELD_RESULTS_CAP` = 10 min (`:88`), `DeliveryLog` (`:389`); `JobWatchers::hold`/`take_held`/
+`turn_ended` and `say_held` (`jobwatch.rs:1021-1035`); `SessionEvent::HeldResults`
+(`sessionlog/src/event.rs:2316`); `bash::wake_sentence` and `wake: now|later` on `bash` and
+`task`; `<workspace>/.letibot/delivery-log.jsonl`; the head's `[meanwhile]` fold and its counter on
+the Responding row.
+
+**Tests:** `delivery::tests::*` (the table, the board facts, a monitor's record),
+`harness::tests::delivery::*` (`harness/tests/delivery.rs`: held-then-one-batch in a child's long
+turn, `when: job` immediate to a root mid-turn, a needed job's failure, the starvation cap, the
+fixture), `crates/harnessd/tests/delivery.rs` (a root's wake answers `Ok(None)` for a routine
+completion and the next prompt carries it before the operator's words), and
+`bash::tests::wake_is_now_or_later_and_the_result_says_which`.
+
+*Left:* "what the model did next" is not recorded (the metrics design's); the before/after
+measurement needs a deployment; `task_start` still has no `wake` argument; `held_results_cap` has
+no providers.toml/CLI knob; emergencies are not in the record and still reach only a turn boundary.
+
+---
+
+## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **SETTLED 2026-10-30 (phase 1): the file, the instruments, the mark and `letibot stats` are in main**
+
+*The entry claimed:* per-turn metrics were computed and dropped, deliveries/wakes/nags were not
+recorded at all, and the operator had no way to mark a moment; phase 1 built a sibling `metrics.db`,
+ten instruments, a feedback frame and a reader.
+
+**Main has it.** `crates/metrics` (`lib.rs` — `Event`, `emit`, the non-blocking channel;
+`store.rs` — the `event`/`daily`/`meta` schema, `path_beside`, the writer, retention and the
+rate/size caps), `crates/harnessd/src/instruments.rs` (one line per site), the hub tap,
+`ClientFrame::Feedback` (`sessionlog/src/protocol.rs:683`), `crates/letibot/src/stats.rs`
+(`stats_text` `:102`) and `letibot fb` (`main.rs:297`).
+
+**Tests:** `crates/harnessd/tests/metrics_instruments.rs` (each instrument's row on a canned-server
+turn through the production turn tail), `crates/sessionlog/tests/feedback.rs` (a mark round-trips
+over a real socket into a temp `metrics.db` with its turn and round while no worker drains the
+hub), and the emitter/writer/retention/cap tests in `crates/metrics`.
+
+*Left:* phase 2/3 as designed — rollup percentiles, retiring the jsonl files, `gate.step` pointers,
+the LIVE `letibot stats serve` page; leticl does not send `Feedback` yet; and a few §5 items (the
+`notes-offers.jsonl` dual-write, `/fb list|rm`, a gutter mark, `delivery.followup`, the `perf`
+< 1 % measurement). The "done when" still wants a day of real use to check the counts.
+
+---
+
+## R80 — `/clear`: a fresh conversation for the same session — **SETTLED 2026-10-30: the fork, the orientation and the boundary row are in main**
+
+*The entry claimed:* `/compact`'s summary and `/reseat` both carry the drift forward, and the
+operator wanted a fresh conversation without losing todos, jobs or subagents.
+
+**Main has it.** `crates/harnessd/src/harness/clear.rs` (the `Clear` verb `:65`, `Harness::orientation`
+`:170`), `Harness::fork_onto` (`harness.rs:13548`, which `fork_to_summary` also delegates to), the
+`cleared` warning as the boundary row, `ChildCommand::Clear` answered by the child's own thread.
+
+**Tests:** `crates/harnessd/tests/clear_context.rs::a_cleared_session_keeps_its_board_its_job_and_its_child`
+(`:220`) — the transcript is `#t1` with exactly one item, the board identical, the old transcript
+whole, the count unmeasured — and `a_childs_clear_is_answered_by_its_own_thread` (`:463`).
+
+*Left:* `/clear <sentence>` quotes the sentence and runs no turn (whether it should be submitted as
+the operator's prompt is the operator's to rule); the authorisation trail is not reset, so an
+utterance from before the clear can still authorise an act the model can no longer see; leticl has
+no `cleared` row code and the head does not fold it like `reseated`; not live-tested on a metered
+provider.
+
+---
+
+## R82 — A row that is only waiting on a job is nagged every window — **SETTLED 2026-10-30: `wait_on` writes the edge, and the check then leaves the row alone**
+
+*The entry claimed:* a `needs` edge silenced the check but only on a row the model restated, never
+the operator's, and nothing told the model it existed; `todo-wait-on` gave `todo_write` a `wait_on`.
+
+**Main has it.** `todo_write`'s `wait_on` — `{"wait_on": [{"content": …, "job"|"child": …}]}`
+and `"detach": true` (`crates/tools/src/builtins/todo.rs:285`, `:896`), `TodoBoard::set_waits`
+(`:323`), `jobs::resolve_job_in` (`jobs.rs:159`) and `ChildTodos::own_child` for the refusals by
+name, `RunningJobs` carrying the session's jobs and subagents so the advice line can offer a real
+handle. R79 reads the same `needs`, so a completion a row waits on is the plan's.
+
+**Tests:** the needs cases under `crates/tools/src/builtins/todo/tests/`, and
+`crates/tools/tests/background.rs::{a_wait_on_a_job_the_harness_is_delivering_returns_at_once
+(:802), a_wait_on_a_job_nobody_is_delivering_still_blocks_for_its_deadline (:868)}`.
+
+*Left:* restating one of the model's own rows in `todos` without the wait takes it off (the
+upsert's contract, and the reply says so); the parent's and the queue's halves cannot take a wait.
+
+---
+
+## R83 — The operator can pause a session's plan-checks, loudly — **SETTLED 2026-10-30: `/nag`, the column, the rows and the resident line are in main**
+
+*The entry claimed:* the only lever was per row; `nag-switch` added `/nag pause|resume` per
+session, persisted on the session's row, with the pause said loudly in four places.
+
+**Main has it.** `crates/harnessd/src/nag_pause.rs`, `/nag` in the slash table (`slash.rs:78`,
+`:347`), `session.nags_paused_until` (schema 25 — `tokencore/src/store/floor.rs:137` records the
+arm as Additive, `store.rs:361` describes the column), `Config::nags_paused`, the `nags_paused` /
+`nags_resumed` rows on the hub, the `nags` settings row and the resident warning line.
+
+**Tests:** `crates/harnessd/tests/nag_pause.rs`, `child_nag.rs`'s paused child, the clock cases in
+`sessions/idle_nag.rs`, and three in `crates/tui/src/app/tests/settings.rs`.
+
+*Left:* a child paused WITH an end does not park until the end (by design, so the resume is said on
+time); the jobs pane does not list paused sessions (the picker does); the Sessions-side hand-back
+of `/nag` to a child's reader has no test of its own.
+
+---
+
+## R60 — `!term`'s three missing things — **SETTLED 2026-10-30: scrollback, several panes, a confined pane — and the two R74 items beside them**
+
+*The entry claimed:* the pane could not scroll back, could not hold a second program and ran
+outside the session's boundary; `r60-term` built all three plus R74's mouse mode and split report.
+
+**Main has it.** `letibot_vt::Screen`'s history (`vt/src/screen.rs:157` `HISTORY_ROWS = 2000`,
+`:445` `view(back)`, `:424` `scrolled`), `letibot_ui::ansi::pane_rows_back` (`ui/src/ansi.rs:455`)
+and `TermPane::back` (`tui/src/app/term_pane.rs:294`); panes numbered on the wire
+(`ServerFrame::TermAttached`, `TermStatus { panes }`); `Registry::bound_panes`
+(`sessionlog/src/registry.rs:2511`), `HostProcesses::terminal_wrap` (`exec/host.rs:1184`) and
+`Confinement::wrap_terminal` (`exec/confine.rs:1501`, bwrap without `--new-session` so `/dev/tty`
+survives), the `RELAY` under `script` for a confined pane (`exec/term.rs:216`); `Screen::mouse()`
+(`vt/src/screen.rs:413`) with `TermPane::mouse` (`term_pane.rs:368-400`).
+
+**Tests:** `vt … screen::tests::a_line_scrolled_off_the_top_is_kept_and_can_be_read_back`
+(`screen.rs:1759`) — **RUN, ok**; `tui … pane::{a_wheel_over_a_pane_reads_back_what_scrolled_off_it
+(:1101), a_program_that_asked_for_the_mouse_is_sent_it_translated_to_the_pane (:1149),
+a_mouse_report_split_across_two_reads_is_put_back_together (:1189)}`;
+`harnessd --test term_pane_live::{a_second_pane_runs_beside_the_first_and_each_is_named_by_its_number
+(:585), a_pane_runs_inside_the_boundary_its_session_installed (:660)}`.
+
+*Left:* no live `!term mc` / `!term less big.log` check was run on a real head — the one check that
+is the operator's; a confined pane has no network and no `ttyname` of the host's (it runs under
+`script`); two heads opening panes in the same session at the same instant can adopt each other's
+number; a pane this head is not drawing that dies files no row here; and whether a confined
+operator pane should get `--unshare-net` is still the operator's.
+
