@@ -225,6 +225,24 @@ impl App {
         standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
     }
 
+    /// **Ask for a fresh snapshot, on the pane's own clock** — the rows AND the detail, because a
+    /// screen showing a running gate is a screen whose whole point is that the numbers move.
+    ///
+    /// **The detail asks for itself.** It is a surface of its own (`Surface::QueueEntry`) and
+    /// `main_area` draws exactly one surface, so the ask inside [`Self::queue_lines`] never ran
+    /// while a row was open: no `Queues` frame arrived, `App::track_gate_tails` froze, and
+    /// `queue_now()` went on advancing — so after `GATE_QUIET_MS` the one screen built to answer
+    /// *is it stuck?* said *may be stuck* about a gate that was writing. The clock is the same
+    /// five seconds, and `queues_asked_ms` is one field, so two surfaces on one frame ask once.
+    fn ask_for_queues(&mut self) {
+        if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
+            self.queues_asked_ms = self.now_ms;
+            if !self.queued.contains(&Action::ListMergeQueue) {
+                self.queued.push(Action::ListMergeQueue);
+            }
+        }
+    }
+
     /// **The pane** — see the module docs. Takes `&mut self` to record where each row was drawn
     /// (the arrows and a click read it) and to ask for a fresh snapshot while the pane is open.
     ///
@@ -233,12 +251,7 @@ impl App {
     /// missing, broken or refused — falls back to this file's own rows. Both paths record
     /// `queue_stop_rows`, so the arrows, Enter and a click read what was drawn whichever it was.
     pub(crate) fn queue_lines(&mut self, w: usize) -> Vec<String> {
-        if self.now_ms.saturating_sub(self.queues_asked_ms) >= REFRESH_MS {
-            self.queues_asked_ms = self.now_ms;
-            if !self.queued.contains(&Action::ListMergeQueue) {
-                self.queued.push(Action::ListMergeQueue);
-            }
-        }
+        self.ask_for_queues();
         // **A snapshot that has not arrived is nobody's to draw.** The plugin is not asked: an
         // empty `reviews` would be a queue it drew as empty, which is the one thing the host pane
         // never does (R61 defect 12).
@@ -543,7 +556,12 @@ impl App {
 
     /// **One row, whole** — the overlay Enter opens: every field the snapshot carries, the
     /// reasons, the gate's steps in full, and the row's moves.
-    pub(crate) fn queue_out_lines(&self, w: usize) -> Vec<String> {
+    ///
+    /// **It asks for a snapshot itself** ([`Self::ask_for_queues`]): this is a surface of its own,
+    /// so the ask inside the pane never runs while it is on the screen, and a running gate's step
+    /// and tail would freeze at the instant the row was opened.
+    pub(crate) fn queue_out_lines(&mut self, w: usize) -> Vec<String> {
+        self.ask_for_queues();
         let Some(id) = self.queue_open.as_deref() else {
             return Vec::new();
         };
@@ -666,7 +684,13 @@ impl App {
                 None => None,
             };
             if let Some((g, key)) = running {
-                lines.extend(running_gate_lines(g, self.gate_tails.get(&key), now, w));
+                lines.extend(running_gate_lines(
+                    g,
+                    self.gate_tails.get(&key),
+                    now,
+                    self.now_ms.saturating_sub(self.queues_got_ms),
+                    w,
+                ));
             }
             lines.push(Line::default());
             lines.push(one("  the gate's steps", Role::Strong));
@@ -688,17 +712,25 @@ impl App {
     }
 }
 
+/// **How old a snapshot may be before the pane stops calling a quiet tail stuck** — several of the
+/// pane's own [`REFRESH_MS`] asks. Past this the head is reading its own clock and not the
+/// daemon's, and *nothing has changed* would be a claim about a screen nobody refreshed: the pane
+/// says *no snapshot for N* instead, and stops short of a verdict it cannot support.
+pub(crate) const GATE_SNAPSHOT_STALE_MS: u64 = 30_000;
+
 /// **The step a gate is running, as a person reads it** — which step of how many, how long it has
 /// been going, whether its output has moved since the last snapshot, and the end of that output.
 ///
 /// The last of those is the whole point: a tail that has not moved in minutes is a step that is
 /// stuck, and one that is growing is not, and a person should be able to tell those apart without
 /// opening a file on the daemon's box. `seen` is what this head last read for this step (see
-/// [`GateTail`]); with no record yet there is nothing to compare and the line says only how long.
+/// [`GateTail`]); `snapshot_age` is how long ago the snapshot arrived, because *it has not moved*
+/// is a fact about two answers and never about one.
 fn running_gate_lines(
     g: &letibot_sessionlog::event::QueueRunningGate,
     seen: Option<&GateTail>,
     now: u64,
+    snapshot_age: u64,
     w: usize,
 ) -> Vec<Line> {
     let mut out = vec![Line::new(vec![
@@ -733,7 +765,19 @@ fn running_gate_lines(
         } else {
             format!("{} ago", dur_human(still))
         };
-        let (words, role) = if still >= GATE_QUIET_MS {
+        let (words, role) = if snapshot_age > GATE_SNAPSHOT_STALE_MS {
+            // **Not an answer, so not a verdict** — the daemon has not replied, and a head that
+            // turned its own silence into *it may be stuck* would be inventing the one fact the
+            // screen exists to establish.
+            (
+                format!(
+                    "no snapshot for {} — this is what the daemon said then ({} byte(s) written)",
+                    dur_human(snapshot_age),
+                    g.log_bytes
+                ),
+                Role::Attention,
+            )
+        } else if still >= GATE_QUIET_MS {
             (
                 format!(
                     "the tail has not moved in {} — it may be stuck ({} byte(s) written)",
