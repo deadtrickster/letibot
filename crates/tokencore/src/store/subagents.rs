@@ -431,6 +431,29 @@ impl Store {
         Ok(())
     }
 
+    /// **Every daemon's life this store has seen** — so a reader can ask *did a daemon other than me
+    /// ever stop here?*, which is what makes a restart a fact rather than an inference from a
+    /// session's creation time (a seeded or long-lived session is older than this daemon without
+    /// anything having restarted).
+    pub fn lives(&self) -> Result<Vec<DaemonLife>> {
+        let mut st = self.conn.prepare(
+            "SELECT instance, started_ms, beat_ms, stopped_ms FROM daemon_life ORDER BY started_ms",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(DaemonLife {
+                instance: r.get(0)?,
+                started_ms: r.get::<_, i64>(1)? as u64,
+                beat_ms: r.get::<_, i64>(2)? as u64,
+                stopped_ms: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
     pub fn life(&self, instance: &str) -> Result<Option<DaemonLife>> {
         Ok(self
             .conn

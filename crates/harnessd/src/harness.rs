@@ -11664,11 +11664,24 @@ impl Harness {
         // when. A session that existed before this daemon started was held by a daemon that is
         // gone — which is the whole of what `came_back` asks, and it is asked of the session ROW
         // because a session with nothing running has no other record to ask.
-        let came_back = store
-            .session(&sid)
-            .ok()
-            .flatten()
-            .is_some_and(|s| (s.created_ms.max(0) as u64) < back_ms);
+        // **And a daemon actually stopped here.** A session older than this daemon is not by itself
+        // a restart: a seeded session, a resumed one, one this daemon opened first — all predate
+        // `back_ms` while nothing stopped. What makes it a restart is another daemon's `daemon_life`
+        // row carrying a stop, which is a fact about the box rather than an inference from a clock.
+        let a_daemon_stopped = store
+            .lives()
+            .map(|lives| {
+                lives
+                    .iter()
+                    .any(|l| l.stopped_ms.is_some() && l.instance != me)
+            })
+            .unwrap_or(false);
+        let came_back = a_daemon_stopped
+            && store
+                .session(&sid)
+                .ok()
+                .flatten()
+                .is_some_and(|s| (s.created_ms.max(0) as u64) < back_ms);
         // **Once per (session, restart)** — `queue_told` is the store's own "said once" table and
         // the key names the daemon, so a session this daemon opens twice says it once, and the
         // NEXT daemon says it again because it is a different restart. Spent on the first open
