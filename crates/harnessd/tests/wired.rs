@@ -165,6 +165,15 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     // without the tool its prompt tells it to call. It sits after `todo_write`
     // because the role's order is the prompt's order, and `flowy` follows the
     // role because `role_for_seat` pushes it.
+    //
+    // **And no LAYER's tool is here, not even the binary's own.** A tool a plugin layer declares
+    // is seated when a layer IN FORCE for this session declares it — the session's, the project's
+    // or the user's — and `crates/harnessd/src/plugins.rs`'s `declared_tools` is the one place
+    // that decides it. The test below this one is the other half: the same session with one
+    // `plugin.toml` in the project seats `claude_transcript`, and without it seats nothing. The
+    // regression this guards is not hypothetical — MEASURED 2026-10-28, the first cut of §4.8
+    // appended the built-in table's declarations here, and a session opened with no seat, no
+    // project layer and no flag seated a tool that reads `~/.claude`.
     assert_eq!(
         w.seated,
         vec![
@@ -205,6 +214,94 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
         "the intent encoder is attached for every session; without it every \
          completion is `NoEncoder` and the reason is ours"
     );
+}
+
+/// **A layer's tool is seated when a layer IN FORCE declares it, and not otherwise.**
+///
+/// The other half of the test above: that one pins what a session with no layers gets, and this
+/// one proves the door is real and narrow — the same seat, the same flags, one `plugin.toml` in
+/// the project, and the tool is in the prompt; take the file away and it is not.
+///
+/// The layer is the binary's own `claude-transcript` manifest, copied into
+/// `<project>/.letibot/plugins/claude-transcript/` with **no `plugin.wasm`**. That is the whole
+/// install: the manifest is the ask and what the model is offered, and the module that answers it
+/// is the one the binary already carries — `PluginHost::production` puts that layer at the bottom
+/// of the session's stack *for a tool the session declared*, and for no other reason (which is
+/// also why a session that asks for nothing pays no compile: MEASURED 2026-10-28, 1.97 s a
+/// session, and `letibot-bridge`'s `no_spin` window was entirely that).
+///
+/// MEASURED 2026-10-28 before this rule: `declared_tools` appended the built-in table's
+/// declarations to every session's, so the assertion above was red with `claude_transcript` in it
+/// — a session that passed no flag, seated a tool that reads `~/.claude`.
+#[test]
+fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // A project of its own: this test is about a layer on disk, and the repository it runs in may
+    // have plugins of its own (a `.letibot/plugins` is a thing a session's project has).
+    let project = std::env::temp_dir().join(format!(
+        "letibot-wired-layer-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&project).expect("a project dir");
+
+    let seated_with = |session: &str| {
+        let mut cfg = config(Seat::default());
+        cfg.workspace = project.clone();
+        cfg.session_id = session.to_string();
+        let p = parts(&cfg);
+        let hub = Hub::new(&cfg.session_id);
+        let h = Harness::open(&p, cfg, hub).expect("the session opens");
+        let w = h.wiring().clone();
+        w
+    };
+
+    // 1. No layer: the default set, exactly — which is what the test above asserts tool by tool.
+    let none = seated_with("s-wired-no-layer");
+    assert!(
+        !none.seated.iter().any(|t| t == "claude_transcript"),
+        "no layer declares it, so nothing seats it: {:?}",
+        none.seated
+    );
+
+    // 2. The binary's own manifest, installed by the project. One file, no module.
+    let builtin = letibot_builtins::table()
+        .iter()
+        .find(|b| b.name == "claude-transcript")
+        .expect("the binary carries the transcript layer");
+    let layer = project
+        .join(".letibot")
+        .join("plugins")
+        .join("claude-transcript");
+    std::fs::create_dir_all(&layer).expect("the layer dir");
+    std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
+
+    let with = seated_with("s-wired-with-layer");
+    assert!(
+        with.seated.iter().any(|t| t == "claude_transcript"),
+        "the project declares it, so the model is offered it: {:?}",
+        with.seated
+    );
+    // **And it is the only difference** — a layer's tool adds a tool and changes nothing else
+    // about what the seat can reach. It reads a tree outside the workspace, which is `Read` and
+    // not a write or a shell: the layer's manifest line is the approval (§4.8.1), not a grant of
+    // the gate's classes.
+    assert_eq!(
+        with.seated.len(),
+        none.seated.len() + 1,
+        "one layer, one tool: {:?} vs {:?}",
+        with.seated,
+        none.seated
+    );
+    assert!(!with.has_write_tools, "seated: {:?}", with.seated);
+    assert!(!with.has_exec_tools, "seated: {:?}", with.seated);
+
+    std::fs::remove_dir_all(&project).ok();
 }
 
 /// The registry is a **superset** and the role decides what the prompt carries.

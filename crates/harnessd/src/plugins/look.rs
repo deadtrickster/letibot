@@ -19,10 +19,12 @@
 //! # Confinement
 //!
 //! `docs/plugins-plan.md` §3: `read` is *"the same confinement `read` has"* — the workspace root
-//! and nothing above it. Both paths are canonicalised before the comparison, so a symlink or a
-//! `..` cannot spell its way out: the check is on what the path *resolves to*, not on what it
-//! says. An absolute path is not refused by name, because canonicalising it is the same check and
-//! a better one — `/etc/passwd` simply resolves outside the root.
+//! and nothing above it. **And `read:<path>` is one tree outside it**, named in the manifest
+//! (`crate::plugins::tool`'s docstring is the long argument; this is the same rule enforced for a
+//! pane's look). Both paths are canonicalised before the comparison, so a symlink or a `..`
+//! cannot spell its way out: the check is on what the path *resolves to*, not on what it says. An
+//! absolute path is not refused by name, because canonicalising it is the same check and a better
+//! one — `/etc/passwd` simply resolves outside the root.
 //!
 //! # `exec` is refused, and says which slice it is missing from
 //!
@@ -62,34 +64,69 @@ pub fn run(spec: &LookSpec, root: &Path, caps: &[Capability]) -> Value {
 
 /// `{"exit":0,"stdout":<the file>,"stderr":""}`, or `exit 1` with the reason in `stderr`.
 fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
-    if !caps.contains(&Capability::Read) {
+    // **Every tree this layer may read**: the workspace if it declared `read`, and each tree it
+    // named as `read:<path>`. Nothing else — the declaration is the approval.
+    let mut roots: Vec<(String, std::path::PathBuf)> = Vec::new();
+    if caps.contains(&Capability::Read) {
+        match root.canonicalize() {
+            Ok(real) => roots.push((root.display().to_string(), real)),
+            Err(e) => {
+                return refused(format!(
+                    "the session's workspace {} cannot be resolved: {e}",
+                    root.display()
+                ));
+            }
+        }
+    }
+    for cap in caps {
+        let Capability::ReadPath(declared) = cap else {
+            continue;
+        };
+        if let Some(tree) = crate::plugins::tool::expand(declared) {
+            let real = tree.canonicalize().unwrap_or(tree);
+            roots.push((format!("`read:{declared}`"), real));
+        }
+    }
+    if roots.is_empty() {
         return refused(format!(
-            "the layer did not declare the `read` capability, so `{path}` is not read for it"
+            "the layer did not declare the `read` capability (and names no `read:<path>` tree), \
+             so `{path}` is not read for it"
         ));
     }
-    let root = match root.canonicalize() {
-        Ok(root) => root,
-        Err(e) => {
-            return refused(format!(
-                "the session's workspace {} cannot be resolved: {e}",
-                root.display()
-            ));
-        }
-    };
     // A path that is absolute replaces the root in `join`, and that is fine: the containment
-    // check below is on what the path resolves to, so an absolute path outside the workspace is
+    // check below is on what the path resolves to, so an absolute path outside every tree is
     // refused for being outside it rather than for being absolute.
-    let wanted = root.join(path);
+    let wanted = if path.starts_with("~/") {
+        match crate::plugins::tool::expand(path) {
+            Some(p) => p,
+            None => return refused(format!("`{path}` needs $HOME, and this daemon has none")),
+        }
+    } else {
+        root.join(path)
+    };
     let real = match wanted.canonicalize() {
         Ok(real) => real,
         Err(e) => return refused(format!("{}: {e}", wanted.display())),
     };
-    if !real.starts_with(&root) {
-        return refused(format!(
-            "`{path}` resolves to {}, which is outside the session's workspace {}",
-            real.display(),
-            root.display()
-        ));
+    let inside = roots.iter().any(|(_, tree)| real.starts_with(tree));
+    if !inside {
+        let named: Vec<String> = roots.iter().map(|(what, _)| what.clone()).collect();
+        // The workspace's refusal keeps its old words: it is the sentence a project's own layer
+        // reads most often, and a test asserts it.
+        let why = if named.len() == 1 && named[0] == root.display().to_string() {
+            format!(
+                "`{path}` resolves to {}, which is outside the session's workspace {}",
+                real.display(),
+                root.display()
+            )
+        } else {
+            format!(
+                "`{path}` resolves to {}, which is outside every tree this layer may read ({})",
+                real.display(),
+                named.join(", ")
+            )
+        };
+        return refused(why);
     }
     match real.metadata() {
         Ok(meta) if meta.is_dir() => {

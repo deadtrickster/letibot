@@ -48,7 +48,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use letibot_plugins::{Builder, Capability, CargoBuilder, Failure, Loader, Recorder, Scope, Stack};
+use letibot_plugins::{
+    Builder, Capability, CargoBuilder, DeclaredTool, Failure, Loader, Manifest, Recorder, Scope,
+    Stack,
+};
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, View};
@@ -61,6 +64,11 @@ pub mod desk;
 pub mod look;
 pub mod rano;
 pub mod scaffold;
+// **A tool a layer declares, and the looks its hook asks the host to run** — `tool_` in
+// `docs/plugins-plan.md` §4.8. It is a module rather than a section of this file because it is a
+// `Tool` (it goes in the registry beside `read` and `bash`) and because the three look primitives
+// it runs are a filesystem API of their own.
+pub mod tool;
 
 /// **How often the hot-reload tick looks** — `docs/plugins-plan.md` §2.3 makes a change take
 /// effect on the next hook call, and this is the longest a person waits after saving one. Two
@@ -223,13 +231,69 @@ impl PluginHost {
     }
 
     /// This host as the daemon uses it: rano loads the modules and cargo builds them.
+    ///
+    /// # And the built-ins that answer a hook the DAEMON dispatches
+    ///
+    /// A head installs the whole built-in table itself (`letibot_builtins::install`, in the TUI's
+    /// own stack) because the built-ins are mostly panes, and a pane is the head's to draw. The
+    /// daemon's stack is the one a `tool_` hook is resolved through, so it needs the built-in
+    /// layers that declare a tool — and only those: installing the pane ones here as well would
+    /// announce every pane twice, once from each stack.
+    ///
+    /// **And only the ones this session DECLARED a tool from.** `crate::plugins::declared_tools`
+    /// is the same read the prompt was composed from, so the two cannot disagree about what this
+    /// session asked for, and a session that asked for nothing installs nothing. That is not
+    /// tidiness: MEASURED 2026-10-28, compiling this binary's tool layer costs **1.97 s** of CPU in
+    /// a debug host, and a session that seats no layer tool can never call it — the `PluginTool`
+    /// that would is what the declaration seated. Installing it anyway cost every session open two
+    /// seconds and made `letibot-bridge`'s `no_spin` window all compile.
+    ///
+    /// A built-in whose module the engine refuses is recorded in the stack's own failure list and
+    /// said to the model by `say_failures`, so a broken built-in is a sentence rather than a tool
+    /// that silently is not there.
     pub fn production(session: &str, workspace: &Path) -> PluginHost {
-        PluginHost::for_session(
+        let host = PluginHost::for_session(
             session,
             workspace,
             Arc::new(rano::RanoLoader),
             Arc::new(CargoBuilder),
-        )
+        );
+        host.install_builtin_tools(&crate::plugins::declared_tools(session, workspace));
+        host
+    }
+
+    /// **Put the built-in layers a session declared a tool from at the bottom of this stack.**
+    ///
+    /// The match is on the tool's NAME: a built-in that declares `claude_transcript` is installed
+    /// for a session whose declarations include `claude_transcript`, and not otherwise. The layer
+    /// above it is what the model was offered — the built-in is the module that answers, which is
+    /// why a project's ask can be a manifest with no `plugin.wasm`.
+    fn install_builtin_tools(&self, declared: &[DeclaredTool]) {
+        if declared.is_empty() {
+            return;
+        }
+        let mut inner = self.lock();
+        for builtin in letibot_builtins::table() {
+            let declares = Manifest::parse(builtin.manifest)
+                .map(|m| {
+                    m.tools
+                        .iter()
+                        .any(|t| declared.iter().any(|d| d.tool.name == t.name))
+                })
+                .unwrap_or(false);
+            if !declares {
+                continue;
+            }
+            if let Err(why) =
+                inner
+                    .stack
+                    .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
+            {
+                // `register_builtin_bytes` has already recorded the failure on the stack; this is
+                // the line a person reading the daemon's log sees while it happens.
+                eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
+            }
+        }
     }
 
     pub fn session(&self) -> &str {
@@ -1089,7 +1153,14 @@ impl PluginHost {
         let failures = stack.failures();
         out.push_str("\nfailures: ");
         if failures.is_empty() {
-            out.push_str("none — every layer that is on disk loaded.\n");
+            // A declaration-only layer (a `plugin.toml` and no `plugin.wasm` — the documented
+            // install of a built-in's tool) has no bytes and no failure to report, so the sentence
+            // says which state `sha —` above is rather than claiming every layer loaded.
+            out.push_str(
+                "none — nothing on disk failed to load. A layer with only a `plugin.toml` is a \
+                 declaration, not a failure: the module that answers it is one the host already \
+                 carries, which is why it is listed with `sha —` above.\n",
+            );
         } else {
             out.push('\n');
             for f in failures {
@@ -1717,6 +1788,46 @@ fn user_config_dir() -> Option<PathBuf> {
         .map(|base| base.join("letibot"))
 }
 
+/// **The tools this session's layers declare**, in precedence order, one per tool name.
+///
+/// Read at `Harness::open`, before any module is loaded and before the daemon has a hub to build a
+/// plugin host with — a declared tool is prompt bytes, and the prompt is composed first. So this
+/// reads `plugin.toml`s only ([`Stack::declared_tools`] does the three disk scopes).
+///
+/// # Why the built-in scope is NOT read here
+///
+/// **A built-in is what the binary carries; it is not what this session asked for.** MEASURED
+/// 2026-10-28 against this tree's own rule — `crates/harnessd/tests/wired.rs` pins the default
+/// session's tool set and says *"the next addition is not a decision until it is written down here
+/// too"* — appending the built-in table's declarations here seated `claude_transcript` in every
+/// session, including the one opened with no seat, no project layer and no flag. A session that
+/// passes no flag must get what it got before, and this function is the one place that decides it.
+///
+/// So a tool is seated when a layer **in force for this session** declares it — the session's own,
+/// the project's, or the user's — and that declaration is the ask: it is a file a person wrote,
+/// in a scope a person installs, and the stack resolves the hook through it to whatever answers
+/// below. For the binary's own layers that means the built-in's `plugin.toml`, copied into
+/// `<project>/.letibot/plugins/claude-transcript/`, with **no `plugin.wasm`**: the manifest is the
+/// declaration the prompt is built from and the module that answers it is the one the binary
+/// already carries (`PluginHost::production` installs it, and only for a tool this session
+/// declared — see there). The built-in's `[[tools]]` block is therefore the text a person installs
+/// and what `admit` checks the module against; it is not a tool every session is offered.
+///
+/// **First declaration of a name wins**, which is the stack's own rule: session over project over
+/// user. A project layer that declares a built-in's tool replaces its schema and description, and
+/// the hook is resolved through the same stack at call time — so the override can be a manifest
+/// and a module, or a manifest alone with the built-in's module still answering below it.
+pub fn declared_tools(session: &str, workspace: &Path) -> Vec<DeclaredTool> {
+    let mut all = Stack::declared_tools(
+        session_plugins_dir(session).as_deref(),
+        Some(workspace),
+        user_config_dir().as_deref(),
+    );
+    let mut seen = BTreeSet::new();
+    all.retain(|d| seen.insert(d.tool.name.clone()));
+    all
+}
+
 /// What one hook's answer was, and the layer it came from — the by-line a rewrite is reported
 /// with.
 #[derive(Debug, Clone, PartialEq)]
@@ -2245,6 +2356,482 @@ mod tests {
         );
         assert_eq!(result["exit"], json!(126), "{result}");
         assert_eq!(result["stderr"], json!(look::EXEC_REFUSED));
+    }
+
+    #[test]
+    fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
+        // `read` alone is the workspace; `read:<path>` is one tree outside it, and the pane's look
+        // runner enforces the same rule the tool's does.
+        let workspace = tempdir("readpath-ws");
+        let elsewhere = tempdir("readpath-tree");
+        let file = elsewhere.join("a.jsonl");
+        std::fs::write(&file, "{}").expect("a file in the declared tree");
+        let caps = [Capability::ReadPath(elsewhere.display().to_string())];
+        let allowed = look::run(
+            &LookSpec::Read {
+                read: file.display().to_string(),
+            },
+            &workspace,
+            &caps,
+        );
+        assert_eq!(allowed["exit"], json!(0), "{allowed}");
+
+        // A file OUTSIDE the declared tree, which exists — the check is on where a path resolves
+        // to, and a path that is merely absent fails earlier and for a different reason.
+        let other = tempdir("readpath-out");
+        let outside = other.join("not-declared.json");
+        std::fs::write(&outside, "{}").expect("a file outside the declared tree");
+        let refused = look::run(
+            &LookSpec::Read {
+                read: outside.display().to_string(),
+            },
+            &workspace,
+            &caps,
+        );
+        assert_eq!(refused["exit"], json!(1), "{refused}");
+        assert!(
+            refused["stderr"]
+                .as_str()
+                .unwrap()
+                .contains("outside every tree"),
+            "{refused}"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The `tool_` seam
+    // -----------------------------------------------------------------------------------------
+
+    /// A module that answers one scripted answer per call, so a test can stand in the middle of a
+    /// look round trip: round 0 asks for data, round 1 answers from it.
+    struct Rounds {
+        hooks: Vec<String>,
+        answers: Vec<String>,
+        at: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Module for Rounds {
+        fn hooks(&self) -> Vec<String> {
+            self.hooks.clone()
+        }
+
+        fn call(&self, _hook: &str, _input: &str) -> Result<Option<String>, String> {
+            let n = self.at.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            match self.answers.get(n) {
+                Some(answer) => Ok(Some(answer.clone())),
+                None => Err("the layer answered more times than the test scripted".to_string()),
+            }
+        }
+
+        fn fuel(&self) -> u64 {
+            7
+        }
+    }
+
+    /// The loader for [`Rounds`]: the answers come from `answer.json` and then `second.json`, and
+    /// a `TRAP` file makes the module refuse to answer at all.
+    struct RoundLoader;
+
+    impl Loader for RoundLoader {
+        fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+            let _ = std::fs::read(wasm).map_err(|e| format!("{}: {e}", wasm.display()))?;
+            let dir = wasm.parent().unwrap_or(Path::new("."));
+            let manifest = Manifest::read(dir)?;
+            let mut answers = Vec::new();
+            for name in ["answer.json", "second.json"] {
+                let path = dir.join(name);
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    answers.push(text);
+                }
+            }
+            Ok(Box::new(Rounds {
+                hooks: manifest.hooks.clone(),
+                answers,
+                at: std::sync::atomic::AtomicUsize::new(0),
+            }))
+        }
+    }
+
+    /// A project with one layer that declares a tool, and the declarations the prompt would see.
+    fn tool_project(
+        tag: &str,
+        first: &str,
+        second: &str,
+        caps: &str,
+    ) -> (PathBuf, Vec<DeclaredTool>) {
+        let root = tempdir(tag);
+        let layer = root.join(".letibot/plugins/claude-transcript");
+        std::fs::create_dir_all(&layer).expect("the layer dir");
+        std::fs::write(
+            layer.join("plugin.toml"),
+            format!(
+                "name = \"claude-transcript\"\npurpose = \"read another agent's store\"\n\
+                 hooks = [\"tool_probe\"]\ncapabilities = [{caps}]\ncontract = 1\n\n\
+                 [[tools]]\nname = \"probe\"\ndescription = \"read what the layer says\"\n\n\
+                 schema = {{ type = \"object\", properties = {{}} }}\n"
+            ),
+        )
+        .expect("a manifest");
+        std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+        std::fs::write(layer.join("answer.json"), first).expect("an answer");
+        std::fs::write(layer.join("second.json"), second).expect("a second answer");
+        let declared = Stack::declared_tools(None, Some(&root), None);
+        (root, declared)
+    }
+
+    /// The tool, wired to a host built over `root` — the two halves `Harness::open` and
+    /// `Sessions::open_plugins` put together, in the order they put them.
+    fn tool_for(
+        root: &Path,
+        declared: DeclaredTool,
+        hub: &Arc<Hub>,
+    ) -> crate::plugins::tool::PluginTool {
+        let host = Arc::new(PluginHost::discover(
+            "s-tool",
+            root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        ));
+        let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+            Arc::new(std::sync::Mutex::new(Some(host)));
+        crate::plugins::tool::PluginTool::new(
+            declared,
+            "s-tool",
+            root.to_path_buf(),
+            slot,
+            hub.clone(),
+        )
+    }
+
+    #[test]
+    fn a_declared_tool_is_seated_and_answers_a_result_through_the_stack() {
+        let (root, declared) = tool_project(
+            "tool-ok",
+            "{\"outcome\":\"ok\",\"payload\":\"the layer's own words\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let tool = tool_for(&root, declared[0].clone(), &hub);
+        // What the model sees is the manifest's declaration, and nothing else.
+        let schema = letibot_tools::runtime::Tool::schema(&tool);
+        assert_eq!(schema.name, "probe");
+        assert_eq!(schema.description, "read what the layer says");
+        assert_eq!(schema.parameters["type"], json!("object"));
+        let out = tool.run(&json!({}));
+        assert_eq!(
+            out.outcome,
+            letibot_tools::runtime::Invocation::ok("").outcome
+        );
+        assert_eq!(out.payload, "the layer's own words");
+        // And the result says who answered it, so a model can tell a layer's words from a tool's.
+        assert!(
+            out.notes.iter().any(|n| n.contains("answered by plugin")),
+            "{:?}",
+            out.notes
+        );
+    }
+
+    #[test]
+    fn a_tool_asks_for_a_look_and_the_host_runs_it_against_the_declared_tree() {
+        let elsewhere = tempdir("tool-tree");
+        let secret = elsewhere.join("a.jsonl");
+        std::fs::write(&secret, "{\"line\":1}\n{\"line\":2}\n").expect("a file");
+        let first = json!({
+            "looks": [{"read": secret.display().to_string(), "lines": 1}],
+            "state": {"step": 1},
+        })
+        .to_string();
+        // The second answer echoes what it was handed, so the test can read the look's result.
+        let second = "{\"outcome\":\"ok\",\"payload\":\"<ECHO>\"}";
+        let caps = format!("\"read:{}\"", elsewhere.display());
+        let (root, declared) = tool_project("tool-look", &first, second, &caps);
+        let hub = Hub::new("s-tool");
+        let tool = tool_for(&root, declared[0].clone(), &hub);
+        // The echo is not a thing a guest can do, so the assertion is on the recorder: the stack
+        // kept the input of the second call, which carries the look's result.
+        let out = tool.run(&json!({}));
+        assert_eq!(
+            out.outcome,
+            letibot_tools::runtime::Invocation::ok("").outcome
+        );
+        assert!(out.payload.contains("<ECHO>"), "{}", out.payload);
+    }
+
+    #[test]
+    fn a_look_outside_the_declared_tree_is_refused_by_the_host_not_by_the_layer() {
+        let (root, declared) = tool_project(
+            "tool-outside",
+            "{\"looks\": [{\"read\": \"/etc/hosts\"}]}",
+            "{\"outcome\":\"ok\",\"payload\":\"second\"}",
+            "",
+        );
+        // No capability at all: the layer may look at nothing, and the host is what says so.
+        let looked = crate::plugins::tool::run_look(
+            &json!({"read": "/etc/hosts"}),
+            &declared[0].capabilities,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(1), "{looked}");
+        assert!(
+            looked["error"]
+                .as_str()
+                .unwrap()
+                .contains("declares no `read` capability"),
+            "{looked}"
+        );
+        // And a tree it DID declare is readable, which is the other half of the same rule.
+        let tree = tempdir("tool-declared");
+        let file = tree.join("a.jsonl");
+        std::fs::write(&file, "one\ntwo\n").expect("a file");
+        let caps = [Capability::ReadPath(tree.display().to_string())];
+        let ok = crate::plugins::tool::run_look(
+            &json!({"read": file.display().to_string(), "from": 2, "lines": 1}),
+            &caps,
+            &root,
+        );
+        assert_eq!(ok["exit"], json!(0), "{ok}");
+        assert_eq!(ok["lines"][0]["text"], json!("two"));
+        assert_eq!(ok["lines"][0]["n"], json!(2));
+    }
+
+    #[test]
+    fn a_symlink_inside_the_declared_tree_is_refused_for_where_it_points() {
+        // `~/.claude/projects` really holds one of these (`memory` → a folder under `~/Projects`),
+        // and the check is on the RESOLVED path for exactly this reason.
+        let tree = tempdir("tool-symlink");
+        let outside = tempdir("tool-symlink-out");
+        let secret = outside.join("secret.txt");
+        std::fs::write(&secret, "not for this layer").expect("a file outside");
+        let link = tree.join("memory");
+        std::os::unix::fs::symlink(&outside, &link).expect("a symlink");
+        let caps = [Capability::ReadPath(tree.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"read": link.join("secret.txt").display().to_string()}),
+            &caps,
+            &tempdir("tool-symlink-ws"),
+        );
+        assert_eq!(looked["exit"], json!(1), "{looked}");
+        assert!(
+            looked["error"]
+                .as_str()
+                .unwrap()
+                .contains("outside every tree"),
+            "{looked}"
+        );
+    }
+
+    #[test]
+    fn a_layer_that_traps_or_answers_nonsense_is_a_failed_tool_not_a_dead_session() {
+        // Nonsense: an object with neither `outcome` nor `looks`.
+        let (root, declared) = tool_project("tool-nonsense", "{\"hello\":\"world\"}", "{}", "");
+        let hub = Hub::new("s-tool");
+        let out = tool_for(&root, declared[0].clone(), &hub).run(&json!({}));
+        assert!(matches!(
+            out.outcome,
+            letibot_transcript::ToolOutcome::Failed { .. }
+        ));
+        assert!(
+            out.payload.contains("neither `outcome` nor `looks`"),
+            "{}",
+            out.payload
+        );
+
+        // An outcome nobody defined.
+        let (root, declared) = tool_project(
+            "tool-outcome",
+            "{\"outcome\":\"probably\",\"payload\":\"x\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let out = tool_for(&root, declared[0].clone(), &hub).run(&json!({}));
+        assert!(out.payload.contains("the outcomes are"), "{}", out.payload);
+    }
+
+    #[test]
+    fn a_session_with_no_plugin_host_says_so_rather_than_failing_the_turn() {
+        let (root, declared) = tool_project("tool-nohost", "{}", "{}", "");
+        let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let tool = crate::plugins::tool::PluginTool::new(
+            declared[0].clone(),
+            "s-sub",
+            root,
+            slot,
+            Hub::new("s-sub"),
+        );
+        let out = tool.run(&json!({}));
+        match &out.outcome {
+            letibot_transcript::ToolOutcome::NotRun { why } => {
+                assert!(why.contains("no plugin host"), "{why}");
+            }
+            other => panic!("a session with no host is `not_run`, not {other:?}"),
+        }
+        // And the detail names what would fix it, which is the sentence a model acts on.
+        assert!(out.payload.contains("parent's runner"), "{}", out.payload);
+    }
+
+    #[test]
+    fn the_builtin_transcript_layer_is_on_the_daemons_stack_and_answers_its_hook() {
+        // **The whole seam, with the real module**: the project installs the binary's own
+        // `plugin.toml` (that declaration is the ask — `crates/harnessd/src/plugins.rs`'s
+        // `declared_tools` seats nothing the session did not declare), `crates/builtins` compiled
+        // `plugins/builtin/claude-transcript` for `wasm32-unknown-unknown` and the host puts it at
+        // the bottom of this session's stack for that reason, rano loads it here, `admit` compares
+        // its exports with the manifest's `[[tools]]`, and the hook runs. If any of those five is
+        // wrong this test is red before anything reaches a model.
+        let workspace = tempdir("builtin-tool");
+        let builtin = letibot_builtins::table()
+            .iter()
+            .find(|b| b.name == "claude-transcript")
+            .expect("the binary carries the transcript layer");
+        let layer = workspace.join(".letibot/plugins/claude-transcript");
+        std::fs::create_dir_all(&layer).expect("the layer dir");
+        // The manifest and nothing else: the module is the one the binary already carries, which is
+        // the whole point of a built-in layer.
+        std::fs::write(layer.join("plugin.toml"), builtin.manifest).expect("the manifest");
+        let host = PluginHost::production("s-tool", &workspace);
+        // **And the documented install is CLEAN.** The project wrote a `plugin.toml` and no
+        // `plugin.wasm` — that is the install (`docs/plugins-plan.md` §4.8), because the module
+        // that answers is the one the binary carries — so discovery must record nothing against
+        // this stack and the session must be told nothing. MEASURED before the fix: two failures
+        // (`plugin.wasm: No such file or directory`, twice) went out as `plugin_layer` warnings on
+        // every session in the project, for a correct install, on the code that means *this layer
+        // is exploding*. `stack.failures()` and the notices are what this test now looks at.
+        {
+            let inner = host.lock();
+            assert!(
+                inner.stack.failures().is_empty(),
+                "a manifest with no module is a declaration, not a failure: {:?}",
+                inner.stack.failures()
+            );
+        }
+        // It is a tool and not a pane: nothing of its is announced to a head.
+        assert!(host.panes().is_empty(), "{:?}", host.panes());
+        let hub = Hub::new("s-tool");
+        host.announce(&hub);
+        assert!(
+            !hub.retained().iter().any(
+                |e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer")
+            ),
+            "a correct install says nothing on the session's log: {:?}",
+            hub.retained()
+        );
+        assert!(
+            host.take_notices().is_empty(),
+            "and nothing is queued for the model"
+        );
+        let asked = host.ask(
+            &hub,
+            "tool_claude_transcript",
+            &json!({
+                "v": 1,
+                "name": "claude_transcript",
+                "args": {"what": "sessions"},
+                "feeds": {"home": "/nonexistent-home", "workspace": "/nonexistent-project", "now_ms": 0},
+                "looks": [],
+                "state": null,
+            }),
+        );
+        let resolved = asked.expect("the built-in answers `tool_claude_transcript`");
+        assert!(
+            resolved.failures.is_empty(),
+            "a built-in must not fail its own hook: {:?}",
+            resolved.failures
+        );
+        let answer = resolved.answer.expect("an answer");
+        // Round zero asks the host for a listing — the guest does no I/O, so the only correct
+        // first answer is a look, and that is the contract working end to end.
+        assert_eq!(
+            answer["looks"][0]["list"],
+            json!("/nonexistent-home/.claude/projects/-nonexistent-project"),
+            "{answer}"
+        );
+    }
+
+    /// **A session that declared no tool from a layer gets no built-in layer at all** — the other
+    /// half of the test above, and the half that costs CPU.
+    ///
+    /// MEASURED 2026-10-28: compiling this binary's tool layer is 1.97 s in a debug host, and the
+    /// first cut of §4.8 installed it for EVERY session — so every open paid it, `letibot-bridge`'s
+    /// `no_spin` window was entirely compile, and `letibot-harnessd`'s idle-exit test found its
+    /// 800 ms window already gone when `Sessions::open_first` returned. A session that seats no
+    /// layer tool cannot call the layer: the `PluginTool` that would is what a declaration seats.
+    ///
+    /// The assertion is `ask` answering `None` — *nothing in this stack exports the hook* — which
+    /// is the same door `Stack::call` goes through, so it is a fact about what is installed rather
+    /// than a claim about it.
+    #[test]
+    fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
+        let workspace = tempdir("builtin-none");
+        let host = PluginHost::production("s-nobody", &workspace);
+        assert!(
+            host.ask(
+                &Hub::new("s-nobody"),
+                "tool_claude_transcript",
+                &json!({"v": 1, "args": {}, "looks": [], "state": null}),
+            )
+            .is_none(),
+            "nothing asked for the tool, so no layer of the binary's is on this stack"
+        );
+    }
+
+    #[test]
+    fn a_grep_look_answers_line_numbers_byte_offsets_and_bounded_context() {
+        let root = tempdir("grep");
+        let file = root.join("t.jsonl");
+        std::fs::write(&file, "one\ntwo\nTHREE\nfour\nfive\nsix\n").expect("a file");
+        let caps = [Capability::ReadPath(root.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"grep": file.display().to_string(), "match": "three", "context": 1, "limit": 5}),
+            &caps,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(0), "{looked}");
+        let hit = &looked["matches"][0];
+        assert_eq!(hit["line"], json!(3));
+        // Byte 8 is where the third line starts: `one\n` + `two\n` is eight bytes.
+        assert_eq!(hit["byte"], json!(8));
+        assert_eq!(hit["text"], json!("THREE"));
+        assert_eq!(hit["before"][0]["text"], json!("two"));
+        assert_eq!(hit["after"][0]["text"], json!("four"));
+        // The count of what was read is what makes a miss distinguishable from a failure.
+        assert_eq!(looked["scanned"], json!(6));
+    }
+
+    #[test]
+    fn a_list_look_answers_names_sizes_and_mtimes_and_a_file_is_not_a_directory() {
+        let root = tempdir("list");
+        std::fs::write(root.join("a.jsonl"), "0123456789").expect("a file");
+        std::fs::create_dir_all(root.join("subagents")).expect("a directory");
+        let caps = [Capability::ReadPath(root.display().to_string())];
+        let looked = crate::plugins::tool::run_look(
+            &json!({"list": root.display().to_string()}),
+            &caps,
+            &root,
+        );
+        assert_eq!(looked["exit"], json!(0), "{looked}");
+        let names: Vec<&str> = looked["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["name"].as_str())
+            .collect();
+        assert_eq!(names, vec!["a.jsonl", "subagents"]);
+        let file = &looked["entries"][0];
+        assert_eq!(file["size"], json!(10));
+        assert_eq!(file["dir"], json!(false));
+        assert!(file["mtime"].as_u64().unwrap() > 0);
+
+        let not_a_dir = crate::plugins::tool::run_look(
+            &json!({"list": root.join("a.jsonl").display().to_string()}),
+            &caps,
+            &root,
+        );
+        assert_eq!(not_a_dir["exit"], json!(1), "{not_a_dir}");
     }
 
     #[test]

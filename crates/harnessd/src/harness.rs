@@ -4721,7 +4721,7 @@ impl Harness {
         // One read, one seat — the two used to be resolved separately and could
         // disagree.
         let role = role_for(&cfg);
-        let registry = registry
+        let mut registry = registry
             .resolve_role(&role)
             .map_err(|e| {
                 HarnessError::Setup(format!("seating the `{}` role: {e}", cfg.seat.as_str()))
@@ -4729,6 +4729,83 @@ impl Harness {
             // The downgrade, applied to what is SEATED: a denied class's tools leave
             // the prompt, so the model is not told it has what the gate would refuse.
             .without_access(&cfg.downgrade.deny);
+        // **And the tools this session's PLUGIN LAYERS declare** (`docs/plugins-plan.md` §4.8).
+        //
+        // After the role, because a layer's tool is not one the role names — it is a seat the
+        // project added, and `resolve_role` would refuse a role naming a tool the role's list does
+        // not carry. The declarations are read from `plugin.toml`s only (`crate::plugins::
+        // declared_tools`): the prompt is composed here and the plugin host is built later by the
+        // daemon, so the tool holds the same slot the `plugin` tool does and answers through it
+        // once it is filled.
+        //
+        // **A layer IN FORCE, and not the binary's own table** — a built-in's `[[tools]]` is what a
+        // project installs (a `plugin.toml` copied into `.letibot/plugins/`, no `plugin.wasm`), not
+        // a tool every session is handed. That is `declared_tools`'s decision and the reason it
+        // reads three scopes; `crates/harnessd/tests/wired.rs` is where the default set it must not
+        // move is written down, and `a_layer_in_force_seats_its_tool_and_no_layer_seats_none`
+        // beside it is the other half.
+        //
+        // A tool that cannot be seated says why, once, in a `plugin_layer` warning — the class the
+        // plugin host already uses for a layer whose answer was refused. Silence would be a model
+        // that does not know a project offered it something.
+        let mut not_seated: Vec<String> = Vec::new();
+        let declared = crate::plugins::declared_tools(&cfg.session_id, &cfg.workspace);
+        let mut plugin_tools = 0usize;
+        for decl in declared {
+            let name = decl.tool.name.clone();
+            if registry.get(&name).is_some() {
+                not_seated.push(format!(
+                    "`{name}` (layer `{}`) is already the name of a tool this seat has",
+                    decl.layer
+                ));
+                continue;
+            }
+            let access = crate::plugins::tool::PluginTool::access(&decl.capabilities);
+            if cfg.downgrade.deny.contains(&access) {
+                not_seated.push(format!(
+                    "`{name}` (layer `{}`) is a {access:?} tool and this session's downgrade \
+                     denies that class",
+                    decl.layer
+                ));
+                continue;
+            }
+            if plugin_tools >= crate::plugins::tool::MAX_TOOLS {
+                not_seated.push(format!(
+                    "`{name}` (layer `{}`) is past the {} tools a session seats from its layers",
+                    decl.layer,
+                    crate::plugins::tool::MAX_TOOLS
+                ));
+                continue;
+            }
+            // **Somebody else's prose, so `register_foreign`** — the lint's findings are recorded
+            // on the registry rather than refusing the tool. A layer's description is a file a
+            // person wrote, and refusing a project's own tool over its wording would be the
+            // harness making a policy nobody asked for; `plugin test` is where the wording is
+            // reported back to the model that can fix it.
+            registry
+                .register_foreign(Box::new(crate::plugins::tool::PluginTool::new(
+                    decl,
+                    cfg.session_id.clone(),
+                    cfg.workspace.clone(),
+                    plugin_slot.clone(),
+                    hub.clone(),
+                )))
+                .map_err(|e| {
+                    HarnessError::Setup(format!("seating the plugin tool `{name}`: {e}"))
+                })?;
+            plugin_tools += 1;
+        }
+        if !not_seated.is_empty() {
+            hub.publish(SessionEvent::Warning {
+                code: "plugin_layer".into(),
+                detail: format!(
+                    "a layer declares a tool this session did not seat: {}. The layer is still \
+                     loaded; `plugin {{\"action\":\"stack\"}}` lists what is in force.",
+                    not_seated.join("; ")
+                ),
+                compaction: None,
+            });
+        }
         let schemas = registry.schemas();
         let seated: Vec<String> = schemas.iter().map(|s| s.name.clone()).collect();
         // **What the prompt is composed from** (R93.G2–G5): the tools actually seated —

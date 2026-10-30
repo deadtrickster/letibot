@@ -45,3 +45,15 @@ Three cases, three render requests:
 A pane's `every_s: 0` is not "no refresh" only — it is *nothing will ask me again
 on my own*. Any code path that hands a pane a frame it does not want must either
 keep the look or leave the pane's clock alone.
+
+## UPDATE 2026-10-29 — the second half of that sentence is no longer true
+
+`docs/plugins-plan.md` §4.8's documented install of a built-in's tool is a `plugin.toml` and no
+`plugin.wasm`, and the daemon published a `plugin_layer` warning on every session for it — a false
+alarm for a correct install (note `a-documented-install-was-a-broken-layer`). So `Stack::discover`
+now treats **a manifest with no module as a DECLARATION**: listed, `sha256` empty, `module: None`, no
+`Failure`. A scaffolded-but-never-built layer is the same state, so the sentence above reads *"it is
+listed with `sha —`, nothing answers it, and nothing is recorded as a failure"* — the missing build
+is what `plugin stack` shows, not a warning. Everything else here stands: `plugin stack` still says
+`no layers at all` until `load` in the session that scaffolded it, and the hot-reload poll still
+never picks up a new directory.

@@ -13,7 +13,7 @@
 //!
 //! | piece | is |
 //! |---|---|
-//! | [`Manifest`] | `plugin.toml`: the name, the one-line purpose, the hooks it exports, the capabilities it asks for, the contract it speaks |
+//! | [`Manifest`] | `plugin.toml`: the name, the one-line purpose, the hooks it exports, the capabilities it asks for, the tools it offers the model, the contract it speaks |
 //! | [`Stack`] | the four scopes resolved into one order — session over project over user over built-in — and [`Stack::call`], the answer protocol |
 //! | [`Recorder`] | the last 32 inputs per hook, which is what a replay can be run over |
 //! | [`gate`] | build, load, shadow, replay, report: the dry run every change takes before it answers |
@@ -45,8 +45,20 @@
 //! The order of the three markers is fixed — `mask`, then `below`, then `pass` — because an answer
 //! carrying two of them has to mean one thing, and the strongest statement is the one that gets
 //! to speak.
+//!
+//! # Two spellings this crate added after the pane, and what each is for
+//!
+//! * **`tool_<name>`** — a layer that declares `[[tools]]` offers the model a tool, and the export
+//!   `tool_<name>` answers it. The declaration is the prompt bytes (name, one line, JSON Schema)
+//!   and [`Manifest::admit`] refuses a layer whose manifest names a tool its exports do not
+//!   answer. Where the host seats it and what the hook's input and answer are is
+//!   `crates/harnessd/src/plugins/tool.rs`; this crate owns only the declaration and the check.
+//! * **`read:<path>`** — [`Capability::ReadPath`], one tree outside the workspace, named as a
+//!   person wrote it down. `read` is unchanged and still means the workspace. The manifest line is
+//!   the approval, and the host's look runner is what makes a module unable to reach past it.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -59,9 +71,9 @@ mod stack;
 mod testing;
 
 pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
-pub use manifest::{Capability, Manifest, Scope};
+pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
-pub use stack::{Candidate, Failure, Layer, Resolved, Stack};
+pub use stack::{Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
 
 /// One plugin module, as the stack sees it.
 ///
@@ -112,6 +124,29 @@ pub trait Loader: Send + Sync {
             "the loader in use cannot load `{name}` from memory — a built-in needs an engine with \
              `load_bytes`, which is the daemon's rano loader"
         ))
+    }
+
+    /// **A built-in's module, shared rather than owned** — the door a layer the binary carries
+    /// comes through when more than one session will seat it.
+    ///
+    /// `load_bytes` answers a `Box`, which is one owner and so one compile per stack: MEASURED
+    /// 2026-10-28 in a debug host, compiling the daemon's built-in tool layer costs **1.97 s**, and
+    /// every session open paid it again. A `Module` is `Send + Sync` and answers `&self`, and the
+    /// stack already keeps it behind an `Arc` (`Wired::module`) — so the same bytes may answer for
+    /// several sessions, and an engine that can say so should.
+    ///
+    /// The default is `load_bytes` and an `Arc::from`, which is correct and pays the compile every
+    /// time: only the engine that has a place to keep the compiled module overrides it. Nothing
+    /// downstream can tell the two apart, which is the point — `fuel()` is the engine's own last
+    /// call either way, so a shared module's price is *per module*, not per stack (ask it right
+    /// after the call that interests you, as `Stack::fuel` says).
+    fn load_builtin(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<std::sync::Arc<dyn Module>, String> {
+        self.load_bytes(name, bytes, caps).map(Arc::from)
     }
 }
 

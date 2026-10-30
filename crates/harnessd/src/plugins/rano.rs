@@ -25,7 +25,9 @@
 //! loops is a bounded cost rather than a hung daemon, and `last_fuel` is what the gate reports
 //! as a pane's price.
 
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use letibot_plugins::{Capability, HOOK_PREFIXES, Loader, Module};
 
@@ -71,7 +73,59 @@ impl Loader for RanoLoader {
         let _ = caps;
         Ok(Box::new(RanoModule { plugin }))
     }
+
+    /// **A built-in's module, compiled once for the whole process.**
+    ///
+    /// MEASURED 2026-10-28 in a debug host, `rano::plugin::Plugin::from_bytes_hooks`:
+    /// `claude_transcript` (232,869 bytes) **1.97 s**, `sessions` (173,119 bytes) **1.39 s**. That is
+    /// wasmtime compiling cranelift's output for a host built without optimisation, and every
+    /// session open paid it again — two tests went red on the price alone (`no_spin`'s three-second
+    /// window was entirely compile; the idle exit's 800 ms window had already passed when
+    /// `Sessions::open_first` returned).
+    ///
+    /// The module is the same bytes for every session in the binary, so it is compiled once and
+    /// the `Arc` is handed out. What is shared is the COMPILED MODULE, not a session's state: a
+    /// call runs in a fresh store (`Plugin::call`), the fuel counter is an atomic, and the stack
+    /// already keeps its module behind an `Arc` — so several sessions wired to these bytes answer
+    /// exactly as several sessions with their own copies did, for one compile instead of N.
+    ///
+    /// Keyed by the layer's name, which the table makes unique within one binary (`crates/builtins`
+    /// names a layer after its directory). A failure is NOT kept: it is cheap to meet again, and a
+    /// refusal recorded against one stack is that stack's to show.
+    fn load_builtin(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        caps: &[Capability],
+    ) -> Result<Arc<dyn Module>, String> {
+        let cache = COMPILED.get_or_init(|| Mutex::new(BTreeMap::new()));
+        if let Some(module) = cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned()
+        {
+            return Ok(module);
+        }
+        // Compiled outside the lock: two sessions opening at once should wait for one compile, not
+        // serialise every other built-in behind it. The second one to arrive finds the first's
+        // module in the map and drops its own copy.
+        let module: Arc<dyn Module> = Arc::from(self.load_bytes(name, bytes, caps)?);
+        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(cache
+            .entry(name.to_string())
+            .or_insert_with(|| module.clone())
+            .clone())
+    }
 }
+
+/// **The compiled built-ins this process has**, by layer name — [`RanoLoader::load_builtin`].
+///
+/// A `static` rather than a field because `RanoLoader` is a unit struct in twenty places and a
+/// session builds a loader per host: the compile it saves is per PROCESS, so the place to keep it
+/// is the process. Nothing removes an entry: a binary's built-ins are `include_bytes!`d into it and
+/// cannot change while it runs.
+static COMPILED: OnceLock<Mutex<BTreeMap<String, Arc<dyn Module>>>> = OnceLock::new();
 
 struct RanoModule {
     plugin: rano::plugin::Plugin,

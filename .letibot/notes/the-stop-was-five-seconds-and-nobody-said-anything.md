@@ -53,3 +53,26 @@ review upkeep either: a `task_start` child that finishes there still has its row
 review row, not a `target_health` row, so the pane's `unjudged` and the edge are untouched) — the
 only trace is the supervisor's one `is not a queue target` line in the daemon's log. Left as the
 brief's rule says, but that is the first place to look if a branch "disappears".
+
+## UPDATE 2026-10-29 — `stop_ends_runs` can be red once in a fully parallel workspace run, and it is not your diff
+
+MEASURED in `agent-fix-tool-mount-landing`: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace
+--no-fail-fast` (≈150 test binaries at once) failed **one** test —
+`crates/harnessd/tests/stop_ends_runs.rs`'s `a_stop_ends_the_run_that_holds_the_worker`:
+
+```
+---- the stop took 5.000019541s (the run's own deadline is 120 s) ----
+---- the Bye arrived after Some(27.372291ms) ----
+panicked at stop_ends_runs.rs:304: the daemon ended a run on the way out and said nothing about it
+```
+
+The Bye at 27 ms is the useful fact: `Registry::close` publishes `daemon_stopping_runs` **before**
+`h.close()`, so a Bye that early means the enders produced no sentence at all (`said.is_empty()`) —
+the `! /bin/cat` run the test had just seen `operator_run_unreadable` for was no longer in
+`self.runs`. Nothing here is in the plugins diff that was being landed.
+
+It did not reproduce: the same target alone (1.1 s), under eight CPU hogs (3/3 green), the whole
+`-p letibot-harnessd --no-fail-fast` package (≈60 targets in parallel, green), and a second full
+`--workspace` run (green, exit 0). So it is a load-sensitive race in the stop path and the ender
+ledger, not a regression — but a red on the queue for this test is worth a second run before
+anybody reads a diff.

@@ -1,0 +1,32 @@
+[package]
+name = "letibot-builtin-claude-transcript"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Claude Code's own transcripts, as a tool: the sessions, a search, a line range, and an outline"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a GUEST: it is built by
+# `crates/builtins`' build script for `wasm32-unknown-unknown`, and the module it produces is
+# `include_bytes!`d into the binary. The root manifest excludes `plugins` so the workspace never
+# tries to build it for the host, where a `cdylib` for a wasm ABI has nothing to say.
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link. The parsing of
+# a Claude Code line, the four operations and every bound on them are policy worth testing where
+# they live — natively, with no engine and no wasm toolchain in the way.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# rano ABI v1 — the input region, the answer arena and the result block. A path, because the guest
+# and the host that embeds it are one tree.
+letibot-guest-abi = { path = "../abi" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# A guest module is embedded in the daemon's binary, so its size is the binary's size.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

@@ -17,6 +17,16 @@
 //! with its module missing — the stack view shows it broken instead of showing nothing, which is
 //! the difference between "this fix is not installed" and "this fix is installed and exploding".
 //!
+//! A layer directory with a manifest and **no `plugin.wasm` at all** is neither: it is a
+//! **declaration**, and it is not a failure. That is the documented install of a built-in's tool
+//! (`docs/plugins-plan.md` §4.8) — the manifest is what the model is offered and the module that
+//! answers it is the one the binary carries, put at the bottom of the session's stack for exactly
+//! that reason — so a correct install must not look like a broken one. The layer is listed (its
+//! `sha256` is empty: there are no bytes to hash), it answers nothing, and it is silent:
+//! [`Stack::poll_changes`] has always treated the same absent file as *a build in progress* rather
+//! than as news, and a `plugin_layer` warning on every session in the project is a false alarm
+//! that teaches a person to ignore the code that means it.
+//!
 //! # Failures during a call are the call's, not the stack's
 //!
 //! [`Stack::call`] takes `&self`, because a stack is shared: the daemon keeps one behind an
@@ -32,7 +42,8 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::manifest::{Manifest, Scope};
+use crate::Capability;
+use crate::manifest::{Manifest, Scope, ToolDecl};
 use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 
 /// How many module calls one resolution may make.
@@ -43,7 +54,22 @@ use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 /// second to draw. Ten layers of one ask each need far fewer than this.
 const MAX_CALLS: usize = 32;
 
-/// A layer: where it came from, what it declares, and which bytes it is.
+/// **One tool a layer declares, with the layer it came from and what that layer may read.**
+///
+/// A [`ToolDecl`] alone is prompt bytes; a tool the host seats needs three more facts, and all
+/// three are the layer's rather than the tool's: which layer it is (for the sentence a failure
+/// carries), what it may read (a tool hook's looks are checked against the layer's capabilities),
+/// and the scope it came from (so a project layer overrides a built-in one by being higher).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredTool {
+    /// The layer's directory name for a layer on disk, the built-in's name for one compiled in.
+    pub layer: String,
+    pub scope: Scope,
+    pub tool: ToolDecl,
+    pub capabilities: Vec<Capability>,
+}
+
+/// A layer: where it came from, what it declares, and which bytes it is./// A layer: where it came from, what it declares, and which bytes it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     /// `s3`, `p1`, `u1` — or `b-github-pr` for a built-in.
@@ -209,12 +235,26 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
     })
 }
 
+/// Whether a layer's module is on disk at all.
+///
+/// `false` for a path that is not there, and for nothing else: a `plugin.wasm` that exists and will
+/// not load is a [`Failure`], and a directory of that name is one too (`fingerprint` refuses to hash
+/// it). A dangling symlink counts as a module that is there, so the reason is recorded once instead
+/// of being taken for a layer that never meant to have one.
+fn has_module(path: &Path) -> bool {
+    !matches!(
+        std::fs::symlink_metadata(path),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 /// Everything about a layer that is not in the [`Layer`] itself: its module, the hooks that
 /// module exports, and the bytes it was read from.
 #[derive(Clone)]
 struct Wired {
-    /// `None` when the module could not be loaded or admitted; the reason is in the stack's
-    /// failures and the layer still appears in the stack view.
+    /// `None` when the module could not be loaded or admitted — the reason is then in the stack's
+    /// failures — and for a layer that has no module at all (a declaration, which has no reason to
+    /// give). Either way the layer still appears in the stack view.
     module: Option<Arc<dyn Module>>,
     hooks: Vec<String>,
     seen: Fingerprint,
@@ -273,6 +313,68 @@ impl Stack {
         stack
     }
 
+    /// **What the layers of these three scopes declare, without loading a single module.**
+    ///
+    /// `Stack::discover` compiles every `plugin.wasm`, which is the right price at session open
+    /// and the wrong one *before* it: a declared tool is prompt bytes, and the prompt is composed
+    /// before the daemon has a hub to build a plugin host with. So this walks the same three
+    /// directories in the same order — session, project, user; newest layer first inside each —
+    /// and reads only the `plugin.toml`s.
+    ///
+    /// **No dedupe here, on purpose**, and no built-in scope either. The order IS the precedence, so
+    /// the caller keeps the first declaration of each tool name — and the built-in table is *not*
+    /// read here: a tool is seated when a layer on disk declares it, never because the binary
+    /// carries it (`docs/plugins-plan.md` §4.8; `crates/harnessd/tests/wired.rs` pins the default
+    /// session's tool set for exactly that reason). A layer whose module does not load is still
+    /// listed: the tool is then seated and answers *the layer is not loaded*, which is a sentence a
+    /// model can act on rather than a tool that silently is not there. So is a layer with no module
+    /// at all — the documented install of a built-in's tool is its `plugin.toml` alone, and the
+    /// module that answers it is the one the host puts below.
+    ///
+    /// A `plugin.toml` that does not parse is skipped here and reported by `discover`, which is
+    /// the caller that has a `Failure` list to put it in.
+    pub fn declared_tools(
+        session_dir: Option<&Path>,
+        project: Option<&Path>,
+        user: Option<&Path>,
+    ) -> Vec<DeclaredTool> {
+        let mut out = Vec::new();
+        let scopes = [
+            (Scope::Session, session_dir.map(Path::to_path_buf)),
+            (
+                Scope::Project,
+                project.map(|root| root.join(".letibot").join("plugins")),
+            ),
+            (Scope::User, user.map(|root| root.join("plugins"))),
+        ];
+        for (scope, dir) in scopes {
+            let Some(dir) = dir else { continue };
+            // Newest first: a later layer is on top, so its declaration is the one the model is
+            // offered when two of them name the same tool.
+            for path in layer_dirs(&dir).into_iter().rev() {
+                let Ok(manifest) = Manifest::read(&path) else {
+                    continue;
+                };
+                if manifest.tools.is_empty() {
+                    continue;
+                }
+                let layer = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.display().to_string());
+                for tool in manifest.tools.clone() {
+                    out.push(DeclaredTool {
+                        layer: layer.clone(),
+                        scope,
+                        tool,
+                        capabilities: manifest.capabilities.clone(),
+                    });
+                }
+            }
+        }
+        out
+    }
+
     /// Every layer, in the order a hook is resolved through them.
     pub fn layers(&self) -> &[Layer] {
         &self.layers
@@ -317,7 +419,19 @@ impl Stack {
     /// An empty id is filled in as `b-<name>`. A layer whose manifest and exports disagree, or
     /// whose id is already taken, is refused and recorded rather than registered: ids are how
     /// `set_disabled`, `by` and the transcript name a layer, so two of them cannot be one.
-    pub fn register_builtin(&mut self, mut layer: Layer, module: Box<dyn Module>) {
+    pub fn register_builtin(&mut self, layer: Layer, module: Box<dyn Module>) {
+        self.register_builtin_shared(layer, Arc::from(module));
+    }
+
+    /// [`Stack::register_builtin`] with a module the caller already holds behind an `Arc` — the
+    /// door a built-in whose compiled module is kept for the whole process comes through
+    /// ([`Loader::load_builtin`]).
+    ///
+    /// One `Arc`, several stacks: a `Module` answers `&self`, so a session's stack, the gate's
+    /// shadow and the next session's stack may all be wired to the same compiled bytes — and
+    /// since compiling one is the expensive half of installing a built-in (1.97 s for this
+    /// binary's tool layer in a debug host, MEASURED 2026-10-28), paying it once is the point.
+    pub fn register_builtin_shared(&mut self, mut layer: Layer, module: Arc<dyn Module>) {
         layer.trusted = true;
         if layer.id.is_empty() {
             layer.id = format!("{}-{}", Scope::BuiltIn.prefix(), layer.manifest.name);
@@ -332,7 +446,6 @@ impl Stack {
             });
             return;
         }
-        let module: Arc<dyn Module> = Arc::from(module);
         let hooks = module.hooks();
         if let Err(why) = layer.manifest.admit(&hooks) {
             self.failures.push(Failure {
@@ -377,7 +490,7 @@ impl Stack {
         let parsed = Manifest::parse(manifest).map_err(|why| format!("plugin.toml: {why}"))?;
         let module = self
             .loader
-            .load_bytes(name, wasm, &parsed.capabilities)
+            .load_builtin(name, wasm, &parsed.capabilities)
             .map_err(|why| {
                 let why = format!("the module could not be loaded: {why}");
                 self.failures.push(Failure {
@@ -401,7 +514,7 @@ impl Stack {
         };
         let id = layer.id.clone();
         let before = self.failures.len();
-        self.register_builtin(layer, module);
+        self.register_builtin_shared(layer, module);
         // `register_builtin` records its own refusals; answer the one that belongs to THIS call
         // so a caller is not told *ok* about a layer that is not on the stack.
         match self.failures[before..].iter().find(|f| f.layer == id) {
@@ -639,47 +752,56 @@ impl Stack {
         for (n, (path, manifest)) in found.into_iter().enumerate().rev() {
             let id = format!("{}{}", scope.prefix(), n + 1);
             let wasm = path.join(WASM);
-            let seen = match fingerprint(&wasm) {
-                Ok(seen) => seen,
-                Err(why) => {
-                    self.failures.push(Failure {
-                        layer: id.clone(),
-                        scope,
-                        hook: None,
-                        why,
-                    });
-                    Fingerprint::absent()
-                }
-            };
-            let module = match self.loader.load(&wasm, &manifest.capabilities) {
-                Ok(module) => {
-                    let hooks = module.hooks();
-                    match manifest.admit(&hooks) {
-                        Ok(()) => Some((Arc::from(module), hooks)),
-                        Err(why) => {
-                            self.failures.push(Failure {
-                                layer: id.clone(),
-                                scope,
-                                hook: None,
-                                why,
-                            });
-                            None
+            // **A manifest and no module is a declaration, not a failure** — the module doc's
+            // third case. Recording it would publish `plugin_layer` warnings on every session in
+            // the project for a *correct* install of a built-in's tool, and there is nothing to
+            // load, so the layer is wired with no module and an empty fingerprint and
+            // `poll_changes` picks a module up if one is ever written beside the manifest.
+            let (seen, module, hooks) = if !has_module(&wasm) {
+                (Fingerprint::absent(), None, Vec::new())
+            } else {
+                let seen = match fingerprint(&wasm) {
+                    Ok(seen) => seen,
+                    Err(why) => {
+                        self.failures.push(Failure {
+                            layer: id.clone(),
+                            scope,
+                            hook: None,
+                            why,
+                        });
+                        Fingerprint::absent()
+                    }
+                };
+                let module = match self.loader.load(&wasm, &manifest.capabilities) {
+                    Ok(module) => {
+                        let hooks = module.hooks();
+                        match manifest.admit(&hooks) {
+                            Ok(()) => Some((Arc::from(module), hooks)),
+                            Err(why) => {
+                                self.failures.push(Failure {
+                                    layer: id.clone(),
+                                    scope,
+                                    hook: None,
+                                    why,
+                                });
+                                None
+                            }
                         }
                     }
+                    Err(why) => {
+                        self.failures.push(Failure {
+                            layer: id.clone(),
+                            scope,
+                            hook: None,
+                            why,
+                        });
+                        None
+                    }
+                };
+                match module {
+                    Some((module, hooks)) => (seen, Some(module), hooks),
+                    None => (seen, None, Vec::new()),
                 }
-                Err(why) => {
-                    self.failures.push(Failure {
-                        layer: id.clone(),
-                        scope,
-                        hook: None,
-                        why,
-                    });
-                    None
-                }
-            };
-            let (module, hooks) = match module {
-                Some((module, hooks)) => (Some(module), hooks),
-                None => (None, Vec::new()),
             };
             self.layers.push(Layer {
                 id: id.clone(),
@@ -893,6 +1015,85 @@ mod tests {
 
     fn answer_of(r: &Resolved) -> Value {
         r.answer.clone().expect("an answer")
+    }
+
+    /// A layer directory whose manifest declares one tool.
+    fn tool_layer(root: &Path, name: &str, tool: &str, caps: &[&str]) {
+        let dir = tool_manifest(root, name, tool, caps);
+        write_wasm(&dir, &[&format!("tool_{tool}")], Act::answer(json!({})));
+    }
+
+    /// The same directory with the manifest and **no module** — the documented install of a
+    /// built-in's tool, where the module that answers is one the host already carries.
+    fn tool_manifest(root: &Path, name: &str, tool: &str, caps: &[&str]) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("a layer directory");
+        let caps: Vec<String> = caps.iter().map(|c| format!("\"{c}\"")).collect();
+        std::fs::write(
+            dir.join(MANIFEST),
+            format!(
+                "name = \"{name}\"\npurpose = \"p\"\nhooks = [\"tool_{tool}\"]\n\
+                 capabilities = [{}]\ncontract = 1\n\n[[tools]]\nname = \"{tool}\"\n\
+                 description = \"what {name} offers\"\n\nschema = {{ type = \"object\" }}\n",
+                caps.join(", ")
+            ),
+        )
+        .expect("plugin.toml");
+        dir
+    }
+
+    #[test]
+    fn declared_tools_are_read_without_loading_a_module_and_in_precedence_order() {
+        let t = TempDir::new("declared-tools");
+        // Two layers in the project scope — one declaring a tool, one that is only a pane — and a
+        // session layer that overrides the project's tool by name.
+        tool_layer(
+            &t.path().join("project/.letibot/plugins"),
+            "from-project",
+            "look",
+            &["read"],
+        );
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "a-pane",
+            &["pane_dashboard"],
+            Act::answer(json!({})),
+        );
+        tool_layer(
+            &t.path().join("session"),
+            "from-session",
+            "look",
+            &["read:~/.claude/projects"],
+        );
+        let declared = Stack::declared_tools(
+            Some(&t.path().join("session")),
+            Some(&t.path().join("project")),
+            Some(&t.path().join("user")),
+        );
+        // **The session layer first**: it is the one on top, so it is the declaration the model is
+        // offered. The pane layer contributes nothing, and nothing was compiled to find that out.
+        assert_eq!(declared.len(), 2, "{declared:?}");
+        assert_eq!(declared[0].layer, "from-session");
+        assert_eq!(declared[0].scope, Scope::Session);
+        assert_eq!(declared[0].tool.name, "look");
+        assert_eq!(
+            declared[0].capabilities,
+            vec![Capability::ReadPath("~/.claude/projects".into())]
+        );
+        assert_eq!(declared[1].layer, "from-project");
+        assert_eq!(declared[1].scope, Scope::Project);
+        assert_eq!(declared[1].tool.description, "what from-project offers");
+    }
+
+    #[test]
+    fn a_layer_whose_manifest_does_not_parse_is_skipped_by_the_scanner() {
+        // `discover` reports it; this scanner is the prompt's half and has no failure list.
+        let t = TempDir::new("declared-broken");
+        let dir = t.path().join("project/.letibot/plugins/broken");
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join(MANIFEST), "name = \"x\"\n").expect("a bad manifest");
+        let declared = Stack::declared_tools(None, Some(&t.path().join("project")), None);
+        assert!(declared.is_empty(), "{declared:?}");
     }
 
     #[test]
@@ -1430,6 +1631,61 @@ mod tests {
             "the reason is on the stack, not in every call"
         );
         assert_eq!(s.call("notice_fired", &json!({})).answer, None);
+    }
+
+    /// **A manifest and no module is a declaration, not a failure** — the documented install of a
+    /// built-in's tool (`docs/plugins-plan.md` §4.8): a project copies the built-in's `plugin.toml`
+    /// into its own scope and the module that answers it is the one the host puts below.
+    ///
+    /// Before this, `discover` recorded two failures for that directory (the fingerprint of a file
+    /// that is not there, and the load of it) and the daemon published them as `plugin_layer`
+    /// warnings on every session in the project — a false alarm for a correct install, on the one
+    /// code that is supposed to mean *this layer is exploding*.
+    #[test]
+    fn a_manifest_with_no_module_is_a_declaration_and_not_a_failure() {
+        let t = TempDir::new("declared-only");
+        let session = t.path().join("session");
+        let dir = tool_manifest(
+            &session,
+            "from-builtin",
+            "look",
+            &["read:~/.claude/projects"],
+        );
+        let mut s = stack(&t);
+        assert!(
+            s.failures().is_empty(),
+            "a correct install must not look broken: {:?}",
+            s.failures()
+        );
+        assert_eq!(
+            s.layers().len(),
+            1,
+            "it is a layer: the model is offered its tool"
+        );
+        assert_eq!(s.layers()[0].id, "s1");
+        assert_eq!(s.layers()[0].sha256, "", "there are no bytes to hash");
+        // Nothing answers it from here — the module that does is one the host puts below.
+        assert_eq!(s.call("tool_look", &json!({})).answer, None);
+        assert!(
+            s.failures().is_empty(),
+            "and resolving it is not a failure either"
+        );
+        assert!(
+            s.poll_changes().is_empty(),
+            "a poll of the same directory is silent"
+        );
+
+        // A module written beside the manifest is a change the poll sees, so a declaration is not
+        // a layer that can never answer.
+        write_wasm(&dir, &["tool_look"], Act::answer(json!({"ok": true})));
+        let pending = s.poll_changes();
+        assert_eq!(pending.len(), 1, "the module that arrived is a change");
+        assert_eq!(pending[0].layer, "s1", "for the layer that already exists");
+        s.apply(pending.into_iter().next().unwrap()).unwrap();
+        assert_eq!(
+            answer_of(&s.call("tool_look", &json!({}))),
+            json!({"ok": true})
+        );
     }
 
     #[test]
