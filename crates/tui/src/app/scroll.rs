@@ -709,7 +709,8 @@ impl App {
     /// click on thinking in the [tools, thinking lines] block, the scroll is stuck and broken"*.
     ///
     /// Asked of the same [`run_open_at`] the two walks draw by, so the keys and the screen
-    /// cannot disagree about which of the two is open.
+    /// cannot disagree about which of the two is open — **except for the live tail, which is not a
+    /// row and is answered here** (see the arm below).
     pub(crate) fn run_is_open(&self) -> bool {
         let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
             return false;

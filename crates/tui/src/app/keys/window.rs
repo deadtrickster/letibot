@@ -36,13 +36,14 @@ impl App {
                     // forgot: `set_verbosity` used to empty `payload_sel` and leave the pane's
                     // lift standing, and from then on no key could reach it — the operator's
                     // *"then all subsequent turns go with think open"*.
+                    //
+                    // **And that is all this arm does.** A panel opened on the thinking closes
+                    // the thinking because the lift IS the thinking; a ctrl-v window on one
+                    // result is a door onto a row, and closing it must not fold the reasoning —
+                    // nor, through `set_thinking`'s one writer, rewrite `head.toml` for a key the
+                    // reader pressed for something else. The fold's own Esc is the general arm
+                    // (`keys/mod.rs`, after the composer), which reaches it with no panel up.
                     self.drop_lift();
-                    // **And the thinking returns to its default** — the closed state — from
-                    // either spelling of open: the lift this just dropped, or the fold `ctrl-r`
-                    // moved. A panel is a door onto one kind and Esc is the way back to the
-                    // default view, which is the same promise the seam `esc folds the run back`
-                    // makes one key wide.
-                    self.set_thinking(false);
                     // An open run's rows are in the history cache, so it is rebuilt — as
                     // ctrl-t's close does.
                     self.invalidate_history();

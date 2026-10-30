@@ -497,6 +497,68 @@ fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
     );
 }
 
+/// **Esc on a ctrl-v window closes the window and nothing else** — the reviewer's secondary find.
+///
+/// The window's Esc arm used to end in `set_thinking(false)`, and at a rung that draws the thinking
+/// that goes through `set_verbosity` — so closing an unrelated window folded the reasoning AND
+/// rewrote `head.toml` for a key the reader pressed for something else. The arm's job is the panel;
+/// the fold's own Esc is the general arm (`keys/mod.rs`), which is one press further on.
+#[test]
+fn esc_on_a_window_does_not_fold_the_thinking() {
+    const THOUGHT: &str = "THINK-WINDOW a thought the reader opened";
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    shell_row(
+        &mut a,
+        1,
+        "s.r1",
+        "reasoning",
+        TranscriptItem::Reasoning {
+            text: THOUGHT.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    // A long result, so `ctrl-v` has a window to open (`newest_payload_row`).
+    shell_row(
+        &mut a,
+        3,
+        "s.t1",
+        "tool_result",
+        TranscriptItem::ToolResult {
+            call_id: "c0".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "LINE-0\nLINE-1\nLINE-2\nLINE-3".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+    a.key(Key::CtrlR);
+    assert!(
+        a.thinking_open(),
+        "the premise: the reader opened the thinking"
+    );
+    a.key(Key::CtrlV);
+    assert!(a.payload_window_open(), "the premise: a window is up");
+    a.key(Key::Esc);
+    assert!(!a.payload_window_open(), "esc closed the window");
+    assert!(
+        a.thinking_open(),
+        "closing a window folded the thinking with it"
+    );
+    // **And the next press is the fold's own** — the general arm, which is what `esc` means when no
+    // panel is in front of it.
+    a.key(Key::Esc);
+    assert!(!a.thinking_open(), "the second esc did not close the fold");
+}
+
 /// **`ctrl-r` will not open a run that holds no thinking** — the reviewer's find, and the mirror of
 /// *"clicked on the tools counter — empty panel"*.
 ///
@@ -626,6 +688,90 @@ fn the_live_markers_panel_is_a_run_and_not_a_window() {
         !open.contains("page the result"),
         "a window's keys for a window that is not there:\n{open}"
     );
+}
+
+/// **A panel opened on the pane's own counter scrolls the conversation, not a phantom window** —
+/// the reviewer's blocking find, at the one address a click on the LIVE counter sets.
+///
+/// `run_open_at` answers *is this ROW of the open run*, and for the live tail's sentinel the answer
+/// is no for every row (it used to be `live.work() > 0 && !live_tail_covered(..)`, a value with no
+/// `row` in it, which made every row of the transcript read as inside the open run). So
+/// `run_is_open` answers the sentinel itself; if it did not, a click on the pane's counter left
+/// `run_is_open()` false — `Key::Up`/`Down` fell through to `page_payload`, `payload_window_open()`
+/// said yes so the page keys and the wheel paged the same window nobody draws, and the hint bar
+/// named `page the result` for it.
+#[test]
+fn a_panel_on_the_live_counter_scrolls_the_conversation() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::READ_EDITS);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // **Rows above the pane to scroll back into.** The view scrolls by ROW, so a transcript of
+    // nothing but the live pane has nowhere to go: this is the history a reader is reading when
+    // they reach for the wheel.
+    let mut seq = 1u64;
+    for i in 0..20 {
+        let id = format!("s.u{i}");
+        a.apply(ServerFrame::Event(env(seq, testing::appended(&id, "user"))));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id,
+                item: Box::new(operator_row(&format!("question number {i}"))),
+            },
+        )));
+        seq += 2;
+    }
+    a.apply(ServerFrame::Event(env_at(
+        seq,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    a.apply(ServerFrame::Event(env_at(
+        seq + 1,
+        1_100,
+        testing::reasoning("r1", "THINK-ONE the round's thinking"),
+    )));
+    let (w, h) = (100usize, 16usize);
+    let (x, y) = find(&a.screen(w, h), "thinking line");
+    a.key(Key::Click { x: x + 1, y });
+    // **The state facts first**: one panel, and it is a run.
+    assert!(a.run_is_open(), "the panel does not read as a run");
+    assert!(
+        !a.payload_window_open(),
+        "the panel reads as a ctrl-v window, which it is not"
+    );
+    let open = a.screen(w, h).join("\n");
+    assert!(
+        open.contains("esc folds the run back"),
+        "the exit is not named:\n{open}"
+    );
+    assert!(
+        !open.contains("page the result"),
+        "a window's keys for a window that is not there:\n{open}"
+    );
+    // **And the keys move the conversation.** `following()` is the honest predicate here — the
+    // view holds a ROW, and `scroll` is recomputed from it at the next draw — and a key that paged
+    // a payload window instead leaves the view exactly where it was.
+    assert!(a.following(), "the premise: the view is at the tail");
+    for (name, up, down) in [
+        ("up/down", Key::Up, Key::Down),
+        ("page-up/down", Key::PageUp, Key::PageDown),
+        ("the wheel", Key::WheelUp, Key::WheelDown),
+    ] {
+        a.key(up);
+        assert!(!a.following(), "{name} did not move the conversation");
+        a.key(down);
+        assert!(a.following(), "{name} did not bring it back to the tail");
+    }
 }
 
 /// **A click on a different run's counter does not leave the first one latched** — one panel, one
