@@ -82,3 +82,24 @@ restore `if open_run { None }` in the walks → `an_open_runs_marker_is_drawn_ov
 `a_click_that_opens_a_run_leaves_no_light_on_what_it_opened` red; drop `run_holds_thinking` →
 `ctrl_r_will_not_open_a_run_that_holds_no_thinking` red; key the reset on `!same_turn` alone →
 `a_new_round_drops_the_panes_lift_without_a_clock` red.
+
+## UPDATE 2026-10-30 (same day): what the *second* review found
+
+* **`run_open_at`'s LIVE_RUN arm and `App::run_is_open` are one question each, and they must not be
+  the same call.** The walks ask *is this ROW of the open run* (answer: no, a row is never the live
+  tail — answering `live.work() > 0 && !live_tail_covered(..)` made every row read as inside the
+  open run). `run_is_open` asks *is the panel open*, and routing it through the per-row function
+  made it **false** for a click on the pane's own counter: Up/Down fell through to `page_payload`,
+  `payload_window_open()` said yes so the page keys and the wheel paged a window nobody draws, and
+  the hint bar named `page the result` for it. `run_is_open` answers the sentinel itself.
+  `a_panel_on_the_live_counter_scrolls_the_conversation` is the test — and note the assertion: a
+  scroll key holds a ROW and `scroll` is recomputed at the next draw, so **`following()` is the
+  honest predicate**, not `scroll > 0`.
+* **`markers::LIVE_RUN` and `runclick::LIVE_RUN` were two constants with one name and different
+  values** (`"<live>"` and `"\u{0}live"`). `ctrl-t` stored the first, a click the second, and
+  `run_open_at`/`run_is_open` recognised only the first — so a click-opened panel was not a run at
+  all. One constant now, and `markers` re-exports `app::runclick`'s.
+* **Esc on a ctrl-v window must not fold the thinking.** The arm ended in `set_thinking(false)`,
+  which at a rung that draws the thinking goes through `set_verbosity` and **rewrites `head.toml`**
+  — a persisted side effect of a key pressed for something else. The arm closes its panel; the
+  fold's Esc is the general arm one press further on.
