@@ -1818,6 +1818,10 @@ pub struct Store {
 /// number of connections grow with the number of sessions?* A `Relaxed` fetch is enough — a test
 /// reads it on one thread after the work it measured has ended, and no other fact is derived
 /// from it.
+///
+/// **The add is unconditional in the same region as the struct, because the sub is**: `Drop`
+/// gives the count back on every path, so `from_connection` takes it the moment a `Store`
+/// exists — an add after the first `?` that can return with one wraps this to `MAX`.
 static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// The connection goes with the struct, and **the close is this impl's**: see the field's doc for
@@ -1930,8 +1934,12 @@ impl Store {
             path,
             newer: std::cell::Cell::new(None),
         };
-        store.migrate()?;
+        // **Taken here and not on success**: `Drop` gives it back on every path and `migrate`
+        // below may refuse and drop this store, so an add after the `?` would leave that drop
+        // subtracting from a counter nobody added to — a wrap to `MAX`, and every later
+        // `Store::live` in the process is nonsense. Nothing above returns with a `Store` alive.
         LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        store.migrate()?;
         Ok(store)
     }
 
