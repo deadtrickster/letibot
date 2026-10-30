@@ -45,8 +45,19 @@ fn fixture() -> PathBuf {
 }
 
 /// `cli::run` with one command line, answering its error (a refusal is the whole subject).
+///
+/// **Every line here ends with `--list-sessions`, and that is the test's clock rather than a
+/// part of the subject.** Without it a line that is NOT refused goes on to start a daemon —
+/// and the pre-fix behaviour was worse than a wrong answer: `--host lab2x1 --where firecode`
+/// booted a VM here, so the test did not fail, it hung (MEASURED: killed at 120 s against the
+/// pre-fix tree). A query answers and exits, so the same mistake is reported in milliseconds
+/// as *started something*, which is what a refusal must never do.
 fn refused(args: &[&str]) -> String {
-    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let args: Vec<String> = args
+        .iter()
+        .map(|a| a.to_string())
+        .chain(std::iter::once("--list-sessions".to_string()))
+        .collect();
     match letibot_harnessd::cli::run(&args) {
         Ok(code) => panic!("`{}` started something (exit {code})", args.join(" ")),
         Err(why) => why,
