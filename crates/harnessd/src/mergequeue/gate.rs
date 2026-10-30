@@ -390,7 +390,9 @@ fn apparatus_absent(out: &str) -> Option<String> {
     }
     let elsewhere = super::setup::step_words(out).any(|l| {
         let t = l.trim_start();
-        t.starts_with("error[") || t.starts_with("error: could not compile") || t.starts_with("Diff in ")
+        t.starts_with("error[")
+            || t.starts_with("error: could not compile")
+            || t.starts_with("Diff in ")
     });
     if elsewhere {
         return None;
@@ -1506,10 +1508,16 @@ mod tests {
             "{}thread 'a_test' (99) panicked at src/x.rs:1:1:\nassertion failed: 1 == 2\n\n",
             out
         );
-        assert_eq!(red_cause(&mixed, StepExit::Code(101), &elsewhere()), RedCause::Code);
+        assert_eq!(
+            red_cause(&mixed, StepExit::Code(101), &elsewhere()),
+            RedCause::Code
+        );
         // And so is a compile error, whatever the refusals said.
         let broken = format!("{out}\nerror[E0308]: mismatched types\n");
-        assert_eq!(red_cause(&broken, StepExit::Code(101), &elsewhere()), RedCause::Code);
+        assert_eq!(
+            red_cause(&broken, StepExit::Code(101), &elsewhere()),
+            RedCause::Code
+        );
         // A run that only MENTIONS the words (a test of the message itself) is not a refusal.
         assert_eq!(
             red_cause(
@@ -1534,9 +1542,11 @@ mod tests {
                    LETIBOT_REQUIRE_APPARATUS is set, and a vocabulary GGUF (/nope.gguf) is not on \
                    this machine.\n\n\
                    This run does not accept a skip.\n";
-        let RedCause::ApparatusAbsent(what) =
-            red_cause(out, StepExit::Code(101), &StepMemory::Elsewhere("lab2x1".into()))
-        else {
+        let RedCause::ApparatusAbsent(what) = red_cause(
+            out,
+            StepExit::Code(101),
+            &StepMemory::Elsewhere("lab2x1".into()),
+        ) else {
             panic!("two refusals are still the machine's");
         };
         assert_eq!(

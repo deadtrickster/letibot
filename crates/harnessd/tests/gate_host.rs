@@ -193,7 +193,9 @@ impl Rig {
         let run = self
             .dir
             .join("home/letibot-remote/gate")
-            .join(letibot_harnessd::mergequeue::gate_host::dir_name(&self.repo))
+            .join(letibot_harnessd::mergequeue::gate_host::dir_name(
+                &self.repo,
+            ))
             .join("run");
         let mut steps: Vec<(u64, PathBuf)> = std::fs::read_dir(&run)
             .map(|d| {
@@ -208,10 +210,12 @@ impl Rig {
             .unwrap_or_default();
         steps.sort();
         let Some((_, path)) = steps.get(n) else {
-            panic!("the host was asked to run {} step(s), not {n} + 1", steps.len());
+            panic!(
+                "the host was asked to run {} step(s), not {n} + 1",
+                steps.len()
+            );
         };
-        std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
     fn gate(&self, steps: &[&str], seconds: u64) -> GateRun {
@@ -593,7 +597,10 @@ fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() 
         launcher.contains("( sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]' )"),
         "{launcher}"
     );
-    assert!(!launcher.contains("LETIBOT_REQUIRE_APPARATUS=1"), "{launcher}");
+    assert!(
+        !launcher.contains("LETIBOT_REQUIRE_APPARATUS=1"),
+        "{launcher}"
+    );
     // The row leads with the fact, and says it in the tree's own idiom.
     let first = &run.steps[0].output;
     assert!(

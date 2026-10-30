@@ -1435,6 +1435,129 @@ The one window a step can outlive its gate is a daemon killed with `SIGKILL` bet
 the same window the local gate has. A far-side `timeout` is deliberately NOT used: its exit status
 would be one more number to tell apart from the step's own.
 
+### The demand a step makes of the MACHINE (2026-10-30)
+
+`LETIBOT_REQUIRE_APPARATUS=1` is **the project's** demand and not the gate's: this repository's
+`AGENTS.md` writes it on step 3 (`LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast
+-- --nocapture`) so that a test which skips cannot read as a pass. The gate's job is to run the step
+as the project wrote it — but *which machine* runs it is the gate's, and that is where the two came
+apart.
+
+MEASURED 2026-10-30, `main` at `7becd144` with `[queue] gate_host = "lab2x1"`: the prefix went to a
+machine that has `bubblewrap 0.11.1` and no writable cgroup v2 subtree, and **twenty-one targets
+went red with one sentence** —
+
+```text
+LETIBOT_REQUIRE_APPARATUS is set, and a cgroup v2 subtree this user may write
+(the process-lifetime tree) is not on this machine.
+
+This run does not accept a skip.
+```
+
+— which halted both queues behind a tip nothing was wrong with. A demand that a machine cannot meet
+has to be **met, dropped or said**, and never turned into a verdict about a branch.
+
+#### The cause, measured in the gate's own session
+
+A gate step runs in the ssh session's cgroup, and the user may not write in it:
+
+```text
+cgroup=0::/user.slice/user-1000.slice/session-79934.scope
+controllers=cpu memory pids
+writable=no                              # -> Cgroup2::probe's mkdir fails
+XDG_RUNTIME_DIR=/run/user/1000
+/usr/bin/systemd-run
+systemd-run --user --scope -p Delegate=yes --quiet -- true   -> rc=0
+```
+
+So the machine was not missing a delegation at all: **the step was not in a scope of its own.**
+`letibot_tools::exec::scope`'s `Cgroup2::probe` asks exactly one question — *can I make a directory
+in the cgroup I am in?* — and a transient delegated scope answers it.
+
+#### What the host gate does now
+
+One call before the steps, and only when a step carries the prefix. It is an EXPERIMENT and not an
+inspection: the probe makes a directory in its own cgroup and removes it, then tries the same thing
+inside `systemd-run --user --scope -p Delegate=yes`. Three answers, three behaviours:
+
+| the host answers | what the gate does |
+|---|---|
+| `cgroup=here` (and `bwrap=yes`) | nothing — the steps run byte for byte as the project wrote them |
+| `cgroup=own-scope` | starts each step that carries the demand inside a transient delegated scope, and **keeps the demand** |
+| anything missing | takes `LETIBOT_REQUIRE_APPARATUS=1` off **that one step** and says so in the row |
+
+The wrap is `( exec systemd-run --user --scope -p Delegate=yes --quiet -- bash -c '<step>' )` inside
+the launcher's subshell: `systemd-run --scope` execs the command in place and answers with its exit
+status, so the pid file, the group kill and `$?` mean what they meant before.
+
+A probe that cannot answer changes **nothing** (the steps run as written, today's behaviour):
+reading a failed probe as *absent* would take a demand off a machine that has everything.
+
+#### The row says it
+
+One line at the head of the first step's evidence, and only when the gate did something:
+
+```text
+[gate on `lab2x1`: each step was started in a delegated scope of its own (`systemd-run --user
+ --scope -p Delegate=yes`), because that is what gives a step here the cgroup v2 subtree the
+ project's step demands]
+```
+```text
+[gate on `lab2x1`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5 step(s) — this machine
+ cannot meet it (a cgroup v2 subtree this user may write (the process-lifetime tree)), so the
+ tests that need it SKIPPED here and THIS IS NOT A PASS for them; every other test in those steps
+ ran as the project wrote them, and each one that did not run printed its own SKIPPED line with
+ the reason. Give the machine the apparatus and the demand comes back by itself]
+```
+
+The note is the gate's own words about the machine, like `[gate memory: …]`, so no classifier reads
+it (`setup::step_words` drops it).
+
+#### The net under it: a refusal is not a verdict
+
+Whatever the probe said, a step that failed and whose **every panic is a
+`LETIBOT_REQUIRE_APPARATUS` refusal** is `RedCause::ApparatusAbsent`: the row is `not_run` and the
+verdict is `GateVerdict::Infra` — the tip goes back to `gating` and is gated again in a minute, never
+`red`. The rule is a count and not a pairing (the refusal is on the line AFTER `panicked at`, and
+`-- --nocapture` does not promise to keep them adjacent): one genuine failure among sixteen refusals
+leaves a panic with no refusal behind it, and the step stays red.
+
+```text
+COULD NOT JUDGE: the gate could not run here: a cgroup v2 subtree this user may write is not on
+`lab2x1`, and `LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace …` demands it, so the step
+refused to skip and nothing it would have judged was judged. This is a fact about the MACHINE and
+not about the code: the tip is UNJUDGED, not red, and the queue is not halted by it.
+```
+
+#### Measured on lab2x1, wrapped
+
+| step | before | after |
+|---|---|---|
+| `LETIBOT_REQUIRE_APPARATUS=1 cargo test -p letibot-tools --test confine` | 2 passed, **23 failed** (19 boundary, 4 cgroup) | **25 passed, 0 failed** |
+| `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p letibot-harnessd --lib` | 782 passed, **17 failed** (16 apparatus + 1 that depended on them) | **806 passed, 0 failed**, 1 ignored |
+| a step that prints a refusal and exits 101 | red | `COULD NOT JUDGE` — `not_run`, the tip unjudged |
+
+#### What an operator has to do
+
+**On lab2x1: nothing.** The delegation was already there (`user@.service` delegates enough for a
+transient scope to be delegated, `XDG_RUNTIME_DIR` is set for the gate's ssh session, and
+`systemd-run --user --scope -p Delegate=yes` answers 0); what was missing was that the gate's steps
+ran in the session's own scope, which the user cannot write to. The gate now puts them in a scope of
+their own.
+
+On a machine where that call fails, the gate drops the demand and says so, and the machine can be
+given one of its own with systemd's own delegation:
+
+```sh
+sudo install -d /etc/systemd/system/user@.service.d
+printf '[Service]\nDelegate=yes\n' | sudo tee /etc/systemd/system/user@.service.d/delegate.conf
+sudo systemctl daemon-reload   # then log out and in, so the user manager is restarted
+```
+
+(That drop-in is the standard systemd answer and was NOT measured here — lab2x1 needed nothing.)
+`cgroup.subtree_control` by hand is not an option: it cannot be written on a cgroup that holds
+processes of its own, which a login session's scope does.
+
 ### Trying it by hand
 
 ```sh
@@ -1448,9 +1571,11 @@ taken. It writes nothing to the store, claims no lease and runs no queue.
 
 ### What this does not do
 
-* **The host's `[memory] gate` is not applied.** There is no delegated cgroup on that machine, so a
-  step there is bounded by the host's own memory and by nothing of ours. A step killed there is
-  still `killed` and unjudged, not red.
+* **The host's `[memory] gate` is not applied.** A step there is bounded by the host's own memory
+  and by nothing of ours: the gate writes no `memory.max`, because the cgroup it would write is the
+  host's. (Since 2026-10-30 a step that demands the cgroup apparatus *is* started in a transient
+  delegated scope of its own — see above — but that scope exists for the apparatus, and no cap is
+  put on it.) A step killed there is still `killed` and unjudged, not red.
 * **`gate_carry` is re-sent on every run** — `rsync` is incremental, so an unchanged file costs a
   stat and not a byte, but a project that carries a gigabyte of images pays for the check each time.
 * **A gate host is a daemon-wide setting**, not a per-repository one, for the reason above: the

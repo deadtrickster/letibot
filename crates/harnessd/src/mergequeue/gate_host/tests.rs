@@ -145,7 +145,10 @@ fn a_step_that_needs_its_own_cgroup_is_started_in_a_delegated_scope() {
     );
     // The pid is still the launcher's, which is still the process group's leader: the kill reaches
     // the scope's command through the group it was forked into.
-    assert!(script.contains("echo $$ > '/h/gate/x/run/step-0.pid'"), "{script}");
+    assert!(
+        script.contains("echo $$ > '/h/gate/x/run/step-0.pid'"),
+        "{script}"
+    );
     assert!(
         script.contains("echo $? > '/h/gate/x/run/step-0.exit'"),
         "{script}"
@@ -172,11 +175,17 @@ fn the_demand_is_read_off_the_head_of_a_step_and_nothing_else_is_touched() {
         Some("make check")
     );
     // `0` is *no*, which is how a project says *not on this step* over an inherited value.
-    assert_eq!(apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=0 make check"), None);
+    assert_eq!(
+        apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=0 make check"),
+        None
+    );
     // A step that makes no demand, and the three shapes that look like one.
     assert_eq!(apparatus_prefix("cargo test --workspace"), None);
     assert_eq!(apparatus_prefix("LETIBOT_REQUIRE_APPARATUS=1"), None);
-    assert_eq!(apparatus_prefix(" env LETIBOT_REQUIRE_APPARATUS=1 make"), None);
+    assert_eq!(
+        apparatus_prefix(" env LETIBOT_REQUIRE_APPARATUS=1 make"),
+        None
+    );
     assert_eq!(apparatus_prefix("echo LETIBOT_REQUIRE_APPARATUS=1"), None);
     // The tail keeps its own spacing after the assignment, and nothing inside it is rewritten.
     assert_eq!(
@@ -230,9 +239,17 @@ fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
     let none = apparatus_from("cgroup=no\nbwrap=yes\n");
     assert_eq!(none.evidence("lab", 5, &[], false), None);
     let line = none
-        .evidence("lab", 5, &["LETIBOT_REQUIRE_APPARATUS=1 cargo test".to_string()], false)
+        .evidence(
+            "lab",
+            5,
+            &["LETIBOT_REQUIRE_APPARATUS=1 cargo test".to_string()],
+            false,
+        )
         .expect("a line");
-    assert!(line.starts_with("[gate on `lab`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"), "{line}");
+    assert!(
+        line.starts_with("[gate on `lab`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"),
+        "{line}"
+    );
     assert!(line.contains(CGROUP_APPARATUS), "{line}");
     assert!(line.contains("THIS IS NOT A PASS"), "{line}");
     assert!(line.contains("SKIPPED"), "{line}");
@@ -241,7 +258,10 @@ fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
     assert_eq!(scope.evidence("lab", 5, &[], false), None);
     let line = scope.evidence("lab", 5, &[], true).expect("a line");
     assert!(line.contains("delegated scope of its own"), "{line}");
-    assert!(line.contains("systemd-run --user --scope -p Delegate=yes"), "{line}");
+    assert!(
+        line.contains("systemd-run --user --scope -p Delegate=yes"),
+        "{line}"
+    );
     assert!(!line.contains("NOT A PASS"), "{line}");
 }
 
@@ -252,8 +272,14 @@ fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
 fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
     let script = apparatus_probe();
     assert!(script.starts_with("# letibot-apparatus-probe"), "{script}");
-    assert!(script.contains("mkdir -p \"$own/letibot-probe.$$\""), "{script}");
-    assert!(script.contains("rmdir \"$own/letibot-probe.$$\""), "{script}");
+    assert!(
+        script.contains("mkdir -p \"$own/letibot-probe.$$\""),
+        "{script}"
+    );
+    assert!(
+        script.contains("rmdir \"$own/letibot-probe.$$\""),
+        "{script}"
+    );
     assert!(
         script.contains("systemd-run --user --scope -p Delegate=yes"),
         "{script}"
@@ -261,7 +287,12 @@ fn the_probe_makes_a_directory_and_tries_a_delegated_scope_before_it_says_no() {
     assert!(script.contains("cgroup=own-scope"), "{script}");
     assert!(script.contains("command -v bwrap"), "{script}");
     // One line per fact, so the reader of a host's answer is not counting positions.
-    assert!(script.trim_end().ends_with("printf 'cgroup=%s\\nbwrap=%s\\n' \"$cgroup\" \"$bwrap\""), "{script}");
+    assert!(
+        script
+            .trim_end()
+            .ends_with("printf 'cgroup=%s\\nbwrap=%s\\n' \"$cgroup\" \"$bwrap\""),
+        "{script}"
+    );
 }
 
 /// **A start is detached and a kill is a group kill with the local gate's numbers.**
@@ -476,6 +507,25 @@ fn an_unset_host_runs_the_gate_here_and_a_set_one_does_not() {
     );
     assert!(matches!(host.verdict, GateVerdict::Infra(_)), "{host:#?}");
     assert_eq!(host.steps[0].outcome, MergeGateOutcome::NotRun);
+    // **A step that DEMANDS apparatus runs here byte for byte** — no probe, no prefix taken off,
+    // no scope: the local gate is `run_with_memory` and nothing else, whatever the machine has.
+    let demanding = vec![format!(
+        "{APPARATUS_ENV}=1 sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]'"
+    )];
+    let local = run_gate(
+        None,
+        &wt,
+        &demanding,
+        &ctl,
+        letibot_tools::exec::memory::Ask::Uncapped,
+    );
+    assert_eq!(local.verdict, GateVerdict::Passed, "{local:#?}");
+    assert!(
+        local.steps[0].output.starts_with("demand=[1]\n"),
+        "the demand reaches the step as the project wrote it: {local:#?}"
+    );
+    assert!(!local.steps[0].output.contains("[gate on "), "{local:#?}");
+    assert_eq!(local.steps[0].command, demanding[0]);
     // And the name a row carries is the host's, so the queue's green line says which machine
     // judged the target.
     let named = crate::mergequeue::gate::HostGate {

@@ -316,7 +316,7 @@ mod tests {
         // And the host gate's notes are the gate's too: what a machine has not got, and that a
         // step's demand was taken off it, are not the step saying anything about the code.
         assert_eq!(
-            step_words("[gate on lab2x1: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"]")
+            step_words("[gate on lab2x1: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5")
                 .count(),
             0
         );
