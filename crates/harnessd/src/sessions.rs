@@ -3668,6 +3668,11 @@ impl<'a> Sessions<'a> {
         self.nags.remove(session_id);
         self.bangs.remove(session_id);
         self.armed.remove(session_id);
+        // **And the plugin host, which nothing else removed.** `open_plugins` installs one per
+        // session and `close` used to leave it in the map for the daemon's life: a layer stack,
+        // its wasm instances and the panes it drew, held for every session ever opened. It is the
+        // session's, and a session that has ended has no layers.
+        self.plugins.remove(session_id);
         self.registry.remove(session_id);
         held.is_some()
     }
