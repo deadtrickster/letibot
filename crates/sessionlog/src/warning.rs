@@ -281,6 +281,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // the handling — and when the retries are exhausted the turn fails under
     // `turn_failed`, which is a failure.
     ("model_endpoint_retry", Class::Routine),
+    // **The endpoint that did not answer came back** — the other half of the row above, and
+    // Routine for its reason: the recovery IS the news, nothing is left for a person to do,
+    // and a recovery that is not said is how somebody spends an afternoon believing the
+    // endpoint is still down. Said once per outage, with the count and how long it was out
+    // (`harnessd`'s `Outage`), never once per attempt.
+    ("model_endpoint_answered", Class::Routine),
     // **The session store was busy and a turn is waiting to write its rows** — another daemon
     // holds the write lock (`Harness::persist`). Routine by the same rule as the retry above:
     // the wait IS the handling, nothing is lost (the rows are in memory), and if the store stays
@@ -1288,8 +1294,12 @@ mod the_register_census {
         //     `message_not_stored` (Failures): another session's words that the turn did not
         //     read (written into the transcript instead), and the same words failing to land in
         //     the transcript at all.
-        assert_eq!(TABLE.len(), 166, "the table's size");
-        assert_eq!(count(Class::Routine), 64);
+        //   · **167, not 166**: `model_endpoint_answered` (Routine) — the other half of
+        //     `model_endpoint_retry`: the endpoint that did not answer came back, said ONCE per
+        //     outage with the count and how long it was out. The operator's *"i dont need walls
+        //     of this … a coutner is what is need"* is why neither code is per attempt.
+        assert_eq!(TABLE.len(), 167, "the table's size");
+        assert_eq!(count(Class::Routine), 65);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 89);
         // A code with an id is read by its family.
