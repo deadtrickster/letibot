@@ -1157,12 +1157,29 @@ impl RepoQueue {
     ///
     /// * a tree a live session works in is kept whatever else is true (R92.24) — and released by a
     ///   later pass once that session has ended, which is the part a person used to do by hand;
-    /// * the branch decides the rest: it goes only when the target already has everything on it
-    ///   (`git merge-base --is-ancestor`), which is what a landing is whether the queue made it or
-    ///   a person did, and a tree with nothing uncommitted goes with it;
-    /// * anything else is kept — a branch that carries work, a tree with uncommitted changes, a
-    ///   tree that is not this repository's — said on the row's record and raised where a person
-    ///   reads it, because the branch may be the only copy of that work.
+    /// * **the COMMITS decide, and never the row's state** — see the invariant below. A branch goes
+    ///   only when its tip is provably on the target (`git merge-base --is-ancestor`), which is what
+    ///   a landing is whether the queue made it or a person did, and a tree goes only under the same
+    ///   proof about the commit its own `HEAD` names;
+    /// * anything else is kept — a branch that carries work, a tree whose `HEAD` carries work, a tree
+    ///   with uncommitted changes, a tree that is not this repository's, and anything whose proof
+    ///   could not be taken — said on the row's record and raised where a person reads it, because
+    ///   it may be the only copy of that work.
+    ///
+    /// # The invariant
+    ///
+    /// **Nothing in the queue may delete a ref, or a worktree, whose commits are not provably on the
+    /// target.** Not a terminal review row, not a `blocked` landing, not a person's withdrawal: a row
+    /// is terminal in TWO queues for different reasons (`approved` is the REVIEW queue's end and says
+    /// nothing about the target), so a row's state can say *the queue is done with this* and never
+    /// *this work is safe*. The proof is [`git::ref_proof`] for a branch and [`git::commit_proof`] for
+    /// a worktree's `HEAD`, and it is three-valued: `On` and `Gone` permit the removal, `Unproven`
+    /// does not. A proof that could not be taken — a repository or a ref git will not read, a target
+    /// that cannot be named — is `Unproven`, and the safe side of *I could not tell* is keeping.
+    ///
+    /// MEASURED 2026-10-29: this used to be `branch_head(..).is_none() => may go`, which folded
+    /// *the ref is not there* together with *git could not tell*, and the worktree went with it —
+    /// `git worktree remove --force` is unrecoverable for a commit no ref holds.
     ///
     /// Cheap: a row that names no worktree costs no `git` call at all, a tree that two rows name
     /// is examined once, and a row the sweep has settled is not looked at again — `first_time`, so
@@ -1184,9 +1201,12 @@ impl RepoQueue {
                 .iter()
                 .any(|m| m.review_id == review_id && m.state.is_open())
         };
-        // One examination per tree per pass: a review row and the merge row it was approved into
-        // name the same worktree and the same branch, and the tree is one thing.
-        let mut decided: HashMap<(String, String), Settled> = HashMap::new();
+        // One examination per (tree, target) per pass: a review row and the merge row it was
+        // approved into name the same worktree, branch AND target, and the tree is one thing. The
+        // TARGET is in the key because the decision is about a branch's commits *on a target* —
+        // two rows naming one tree but different targets are two questions, and a cached verdict
+        // must never answer a question it was not asked.
+        let mut decided: HashMap<(String, String, String), Settled> = HashMap::new();
         for m in &merges {
             if m.state.is_open() || m.worktree.is_none() {
                 continue;
@@ -1243,13 +1263,17 @@ impl RepoQueue {
         id: &str,
         state: &str,
         held: &Held<'_>,
-        decided: &mut HashMap<(String, String), Settled>,
+        decided: &mut HashMap<(String, String, String), Settled>,
     ) -> Result<(), StoreError> {
         let settled = format!("released:{}:{queue}:{id}:{state}", self.key);
         if held.worktree.is_empty() || self.said(&settled) {
             return Ok(());
         }
-        let tree = (held.worktree.to_string(), held.branch.to_string());
+        let tree = (
+            held.worktree.to_string(),
+            held.branch.to_string(),
+            held.target.to_string(),
+        );
         let found = match decided.get(&tree) {
             Some(found) => found.clone(),
             None => {
@@ -1288,7 +1312,7 @@ impl RepoQueue {
 
     /// **The decision about one tree** — what may go, and what stays with the reason it does.
     ///
-    /// **The branch decides, and the tree follows it.** That is the rule this queue already
+    /// **The commits decide, and the tree follows them.** That is the rule this queue already
     /// applies to a superseded fix (`git::retire_if_empty`: *a branch that carries nothing may go,
     /// a branch that carries the fixer's work and its tree are kept*), and one queue may not hold
     /// two rules for one tree: a sweep that removed the tree of a branch the mover had just said it
@@ -1297,7 +1321,13 @@ impl RepoQueue {
     /// both — the tree is where that work is continued, and it is the only copy of anything the
     /// branch does not hold.
     ///
-    /// A tree a live session works in is kept whatever the branch says (R92.24), and released by a
+    /// **Two proofs, and the second one is the tree's own.** The branch's tip is proved on the
+    /// target ([`git::ref_proof`]) *and* the commit the worktree's `HEAD` names is proved on it
+    /// ([`git::commit_proof`]), because a tree can hold a commit no ref of the row names — a
+    /// detached head, a branch the row does not name — and `git worktree remove --force` is
+    /// unrecoverable for it. Either proof failing (or not being takeable) keeps both.
+    ///
+    /// A tree a live session works in is kept whatever the proofs say (R92.24), and released by a
     /// later pass once that session has ended.
     fn settle_tree(&self, held: &Held<'_>) -> Settled {
         let mut found = Settled::default();
@@ -1316,14 +1346,44 @@ impl RepoQueue {
             ));
             return found;
         }
+        let with_tree = if there {
+            format!(" (its worktree {} is kept with it)", wt.display())
+        } else {
+            String::new()
+        };
         if let Some((kind, why)) = self.branch_may_go(held) {
-            let with_tree = if there {
-                format!(" (its worktree {} is kept with it)", wt.display())
-            } else {
-                String::new()
-            };
             found.kept = Some((kind, format!("{why}{with_tree}")));
             return found;
+        }
+        // **The tree's own commits, under the same proof.** A tree is removed whole, so a commit
+        // it holds and no ref does (a detached head, a branch the row does not name) is gone with
+        // it — kept here unless it is provably on the target.
+        if there {
+            match git::head_of(wt) {
+                Ok(head) => {
+                    let what = format!("the worktree {}'s HEAD ({head})", wt.display());
+                    if let Some((_, why)) =
+                        git::commit_proof(&self.repo, &head, held.target, &what).unproven()
+                    {
+                        // The kind is `tree` because the TREE is what is kept: the sentence says
+                        // which proof refused it, and `noted:<row>:tree` is what keeps it said once.
+                        found.kept = Some(("tree", why));
+                        return found;
+                    }
+                }
+                Err(why) => {
+                    found.kept = Some((
+                        "tree",
+                        format!(
+                            "the worktree {} is kept: the commit its HEAD names could not be read \
+                             ({why}), so whether it is on `{}` could not be told",
+                            wt.display(),
+                            held.target
+                        ),
+                    ));
+                    return found;
+                }
+            }
         }
         if there {
             match git::remove_worktree(&self.repo, wt, held.branch) {
@@ -1347,51 +1407,21 @@ impl RepoQueue {
         found
     }
 
-    /// **Whether a terminal row's branch may go** — `None` when it may, else the kind of reason it
-    /// stays and the sentence for a person.
+    /// **Whether a terminal row's branch may go** — `None` when the proof says its commits are on
+    /// the target (or the ref is not there at all), else the kind of reason it stays and the
+    /// sentence for a person.
     ///
     /// The test is the one a landing makes: *does the target already have everything on this
     /// branch?* (`git merge-base --is-ancestor`). That is a landing by the queue and a landing by
     /// hand alike, and it is what the operator's own `git merge --ff-only` mornings were.
+    ///
+    /// **`None` means one of two things and never a third.** Either the tip is provably on the
+    /// target, or git says there is no such ref — permission to delete what is left, because a ref
+    /// that is not there holds no commit. *Git could not tell* is [`git::Proof::Unproven`], and it
+    /// keeps.
     fn branch_may_go(&self, held: &Held<'_>) -> Option<(&'static str, String)> {
-        let Some(head) = git::branch_head(&self.repo, held.branch) else {
-            return None; // already gone: nothing to keep, nothing to delete
-        };
-        let Some(tip) = git::branch_head(&self.repo, held.target) else {
-            return Some((
-                "target",
-                format!(
-                    "`{}` cannot be named in {}, so whether `{}` is on it cannot be told, and the \
-                     branch is kept",
-                    held.target,
-                    self.repo.display(),
-                    held.branch
-                ),
-            ));
-        };
-        match git::is_ancestor(&self.repo, &head, &tip) {
-            Ok(true) => None,
-            Ok(false) => {
-                let over = git::commits_over(&self.repo, &tip, &head)
-                    .map(|n| format!("{n} commit(s)"))
-                    .unwrap_or_else(|_| "commits".into());
-                Some((
-                    "carries",
-                    format!(
-                        "the branch `{}` is kept: it carries {over} over `{}` (at {tip}) that are \
-                         not on it, so the branch is the only copy of that work",
-                        held.branch, held.target
-                    ),
-                ))
-            }
-            Err(why) => Some((
-                "unknown",
-                format!(
-                    "whether `{}` is on `{}` could not be told ({why}), so the branch is kept",
-                    held.branch, held.target
-                ),
-            )),
-        }
+        let what = format!("the branch `{}`", held.branch);
+        git::ref_proof(&self.repo, held.branch, held.target, &what).unproven()
     }
 
     /// **The review of a tip the target no longer has** (R76 item 4, and the operator's ruling of
@@ -2551,6 +2581,19 @@ impl RepoQueue {
                 .review_row(&row.review_id)?
                 .map(|r| r.session_id)
                 .filter(|s| !s.is_empty() && self.env.door.session_live(s));
+            // **The queue's own landing is the proof, and it is taken here too** — the branch goes
+            // only when the sha the compare-and-swap put on the target is still on it. A landing
+            // is often a REBASE, so the branch's own commits are not ancestors of the target; the
+            // commit they became is (`landed_sha`, `rebased`, on the target by the CAS above), and
+            // that is what makes this the same fact the sweep proves. A target rewritten past the
+            // landing — a force-push, a reset — makes the branch the only copy of the work again,
+            // and it is kept and said.
+            let proved = git::commit_proof(
+                repo,
+                rebased,
+                &target,
+                &format!("the branch `{}` (landed at {rebased})", row.branch),
+            );
             let kept = match &live {
                 Some(s) => Err(format!(
                     "the worktree {} and `{}` are kept: the session `{s}` that works in it is \
@@ -2559,7 +2602,14 @@ impl RepoQueue {
                     row.worktree.as_deref().unwrap_or("?"),
                     row.branch
                 )),
-                None => git::retire_branch(repo, &row.branch, row.worktree.as_deref()),
+                None => match proved {
+                    git::Proof::On => {
+                        git::retire_branch(repo, &row.branch, row.worktree.as_deref())
+                    }
+                    other => Err(other.unproven().map(|(_, why)| why).unwrap_or_else(|| {
+                        format!("`{}` is kept: {rebased} is not on `{target}`", row.branch)
+                    })),
+                },
             };
             if let Err(kept) = kept {
                 // Said where a person reads it (R92.4), not only in the daemon's log — and once

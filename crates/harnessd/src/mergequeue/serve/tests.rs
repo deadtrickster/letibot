@@ -3856,3 +3856,383 @@ fn a_one_shot_takes_no_lease() {
         store.queue_leases().unwrap()
     );
 }
+
+// ===== The invariant: the COMMITS decide, never the row's state =====
+
+/// **A `blocked` landing whose branch is not merged keeps everything, and the sweep removes
+/// nothing** — the ref, the worktree and the caches inside it all stay.
+///
+/// A landing is `blocked` exactly when the work has to be landed or fixed by somebody: its gate
+/// could not run, or the queue could not make its landing tree. `blocked` is still the merge
+/// queue's business (`MergeState::is_open`), so the sweep does not even look at the row — and this
+/// test is the guard on that: it is the state a person's `/queue restart` resumes, and a sweep that
+/// released it would leave the restart nothing to land.
+#[test]
+fn a_blocked_landings_branch_and_tree_are_never_released() {
+    let w = World::new("invariant-blocked");
+    let (wt, base, head) = branch(&w.repo, "blk", "blk.txt");
+    // A build cache in the tree, so "nothing was released" covers the caches too.
+    std::fs::write(w.repo.join(".git/info/exclude"), "target/\n").unwrap();
+    std::fs::create_dir_all(wt.join("target/debug")).unwrap();
+    std::fs::write(wt.join("target/debug/blob"), vec![b'x'; 4096]).unwrap();
+    w.enqueue("blk", &wt, &base, &head);
+    let green = w.worker(Arc::new(GreenGate), "a");
+    run(&green, 1);
+    let m = w.accept("blk", "test/a");
+    // A gate that cannot judge the branch: the landing parks as `blocked`.
+    let blocked = {
+        let env = env(Arc::new(KilledAtCapGate), w.door.clone(), "a");
+        RepoQueue::new(w.store(), w.repo.clone(), env)
+    };
+    run(&blocked, 1);
+    assert_eq!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Blocked,
+        "the landing is blocked, which is the case the work has to survive"
+    );
+    assert_ne!(w.tip(), head, "and its commits are NOT on the target");
+    run(&blocked, 3);
+
+    assert!(wt.exists(), "the worktree stays: {}", wt.display());
+    assert!(
+        wt.join("target/debug/blob").exists(),
+        "and the build cache inside it"
+    );
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/blk"),
+        Some(head),
+        "and the ref, which is the only copy of the work"
+    );
+    assert!(
+        release_notes(&w, "merge", &m).is_empty() && release_notes(&w, "review", "blk").is_empty(),
+        "and the sweep said nothing, because it touched nothing"
+    );
+    assert!(w.door.warnings("queue_branch_kept").is_empty());
+}
+
+/// **A landed row gives its resources back** — the one case where the proof says the commits are on
+/// the target, so the branch and its tree go and the record keeps `landed_sha`.
+#[test]
+fn a_landed_row_releases_its_branch_and_its_tree() {
+    let w = World::new("invariant-landed");
+    let (wt, base, head) = branch(&w.repo, "lan", "lan.txt");
+    w.enqueue("lan", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("lan", "test/a");
+    run(&q, 3);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    let landed = row
+        .landed_sha
+        .clone()
+        .expect("the row keeps the sha it landed");
+    assert!(
+        git::is_ancestor(&w.repo, &landed, "main").unwrap(),
+        "and that sha is on the target"
+    );
+    assert!(!wt.exists(), "the tree is released");
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/lan"),
+        None,
+        "and so is the ref"
+    );
+}
+
+/// **An `approved` row whose landing was taken out keeps an unmerged branch** — `approved` is the
+/// REVIEW queue's terminal and says nothing about the target, and a person's withdrawal of the
+/// landing (`d rm`, *"the branch and its worktree stay"*) is not permission either.
+#[test]
+fn an_approved_row_whose_landing_was_taken_out_keeps_an_unmerged_branch() {
+    let w = World::new("invariant-approved");
+    let (wt, base, head) = branch(&w.repo, "app", "app.txt");
+    w.enqueue("app", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("app", "test/a");
+    // The operator takes the landing out, as the `d rm` verb does — the review row stays approved.
+    assert!(
+        w.store()
+            .move_merge(
+                &m,
+                MergeState::Queued,
+                MergeState::Withdrawn,
+                &Move::new(
+                    "operator:s-op",
+                    "withdrawn by the operator; the branch and its worktree stay"
+                ),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    assert_eq!(
+        w.store().review_row("app").unwrap().unwrap().state,
+        ReviewState::Approved
+    );
+    run(&q, 3);
+
+    assert!(wt.exists(), "the tree stays");
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/app"),
+        Some(head),
+        "and the ref, whose commits are not on the target"
+    );
+    let notes = release_notes(&w, "review", "app");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+    assert!(notes[0].contains("carries 1 commit"), "{}", notes[0]);
+}
+
+/// **A withdrawn row keeps the ref of a branch that is not on the target** — the operator's veto is
+/// not permission, whatever the `d rm` verb's own words promise about the tree: only *merged* is.
+#[test]
+fn a_withdrawn_row_keeps_the_ref_of_a_branch_that_is_not_on_the_target() {
+    let w = World::new("invariant-withdrawn");
+    let (wt, base, head) = branch(&w.repo, "wd", "wd.txt");
+    w.enqueue("wd", &wt, &base, &head);
+    withdraw(&w, "wd");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/wd"),
+        Some(head),
+        "the ref survives the withdrawal"
+    );
+    assert!(wt.exists(), "and so does the tree it is worked in");
+    let notes = release_notes(&w, "review", "wd");
+    assert_eq!(notes.len(), 1, "said once: {notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+}
+
+/// **The invariant, end to end**: plant a branch with one unmerged commit, put a terminal row of
+/// each kind on it, run the whole sweep over and over, and the ref still resolves to that commit.
+///
+/// *Nothing in the queue may delete a ref whose commits are not on the target.* The rows here are
+/// the four a person or the queue can end with — a withdrawn review, an approved review whose
+/// landing was taken out, a failed landing, and a review row of a branch no landing names — because
+/// the sweep decides per row and the invariant must hold for every one of them.
+#[test]
+fn the_sweep_never_deletes_a_ref_whose_commits_are_not_on_the_target() {
+    let w = World::new("invariant-every-row");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    // One branch, one commit that the target does not have, named by four terminal rows.
+    let (wt, base, head) = branch(&w.repo, "inv", "inv.txt");
+    assert_ne!(w.tip(), head);
+    w.enqueue("inv", &wt, &base, &head);
+    run(&q, 1);
+    let m = w.accept("inv", "test/a");
+    assert!(
+        w.store()
+            .move_merge(
+                &m,
+                MergeState::Queued,
+                MergeState::Failed,
+                &Move::new("test/a", "the gate was red"),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    withdraw(&w, "inv");
+    for _ in 0..4 {
+        run(&q, 1);
+    }
+
+    let sha = sh(&w.repo, &["rev-parse", "--verify", "refs/heads/agent/inv"]);
+    assert_eq!(
+        sha, head,
+        "the ref still resolves, and to the unmerged commit"
+    );
+    assert!(
+        !git::is_ancestor(&w.repo, &head, "main").unwrap(),
+        "and it is still not on the target"
+    );
+    assert!(wt.exists(), "the tree it is worked in is still there");
+    assert_eq!(
+        git::rev_parse(&w.repo, &format!("{head}^{{commit}}")),
+        Some(head.clone()),
+        "the commit is still reachable by its ref"
+    );
+}
+
+/// **A tree whose own `HEAD` is not on the target is kept even when the row's branch is** — the
+/// hole this test was written for.
+///
+/// `settle_tree` used to prove the row's BRANCH and then remove the worktree whole. A tree can hold
+/// a commit no ref of the row names — here a detached `HEAD` carrying one commit made after the
+/// branch landed by hand — and `git worktree remove --force` is unrecoverable for it. MEASURED
+/// 2026-10-29: before the second proof, this tree was removed and the commit survived only in
+/// `.git`'s reflog.
+#[test]
+fn a_tree_whose_own_head_is_not_on_the_target_is_kept_and_says_so() {
+    let w = World::new("invariant-tree-head");
+    let (wt, base, head) = branch(&w.repo, "det", "det.txt");
+    // The branch lands by hand, so the sweep's proof about the REF says *may go* …
+    sh(&w.repo, &["merge", "--ff-only", "agent/det"]);
+    assert_eq!(w.tip(), head);
+    // … and the tree then gets a commit that no ref holds, on a detached HEAD.
+    sh(&wt, &["checkout", "--detach", "HEAD"]);
+    let extra = commit(
+        &wt,
+        "later.txt",
+        "not on any branch\n",
+        "work after the landing",
+    );
+    assert_eq!(git::branch_head(&w.repo, "agent/extra"), None);
+    w.enqueue("det", &wt, &base, &head);
+    withdraw(&w, "det");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+
+    assert!(wt.exists(), "the tree holds a commit no ref does");
+    assert_eq!(
+        git::head_of(&wt).unwrap(),
+        extra,
+        "and it is still the commit that was made in it"
+    );
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/det"),
+        Some(head),
+        "and the branch stays WITH the tree: one tree is one decision, and the branch is where \
+         that tree's work would go"
+    );
+    let notes = release_notes(&w, "review", "det");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+    assert!(
+        notes[0].contains("HEAD") && notes[0].contains("carries 1 commit"),
+        "the note says which proof refused it: {}",
+        notes[0]
+    );
+    assert!(
+        notes[0].contains(&wt.display().to_string()),
+        "and where the tree is: {}",
+        notes[0]
+    );
+}
+
+/// **A landing the target was rewritten past keeps the branch** — the second ref-deleting path,
+/// `landed`, proved too.
+///
+/// The queue's landing is a compare-and-swap and the row says `landed_sha`, and that IS the proof —
+/// while the sha is still on the target. The window is not zero: the install gate is a SECOND gate
+/// on its own thread, so a target reset (a force-push, a person's `git reset --hard`) can happen
+/// between the swap and the retirement. This used to delete the branch on the strength of the row's
+/// state; the branch is the only copy of that work once the target no longer has it.
+#[test]
+fn a_landing_the_target_was_rewritten_past_keeps_the_branch() {
+    /// Green, and it puts the target back while the landing's INSTALL step runs.
+    struct RewritesTheTargetAtInstall {
+        repo: PathBuf,
+        to: String,
+    }
+    impl GateRunner for RewritesTheTargetAtInstall {
+        fn run(&self, _wt: &Path, steps: &[String], _ctl: &GateControl) -> GateRun {
+            if steps.iter().any(|s| s.contains(gate::INSTALL_MARK)) {
+                sh(&self.repo, &["reset", "--hard", &self.to]);
+            }
+            GateRun {
+                steps: steps
+                    .iter()
+                    .map(|s| letibot_tokencore::store::MergeGateStep {
+                        command: s.clone(),
+                        outcome: letibot_tokencore::store::MergeGateOutcome::Passed,
+                        output: String::new(),
+                        started_ms: gate::now_ms(),
+                        elapsed_ms: 0,
+                    })
+                    .collect(),
+                verdict: GateVerdict::Passed,
+            }
+        }
+    }
+
+    let w = World::new("landed-rewritten");
+    // An install step, so the landing reaches `landed` through a second gate: that is the window.
+    std::fs::write(
+        w.repo.join("AGENTS.md"),
+        format!(
+            "## Merge gate\n\n```sh\ntest ! -f broken\ntrue # {}\n```\n",
+            gate::INSTALL_MARK
+        ),
+    )
+    .unwrap();
+    sh(&w.repo, &["commit", "-q", "-am", "an install step"]);
+    let before = w.tip();
+    let (wt, base, head) = branch(&w.repo, "rw", "rw.txt");
+    w.enqueue("rw", &wt, &base, &head);
+    let q = w.worker(
+        Arc::new(RewritesTheTargetAtInstall {
+            repo: w.repo.clone(),
+            to: before.clone(),
+        }),
+        "a",
+    );
+    run(&q, 1);
+    let m = w.accept("rw", "test/a");
+    run(&q, 3);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert_eq!(w.tip(), before, "the target was put back under the landing");
+    let landed = row.landed_sha.clone().expect("the row keeps its sha");
+    assert!(
+        !git::is_ancestor(&w.repo, &landed, "main").unwrap(),
+        "and that sha is not on it any more"
+    );
+    assert_eq!(
+        git::branch_head(&w.repo, "agent/rw"),
+        Some(head),
+        "so the branch is the only copy of the work, and it is kept"
+    );
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "and a person is told: {said:?}");
+    assert!(said[0].contains("agent/rw"), "{}", said[0]);
+}
+
+/// **A proof that cannot be taken keeps the branch and says why** — a target git cannot name is not
+/// a target the branch is on.
+#[test]
+fn a_target_that_cannot_be_named_keeps_the_branch_and_says_why() {
+    let w = World::new("invariant-no-target");
+    let (wt, base, head) = branch(&w.repo, "nt", "nt.txt");
+    w.enqueue("nt", &wt, &base, &head);
+    withdraw(&w, "nt");
+    // The row names a target this repository does not have.
+    w.store()
+        .enqueue_review(
+            &NewReview {
+                id: "nt2".into(),
+                repository: w.key(),
+                target: "trunk".into(),
+                kind: ReviewKind::Branch,
+                session_id: "s-nt2".into(),
+                branch: "agent/nt".into(),
+                worktree: Some(wt.display().to_string()),
+                base_sha: base.clone(),
+                head_sha: head.clone(),
+                brief: "do nt".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            gate::now_ms(),
+        )
+        .unwrap();
+    withdraw(&w, "nt2");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 2);
+
+    assert_eq!(git::branch_head(&w.repo, "agent/nt"), Some(head.clone()));
+    assert!(wt.exists());
+    let notes = release_notes(&w, "review", "nt2");
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].starts_with("resources kept"), "{}", notes[0]);
+    assert!(
+        notes[0].contains("trunk") && notes[0].contains("cannot be named"),
+        "the note names the target it could not read: {}",
+        notes[0]
+    );
+}
