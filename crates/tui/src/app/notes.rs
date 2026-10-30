@@ -62,6 +62,12 @@ impl App {
     pub(crate) fn file_note(&mut self, n: Note) {
         let at = self.items.len();
         self.notes.push((Placed::Seam(at), n));
+        // **A note born older than what the reader has read is born hidden** — the
+        // watermark's half of filing, and the reason a re-said or re-planted notice cannot
+        // rebuild a wall that was cleared. Through `hide_read` rather than by hand so there
+        // is one writer of the mark's keys and one place the cap lives; the walk is over the
+        // notes this head holds, which is bounded.
+        self.hide_read();
         if self.notes.len() > 64 {
             self.notes.remove(0);
             self.note_upto = self.note_upto.saturating_sub(1);
@@ -80,8 +86,107 @@ impl App {
     /// A retired note is not rendered, and nothing else about it changes: it stays
     /// in `notes`, [`App::notes_lines`] lists it with its text, and
     /// [`App::retired_notes`] counts it. See [`App::dismissed`].
+    ///
+    /// **Two ways to be retired, and they are one question.** The key set is the reader's
+    /// act on one copy ([`App::dismissed`]); the watermark is the reader's act on a *kind*
+    /// ([`App::read_marks`], and `read_marks`' docstring is the argument for why a key set
+    /// alone is a hide and not a mark). A note either way is hidden, counted and listed, so
+    /// everything that asks this question — the drawing walk, `/notes`, `/status` — keeps
+    /// asking one question.
     pub(crate) fn is_retired(&self, n: &Note) -> bool {
-        self.dismissed.contains(&note_key(n))
+        self.dismissed.contains(&note_key(n)) || already_read(&self.read_marks, n)
+    }
+
+    /// **What this reader has read of one kind of notice** — the newest `ts` a `ctrl-n`
+    /// covered, or `None` for a kind it has never read.
+    pub(crate) fn read_upto(&self, kind: &str) -> Option<u64> {
+        self.read_marks
+            .iter()
+            .find(|(k, _)| k == kind)
+            .map(|(_, ts)| *ts)
+    }
+
+    /// **`ctrl-n`'s act: say how far this reader has read, per kind** — then hide what that
+    /// covers, in the one record the rest of the head reads.
+    ///
+    /// Per **kind**, and that is the whole difference from `dismissed`: the mark is
+    /// `(code, newest ts)`, so it is a statement about a stream of notices rather than about
+    /// the copies of them this head happens to hold. A copy that arrives afterwards — the
+    /// same incident re-said in different words, a re-scrubbed replay, a snapshot's re-plant
+    /// — is read because it is not newer, whatever identity it comes under.
+    ///
+    /// **A note with no clock is not marked.** `ts == 0` is a note that happened on the
+    /// socket rather than on the session's log (`unreadable_frame`, `log_gap`), and two of
+    /// them cannot be ordered — so a mark of `0` would hide the second one for ever. Those
+    /// are hidden by the key set, which is the right instrument for a copy with no clock.
+    ///
+    /// **Only forwards.** A mark is `max`, never a replacement, so a mark set while this
+    /// head holds fewer notes than it once did cannot rewind and re-draw an older incident.
+    pub(crate) fn mark_read(&mut self) {
+        for (_, n) in &self.notes {
+            let (Some(kind), Some(ts)) = (note_kind(n), note_stamp(n)) else {
+                continue;
+            };
+            if ts == 0 {
+                continue;
+            }
+            match self.read_marks.iter_mut().find(|(k, _)| k == kind) {
+                Some(row) => row.1 = row.1.max(ts),
+                None => self.read_marks.push((kind.to_string(), ts)),
+            }
+        }
+        self.hide_read();
+    }
+
+    /// **Put every note the mark covers into `dismissed`**, and answer how many went in.
+    ///
+    /// One writer for the second half of the mark, called from the three moments the two
+    /// records can disagree: a note being filed ([`App::file_note`]), a mark being set
+    /// ([`App::mark_read`]), and the key set being replaced from the file
+    /// ([`App::refresh_retired`] — which is the one that would otherwise drop a key this head
+    /// added in memory and draw a wall that was cleared).
+    ///
+    /// **`dismissed` stays the record everything else reads.** The walk, `/notes`' marker,
+    /// the `/status` count and `one_event`'s absorption all ask `dismissed`, and a second
+    /// place for "hidden" is a second place for them to disagree — so the watermark decides
+    /// and `dismissed` records.
+    ///
+    /// # Why this is `<=` where the draw is `<`
+    ///
+    /// The two questions are not the same one. The DRAW asks *is this news*, and a notice born
+    /// in the same millisecond as the mark is news — the head cannot order the two, and
+    /// drawing loses nothing while hiding loses a line for ever. This asks *was this note on
+    /// the screen when the reader pressed the key*, and the answer for a note at the mark's own
+    /// instant is yes, because the mark was taken FROM it. So the copies this head holds at the
+    /// instant of the mark are recorded as read, and a copy that arrives at that same instant
+    /// later is not. Without this, the newest line would be hidden only by its key — and a
+    /// `head.toml` reload or the cap would bring exactly that one back.
+    pub(crate) fn hide_read(&mut self) -> usize {
+        let mut added = 0;
+        for (_, n) in &self.notes {
+            if !covered_by_mark(&self.read_marks, n) {
+                continue;
+            }
+            let key = note_key(n);
+            if !self.dismissed.contains(&key) {
+                self.dismissed.push(key);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            // The same cap `retire` keeps, for the same reason: this is the reader's memory of
+            // what they have read, and an unbounded one is a list that grows for the life of
+            // the box. A key that falls off is a copy whose kind the mark still covers, so the
+            // note stays hidden — the cap costs a key here and nothing on the screen.
+            let over = self
+                .dismissed
+                .len()
+                .saturating_sub(crate::prefs::RETIRED_CAP);
+            if over > 0 {
+                self.dismissed.drain(..over);
+            }
+        }
+        added
     }
 
     /// How many of the notes this head holds are hidden right now.
@@ -162,6 +267,13 @@ impl App {
         let (p, _) = crate::prefs::load(&path);
         if p.retired != self.dismissed {
             self.dismissed = p.retired;
+            // **And what the watermark covers goes straight back in.** This replaces the
+            // whole set from a file another head may have written, so a key this head added
+            // in memory — one the mark, not a press, put there — would be dropped by the
+            // reload and the wall it cleared would come back on the next draw. The mark is
+            // the newer statement of the two, so it is re-applied rather than trusted to a
+            // file that cannot hold it.
+            self.hide_read();
             self.invalidate_history();
             self.redraw = true;
         }
@@ -443,6 +555,76 @@ impl Note {
             said: d.basis,
         }
     }
+}
+
+/// **The kind of notice a note is**, for the watermark — its warning code, or `None` for the
+/// disclosures that are not a stream of the same thing happening again.
+///
+/// `Warned` and `NotRun` are the two that arrive by the hundred (a retry ladder, a store that
+/// will not lock), and they are the two that carry a clock. A settled decision, an answer and a
+/// pane's ending are each about one request or one program — there is no *more of the same* to
+/// be older than — so they are left to the key set, which is the right instrument for them.
+pub(crate) fn note_kind(n: &Note) -> Option<&str> {
+    match n {
+        Note::Warned(w) | Note::NotRun(w) => Some(w.code.as_str()),
+        Note::Decided(_) | Note::Answered { .. } | Note::Pane { .. } => None,
+    }
+}
+
+/// **When a note happened, by the session log's clock** — the value a watermark compares.
+///
+/// `0` is a note that happened on the socket rather than on the log (`App::unreadable`,
+/// `log_gap`), and it is deliberately returned as itself: the caller must not treat two notes
+/// with no clock as ordered. See [`App::mark_read`].
+pub(crate) fn note_stamp(n: &Note) -> Option<u64> {
+    match n {
+        Note::Warned(w) | Note::NotRun(w) => Some(w.ts),
+        _ => None,
+    }
+}
+
+/// **Has this reader read this note's kind past it?**
+///
+/// The watermark's whole question, as a free function so that the drawing walk — which holds
+/// the head's fields destructured and cannot call a method — asks exactly the question
+/// [`App::is_retired`] asks.
+///
+/// **Older than the newest one read, and not merely as old.** A notice born in the same
+/// millisecond as the mark is NEWS, and the choice is not a coin: the log's clock is
+/// milliseconds, the head cannot order two events inside one of them, and drawing loses
+/// nothing while hiding loses a notice that will never come back. The copies that *were* on
+/// the screen at the press are covered by the key set and by [`covered_by_mark`]'s inclusive
+/// rule — `ctrl-n` writes both — so the equality case costs nothing it was meant to catch.
+///
+/// **`ts == 0` is never read**, for the same reason one step further: a note with no clock
+/// happened on the socket rather than on the log (`App::unreadable`, `log_gap`), two of them
+/// cannot be ordered at all, and a mark could only hide the second one for ever. A kind this
+/// reader has never read has no row here, and then nothing is older than it — which is what
+/// keeps a warning kind that did not exist when the mark was set visible.
+pub(crate) fn already_read(marks: &[(String, u64)], n: &Note) -> bool {
+    read_against(marks, n, false)
+}
+
+/// **Is this note at or before its kind's mark?** — the same question for the COPIES this head
+/// holds, and `<=` where [`already_read`] is `<`.
+///
+/// [`App::hide_read`]'s docstring is the argument for the asymmetry: a note at the mark's own
+/// instant *was* on the screen when the mark was taken, so the copy is read; a note that
+/// arrives at that instant afterwards is news, so the draw draws it.
+pub(crate) fn covered_by_mark(marks: &[(String, u64)], n: &Note) -> bool {
+    read_against(marks, n, true)
+}
+
+fn read_against(marks: &[(String, u64)], n: &Note, inclusive: bool) -> bool {
+    let (Some(kind), Some(ts)) = (note_kind(n), note_stamp(n)) else {
+        return false;
+    };
+    if ts == 0 {
+        return false;
+    }
+    marks
+        .iter()
+        .any(|(k, mark)| k == kind && if inclusive { ts <= *mark } else { ts < *mark })
 }
 
 /// **What a note is called when a reader wants to retire it.**

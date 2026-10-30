@@ -620,6 +620,342 @@ fn a_note_retired_with_ctrl_n_stays_retired_across_a_restart() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **`ctrl-n` is a watermark, not a hide** — R22's second face, in the operator's words:
+/// *"i do ctrl-n to hide but the very next time model_endpoint_retry happens im presented with
+/// the wall of all endpoint_retry notices ever happened since the head or harnessd start"*.
+///
+/// The wall he cleared comes back because a key set is a statement about COPIES: it hides the
+/// ones whose identity it holds, and the source it hides them from — the head's `notes` and the
+/// daemon's retained warnings behind them — is never trimmed. So this asserts the three things
+/// a mark has that a set does not: the next notice arrives ALONE, a re-render in between does
+/// not resurrect the three, and the mark is a value compared at every draw rather than a list
+/// that a rebuild can lose.
+#[test]
+fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    // Three of one kind, at three instants — the shape of a retry ladder. Explicit stamps
+    // rather than `Hub::publish`, because the mark is an ORDER and a test may not depend on
+    // two publishes not landing in the same millisecond.
+    for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            ts,
+            SessionEvent::Warning {
+                code: "model_endpoint_retry".into(),
+                detail: format!("the model endpoint did not answer: attempt {i} of 5"),
+                compaction: None,
+            },
+        )));
+    }
+    let wall = a.screen(120, 40).join("\n");
+    assert_eq!(
+        wall.matches("model_endpoint_retry").count(),
+        3,
+        "the premise — three notices, three lines:\n{wall}"
+    );
+
+    assert_eq!(a.key(Key::CtrlN), None);
+    assert_eq!(
+        a.screen(120, 40)
+            .join("\n")
+            .matches("model_endpoint_retry")
+            .count(),
+        0,
+        "the press did not clear the wall"
+    );
+    // **Hidden, not dropped**, and the mark is what the head now holds of that kind.
+    assert_eq!(a.notes.len(), 3, "a note was dropped, not retired");
+    assert_eq!(a.retired_notes(), 3);
+    assert_eq!(
+        a.read_upto("model_endpoint_retry"),
+        Some(3_000),
+        "the mark is the newest one on the screen: {:?}",
+        a.read_marks
+    );
+
+    // **A re-render in between.** A resync replaces `self.notes` wholesale from the daemon's
+    // snapshot — which still carries all three, because nothing trims the source — so this is
+    // the strongest form of the thing that used to bring the wall back.
+    a.apply(ServerFrame::Resync {
+        reason: "queue overflow".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert_eq!(
+        a.screen(120, 40)
+            .join("\n")
+            .matches("model_endpoint_retry")
+            .count(),
+        0,
+        "a re-render resurrected the wall"
+    );
+
+    // **And the next one of that kind arrives alone.**
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        4_000,
+        SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: "the model endpoint did not answer: attempt 4 of 5".into(),
+            compaction: None,
+        },
+    )));
+    let after = a.screen(120, 40).join("\n");
+    assert_eq!(
+        after.matches("model_endpoint_retry").count(),
+        1,
+        "the wall came back plus one:\n{after}"
+    );
+    // And the line is the NEW one: the head's last note is the fourth, and it is live.
+    let newest = a.notes.last().expect("the fourth was filed").1.clone();
+    assert!(
+        matches!(note_stamp(&newest), Some(4_000)),
+        "the one line drawn is not the new notice: {:?}",
+        note_stamp(&newest)
+    );
+    assert!(
+        !a.is_retired(&newest),
+        "the new notice is hidden, not drawn"
+    );
+}
+
+/// **A kind the watermark never covered is not swallowed by it** — the hazard of a mark, and
+/// the reason the mark is per kind rather than one line across the whole list.
+///
+/// A single *read up to here* over every notice would hide the first of a kind this reader has
+/// never seen, because it happened before the mark. A mark per code has no row for a code it
+/// has never read, so nothing of that kind can be older than it — and this is the assertion
+/// that keeps it true.
+#[test]
+fn a_notice_of_a_kind_the_watermark_never_covered_is_drawn() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    for (i, ts) in [(1u64, 1_000u64), (2, 2_000)] {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            ts,
+            SessionEvent::Warning {
+                code: "model_endpoint_retry".into(),
+                detail: format!("did not answer: attempt {i} of 5"),
+                compaction: None,
+            },
+        )));
+    }
+    assert_eq!(a.key(Key::CtrlN), None);
+    assert_eq!(
+        a.screen(120, 40)
+            .join("\n")
+            .matches("model_endpoint_retry")
+            .count(),
+        0
+    );
+
+    // **Older than the mark, and of a kind nobody has read** — the case a list-wide watermark
+    // would swallow, and the one that must be drawn.
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        500,
+        SessionEvent::Warning {
+            code: "store_busy_wait".into(),
+            detail: "the store is busy; the rows are in memory and the turn is waiting".into(),
+            compaction: None,
+        },
+    )));
+    let after = a.screen(120, 40).join("\n");
+    assert!(
+        after.contains("store_busy_wait"),
+        "a kind the mark never covered was swallowed by it:\n{after}"
+    );
+    assert_eq!(
+        a.read_upto("store_busy_wait"),
+        None,
+        "a kind with no mark was given one without being read"
+    );
+}
+
+/// **The same incident, said again in other words, is not news** — the half a key set cannot
+/// do, and the half that makes the wall come back.
+///
+/// `note_key` is `(code, ts, hash(detail))`, so a copy whose words differ is a different key:
+/// a re-scrubbed replay, a `[fallback]` re-worded on the way past, a snapshot's re-plant of a
+/// notice whose text was rewritten. Each is drawn again by a hide, and by the thousand is
+/// exactly the wall the operator described. A mark answers *I have read this kind up to here*
+/// instead, so the words stop mattering.
+#[test]
+fn a_notice_of_a_kind_the_reader_has_read_past_is_not_news_in_other_words() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            ts,
+            SessionEvent::Warning {
+                code: "model_endpoint_retry".into(),
+                detail: format!("did not answer: attempt {i} of 5"),
+                compaction: None,
+            },
+        )));
+    }
+    assert_eq!(a.key(Key::CtrlN), None);
+    assert_eq!(
+        a.screen(120, 40)
+            .join("\n")
+            .matches("model_endpoint_retry")
+            .count(),
+        0
+    );
+
+    // **The second one again, at its own instant and in different words.** Not in the key
+    // set (a different detail is a different key) and older than the mark.
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        2_000,
+        SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: "did not answer: attempt 2 of 5 — said again, and re-worded".into(),
+            compaction: None,
+        },
+    )));
+    let after = a.screen(120, 40).join("\n");
+    assert_eq!(
+        after.matches("model_endpoint_retry").count(),
+        0,
+        "a re-worded copy of a notice the reader had read was drawn:\n{after}"
+    );
+    // Hidden, and counted — the rule `/status` keeps for every retired note.
+    assert_eq!(a.notes.len(), 4, "it was dropped instead of hidden");
+    assert_eq!(a.retired_notes(), 4);
+    // And a NEWER one is still news: the mark is not a mute.
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        9_000,
+        SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: "did not answer: attempt 9 of 9".into(),
+            compaction: None,
+        },
+    )));
+    let newer = a.screen(120, 40).join("\n");
+    assert_eq!(
+        newer.matches("model_endpoint_retry").count(),
+        1,
+        "the watermark became a mute:\n{newer}"
+    );
+}
+
+/// **The mark outlives the key set being reloaded from the file** — the one moment the two
+/// records can disagree, because `head.toml` cannot hold a mark.
+///
+/// `refresh_retired` replaces `dismissed` with the file's list, and a key this head added from
+/// the MARK rather than from a press is not in that file. Without the re-application the wall
+/// would come back on the next draw, and the reader would be told by `/notes` that everything
+/// was retired while the screen said otherwise.
+#[test]
+fn the_watermark_survives_the_key_set_being_reloaded_from_the_file() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    let dir = std::env::temp_dir().join(format!("letibot-r22-mark-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory for the file");
+    let path = dir.join("head.toml");
+    a.prefs_path = Some(path.clone());
+    for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            ts,
+            SessionEvent::Warning {
+                code: "model_endpoint_retry".into(),
+                detail: format!("did not answer: attempt {i} of 5"),
+                compaction: None,
+            },
+        )));
+    }
+    assert_eq!(a.key(Key::CtrlN), None);
+    assert!(path.is_file(), "the press did not reach head.toml");
+
+    // Another head saves the file with nothing retired in it — a restore, or a head that has
+    // never dismissed anything. This head's own key set is replaced by it.
+    std::fs::write(&path, "diff = split\nretired =\n").expect("write the file");
+    a.refresh_retired();
+    assert_eq!(
+        a.dismissed.len(),
+        3,
+        "the reload did not happen, or the mark did not put its keys back: {:?}",
+        a.dismissed
+    );
+    let after = a.screen(120, 40).join("\n");
+    assert_eq!(
+        after.matches("model_endpoint_retry").count(),
+        0,
+        "reloading the file dropped the mark and drew the wall again:\n{after}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **A kind with no clock is never watermarked** — the guard against a mark becoming a mute by
+/// accident.
+///
+/// `unreadable_frame` and `log_gap` happen on the socket rather than on the session's log, so
+/// their `ts` is `0` and two of them cannot be ordered. A mark of `0` would hide the second one
+/// for ever, so a note with no clock is left to the key set — which is the right instrument for
+/// a copy that has an identity and no time.
+#[test]
+fn a_note_with_no_clock_is_never_hidden_by_a_watermark() {
+    let hub = Hub::new("s");
+    hub.publish(testing::turn_started("t1"));
+    let mut a = app();
+    a.clock(1_000);
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        1_000,
+        SessionEvent::Warning {
+            code: "model_endpoint_retry".into(),
+            detail: "did not answer: attempt 1 of 5".into(),
+            compaction: None,
+        },
+    )));
+    a.unreadable(Unreadable {
+        line: "{\"nonsense\":true}".into(),
+        detail: "unknown variant `nonsense`".into(),
+    });
+    assert_eq!(a.key(Key::CtrlN), None);
+    assert!(
+        !a.screen(120, 40).join("\n").contains("unreadable_frame"),
+        "the press did not clear it either"
+    );
+    // A second frame this build cannot read is a second fact, and it must be drawn: the mark
+    // says nothing about a note with no clock.
+    a.unreadable(Unreadable {
+        line: "{\"still\":\"nonsense\"}".into(),
+        detail: "unknown variant `still`".into(),
+    });
+    let after = a.screen(120, 40).join("\n");
+    assert!(
+        after.contains("unreadable_frame"),
+        "a notice with no clock was muted by a watermark:\n{after}"
+    );
+    assert_eq!(
+        a.read_upto("unreadable_frame"),
+        None,
+        "a note with no clock was given a mark"
+    );
+}
+
 #[test]
 fn a_note_the_operator_has_read_can_be_retired_and_stays_retired() {
     let hub = Hub::new("s");

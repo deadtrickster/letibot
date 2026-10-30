@@ -159,28 +159,14 @@ impl App {
             // appears to do nothing invites a second press. One line, routine register, taken
             // down by any key including this one.
             Key::CtrlN => {
-                // **Read the durable list before counting what is left.** Another head
-                // may have retired one of these since this one loaded the file, and the
-                // count is what decides between the verb and the honest empty answer.
-                self.refresh_retired();
-                // **"Nothing to retire" means nothing LEFT to retire**, not "no notes held".
-                //
-                // A retired note stays in `notes` on purpose (R10: retired is not deleted), so
-                // after a first press the set is *all retired* rather than *empty* — and a guard
-                // on `notes.is_empty()` would send the second press down the verb's path, where
-                // it would say `retired 0 note(s)`, which is a true sentence an operator should
-                // not be shown. Counting what is left makes the chord idempotent and honest:
-                // first press retires N and says so, second press says this.
-                let left = self
-                    .notes
-                    .iter()
-                    .filter(|(_, n)| !self.is_retired(n))
-                    .count();
-                if left == 0 {
-                    self.say("nothing to retire");
-                } else {
-                    let _ = self.notes_command("notes", "dismiss all");
-                }
+                // **One writer, and it is the verb.** The counting, the mark and the
+                // sentence all live in `notes_command`'s `dismiss all` arm — the arm that
+                // sets the WATERMARK as well as the key set (`App::mark_read`), because
+                // the two halves of this act must not be written in two places. A chord
+                // that counted here would be a second opinion about what *nothing left to
+                // retire* means, and the chord and `/notes dismiss all` would eventually
+                // disagree about it.
+                let _ = self.notes_command("notes", "dismiss all");
                 return ControlFlow::Break(None);
             }
             // **Ctrl+O: move the running command to the background**, the same action

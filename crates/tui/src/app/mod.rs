@@ -740,6 +740,37 @@ pub struct App {
     /// `/status` counts it. That is the rule `/status`'s own `filtered` counter
     /// keeps — "I chose not to show this" must not look like "nothing happened".
     pub(crate) dismissed: Vec<String>,
+    /// **What this reader has READ, by kind** — the watermark `ctrl-n` leaves, and the one
+    /// thing `dismissed` cannot be.
+    ///
+    /// The operator's second report of the notice problem, verbatim: *"i do ctrl-n to hide
+    /// but the very next time model_endpoint_retry happens im presented with the wall of all
+    /// endpoint_retry notices ever happened since the head or harnessd start"*.
+    ///
+    /// `dismissed` is a **hide**: a list of identities, so it hides exactly the copies whose
+    /// `note_key` it happens to hold. That is a promise about *the copies*, and a copy whose
+    /// words differ is a different key — a re-said retry, a re-scrubbed replay, a
+    /// `[fallback]` re-worded on the way past — so a hide cannot say the thing the reader
+    /// meant, which is *I have read everything up to here*.
+    ///
+    /// This is that sentence, per **kind**: the newest `ts` of each warning code a `ctrl-n`
+    /// covered. A note of a kind is read when its own `ts` is **older** than that mark,
+    /// whatever its words and whatever identity it arrived under — a notice born in the same
+    /// millisecond as the mark is news, because the log's clock cannot order the two and
+    /// drawing one line costs nothing while hiding one loses it (`already_read`).
+    ///
+    /// **Per kind and not one line across the list**, which is what keeps a new kind
+    /// visible: a code this reader has never read has no row here, and a note with no mark
+    /// above it cannot be older than it. So a warning kind that did not exist when the
+    /// mark was set is drawn the first time it happens, and the watermark cannot become a
+    /// permanent mute either — a mark only ever hides what is *not newer than it*, and the
+    /// clock it is compared against is the log's, which moves.
+    ///
+    /// It lives in the process and not in `head.toml`: a restart is a different head, and
+    /// what carries a dismissal across one is `dismissed` (see its docstring). This is what
+    /// makes the *live* head's promise unconditional — across a re-render, a pane, a switch
+    /// and a reattach, none of which touch a field.
+    pub(crate) read_marks: Vec<(String, u64)>,
     /// How many of those are already in `hist_lines`.
     pub(crate) note_upto: usize,
     pub(crate) heads: usize,
@@ -2047,6 +2078,7 @@ impl App {
             dec_content_len: 0,
             dec_content_room: 0,
             dismissed: Vec::new(),
+            read_marks: Vec::new(),
             heads: 0,
             hist_renders: 0,
             seq: 0,
