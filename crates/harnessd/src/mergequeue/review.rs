@@ -831,11 +831,13 @@ fn verdict(
     // A verdict about a tree that is not there is not a verdict about the branch. A reviewer
     // whose clone was removed under it reads a fraction of the artifact, knows it, and answers
     // `cannot_decide`
+    // An empty cwd is a reviewer on another machine: there is no tree here to have gone away.
     let tree = Path::new(&req_cwd);
-    let there = tree.is_dir()
-        && std::fs::read_dir(tree)
-            .map(|mut d| d.next().is_some())
-            .unwrap_or(false);
+    let there = req_cwd.is_empty()
+        || (tree.is_dir()
+            && std::fs::read_dir(tree)
+                .map(|mut d| d.next().is_some())
+                .unwrap_or(false));
     if !there {
         let why = format!(
             "the review environment went away under the reviewer: the tree it was given (`{}`) is \
