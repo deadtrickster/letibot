@@ -356,13 +356,25 @@ pub fn veto(
                 Err(e) => format!("`{}` vetoed; the child could not be told: {e}", r.branch),
             })
         }
-        Found::Merge(m) => withdraw_merge(
-            store,
-            &m,
-            &format!("vetoed by the operator: {words}"),
-            &who,
-            events,
-        ),
+        Found::Merge(m) => {
+            // **A running gate is taken out by `rm`, not by `veto`** — `veto` is *rejected in your
+            // words, sent back to the child*, and a landing has no child left to send it to. The
+            // pane offers `d` on a `gating` row and nothing on `v` (`ui::panes::queue::verb_moves`),
+            // so this is the sentence a person who typed the other letter gets.
+            if m.state == MergeState::Gating {
+                return Err(format!(
+                    "`{}` is `gating`; `/queue rm {}` takes it out of line while its gate runs",
+                    m.id, m.id
+                ));
+            }
+            withdraw_merge(
+                store,
+                &m,
+                &format!("vetoed by the operator: {words}"),
+                &who,
+                events,
+            )
+        }
     }
 }
 
@@ -373,23 +385,23 @@ fn withdraw_merge(
     who: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
+    // **`gating` is withdrawable too** — *take it out of line* is the person's answer to a gate that
+    // is going nowhere, and refusing it was the pane offering no way out of the one state a queue
+    // gets stuck in. What makes that safe is not this check but `finish_land`'s: a landing whose row
+    // has left `gating` does not land, whatever its gate said.
     if !matches!(
         m.state,
         MergeState::Queued
+            | MergeState::Gating
             | MergeState::Blocked
             | MergeState::Failed
             | MergeState::TimedOut
             | MergeState::Conflict
     ) {
         return Err(format!(
-            "`{}` is `{}` and cannot be withdrawn{}",
+            "`{}` is `{}` and cannot be withdrawn",
             m.id,
-            m.state.as_str(),
-            if m.state == MergeState::Gating {
-                " while its gate runs"
-            } else {
-                ""
-            }
+            m.state.as_str()
         ));
     }
     let ok = store

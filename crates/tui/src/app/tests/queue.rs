@@ -192,6 +192,7 @@ fn a_red_target_is_drawn_at_emergency_severity_first() {
             checked_ms: 61_000,
             evidence: "`cargo test` failed".into(),
             gate_steps: Vec::new(),
+            running_gate: None,
         });
     a.apply(queue_frame(snap));
     let rows = a.screen(160, 40);
@@ -437,6 +438,7 @@ fn target(repo: &str, state: &str) -> letibot_sessionlog::event::TargetHealthVie
         checked_ms: 61_000,
         evidence: format!("main is {state}"),
         gate_steps: Vec::new(),
+        running_gate: None,
     }
 }
 
@@ -1080,9 +1082,14 @@ fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
     assert!(!a.is_open(Surface::Queue), "some pane opened anyway");
 }
 
-/// **A click on a row selects it, and Enter opens THAT row.**
+/// **A click on a row opens THAT row, and so does Enter on the row the cursor is on.**
+///
+/// The click used to only move the mark, so the row's detail was behind a key the person had
+/// already pressed (`app/keys/mouse.rs`): a queue row is a thing you open, not a thing you point
+/// at. What this test keeps from the old one is the half that matters — the row that opens is the
+/// row the pointer landed on, not whichever row the host's enumeration had at that index.
 #[test]
-fn a_click_on_a_queue_row_selects_the_row_drawn_there() {
+fn a_click_on_a_queue_row_opens_the_row_drawn_there() {
     let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
@@ -1100,12 +1107,14 @@ fn a_click_on_a_queue_row_selects_the_row_drawn_there() {
         .position(|l| l.contains("agent/three"))
         .expect("drawn") as u16;
     assert_eq!(a.key(Key::Click { x: 6, y: at }), None);
-    assert!(
-        a.screen(140, 40)
-            .iter()
-            .any(|l| l.contains('▸') && l.contains("agent/three")),
-        "the click selected the row it landed on"
+    assert_eq!(
+        a.queue_open.as_deref(),
+        Some("three"),
+        "the click opened the row it landed on"
     );
+    assert_eq!(a.top_surface(), Some(Surface::QueueEntry));
+    // **And the keyboard reaches the same row** — the cursor stayed where the click put it.
+    a.key(Key::Esc);
     a.key(Key::Enter);
     assert_eq!(a.queue_open.as_deref(), Some("three"));
 }
@@ -1466,4 +1475,34 @@ fn o_goes_into_the_reviewers_session() {
         "{:?}",
         b.notice
     );
+}
+
+/// **`d` is offered on a `gating` landing, and not on one that has landed** — *take it out of line*
+/// is the person's answer to a gate that is going nowhere, and the offer has to be where it means
+/// something.
+///
+/// The daemon's side of the same rule: `verbs::withdraw_merge` takes a `gating` row, and a landing
+/// whose row has left `gating` does not land whatever its gate said
+/// (`serve::tests::a_landing_withdrawn_while_its_gate_runs_does_not_land`).
+#[test]
+fn withdraw_is_offered_on_a_gating_landing_and_not_on_a_landed_one() {
+    use crate::ui::panes::queue::{Selected, Verb, verb_moves};
+    let gating = queue_merge_row("m-gating", "gating");
+    assert_eq!(
+        verb_moves(Verb::Rm, &Selected::Merge(&gating)),
+        Ok(()),
+        "a running gate can be taken out of line"
+    );
+    let landed = queue_merge_row("m-landed", "landed");
+    assert!(
+        verb_moves(Verb::Rm, &Selected::Merge(&landed)).is_err(),
+        "a landed row has nothing to withdraw"
+    );
+    // **`restart` keeps its own ground** — a running gate is not a parked row, and a failed one is.
+    assert!(
+        verb_moves(Verb::Restart, &Selected::Merge(&gating)).is_err(),
+        "a gate that is running is not restarted"
+    );
+    let failed = queue_merge_row("m-failed", "failed");
+    assert_eq!(verb_moves(Verb::Restart, &Selected::Merge(&failed)), Ok(()));
 }

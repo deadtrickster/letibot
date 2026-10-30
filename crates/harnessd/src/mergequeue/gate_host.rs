@@ -324,14 +324,14 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
     let mut dropped: Vec<String> = Vec::new();
     let mut wrapped = false;
-    for step in steps {
+    for (i, step) in steps.iter().enumerate() {
         let plan = plan_step(step, &apparatus);
         if plan.dropped {
             dropped.push(step.clone());
         }
         wrapped |= plan.own_scope;
         let started = now_ms();
-        let end = remote.run_step(plan.command, plan.own_scope, ctl);
+        let end = remote.run_step(plan.command, plan.own_scope, (i + 1, steps.len()), ctl);
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(
             step,
@@ -763,7 +763,13 @@ impl Remote {
     /// **One step on the host**: start it detached, poll it, and kill its group if it outlives the
     /// gate. The log arrives at the local path the local gate would have written, so the pane and
     /// the failure excerpt do not change.
-    fn run_step(&self, step: &str, own_scope: bool, ctl: &GateControl) -> StepEnd {
+    fn run_step(
+        &self,
+        step: &str,
+        own_scope: bool,
+        at: (usize, usize),
+        ctl: &GateControl,
+    ) -> StepEnd {
         let n = self.next();
         let log = match tempfile_in(&self.local) {
             Ok(l) => l,
@@ -772,6 +778,10 @@ impl Remote {
         if let Err(e) = std::fs::File::create(&log) {
             return StepEnd::Infra(format!("{}: {e}", log.display()));
         }
+        // **The same tail as a local gate's** — this box's copy of the log is what the polls
+        // append to, so a pane reads the running step of a gate on another machine here.
+        super::gate::watch_step(&self.local, step, at.0, at.1, &log);
+        let _running = super::gate::step_guard(&self.local);
         let end = self.run_step_into(n, step, own_scope, &log, ctl);
         let _ = std::fs::remove_file(&log);
         end

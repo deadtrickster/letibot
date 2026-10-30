@@ -78,6 +78,46 @@ impl App {
         self.queues.at_ms.saturating_add(since)
     }
 
+    /// **Note when each running gate's tail last CHANGED** — called once per snapshot, because the
+    /// answer to *is it stuck?* is a comparison and the daemon sends only one half of it.
+    ///
+    /// A step whose tail is byte-for-byte what it was keeps the stamp it already had; a step whose
+    /// tail grew, or a step this head has not seen before, starts now. A step that is gone drops out
+    /// of the record, so a gate that ends and starts again is not read as *quiet for an hour*.
+    pub(crate) fn track_gate_tails(&mut self) {
+        let now = self.queue_now();
+        let mut fresh: std::collections::HashMap<String, GateTail> = Default::default();
+        let mut note =
+            |fresh: &mut std::collections::HashMap<String, GateTail>, key: String, tail: &str| {
+                let since_ms = match self.gate_tails.get(&key) {
+                    Some(old) if old.text == tail => old.since_ms,
+                    _ => now,
+                };
+                fresh.insert(
+                    key,
+                    GateTail {
+                        text: tail.to_string(),
+                        since_ms,
+                    },
+                );
+            };
+        for m in &self.queues.merges {
+            if let Some(g) = &m.running_gate {
+                note(&mut fresh, format!("{}#{}", m.id, g.step), &g.tail);
+            }
+        }
+        for t in &self.queues.targets {
+            if let Some(g) = &t.running_gate {
+                note(
+                    &mut fresh,
+                    format!("{}#{}#{}", t.repository, t.target, g.step),
+                    &g.tail,
+                );
+            }
+        }
+        self.gate_tails = fresh;
+    }
+
     /// **The rows the current view lists, in order** — open rows first (a red target's review
     /// before every other review), oldest first; then the finished ones of the last day, newest
     /// first. The one enumeration the drawn `▸`, the arrows, Enter, a click and a verb read.
@@ -606,6 +646,28 @@ impl App {
                 lines.extend(field("push", &m.pushed));
             }
             lines.extend(field("why", &m.evidence));
+            // **Is it stuck?** — the question the row exists to answer, and the one the pane could
+            // not: a `gating` landing shows the step its gate is on, how long that step has been
+            // going, whether its output has moved, and the end of that output. A `queued` landing
+            // shows the same for the TARGET's gate it is waiting on, which is the other way a
+            // queue sits still with nothing failing.
+            let running = match &m.running_gate {
+                Some(g) => Some((g, format!("{}#{}", m.id, g.step))),
+                None if m.state == "queued" => self
+                    .queues
+                    .targets
+                    .iter()
+                    .find(|t| t.repository == m.repository && t.target == m.target)
+                    .and_then(|t| {
+                        t.running_gate
+                            .as_ref()
+                            .map(|g| (g, format!("{}#{}#{}", t.repository, t.target, g.step)))
+                    }),
+                None => None,
+            };
+            if let Some((g, key)) = running {
+                lines.extend(running_gate_lines(g, self.gate_tails.get(&key), now, w));
+            }
             lines.push(Line::default());
             lines.push(one("  the gate's steps", Role::Strong));
             lines.extend(gate_lines(
@@ -624,6 +686,110 @@ impl App {
         lines.extend(moves_lines(&self.queues.recent, id, usize::MAX, now, w));
         row_strings(&lines, self.cfg.palette())
     }
+}
+
+/// **The step a gate is running, as a person reads it** — which step of how many, how long it has
+/// been going, whether its output has moved since the last snapshot, and the end of that output.
+///
+/// The last of those is the whole point: a tail that has not moved in minutes is a step that is
+/// stuck, and one that is growing is not, and a person should be able to tell those apart without
+/// opening a file on the daemon's box. `seen` is what this head last read for this step (see
+/// [`GateTail`]); with no record yet there is nothing to compare and the line says only how long.
+fn running_gate_lines(
+    g: &letibot_sessionlog::event::QueueRunningGate,
+    seen: Option<&GateTail>,
+    now: u64,
+    w: usize,
+) -> Vec<Line> {
+    let mut out = vec![Line::new(vec![
+        Span::role(format!("  {:<12}  ", "gate"), Role::Faint),
+        Span::role(
+            format!(
+                "step {} of {} · running {}",
+                g.step.max(1),
+                g.of.max(1),
+                dur_human(now.saturating_sub(g.started_ms))
+            ),
+            Role::Pending,
+        ),
+    ])];
+    let room = w.saturating_sub(16);
+    for l in wrap(&clean_line(&g.command), room) {
+        out.push(Line::new(vec![
+            Span::role(
+                format!("  {:<12}  ", if out.len() == 1 { "step" } else { "" }),
+                Role::Faint,
+            ),
+            Span::raw(l),
+        ]));
+    }
+    // **Has it moved?** — the one question the snapshot alone cannot answer, because it says what
+    // the tail IS and not what it was. `quiet` is the longest a step's output may stand still
+    // before the pane says so; a build can legitimately print nothing for a minute.
+    if let Some(s) = seen {
+        let still = now.saturating_sub(s.since_ms);
+        let ago = if still < 1_000 {
+            "just now".to_string()
+        } else {
+            format!("{} ago", dur_human(still))
+        };
+        let (words, role) = if still >= GATE_QUIET_MS {
+            (
+                format!(
+                    "the tail has not moved in {} — it may be stuck ({} byte(s) written)",
+                    dur_human(still),
+                    g.log_bytes
+                ),
+                Role::Attention,
+            )
+        } else {
+            (
+                format!("the tail moved {ago} ({} byte(s) written)", g.log_bytes),
+                Role::Faint,
+            )
+        };
+        out.push(Line::new(vec![
+            Span::role(format!("  {:<12}  ", "moving"), Role::Faint),
+            Span::role(trim_to(&words, room), role),
+        ]));
+    }
+    if g.tail.is_empty() {
+        out.push(Line::new(vec![
+            Span::role(format!("  {:<12}  ", "tail"), Role::Faint),
+            Span::role("nothing written yet", Role::Faint),
+        ]));
+        return out;
+    }
+    out.push(Line::new(vec![
+        Span::role(format!("  {:<12}  ", "tail"), Role::Faint),
+        Span::role("the end of what it has written", Role::Faint),
+    ]));
+    for (i, l) in g.tail.lines().enumerate() {
+        let label = if i == 0 { OUTPUT_AT } else { "             " };
+        out.push(Line::new(vec![
+            Span::raw(label),
+            Span::role(
+                trim_to(&clean_line(l), w.saturating_sub(OUTPUT_AT.len())),
+                Role::Faint,
+            ),
+        ]));
+    }
+    out
+}
+
+/// **How long a running step's output may stand still before the pane calls it stuck** — a `cargo
+/// test` between two test binaries, a build between two crates, are minutes of silence; ten of them
+/// with no byte written is a step that is not going anywhere.
+pub(crate) const GATE_QUIET_MS: u64 = 10 * 60 * 1000;
+
+/// **The tail a gate's step had when this head last looked, and when it last CHANGED** — the
+/// daemon's snapshot says what the tail is now; only a reader that has seen two of them can say
+/// whether it moved, and the head is that reader. Keyed by `entry#step`, so a step moving on starts
+/// its own clock rather than inheriting the last one's.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GateTail {
+    pub text: String,
+    pub since_ms: u64,
 }
 
 /// The repository's last path component — the name a person knows it by.
@@ -1326,7 +1492,15 @@ pub(crate) fn verb_moves(verb: Verb, row: &Selected) -> Result<(), String> {
             "waiting" | "reviewing" | "blocked" | "rejected" | "cannot_decide"
         ),
         (Verb::Regate, _) => true,
-        (Verb::Veto | Verb::Rm, Selected::Merge(m)) => matches!(
+        // **`rm` is the way out of a row that is going nowhere, `gating` included** — the operator's
+        // *"no way … to take it out of line"*. The daemon's `withdraw_merge` takes a `gating`
+        // landing too, and a landing whose row has left `gating` does not land whatever its gate
+        // said (`serve.rs::finish_land`), so the offer is not a lie.
+        (Verb::Rm, Selected::Merge(m)) => matches!(
+            m.state.as_str(),
+            "queued" | "gating" | "blocked" | "failed" | "timed_out" | "conflict"
+        ),
+        (Verb::Veto, Selected::Merge(m)) => matches!(
             m.state.as_str(),
             "queued" | "blocked" | "failed" | "timed_out" | "conflict"
         ),

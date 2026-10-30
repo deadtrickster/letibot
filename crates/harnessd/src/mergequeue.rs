@@ -62,6 +62,9 @@ pub mod setup;
 pub mod verbs;
 pub mod watch;
 
+#[cfg(test)]
+mod tests;
+
 pub use git::{repo_of_workspace, repo_of_worktree, repo_root};
 
 /// **The clause a row waiting for its target to declare a gate leads with** — the project's
@@ -235,7 +238,7 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                 .map(|m| w::QueueMerge {
                     id: m.id,
                     review_id: m.review_id,
-                    repository: m.repository,
+                    repository: m.repository.clone(),
                     target: m.target,
                     branch: m.branch,
                     state: m.state.as_str().into(),
@@ -248,6 +251,12 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     evidence: m.evidence,
                     gate_steps: m.gate_steps.iter().map(wire_gate_step).collect(),
                     fixes: m.fixes,
+                    // **The step its gate is running, while it is running it** — the pane's answer
+                    // to *is it stuck?* without opening a file on this box (see `gate::running`).
+                    running_gate: (m.state == letibot_tokencore::store::MergeState::Gating)
+                        .then(|| gate::running(&m.repository))
+                        .flatten()
+                        .map(wire_running_gate),
                     created_ms: m.created_ms,
                     state_ms: m.state_ms,
                 })
@@ -287,13 +296,20 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     continue;
                 }
                 out.targets.push(w::TargetHealthView {
-                    repository: h.repository,
+                    repository: h.repository.clone(),
                     target: h.target,
                     sha: h.sha,
                     state: h.state.as_str().into(),
                     checked_ms: h.checked_ms,
                     evidence: h.evidence,
                     gate_steps: h.gate_steps.iter().map(wire_gate_step).collect(),
+                    // **A `gating` target's step, the same read** — a merge row that is `queued`
+                    // is waiting on exactly this, and *which step of the target's gate, and how
+                    // long* is the answer to *why is nothing landing?*
+                    running_gate: (h.state == letibot_tokencore::store::HealthState::Gating)
+                        .then(|| gate::running(&h.repository))
+                        .flatten()
+                        .map(wire_running_gate),
                 });
             }
             not_queued.sort();
@@ -331,6 +347,18 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
         ));
     }
     out
+}
+
+/// One running step, as the wire spells it.
+pub fn wire_running_gate(g: gate::RunningGate) -> letibot_sessionlog::event::QueueRunningGate {
+    letibot_sessionlog::event::QueueRunningGate {
+        command: g.command,
+        step: g.step,
+        of: g.of,
+        started_ms: g.started_ms,
+        tail: g.tail,
+        log_bytes: g.log_bytes,
+    }
 }
 
 /// One gate step, as the wire spells it.

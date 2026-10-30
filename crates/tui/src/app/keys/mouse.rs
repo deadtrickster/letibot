@@ -190,7 +190,16 @@ impl App {
                     let stops = self.todos_stops();
                     self.sync_repo_from_stop(&stops);
                 }
-                Surface::Queue => self.queue_sel = k,
+                // **A click on a queue row OPENS it** — Enter's own act, through the same door. A
+                // click that only moved the mark left the row's detail behind a key the person had
+                // already pressed and found inert (the operator: *"i go to /queue and cant click or
+                // enter that merge job"*), and a queue row is a thing you open, not a thing you
+                // point at.
+                Surface::Queue => {
+                    self.queue_sel = k;
+                    self.redraw = true;
+                    return self.open_act(Surface::Queue);
+                }
                 Surface::Subagents => self.subagents_sel = k,
                 Surface::Jobs => self.jobs_sel = k,
                 Surface::Monitors => self.monitors_sel = k,

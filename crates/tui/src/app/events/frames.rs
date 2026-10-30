@@ -163,6 +163,9 @@ impl App {
                 self.queues_all = snapshot;
                 self.queues_got_ms = self.now_ms.max(1);
                 self.rescope_queues();
+                // **The one thing a snapshot cannot say about itself** — whether a running step's
+                // output has moved since the last one (see `App::track_gate_tails`).
+                self.track_gate_tails();
                 self.redraw = true;
                 Disposition::Control
             }

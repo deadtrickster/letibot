@@ -644,6 +644,7 @@ impl RepoQueue {
     /// **Start a gate on its own thread** — under the same controls as ever: the deadline from
     /// now, the daemon's stop (through `cancel`), and the lease (through [`Self::lease_ok`]).
     fn start_gate(&self, what: GateFor, wt: PathBuf, steps: Vec<String>, sha: &str) {
+        gate::watch(&wt, &self.key);
         let cancel = Arc::new(AtomicBool::new(false));
         let lease = self.lease_ok.clone();
         let runner = self.env.gate.clone();
@@ -2346,6 +2347,17 @@ impl RepoQueue {
         let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
             serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
         };
+        // **The person may have taken the row out while its gate ran** (`/queue rm` on a `gating`
+        // row, `verbs::withdraw_merge`). A landing whose row is no longer `gating` does not land,
+        // whatever its gate said — and its verdict is not news about a row nobody wants. The row
+        // is read once, here, because everything below writes to the repository.
+        if !self
+            .store
+            .merge_row(&row.id)?
+            .is_some_and(|r| r.state == MergeState::Gating)
+        {
+            return Ok(());
+        }
         match run.verdict.clone() {
             GateVerdict::Passed => {}
             GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {

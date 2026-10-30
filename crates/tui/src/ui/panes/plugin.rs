@@ -958,7 +958,18 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                     ])
                 }
             };
-            out.push_stop(first);
+            // **Only an item the walk calls a stop is RECORDED as one.** `push_stop` writes an
+            // entry into `stop_rows`, and a click's index is a position in that record while the
+            // cursor is a position in [`stops`] — two counts, so a line that is drawn but is not a
+            // stop (the queue's lease line, its `not queued` line, a `kv`) would shift every stop
+            // below it by one. Measured: the queue pane's three chrome lines and two rows recorded
+            // three stops, a click on the second row selected stop 2 of 2, and Enter on it opened
+            // nothing.
+            if it.stop().is_some() {
+                out.push_stop(first);
+            } else {
+                out.push(first);
+            }
             // **A label the legend documents is a row the pointer can explain.** The key is the
             // label as DRAWN (`clean_line`, the same reading the drawing measured), so a legend
             // entry and the row it documents cannot disagree about what a label says.

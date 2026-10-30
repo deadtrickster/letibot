@@ -849,3 +849,240 @@ fn probe_render_the_pane() {
         }
     }
 }
+
+/// **A `gating` landing is a stop, and a click on it OPENS it** — the operator's own report, in his
+/// words: *"i go to /queue and cant click or enter that merge job"*.
+///
+/// Two things had to be true. The stop RECORD and the cursor's stop COUNT are two counts, and the
+/// drawing recorded one for every item — the lease line above the rows is drawn but is not a stop,
+/// so every stop below it was numbered one too high, a click on the landing selected a stop that did
+/// not exist, and Enter on it opened nothing. And a click only moved the mark; the row's detail was
+/// behind a key the person had already pressed.
+#[test]
+fn a_click_on_a_gating_landing_opens_it() {
+    let mut a = a_head_with_a_queue();
+    a.apply(queue_frame(queues(
+        vec![queue_review_row("one", "reviewing")],
+        vec![queue_merge_row("m-three", "gating")],
+    )));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    let screen = a.screen(120, 30);
+    // **The premise of the old defect**: something above the rows is drawn that is not a stop, so a
+    // record with one entry per item is one longer than the list the cursor walks.
+    assert!(
+        screen.iter().any(|l| l.contains("served by")),
+        "a chrome line above the rows:\n{}",
+        screen.join("\n")
+    );
+    assert_eq!(
+        a.queue_stop_rows.len(),
+        a.queue_plugin_stops,
+        "one recorded stop row per stop, in the same order: {:?} of {}",
+        a.queue_stop_rows,
+        a.queue_plugin_stops
+    );
+    let y = screen
+        .iter()
+        .position(|l| l.contains("agent/three"))
+        .expect("the landing is drawn");
+    assert_eq!(a.key(Key::Click { x: 10, y: y as u16 }), None);
+    assert_eq!(
+        a.queue_open.as_deref(),
+        Some("m-three"),
+        "the row that was clicked is the row that was opened"
+    );
+    assert_eq!(a.top_surface(), Some(Surface::QueueEntry));
+}
+
+/// **Enter on the same row opens it too**, with the keyboard alone — the two doors, one act.
+#[test]
+fn enter_on_a_gating_landing_opens_it() {
+    let mut a = a_head_with_a_queue();
+    a.apply(queue_frame(queues(
+        vec![queue_review_row("one", "reviewing")],
+        vec![queue_merge_row("m-three", "gating")],
+    )));
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 30);
+    a.queue_sel = 1;
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.queue_open.as_deref(), Some("m-three"));
+}
+
+/// A landing in the given state, carrying a gate that is running its second of four steps.
+fn gating_with_a_step(id: &str, tail: &str) -> letibot_sessionlog::event::QueueMerge {
+    let mut m = queue_merge_row(id, "gating");
+    m.running_gate = Some(letibot_sessionlog::event::QueueRunningGate {
+        command: "cargo test --offline --workspace --no-fail-fast".into(),
+        step: 2,
+        of: 4,
+        started_ms: 3_602_000,
+        tail: tail.into(),
+        log_bytes: 12_345,
+    });
+    m
+}
+
+/// A snapshot of one landing, taken at `at_ms` — the clock the pane measures ages against.
+fn a_snapshot_at(
+    at_ms: u64,
+    merges: Vec<letibot_sessionlog::event::QueueMerge>,
+) -> letibot_sessionlog::event::QueueSnapshot {
+    let mut s = queues(vec![], merges);
+    s.at_ms = at_ms;
+    s
+}
+
+/// **The detail of a running gate names the step, its command, how long it has been going, and the
+/// end of what it has written** — the answer to *is it stuck?*, drawn from the snapshot alone.
+#[test]
+fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000,
+        vec![gating_with_a_step(
+            "m-three",
+            "building\nrunning 3 tests\ntest two ... ok",
+        )],
+    )));
+    a.command("queue");
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("step 2 of 4"),
+        "which step of how many:\n{screen}"
+    );
+    assert!(
+        screen.contains("running 1m00s"),
+        "and how long that step has been going:\n{screen}"
+    );
+    assert!(
+        screen.contains("cargo test --offline --workspace"),
+        "the step itself:\n{screen}"
+    );
+    assert!(
+        screen.contains("test two ... ok"),
+        "and the end of what it has written:\n{screen}"
+    );
+    assert!(
+        screen.contains("12345 byte(s) written"),
+        "how much it has written in all:\n{screen}"
+    );
+}
+
+/// **A tail that has not moved in minutes says so, and one that has just grown does not** — the two
+/// halves a person has to be able to tell apart, and the reason the head keeps the last tail it saw.
+#[test]
+fn a_tail_that_has_not_moved_is_called_out() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000,
+        vec![gating_with_a_step("m-three", "building\nlinking")],
+    )));
+    a.command("queue");
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    // **Twenty minutes later, the same bytes** — the step has written nothing since.
+    a.now_ms = 3_662_000 + 20 * 60_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000 + 20 * 60_000,
+        vec![gating_with_a_step("m-three", "building\nlinking")],
+    )));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("the tail has not moved in 20m00s"),
+        "a step that has written nothing for twenty minutes:\n{screen}"
+    );
+    assert!(screen.contains("may be stuck"), "{screen}");
+
+    // **And one that grew a moment ago is not stuck** — the same row, a tail with one more line.
+    // The five seconds are the head's own clock since the snapshot arrived (`queue_now`), which is
+    // how a pane measures anything that happened between two snapshots.
+    a.key(Key::Esc);
+    a.now_ms = 3_662_000 + 20 * 60_000 + 5_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000 + 20 * 60_000 + 5_000,
+        vec![gating_with_a_step(
+            "m-three",
+            "building\nlinking\nlinking done",
+        )],
+    )));
+    a.now_ms += 5_000;
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("the tail moved 5.0s ago"),
+        "the tail that grew:\n{screen}"
+    );
+    assert!(!screen.contains("may be stuck"), "{screen}");
+}
+
+/// **A `queued` landing shows the TARGET's running gate** — the other way a queue sits still with
+/// nothing failing: the row is gating nothing itself, `main` is, and `waits: gate running on … for
+/// 2m` says that something is happening but not what.
+#[test]
+fn a_queued_landing_shows_the_step_of_the_gate_it_waits_on() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    let mut snap = a_snapshot_at(3_662_000, vec![queue_merge_row("m-q", "queued")]);
+    snap.targets = vec![letibot_sessionlog::event::TargetHealthView {
+        repository: "/home/dead/Projects/letibot/letibot".into(),
+        target: "main".into(),
+        sha: "aaaa1111bbbb".into(),
+        state: "gating".into(),
+        checked_ms: 3_600_000,
+        evidence: "re-gate asked by the operator".into(),
+        gate_steps: Vec::new(),
+        running_gate: Some(letibot_sessionlog::event::QueueRunningGate {
+            command: "cargo test --offline --workspace".into(),
+            step: 3,
+            of: 5,
+            started_ms: 3_602_000,
+            tail: "test result: ok. 18 passed".into(),
+            log_bytes: 900,
+        }),
+    }];
+    a.apply(queue_frame(snap));
+    a.command("queue");
+    a.queue_view = crate::ui::panes::queue::QueueView::Merge;
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("step 3 of 5"),
+        "the target's gate, which is what the landing waits on:\n{screen}"
+    );
+    assert!(
+        screen.contains("test result: ok. 18 passed"),
+        "and the end of what it has written:\n{screen}"
+    );
+}

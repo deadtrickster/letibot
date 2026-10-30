@@ -280,7 +280,7 @@ impl App {
     }
 
     /// **Enter on a list: the row's act.**
-    fn open_act(&mut self, s: Surface) -> ControlFlow<Option<Action>> {
+    pub(crate) fn open_act(&mut self, s: Surface) -> ControlFlow<Option<Action>> {
         match s {
             // The session under the cursor. The empty-composer rule is the binding's: a
             // half-typed id's Enter still means the id, and `submit` takes it.

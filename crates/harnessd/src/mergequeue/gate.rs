@@ -201,6 +201,179 @@ pub fn gate_host() -> Option<String> {
     GATE_HOST.get().cloned().flatten()
 }
 
+// ===== The step running now, and the tail of its log =====
+
+/// **How much of a running step's log a snapshot reads** — 4 KiB from the END of the file, whatever
+/// the file's size, so a `cargo test` that has written forty megabytes costs the same as one that has
+/// written forty bytes. The tail is the last [`TAIL_LINES`] of those bytes.
+pub const TAIL_BYTES: u64 = 4 * 1024;
+
+/// **How many lines of it are kept** — a pane's detail, not a log viewer.
+pub const TAIL_LINES: usize = 40;
+
+/// One gate's landing worktree, the repository it gates, and the step in it — if any.
+struct Watched {
+    worktree: PathBuf,
+    repository: String,
+    step: Option<Running>,
+}
+
+/// A step that is running: what it is, which of how many, when it started, and where its output is
+/// going. The log's path is here and nowhere else: [`tempfile_in`] makes it per step and deletes it
+/// when the step ends, so *the file the gate is streaming into* is a fact only the gate has.
+struct Running {
+    command: String,
+    /// 1-based, as a person counts steps.
+    step: usize,
+    of: usize,
+    started_ms: u64,
+    log: PathBuf,
+}
+
+/// **Every landing worktree a gate is (or was last) running in** — one process-wide list, because
+/// the reader is a different thread from the writer: the queue's worker starts a gate on a thread of
+/// its own, and a head's `Queues` request builds the snapshot on the server's thread.
+static WATCHED: std::sync::Mutex<Vec<Watched>> = std::sync::Mutex::new(Vec::new());
+
+fn watched() -> std::sync::MutexGuard<'static, Vec<Watched>> {
+    WATCHED.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// **Say which repository a landing worktree is gating** — one call, from the queue's worker, before
+/// the gate starts ([`super::serve::RepoQueue::start_gate`]). The gate itself is handed a worktree
+/// and knows nothing about rows; this is the one fact that lets a snapshot answer *which row's step
+/// is this?*
+pub fn watch(worktree: &Path, repository: &str) {
+    let mut all = watched();
+    if let Some(w) = all.iter_mut().find(|w| w.worktree == worktree) {
+        w.repository = repository.to_string();
+        return;
+    }
+    all.push(Watched {
+        worktree: worktree.to_path_buf(),
+        repository: repository.to_string(),
+        step: None,
+    });
+}
+
+/// **The step `worktree`'s gate has started** — called by both machines' step loops, so a local gate
+/// and a host gate answer the pane's question the same way (a host gate streams its step back into
+/// the same local log as it polls, so the tail is the same read either way).
+pub(super) fn watch_step(worktree: &Path, command: &str, step: usize, of: usize, log: &Path) {
+    let mut all = watched();
+    if let Some(w) = all.iter_mut().find(|w| w.worktree == worktree) {
+        w.step = Some(Running {
+            command: command.to_string(),
+            step,
+            of,
+            started_ms: now_ms(),
+            log: log.to_path_buf(),
+        });
+    }
+}
+
+/// The step ended (however it ended) — the worktree has no step running any more.
+fn ended(worktree: &Path) {
+    let mut all = watched();
+    if let Some(w) = all.iter_mut().find(|w| w.worktree == worktree) {
+        w.step = None;
+    }
+}
+
+/// Clears the step on every return path out of a step, including a panic: a stale entry would tell
+/// a pane that a step has been running for ever.
+pub(super) struct RunningFor<'a>(&'a Path);
+
+impl Drop for RunningFor<'_> {
+    fn drop(&mut self) {
+        ended(self.0);
+    }
+}
+
+/// The guard a step holds for as long as it runs — see [`RunningFor`].
+pub(super) fn step_guard(worktree: &Path) -> RunningFor<'_> {
+    RunningFor(worktree)
+}
+
+/// **What a `gating` row's detail reads**: the step, of how many, since when, and the end of its
+/// output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningGate {
+    pub command: String,
+    pub step: usize,
+    pub of: usize,
+    pub started_ms: u64,
+    pub tail: String,
+    /// Every byte the step has written, so *the tail has not moved* can be told apart from *the
+    /// step is quiet between lines* — a number that only ever grows while it works.
+    pub log_bytes: u64,
+}
+
+/// **The step `repository`'s gate is running, and the tail of its log** — `None` when no gate is
+/// running for it, which is the honest answer for a row that is not `gating` and for the moment
+/// between two steps.
+pub fn running(repository: &str) -> Option<RunningGate> {
+    let (command, step, of, started_ms, log) = {
+        let all = watched();
+        let w = all.iter().find(|w| w.repository == repository)?;
+        let running = w.step.as_ref()?;
+        (
+            running.command.clone(),
+            running.step,
+            running.of,
+            running.started_ms,
+            running.log.clone(),
+        )
+    };
+    let (tail, log_bytes) = tail_of(&log);
+    Some(RunningGate {
+        command,
+        step,
+        of,
+        started_ms,
+        tail,
+        log_bytes,
+    })
+}
+
+/// **The end of a log, bounded twice** — at most [`TAIL_BYTES`] read (a seek, so the file's size
+/// costs nothing to skip) and at most [`TAIL_LINES`] lines kept, plus the one line that says what
+/// was dropped. A step's output is the step's own bytes and may be any length; this is the only
+/// place the pane's side reads them, and it never reads more than that.
+fn tail_of(log: &Path) -> (String, u64) {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(log) else {
+        return (String::new(), 0);
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let from = len.saturating_sub(TAIL_BYTES);
+    let mut buf = Vec::with_capacity(TAIL_BYTES as usize);
+    if f.seek(SeekFrom::Start(from)).is_err() || f.take(TAIL_BYTES).read_to_end(&mut buf).is_err() {
+        return (String::new(), len);
+    }
+    let text = String::from_utf8_lossy(&buf);
+    // A read that began mid-line begins mid-word: the first line is dropped rather than drawn as
+    // the step's first words, which it is not.
+    let body = if from > 0 {
+        text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+    } else {
+        text.as_ref()
+    };
+    let lines: Vec<&str> = body.lines().collect();
+    let from_line = lines.len().saturating_sub(TAIL_LINES);
+    let mut tail = lines[from_line..].join("\n");
+    if from > 0 || from_line > 0 {
+        tail.insert_str(
+            0,
+            &format!(
+                "… [the step has written {len} byte(s); what follows is its last {} line(s)]\n",
+                lines.len() - from_line
+            ),
+        );
+    }
+    (tail, len)
+}
+
 /// **Where a run's steps go, decided once per run**: a cgroup of their own (with the cap, or
 /// `None` for `uncapped`), or the daemon's own cgroup as before R76 and why.
 #[derive(Debug, Clone, PartialEq)]
@@ -689,9 +862,17 @@ pub fn run_with_memory(
         Err(why) => return could_not_run(steps, why),
     };
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
-    for step in steps {
+    for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
-        let (end, mem, leftover) = run_step(worktree, step, scratch.path(), cap, ctl, &place);
+        let (end, mem, leftover) = run_step(
+            worktree,
+            step,
+            (i + 1, steps.len()),
+            scratch.path(),
+            cap,
+            ctl,
+            &place,
+        );
         let elapsed = now_ms().saturating_sub(started);
         let judged = judge(step, end, mem, leftover, ctl.budget);
         let last = judged.verdict.is_some();
@@ -935,10 +1116,12 @@ pub(crate) enum StepEnd {
 }
 
 /// One step: its end, what its memory did, and how many processes it left behind in its
-/// cgroup (killed with it).
+/// cgroup (killed with it). `at` is which step this is, 1-based, and `of` how many the gate has —
+/// the `2 of 4` a pane reads beside the tail.
 fn run_step(
     worktree: &Path,
     step: &str,
+    at: (usize, usize),
     scratch: &Path,
     cap: Option<u64>,
     ctl: &GateControl,
@@ -963,6 +1146,11 @@ fn run_step(
             );
         }
     };
+    // **The step a pane can see from here on** — the log's path is this function's secret (the
+    // file is created here and removed on the way out), so it is said once, here, and cleared by
+    // the guard whatever way the step ends.
+    watch_step(worktree, step, at.0, at.1, &log);
+    let _running = step_guard(worktree);
     // **The step's own cgroup**, or the daemon's as before and why. A scope that cannot be
     // made is not a reason to refuse the gate — the gate ran uncapped for its whole life
     // before R76 — so it runs as before and the row says so.
@@ -1896,6 +2084,119 @@ mod tests {
             .unwrap_or_default()
             .trim()
             .to_string()
+    }
+
+    /// **The tail of a running step GROWS between two reads** — the measurement behind *is it
+    /// stuck?*: a step that is writing is not stuck, and a pane can only say so if the daemon reads
+    /// the file the step is writing while it writes it.
+    ///
+    /// A real `sh` step, a real log, the real registry: `echo one`, a pause, `echo two`, a pause,
+    /// `echo three`. The first read is taken while it is between the first two, and the second
+    /// after it has written the third.
+    #[test]
+    fn a_running_steps_tail_grows_between_two_reads() {
+        let dir = std::env::temp_dir().join(format!("letibot-gate-tail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the fixture's directory");
+        let wt = dir.join("landing");
+        std::fs::create_dir_all(&wt).expect("the landing tree");
+        let repo = dir.display().to_string();
+        watch(&wt, &repo);
+        // **A trailing sleep, so the last line is observable** — `three` is written and the step
+        // exits, and a poll that has to land between those two instants is a poll that misses under
+        // a loaded suite (measured: it passed alone and failed in the workspace run).
+        let steps =
+            vec!["echo one; sleep 0.6; echo two; sleep 0.6; echo three; sleep 1".to_string()];
+        std::thread::scope(|s| {
+            let run = s.spawn(|| {
+                let stop = AtomicBool::new(false);
+                let alive = || true;
+                let ctl = GateControl {
+                    deadline: Instant::now() + Duration::from_secs(60),
+                    budget: Duration::from_secs(60),
+                    stop: &stop,
+                    alive: &alive,
+                };
+                run_with_memory(&wt, &steps, &ctl, Ask::Default)
+            });
+            let wait_for = |word: &str| -> RunningGate {
+                let until = Instant::now() + Duration::from_secs(20);
+                loop {
+                    if let Some(g) = running(&repo)
+                        && g.tail.contains(word)
+                    {
+                        return g;
+                    }
+                    assert!(Instant::now() < until, "the step never wrote {word:?}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            };
+            let first = wait_for("one");
+            assert_eq!(
+                (first.step, first.of),
+                (1, 1),
+                "one step, and it is the first"
+            );
+            assert_eq!(
+                first.command,
+                "echo one; sleep 0.6; echo two; sleep 0.6; echo three; sleep 1"
+            );
+            let second = wait_for("three");
+            assert!(
+                second.log_bytes > first.log_bytes,
+                "the tail grew: {} then {} byte(s)",
+                first.log_bytes,
+                second.log_bytes
+            );
+            assert!(
+                second.tail.contains("two") && !first.tail.contains("three"),
+                "each read is the file as it was: {:?} then {:?}",
+                first.tail,
+                second.tail
+            );
+            assert_eq!(
+                run.join().expect("the gate's thread").verdict,
+                GateVerdict::Passed
+            );
+        });
+        assert!(
+            running(&repo).is_none(),
+            "a step that has ended leaves nothing to read"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The tail is bounded, and the bound is the READ** — a step that has written far more than
+    /// [`TAIL_BYTES`] costs one 4 KiB read and keeps its last [`TAIL_LINES`] lines, saying how much
+    /// it dropped. A pane that read the whole file would be a `cargo test` log in a head's memory.
+    #[test]
+    fn the_tail_of_a_long_log_is_its_end_and_only_its_end() {
+        let dir = std::env::temp_dir().join(format!("letibot-gate-tailcap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("the directory");
+        let log = dir.join("step.log");
+        let mut text = String::new();
+        for i in 0..5_000 {
+            text.push_str(&format!("line {i} of a build\n"));
+        }
+        std::fs::write(&log, &text).expect("the log");
+        let (tail, bytes) = tail_of(&log);
+        assert_eq!(bytes, text.len() as u64, "the size is the file's own");
+        let lines: Vec<&str> = tail.lines().collect();
+        assert_eq!(
+            lines.len(),
+            TAIL_LINES + 1,
+            "the marker, then the last {TAIL_LINES} lines"
+        );
+        assert!(
+            lines[0].starts_with("… [the step has written"),
+            "{:?}",
+            lines[0]
+        );
+        assert_eq!(lines[TAIL_LINES], "line 4999 of a build");
+        assert!(
+            !tail.contains("line 0 of a build"),
+            "the beginning is not read at all"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// **Every step's row ends with what its memory did** (R76 item 6). A test binary is not

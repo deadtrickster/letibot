@@ -346,6 +346,86 @@ fn run(q: &RepoQueue, passes: usize) {
 
 // ===== The landing =====
 
+/// **A landing taken out of line while its gate runs does not land** — the safety half of *`rm` on a
+/// `gating` row*.
+///
+/// The person's verb moves the row to `withdrawn`; the gate is on a thread of its own and finishes
+/// afterwards, saying *passed*. Nothing about that may undo the person's word, and nothing about it
+/// may move `main`: `finish_land` reads the row before it writes into the repository.
+#[test]
+fn a_landing_withdrawn_while_its_gate_runs_does_not_land() {
+    /// A gate that waits until the test lets it go, so the row can be withdrawn WHILE it runs.
+    ///
+    /// **Only the LANDING's gate is held** — the branch's own file is in the tree it was handed,
+    /// and the target's health gate runs on the target alone — and the wait has a deadline, so a
+    /// test that fails before it lets go cannot wedge the whole binary.
+    struct HeldGate {
+        go: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+    impl GateRunner for HeldGate {
+        fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+            if !wt.join("held.txt").exists() {
+                return GreenGate.run(wt, steps, ctl);
+            }
+            let (lock, cv) = &*self.go;
+            let mut open = lock.lock().unwrap();
+            let until = std::time::Instant::now() + Duration::from_secs(30);
+            while !*open {
+                let left = until.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                open = cv.wait_timeout(open, left).unwrap().0;
+            }
+            drop(open);
+            GreenGate.run(wt, steps, ctl)
+        }
+        fn name(&self) -> String {
+            "held (test)".into()
+        }
+    }
+    let w = World::new("withdraw-gating");
+    let (wt, base, head) = branch(&w.repo, "held", "held.txt");
+    w.enqueue("held", &wt, &base, &head);
+    let go = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let q = w.worker(Arc::new(HeldGate { go: go.clone() }), "a");
+    let stop = AtomicBool::new(false);
+    // **Passes, not `settle`** — a pass starts a gate and goes on; `settle` waits for a gate in
+    // flight to end, and this one is held until the row has been withdrawn. The target is gated
+    // first (its own health), so it takes a few passes to reach the landing.
+    assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+    let m = w.accept("held", "test/a");
+    let mut gating = false;
+    for _ in 0..12 {
+        assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+        if w.store().merge_row(&m).unwrap().unwrap().state == MergeState::Gating {
+            gating = true;
+            break;
+        }
+    }
+    assert!(gating, "the premise: the landing's gate is running");
+    let before = w.tip();
+    // **The person takes it out of line** — the verb the pane offers on a `gating` row.
+    let said = crate::mergequeue::verbs::remove(&w.store(), &m, "operator", &|_| {})
+        .expect("a gating landing can be withdrawn");
+    assert!(said.contains("withdrawn"), "{said}");
+    // …and the gate finishes, having passed.
+    *go.0.lock().unwrap() = true;
+    go.1.notify_all();
+    run(&q, 3);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(
+        row.state,
+        MergeState::Withdrawn,
+        "a verdict does not undo the person's word: {row:?}"
+    );
+    assert_eq!(w.tip(), before, "and nothing landed on main");
+    assert!(
+        !w.repo.join("held.txt").exists(),
+        "the branch's work is not in the target's tree"
+    );
+}
+
 /// **The whole path: claimed for review, approved bound to its head, rebased onto the target's
 /// tip in the dedicated worktree, gated, landed by compare-and-swap, the operator's checkout
 /// brought along, the branch and its worktree retired — and every move in the history.**

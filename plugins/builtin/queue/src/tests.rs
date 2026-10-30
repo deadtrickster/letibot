@@ -569,3 +569,70 @@ fn a_target_review_says_red_target() {
     let cells = cells_of(row);
     assert_eq!(cells[1], "RED TARGET main", "{cells:?}");
 }
+
+/// **A `gating` row says which step its gate is on, and how long it has been there** — the question
+/// the row is asked and could not answer, in the one line it has room for.
+///
+/// The tail itself is not in the feed: a guest cannot read a file, and a row is one line. The
+/// detail the host draws on Enter carries it (`ui::panes::queue::running_gate_lines`).
+#[test]
+fn a_gating_row_says_which_step_its_gate_is_on() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-gating", "gating", true);
+    row["waits_on"] = Value::Null;
+    row["running_gate"] = json!({
+        "command": "cargo test --offline",
+        "step": 2,
+        "of": 4,
+        "running_ms": 360_000u64,
+        "bytes": 12_345u64,
+    });
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    let view = view_of(&feed, &[]);
+    let drawn = rows(&view);
+    let under = drawn
+        .iter()
+        .find(|r| r["id"] == "m-gating")
+        .expect("the landing")["under"]
+        .as_array()
+        .expect("an under line")
+        .iter()
+        .map(|u| u.as_str().unwrap_or_default().to_string())
+        .collect::<Vec<_>>();
+    assert!(
+        under
+            .iter()
+            .any(|u| u == "gate step 2 of 4 · running 6m · 12345 byte(s) written"),
+        "the step, its place, and how long it has been going: {under:?}"
+    );
+}
+
+/// **A `gating` row's `rm` is the verb that acts**, now that the queue lets a running landing be
+/// taken out of line — a row that offered only `restart (the queue is gating it right now)` had no
+/// way out of the one state a queue gets stuck in.
+#[test]
+fn a_gating_rows_verb_is_withdraw() {
+    let mut feed = a_queue();
+    let mut row = a_merge("m-gating", "gating", true);
+    row["verbs"] = json!([
+        {"verb": "approve", "why": "a merge row is approved already"},
+        {"verb": "veto", "why": "the queue is gating it right now"},
+        {"verb": "restart", "why": "the queue is gating it right now"},
+        {"verb": "rm", "why": ""},
+    ]);
+    feed["merges"] = json!([row]);
+    feed["reviews"] = json!([]);
+    let view = view_of(&feed, &[]);
+    let drawn = rows(&view);
+    let facts = facts_of(
+        drawn
+            .iter()
+            .find(|r| r["id"] == "m-gating")
+            .expect("the row"),
+    );
+    assert!(
+        facts.iter().any(|f| f == "rm"),
+        "the verb that would move it: {facts:?}"
+    );
+}
