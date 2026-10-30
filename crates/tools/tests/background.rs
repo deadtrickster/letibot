@@ -399,6 +399,153 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     );
 }
 
+/// **A run the harness itself recommends — `background: true` — has a file holding all of it.**
+///
+/// The promotion's fix reached only runs a person moved: `spill_to` had one caller, so a job that
+/// BEGAN in the background kept its output in the 8 MiB window and nowhere else — and the harness
+/// says *"Killed at its 120s deadline. Re-run it with `background: true`"* to exactly the long
+/// run whose output does not fit. This is that run: it prints more than the window holds, the
+/// window drops its front (and says so), and the file has every byte from 0.
+///
+/// Three readers must name the file, because the value of it is a reader knowing where the whole
+/// of it is: the `bash` result that hands back the handle, `job_output`, and `job_list`.
+#[test]
+fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
+    let mut h = runner!("background_spill");
+    let scratch = h
+        .scratch_dir()
+        .expect("the runner fixture has a scratch")
+        .to_path_buf();
+    // Six bytes, nine million, five: past the window's 8 MiB, so the ring must drop a front the
+    // file must not. The markers at each end are what make *from byte 0* checkable rather than a
+    // length somebody could have got right by accident.
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "printf 'FIRST\\n'; yes x | head -c 9000000; printf '\\nLAST\\n'",
+            "background": true,
+        })
+        .to_string(),
+    );
+    let handle = match &r.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!(
+            "the model asked for the background: {other:?}\n{}",
+            r.render()
+        ),
+    };
+    let host = h.processes.clone().unwrap();
+    let jid = JobId(handle.clone());
+
+    // **The file is in the view at the moment the handle is handed back** — the spawn opens it
+    // before a byte is drained, so the result the model reads is the earliest possible moment to
+    // be told, and it is not too early.
+    let file = host
+        .job(&jid)
+        .and_then(|v| v.output_file)
+        .expect("a run with no deadline has its file from the spawn");
+    assert!(
+        file.path.ends_with(&format!("job-{handle}.out")),
+        "the file is named after the job: {}",
+        file.path
+    );
+    assert_eq!(
+        file.from, 0,
+        "nothing had been printed when it was opened, so it starts where the job did"
+    );
+    assert!(
+        file.path.starts_with(scratch.to_str().unwrap()),
+        "the file belongs in the session's scratch directory: {}",
+        file.path
+    );
+    let rendered = r.render();
+    assert!(
+        rendered.contains(&format!("job=\"{handle}\"")),
+        "the result must name the handle: {rendered}"
+    );
+    assert!(
+        rendered.contains(&file.path),
+        "the result must name the file that keeps the whole of it: {rendered}"
+    );
+
+    // **Wait for the run itself** — `job_wait` returns at once for a job this session started,
+    // so the wait is a poll on the state and not a clock the test invents.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while host
+        .job(&jid)
+        .map(|v| v.state.is_running())
+        .unwrap_or(false)
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        !host.job(&jid).map(|v| v.state.is_running()).unwrap_or(true),
+        "the command never finished"
+    );
+
+    // **The window dropped its front** — otherwise this test is about a short run and proves
+    // nothing about the one the harness recommends the background to.
+    let view = host.job(&jid).expect("the row stays");
+    let produced = view.produced;
+    assert!(
+        produced > 8 * 1024 * 1024,
+        "the run has to outgrow the window for this to be about anything: {produced} bytes"
+    );
+    let window = host.output(&jid, 0, 64).expect("the row stays");
+    assert!(
+        window.dropped > 0,
+        "the window kept everything, so nothing was measured: {produced} produced"
+    );
+
+    // **The file has every byte, from the job's first** — read from the disk, not through the
+    // harness: a test that asked the tool whether it wrote is a test of the tool's opinion of
+    // itself.
+    let on_disk = std::fs::read(&file.path).expect("the scratch file exists");
+    assert_eq!(
+        on_disk.len() as u64,
+        produced,
+        "the file holds all {produced} bytes, not the window's {}",
+        window.retained
+    );
+    assert!(
+        on_disk.starts_with(b"FIRST\n"),
+        "the file starts where the job did: {:?}",
+        String::from_utf8_lossy(&on_disk[..on_disk.len().min(40)])
+    );
+    assert!(
+        on_disk.ends_with(b"\nLAST\n"),
+        "and it kept up to the end: {:?}",
+        String::from_utf8_lossy(&on_disk[on_disk.len().saturating_sub(40)..])
+    );
+
+    // **`job_output` returns the window and names the file** — the two facts a reader of a window
+    // whose edges matter needs, and the note is where the dropped front stops being *gone*.
+    let read = h.call(
+        "job_output",
+        &serde_json::json!({"job": handle, "limit": 64}).to_string(),
+    );
+    let body = read.render();
+    assert!(
+        body.contains(&file.path),
+        "`job_output` must name the file that keeps the whole of it: {body}"
+    );
+    assert!(
+        body.contains("not lost"),
+        "a window that dropped its front must say where those bytes are: {body}"
+    );
+
+    // **And `job_list`, which is where a model goes to find the handle** — a row that showed only
+    // the window's byte count would be the one place in the tree that did not say where the rest
+    // is.
+    let listing = h.call("job_list", &serde_json::json!({"all": true}).to_string());
+    assert!(
+        listing.render().contains(&file.path),
+        "`job_list` must name the file too: {}",
+        listing.render()
+    );
+}
+
 // ------------------------------------------------------- monitors, T24
 
 /// T24 requirements 1, 2, 3 and 4, through the tool the model actually calls.

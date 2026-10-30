@@ -477,21 +477,23 @@ pub struct Capture {
     /// publication timestamp says a dead job is live and a progress timestamp says
     /// a finished job is broken, and only the second one is about work.
     last_at: Option<SystemTime>,
-    /// **A file the whole of this job's output keeps going into**, once somebody moved the
-    /// run out of the foreground. See [`Capture::spill_to`] for the report that closes.
+    /// **A file the whole of this job's output keeps going into** — for every run the window
+    /// was never sized for, from the moment it exists. See [`Capture::spill_to`].
     spill: Option<Spill>,
 }
 
-/// **Where a promoted run's output goes on living** — the file, the byte of the job's own
-/// output its first byte is, and whether it is still growing.
+/// **Where a run's output goes on living outside the window** — the file, the byte of the
+/// job's own output its first byte is, and whether it is still growing.
 ///
 /// The window ([`Capture`]) stays exactly what it was: 8 MiB of the tail, which is what
 /// `job_output` pages and what the denominator counts. This is the copy that is **not**
-/// bounded, because a run that went to the background is a run that may print for an hour —
-/// and the operator's report was that a promoted run's output *"goes to /dev/null"*, which
-/// the window becomes in three measured ways: it drops everything past
-/// [`super::host::DEFAULT_CAPTURE_BYTES`], [`super::host::SETTLED_CAPTURE_BUDGET`] releases
-/// a settled job's window altogether, and the whole table dies with the daemon.
+/// bounded, and it belongs to every run with **no deadline** — `bash { background: true }`
+/// from the spawn, and a foreground run from the Ctrl+O that lifted its deadline — because
+/// a run nobody has bounded may print for an hour. The operator's report was that such a
+/// run's output *"goes to /dev/null"*, which the window becomes in three measured ways: it
+/// drops everything past [`super::host::DEFAULT_CAPTURE_BYTES`],
+/// [`super::host::SETTLED_CAPTURE_BUDGET`] releases a settled job's window altogether, and
+/// the whole table dies with the daemon.
 ///
 /// `path` is a string rather than a `PathBuf` because every reader of it prints it: the
 /// promotion's result, `job_output`, `job_list` and the run's own settlement notice, and a
@@ -499,10 +501,10 @@ pub struct Capture {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFile {
     pub path: String,
-    /// **The ABSOLUTE offset in this job's output of the file's first byte.** Usually 0, and
-    /// not always: a foreground run that had already outgrown the window when it was
-    /// promoted has lost its head for good, and the file honestly starts where the window
-    /// did rather than at a zero no reader could check.
+    /// **The ABSOLUTE offset in this job's output of the file's first byte.** 0 for every run
+    /// that had a file from its spawn, and not always: a foreground run that had already
+    /// outgrown the window when it was promoted has lost its head for good, and the file
+    /// honestly starts where the window did rather than at a zero no reader could check.
     pub from: u64,
     /// Bytes in the file at the moment this was read.
     pub bytes: u64,
@@ -517,9 +519,10 @@ pub struct OutputFile {
 #[derive(Debug)]
 struct Spill {
     path: std::path::PathBuf,
-    /// `None` once the job has settled and the window was released — the file is still on
-    /// disk and still named, and this process has no reason to hold a descriptor open for
-    /// a run that can never write again.
+    /// `None` once nothing can write again — the drains have joined
+    /// ([`Capture::close_spill`]) or the settled window was released. The file is still on
+    /// disk and still named; this process has no reason to hold a descriptor open for a run
+    /// that can never write again.
     file: Option<std::fs::File>,
     from: u64,
     bytes: u64,
@@ -557,14 +560,19 @@ impl Capture {
     /// **Start a file that this job's output keeps going into, and seed it with what the job
     /// has already printed.**
     ///
-    /// Called once per job, at the moment the run is moved out of the foreground — the moment
-    /// its output stopped having an end in sight. The seed is the **retained window**, so the
-    /// file holds everything the result the model just read held, and the two agree about
-    /// where they start: [`OutputFile::from`] is the window's own absolute offset, not 0.
+    /// Called once per job, at the first moment the run's output stopped having an end in
+    /// sight: at the **spawn** for a run with no deadline (`bash { background: true }`, and the
+    /// operator's own `!` run), and at the **promotion** for one whose deadline a person just
+    /// lifted. Nothing has been printed yet on the spawn path, so the seed is empty and
+    /// [`OutputFile::from`] is 0; on the promotion path the seed is the **retained window**, so
+    /// the file holds everything the result the model just read held, and the two agree about
+    /// where they start — `from` is the window's own absolute offset and not a zero nobody
+    /// could check.
     ///
-    /// Truncates. A second promotion of a job that already has a file is answered from
-    /// [`Capture::output_file`] by the caller rather than by calling this again — truncating a
-    /// file a run is writing is the one outcome worse than having none.
+    /// Truncates. A job that already has a file — the promoted half of a run that was already
+    /// spilling — is answered from [`Capture::output_file`] by the caller
+    /// ([`super::host::HostProcesses::spill_output`]) rather than by calling this again:
+    /// truncating a file a run is writing is the one outcome worse than having none.
     pub fn spill_to(&mut self, path: impl Into<std::path::PathBuf>) -> Result<OutputFile, String> {
         let path = path.into();
         let mut file = std::fs::File::options()
@@ -584,6 +592,16 @@ impl Capture {
             problem: None,
         });
         Ok(self.output_file().expect("the spill was just set"))
+    }
+
+    /// **The last byte is in, so the descriptor goes and the file stays.** Called where the
+    /// job's drains have joined — nothing can push again — and from [`Capture::release`], which
+    /// is the same fact one step later. The path, the offset and the byte count stay, because
+    /// the bytes are still on disk and every reader of a settled job is still owed the place.
+    pub fn close_spill(&mut self) {
+        if let Some(spill) = &mut self.spill {
+            spill.file = None;
+        }
     }
 
     /// The file this job's output is also going into, or `None`. See [`OutputFile`].
@@ -636,9 +654,7 @@ impl Capture {
     pub fn release(&mut self) {
         self.dropped += self.buf.len() as u64;
         self.buf = VecDeque::new();
-        if let Some(spill) = &mut self.spill {
-            spill.file = None;
-        }
+        self.close_spill();
     }
 
     /// How long since the last byte, and `None` when there has never been one —
@@ -920,11 +936,21 @@ impl Job {
         self.stdin.clone()
     }
 
-    /// **The file this job's output is also going into**, once it was promoted out of the
-    /// foreground, or `None`. Read off the capture rather than kept beside it, so there is
-    /// one record of where the bytes are and not two that can disagree.
+    /// **The file this job's output is also going into**, for a run with no deadline — from
+    /// its spawn (`bash { background: true }`, the operator's own `!` run) — or from the
+    /// promotion that lifted its deadline; `None` while a deadline-bounded run has never been
+    /// moved, and on a host with no scratch directory to put one in. Read off the capture
+    /// rather than kept beside it, so there is one record of where the bytes are and not two
+    /// that can disagree.
     pub fn output_file(&self) -> Option<OutputFile> {
         self.capture.lock().expect("capture").output_file()
+    }
+
+    /// **The last byte is in, so the file's descriptor goes.** Called by the waiter once both
+    /// drains have joined; nothing can push a byte after that, so this is the moment the file's
+    /// contents stop moving. See [`Capture::close_spill`].
+    pub fn close_spill(&self) {
+        self.capture.lock().expect("capture").close_spill();
     }
 
     pub fn lifetime(&self) -> Lifetime {

@@ -357,7 +357,7 @@ impl Tool for JobList {
         for j in &jobs {
             body.push_str(&format!(
                 "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n  pid:     {}\n  \
-                 elapsed: {}\n  output:  {} bytes{}\n{}",
+                 elapsed: {}\n  output:  {} bytes{}\n{}{}",
                 // **The name beside the id**, the same rule `/job` and the pane's entry
                 // follow ([`JobView::label`]): the listing is where a model goes to find
                 // the handle it will pass to `job_output`, and the name it stated is a
@@ -375,6 +375,15 @@ impl Tool for JobList {
                     Some(d) => format!(", last wrote {} ago", secs(d)),
                     None => ", nothing written yet".to_string(),
                 },
+                // **Where the whole of it is**, on every row that has somewhere: a run with
+                // no deadline (`bash { background: true }`, the operator's own `!` line) has
+                // had its file since the spawn, so a listing that showed only the window's
+                // byte count would be the one place in the tree that did not name it. Read
+                // off the same record `job_output` and the `bash` result read.
+                j.output_file
+                    .as_ref()
+                    .map(|f| format!("  file:    {} (from byte {})\n", f.path, f.from))
+                    .unwrap_or_default(),
                 j.memory_clause()
                     .map(|m| format!("  memory:  {m}\n"))
                     .unwrap_or_default()
