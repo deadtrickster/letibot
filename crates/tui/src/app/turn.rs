@@ -173,6 +173,103 @@ pub(crate) struct TurnPane {
     pub(crate) think_last_ms: u64,
 }
 
+impl TurnPane {
+    /// **Does a row this round appended already hold the prose this pane is drawing?**
+    ///
+    /// The pane's prose and a stored `Assistant` row are two buffers holding one paragraph, and
+    /// the head keeps them from both being drawn by *giving the pane's up* the moment the
+    /// transcript has it ([`App::record_item`], at the row's body). That works because a body
+    /// arrives as an event; a SNAPSHOT does not — it is a replacement, and it carries the turn's
+    /// accumulated text (`Snapshot::turn`) beside rows that already hold their bodies. So a head
+    /// that re-attaches, resyncs or switches back mid-turn is handed one paragraph twice, and
+    /// nothing in the stream will ever take the pane's copy away: the body it waits for has
+    /// already landed, and the next `TurnStarted` is a whole round away.
+    ///
+    /// The operator photographed exactly that, 2026-10-30: a reply drawn above their question and
+    /// again below it, the second copy carrying the counts — which is how it is known that the
+    /// second is the LIVE one: the pane draws its marker *after* the reply (`ui::transcript::
+    /// live`), so the copy with `[1 tool call, 36 thinking lines]` attached is the pane's.
+    pub(crate) fn prose_taken_over(
+        &self,
+        items: &[letibot_sessionlog::view::SnapshotItem],
+    ) -> bool {
+        self.a_row_holds(self.text.raw(), items, |it| match it {
+            letibot_transcript::TranscriptItem::Assistant { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// **Does a row this round appended already hold the reasoning this pane is counting?**
+    ///
+    /// `reasoned_upto`'s sibling of [`TurnPane::prose_taken_over`], and it exists for the same
+    /// reason: the live door advances the mark when a reasoning row's BODY lands
+    /// ([`App::record_item`]), and a snapshot is a door with no body event behind it. Zero there
+    /// means the pane counts thinking the transcript already holds — the count the operator
+    /// caught going *up* on a re-attach, which is the same defect as the one that made it go down
+    /// (a number that is a count of work done may not move because the head was not watching).
+    ///
+    /// **The mark, not the text.** The pane keeps the reasoning it accumulated, exactly as the
+    /// live door leaves it: what is drawn from `reasoning` is the rung's business, and what is
+    /// *counted* is what no row holds.
+    pub(crate) fn reasoning_taken_over(
+        &self,
+        items: &[letibot_sessionlog::view::SnapshotItem],
+    ) -> bool {
+        self.a_row_holds(self.reasoning.raw(), items, |it| match it {
+            letibot_transcript::TranscriptItem::Reasoning { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// **Is `words` a body this round's rows already carry?** — the one rule behind both marks.
+    ///
+    /// **The pairing is by TEXT and only within `appended`**, because that is the whole of what a
+    /// snapshot proves. `appended` is this round's rows — the round whose deltas this pane is
+    /// holding — so a row from an earlier round cannot be mistaken for the one that owns the
+    /// words, even when the model repeated a sentence verbatim. And equality after trimming, not
+    /// a prefix: clearing on a prefix would hide words no row holds, which is worse than the
+    /// duplicate this exists to remove. A row still waiting for its body matches nothing, so the
+    /// R2 window (a row announced, its words not yet here) is untouched — the live door closes
+    /// that one when the body lands.
+    fn a_row_holds(
+        &self,
+        words: &str,
+        items: &[letibot_sessionlog::view::SnapshotItem],
+        body: impl Fn(&letibot_transcript::TranscriptItem) -> Option<&str>,
+    ) -> bool {
+        let words = words.trim();
+        if words.is_empty() {
+            return false;
+        }
+        self.appended.iter().any(|id| {
+            items.iter().any(|r| {
+                &r.item_id == id
+                    && r.item
+                        .as_ref()
+                        .and_then(&body)
+                        .is_some_and(|t| t.trim() == words)
+            })
+        })
+    }
+
+    /// **Give the prose up if a row holds it** — the snapshot's half of the handover.
+    ///
+    /// Returns whether it did, so a caller can say so rather than guess. The cache goes with the
+    /// text for [`App::record_item`]'s reason: `IncrementalMarkdown` is a frozen-prefix lexer, so
+    /// the rendered blocks are the same fact in another form and cannot outlive it.
+    pub(crate) fn hand_over_prose(
+        &mut self,
+        items: &[letibot_sessionlog::view::SnapshotItem],
+    ) -> bool {
+        if !self.prose_taken_over(items) {
+            return false;
+        }
+        self.text = rano::markdown::IncrementalMarkdown::new();
+        self.text_cache = BlockCache::new();
+        true
+    }
+}
+
 /// One compaction half, as the daemon reports it.
 #[derive(Debug, Clone)]
 pub(crate) struct CompactionLine {

@@ -3758,3 +3758,442 @@ fn a_selections_hold_ends_with_the_next_key() {
         "and the wheel moved the view"
     );
 }
+
+// ---------------------------------------------------------------------------
+// **The reply drawn twice, once on each side of the question** — 2026-10-30.
+//
+// The operator's photograph, in order:
+//
+// ```text
+//   so, update the docs ?                                          10:19:38
+// [2 tool calls, 53 thinking lines]
+// The doc is stale in six places — … Rewriting it to what the code does:
+//   » Wrote rano/docs/pdf.md · ok · 7ms · 147 lines
+// [1 tool call, 19 thinking lines]
+// Different thread, and a useful one — §20.8 has been waiting on a real *-json.log:
+//   also maybe we have docker on this host now? …                  10:20:10
+// [1 tool call, 18 thinking lines]
+// Different thread, and a useful one — §20.8 has been waiting on a real *-json.log: [1 tool call, 36 thinking lines]
+// ```
+//
+// Their words: *"the reply started before my question was visible and then duplicated after."*
+//
+// **Which copy is which, from the code and not from the look.** The counts are drawn AFTER the
+// reply in the pane (`ui::transcript::live`, whose own comment records the operator's ruling
+// *"all of it after the reply"*), and the pane is drawn after every row — so the copy carrying
+// `[1 tool call, 36 thinking lines]` is the LIVE one, and the copy above the question is the
+// stored row. That is the opposite of what the shape suggests, and it is what makes the search
+// land in the right place.
+//
+// **The two copies are two buffers, not one list written twice.** `items` holds the row;
+// `TurnPane::text` holds the prose the deltas streamed into; the frame draws the rows and then
+// the pane. Nothing in the item list is duplicated, so a rule about the list cannot see this.
+//
+// **The live path already hands the prose over** — at the row's BODY (`App::record_item`), which
+// is why the first test below passes on the tree before this change. What it cannot cover is a
+// row that arrives already holding its body: a snapshot. A snapshot is a *replacement*, and it
+// carries the turn's accumulated text (`Snapshot::turn`) beside rows whose bodies are in `items`
+// — and the daemon's view never trims that text when a row lands, so a head that re-attaches,
+// resyncs or switches back mid-turn is handed one paragraph twice, with no later event to take
+// the pane's copy away: the body it waits for has already happened. The second test is that door,
+// and it is the one that failed before the fix.
+
+/// **How many times the frame draws this text**, which is the assertion a duplicate needs — a
+/// count of rows can be right while the screen shows a paragraph twice.
+fn drawn_times(frame: &str, words: &str) -> usize {
+    frame.matches(words).count()
+}
+
+/// The line index of the first row of the frame that contains `words`.
+fn at(frame: &str, words: &str) -> usize {
+    frame
+        .lines()
+        .position(|l| l.contains(words))
+        .unwrap_or_else(|| panic!("`{words}` is not on the frame:\n{frame}"))
+}
+
+/// **A reply streamed while the operator's own prompt lands mid-stream is drawn once, below it.**
+///
+/// The photographed order, driven live: round 1 answers the first prompt and lands as a row;
+/// round 2 starts streaming; the operator types; their row lands; the round's row and body land.
+/// The reply's sentence is on the frame exactly once, under the question, and the rows above it
+/// are byte-identical to what they were before the question arrived — a head that re-flowed
+/// history to make room would pass a "once" assertion and still be wrong.
+#[test]
+fn a_reply_streamed_while_a_prompt_lands_is_drawn_once_below_it() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // The operator's first prompt, and the round that answered it.
+    shell_row(
+        &mut a,
+        1,
+        "s.u1",
+        "user",
+        operator_row("so, update the docs ?"),
+    );
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    a.apply(ServerFrame::Event(env_at(
+        4,
+        1_001,
+        testing::delta("r1", "The doc is stale in six places."),
+    )));
+    shell_row(
+        &mut a,
+        5,
+        "s.a1",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "The doc is stale in six places.".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    // Round 2, streaming — and the operator types into the middle of it.
+    a.apply(ServerFrame::Event(env_at(
+        7,
+        2_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r2".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(2_000),
+        },
+    )));
+    a.apply(ServerFrame::Event(env_at(
+        8,
+        2_001,
+        testing::delta("r2", "Different thread, and the useful one:"),
+    )));
+    let before = a.screen(90, 40).join("\n");
+    assert_eq!(
+        drawn_times(&before, "Different thread, and the useful one:"),
+        1,
+        "the premise: the streaming reply is on the frame once:\n{before}"
+    );
+    // The prompt lands while the round is still speaking.
+    shell_row(
+        &mut a,
+        9,
+        "s.u2",
+        "user",
+        operator_row("also maybe we have docker on this host now?"),
+    );
+    // And the round finishes: the row, then its body.
+    shell_row(
+        &mut a,
+        11,
+        "s.a2",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "Different thread, and the useful one:".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    let frame = a.screen(90, 40).join("\n");
+    // **Once**, and after the question it answers.
+    assert_eq!(
+        drawn_times(&frame, "Different thread, and the useful one:"),
+        1,
+        "the reply is drawn {} time(s) — the row and the live pane's copy are both on the \
+         screen:\n{frame}",
+        drawn_times(&frame, "Different thread, and the useful one:")
+    );
+    assert!(
+        at(&frame, "Different thread, and the useful one:")
+            > at(&frame, "also maybe we have docker on this host now?"),
+        "the reply is drawn above the question that prompted it:\n{frame}"
+    );
+    // **And the rows above it did not move.** Everything up to and including the first answer's
+    // row is the same on both frames — a head that folded or re-flowed history to make room for
+    // the streaming copy would satisfy the count above and still be wrong. Cut at that row rather
+    // than at the question, because the pane's own copy of the streaming text sits between them
+    // on the first frame and below them on the second, and that difference is the subject.
+    let kept = |f: &str| -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for l in f.lines() {
+            out.push(l.to_string());
+            if l.contains("The doc is stale in six places.") {
+                break;
+            }
+        }
+        out
+    };
+    assert_eq!(
+        kept(&before),
+        kept(&frame),
+        "the rows above the question changed when it landed"
+    );
+    assert_eq!(
+        drawn_times(&frame, "The doc is stale in six places."),
+        1,
+        "the first answer is still drawn once:\n{frame}"
+    );
+}
+
+/// **A head that re-attaches mid-turn does not draw the reply it already has a row for.**
+///
+/// The photographed frame exactly: a snapshot taken while a turn runs, whose rows are the round's
+/// answer (body and all) and then the operator's prompt — the state a head lands in when it
+/// re-attaches, resyncs, or switches back to a session in the middle of a turn. The pane is handed
+/// the turn's accumulated text beside those rows, and nothing later in the stream will take that
+/// text away, because the event that would have (the row's body) happened before this head
+/// existed.
+///
+/// Before the fix this frame read the paragraph twice — the row above the question and the pane's
+/// copy under it — which is the operator's screenshot.
+#[test]
+fn a_reattach_mid_turn_does_not_draw_the_reply_twice() {
+    // The daemon's own log, folded into a snapshot: the answer to the first prompt has landed, and
+    // the operator's next prompt was appended after it while the model was still speaking.
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.u1", "user"));
+    hub.record_item("s.u1", operator_row("so, update the docs ?"));
+    hub.publish(testing::turn_started("r1"));
+    hub.publish(testing::delta(
+        "r1",
+        "Different thread, and the useful one:",
+    ));
+    hub.publish(testing::appended("s.a1", "assistant"));
+    hub.record_item(
+        "s.a1",
+        TranscriptItem::Assistant {
+            text: "Different thread, and the useful one:".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    hub.publish(testing::appended("s.u2", "user"));
+    hub.record_item(
+        "s.u2",
+        operator_row("also maybe we have docker on this host now?"),
+    );
+
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+    let frame = a.screen(90, 40).join("\n");
+    assert_eq!(
+        drawn_times(&frame, "Different thread, and the useful one:"),
+        1,
+        "the reply the rows already hold is drawn {} time(s): the row, and the pane's copy of \
+         it below the operator's own prompt:\n{frame}",
+        drawn_times(&frame, "Different thread, and the useful one:")
+    );
+    assert!(
+        at(&frame, "Different thread, and the useful one:")
+            < at(&frame, "also maybe we have docker on this host now?"),
+        "the answer to the first prompt is drawn above the second prompt:\n{frame}"
+    );
+
+    // **And the next round streams where it belongs** — under the question, not above it, and
+    // still without a second copy of the sentence that landed before the attach.
+    a.apply(ServerFrame::Event(env_at(
+        100,
+        3_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r2".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(3_000),
+        },
+    )));
+    a.apply(ServerFrame::Event(env_at(
+        101,
+        3_001,
+        testing::delta(
+            "r2",
+            "Docker is here — 29.1.3, and this user can talk to it.",
+        ),
+    )));
+    let frame = a.screen(90, 40).join("\n");
+    assert_eq!(
+        drawn_times(&frame, "Different thread, and the useful one:"),
+        1,
+        "the landed reply is drawn twice once the next round streams:\n{frame}"
+    );
+    assert!(
+        at(&frame, "Docker is here — 29.1.3")
+            > at(&frame, "also maybe we have docker on this host now?"),
+        "the round that answers the second prompt is drawn under it:\n{frame}"
+    );
+}
+
+/// **Two complete turns in a row draw each reply once** — the control case.
+///
+/// If this ever fails, the cause is the item list rather than the live buffer: a duplicate here
+/// means a row was announced twice, or the pane's prose survived a round boundary.
+#[test]
+fn two_complete_turns_draw_each_reply_once() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    let mut seq = 1;
+    for (n, (prompt, answer)) in [
+        ("so, update the docs ?", "The doc is stale in six places."),
+        ("and the docker one?", "Docker is here — 29.1.3."),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let turn = format!("r{n}");
+        shell_row(
+            &mut a,
+            seq,
+            &format!("s.u{n}"),
+            "user",
+            operator_row(prompt),
+        );
+        seq += 2;
+        a.apply(ServerFrame::Event(env_at(
+            seq,
+            1_000 * (n as u64 + 1),
+            SessionEvent::TurnStarted {
+                turn_id: turn.clone(),
+                model: "qwen3-next-80b".into(),
+                ledger_head: "0000".into(),
+                began_ms: Some(1_000 * (n as u64 + 1)),
+            },
+        )));
+        seq += 1;
+        a.apply(ServerFrame::Event(env(seq, testing::delta(&turn, answer))));
+        seq += 1;
+        shell_row(
+            &mut a,
+            seq,
+            &format!("s.a{n}"),
+            "assistant",
+            TranscriptItem::Assistant {
+                text: answer.into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+        );
+        seq += 2;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TurnFinished {
+                turn_id: turn,
+                finish_reason: letibot_sessionlog::event::FinishReason::Eos,
+                usage: Default::default(),
+                timings: Default::default(),
+            },
+        )));
+        seq += 1;
+    }
+    let frame = a.screen(90, 40).join("\n");
+    for (prompt, answer) in [
+        ("so, update the docs ?", "The doc is stale in six places."),
+        ("and the docker one?", "Docker is here — 29.1.3."),
+    ] {
+        assert_eq!(
+            drawn_times(&frame, answer),
+            1,
+            "`{answer}` is drawn {} time(s):\n{frame}",
+            drawn_times(&frame, answer)
+        );
+        assert!(
+            at(&frame, answer) > at(&frame, prompt),
+            "`{answer}` is drawn above `{prompt}`:\n{frame}"
+        );
+    }
+}
+
+/// **A re-attach mid-round does not count the working it already has rows for** — the same door,
+/// the other two buffers.
+///
+/// The pane's prose was the paragraph the operator photographed; the WORKING has the same shape
+/// and the same door. `settled_calls` and `reasoned_upto` are the two marks that say *the
+/// transcript has this much of the working*, and the live path advances both when a row's BODY
+/// lands (`App::record_item`). A snapshot carries neither, so a head that re-attaches mid-round
+/// started both at zero and counted — and, on a rung that shows the working, drew — a call and a
+/// block of thinking that were already rows above it.
+///
+/// Measured on this fixture before the marks were seeded: `[2 tool calls, 2 thinking lines]` for
+/// one call and one thinking line. The number is the same defect the operator caught going the
+/// other way (*"lol, just saw how thinking lines count went from 22 to 15"*): a count of work
+/// done moving because the head was not watching.
+#[test]
+fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.u1", "user"));
+    hub.record_item("s.u1", operator_row("so, update the docs ?"));
+    hub.publish(testing::turn_started("r1"));
+    hub.publish(testing::reasoning(
+        "r1",
+        "a thought that already landed as a row",
+    ));
+    hub.publish(SessionEvent::ToolCallProposed {
+        turn_id: "r1".into(),
+        call_id: "call_0".into(),
+        name: "bash".into(),
+        args_digest: "d".into(),
+        target: "cargo test".into(),
+    });
+    // The round's thinking lands as a row, and then the call's result.
+    hub.publish(testing::appended("s.r1", "reasoning"));
+    hub.record_item(
+        "s.r1",
+        TranscriptItem::Reasoning {
+            text: "a thought that already landed as a row".into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    hub.publish(testing::appended("s.t1", "tool_result"));
+    hub.record_item(
+        "s.t1",
+        TranscriptItem::ToolResult {
+            call_id: "call_0".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "the output of a call that already landed".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+    let t = a.turn.as_ref().expect("the snapshot carried a turn");
+    assert_eq!(
+        t.settled_calls, 1,
+        "the pane still believes the transcript owes it a card for `call_0`"
+    );
+    assert_eq!(
+        t.reasoned_upto,
+        t.reasoning.raw().len(),
+        "the pane still counts thinking the reasoning row holds"
+    );
+    // And the marker the reader sees counts each once — one call, one thinking line, both of them
+    // the rows' own.
+    let frame = a.screen(90, 40).join("\n");
+    assert!(
+        frame.contains("[1 tool call, 1 thinking line]"),
+        "the marker counts the landed work twice:\n{frame}"
+    );
+    assert!(
+        !frame.contains("2 tool calls") && !frame.contains("2 thinking lines"),
+        "the marker counts work the transcript already holds:\n{frame}"
+    );
+}
