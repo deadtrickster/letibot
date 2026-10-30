@@ -1,6 +1,13 @@
 //! **A daemon restart brings back what a session was running — or, past the threshold, reminds
 //! the model of it.**
 //!
+//! **And a restart that had nothing to restore is said anyway**, because the one fact only the
+//! daemon has is the time: the operator, 2026-10-30, after one restart had told the model
+//! something and the next had said nothing — *"mb always tell agent about restart? with the
+//! current time lol"*. That sentence is a NOTICE and not a turn (`restart::nothing_running`),
+//! while a restore keeps the turn it has always had: `an_empty_restart_is_said_once_and_starts_no_turn`
+//! pins the first, and every other test here pins the second.
+//!
 //! The operator, 2026-10-12, verbatim: *"and here is one more thing about restart - we should
 //! bring subagents back - i cant afford to wait till they finish. we should record them (session
 //! persist anyway) and restart automatically"*; then *"on restoring agents - in fact to make
@@ -557,6 +564,10 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
         )),
         "{notice}"
     );
+    // **And the time, with the list** — the return time and the stop are in every restart notice,
+    // and a restore is not the case that is allowed to drop them.
+    assert!(notice.contains("; back at "), "{notice}");
+    assert!(notice.contains("stopped at "), "{notice}");
     let child = {
         let mut hub = None;
         wait_until("the resumed child to be in the new registry", || {
@@ -1021,13 +1032,18 @@ fn job_state(store: &Store, handle: &str) -> String {
         .unwrap_or_default()
 }
 
-/// **A relic says nothing** — pg-noop, 2026-10-15: a daemon down a couple of seconds told the
+/// **A relic draws no REMINDER** — pg-noop, 2026-10-15: a daemon down a couple of seconds told the
 /// model *"when the previous one stopped is unknown … NOTHING was restored automatically"* over
 /// four jobs (j900, j610, j624, j2437) that builds long gone had left with no `job_context`. They
 /// were the session's only records, they name no daemon, and `Stopped::latest` over no daemon is
-/// unknown. Such a row is closed quietly, and with nothing else to say, nothing is said.
+/// unknown. Such a row is closed quietly and named to nobody.
+///
+/// **The restart itself is still said** (2026-10-30): a session with nothing running is told when
+/// the daemon came back, because that is the one fact only the daemon has. Here that sentence is
+/// the whole notice — no job in it — and, because the relics name no daemon, it is the one that
+/// says the stop is unknown rather than the one that dates it.
 #[test]
-fn relics_alone_draw_no_notice_and_are_closed_quietly() {
+fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
@@ -1055,9 +1071,21 @@ fn relics_alone_draw_no_notice_and_are_closed_quietly() {
     }
     let mut d = a_daemon(&parts, &cfg);
     let notice = d.parent.restore_after_restart();
-    assert_eq!(notice, None, "a relic drew a notice");
+    // **The restart is said, and nothing is listed**: no relic is named, no reminder is drawn, and
+    // the sentence is the empty one — the relics name no daemon, so the stop is unknown.
+    let notice = notice.expect("a restart with nothing running is still said");
+    assert!(
+        notice.starts_with("[restart] the daemon came back at ")
+            && notice.ends_with(": nothing was running"),
+        "{notice}"
+    );
+    for relic in ["j900", "j610", "j624", "j2437"] {
+        assert!(!notice.contains(relic), "a relic drew a notice: {notice}");
+    }
+    assert!(!notice.contains("Nothing above is running now"), "{notice}");
     assert!(warnings(&d.hub(), "restart_reminded").is_empty());
     assert!(warnings(&d.hub(), "restart_restored").is_empty());
+    assert_eq!(warnings(&d.hub(), "restart_nothing").len(), 1);
     let store = Store::open(&dir.store()).unwrap();
     for h in ["j900", "j610", "j624", "j2437"] {
         assert_eq!(job_state(&store, h), "lost at restart", "{h}");
@@ -1481,6 +1509,111 @@ fn stage_monitors_and_jobs(store: &Store) {
             .unwrap()],
         )
         .unwrap();
+}
+
+/// **A restart with nothing running is SAID — once, through the daemon's own open — and it starts
+/// no turn.** The operator, 2026-10-30, after one restart had told the model something and the next
+/// had said nothing: *"mb always tell agent about restart? with the current time lol"*.
+///
+/// The two doors are pinned here and in `harness::tests::restart_notice`: a restore is work to
+/// continue and keeps its turn, and a restart with nothing to restore is a NOTICE — a transcript
+/// row the model reads when it next reads. The daemon's open rings the session either way (that
+/// ring is what carries a todo row, a queue handover and a restored child), so the assertion that
+/// matters is the one after it: the wake finds nothing to say and no model call is made.
+#[test]
+fn an_empty_restart_is_said_once_and_starts_no_turn() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-nothing");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    let store = Store::open(&dir.store()).unwrap();
+    old_daemon_stopped(&store, Duration::from_secs(1));
+    // **Nothing was running**, and the session still names the daemon that held it: a monitor that
+    // had already ended. That is where the down time is read from — a session whose rows name no
+    // daemon at all says `unknown` (`harness::tests::restart_notice`).
+    store
+        .put_monitor(
+            PARENT,
+            "ended",
+            r#"{"name":"ended","path":"x"}"#,
+            OLD,
+            60_000,
+        )
+        .unwrap();
+    store.end_monitor(PARENT, "ended").unwrap();
+    let stopped = store.life(OLD).unwrap().unwrap().stopped_ms.unwrap();
+
+    let registry = Registry::new();
+    registry
+        .create(PARENT, "the parent", wiring(&cfg))
+        .expect("created");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let hub = registry.get(PARENT).unwrap();
+    let back = registry.started_ms();
+    // **The whole sentence**, not a fragment: the return time from the daemon's own clock, the down
+    // time and the stop it is counted from, and that nothing was running.
+    let sentence = format!(
+        "[restart] the daemon came back at {} (down {}, stopped at {}): nothing was running",
+        letibot_harnessd::subagent_record::utc(back),
+        letibot_harnessd::restart::span(Duration::from_millis(back.saturating_sub(stopped))),
+        letibot_harnessd::subagent_record::utc(stopped)
+    );
+    assert_eq!(warnings(&hub, "restart_nothing"), vec![sentence.clone()]);
+    assert!(warnings(&hub, "restart_restored").is_empty());
+    assert!(warnings(&hub, "restart_reminded").is_empty());
+
+    // **The open rang the session** — that ring is the daemon's own, and it carries everything a
+    // restored session owes. This session owes nothing, so the wake says so.
+    let woke = loop {
+        match registry.next_work_until(Some(Instant::now() + Duration::from_secs(5))) {
+            WorkOrIdle::Work(Work::Woken(id)) => break id,
+            WorkOrIdle::Work(_) => continue,
+            _ => panic!("the opened session was not rung"),
+        }
+    };
+    assert_eq!(woke, PARENT);
+    assert!(
+        matches!(sessions.wake(PARENT), Outcome::Ignored),
+        "a restart with nothing running opened a turn"
+    );
+    // **And the model was told anyway**, as a row it reads at its next turn.
+    let rows = user_rows(&hub);
+    assert!(
+        rows.contains(&sentence),
+        "the notice never reached the transcript: {rows:?}"
+    );
+    assert_eq!(
+        stub.arrived(),
+        0,
+        "the empty restart cost a model call — it is a notice, not a turn"
+    );
+    // **Once.** A second wake finds nothing, and the sentence is not said again.
+    assert!(matches!(sessions.wake(PARENT), Outcome::Ignored));
+    assert_eq!(
+        user_rows(&hub)
+            .iter()
+            .filter(|r| r.starts_with("[restart]"))
+            .count(),
+        1,
+        "{:?}",
+        user_rows(&hub)
+    );
+    assert_eq!(stub.arrived(), 0);
+    registry.close();
 }
 
 /// **Under the threshold: monitors come back, a monitor that cannot is reported, and a job is
@@ -1909,6 +2042,10 @@ fn under_the_threshold_a_session_with_only_a_job_is_reminded_not_restored() {
         notice.contains("under the 1h00m restore threshold, but nothing could be restored"),
         "{notice}"
     );
+    // **And the time**, which is what a restart is for: the return time and the stop it is counted
+    // from are in every notice, whatever is listed under it.
+    assert!(notice.contains("; back at "), "{notice}");
+    assert!(notice.contains("stopped at "), "{notice}");
     assert!(!notice.contains("restored where it could be"), "{notice}");
     assert!(
         notice.contains("Its output was in the old daemon's memory and is gone."),

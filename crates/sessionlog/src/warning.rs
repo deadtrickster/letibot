@@ -505,6 +505,13 @@ pub const TABLE: &[(&str, Class)] = &[
     // detail and to the model, and is not a fault of this session.
     ("restart_restored", Class::Routine),
     ("restart_reminded", Class::Routine),
+    // **A restart that had nothing to restore** — the operator, 2026-10-30: *"mb always tell agent
+    // about restart? with the current time lol"*. Its own word rather than `restart_reminded` over
+    // an empty list, because it is its own sentence (`restart::nothing_running`): the daemon came
+    // back at a time, and what was running was nothing. Routine by the same rule as the two above
+    // — nothing is wrong, and the reader is told where the session stands after a restart they
+    // made.
+    ("restart_nothing", Class::Routine),
     // **The session's message 0 is not the one this daemon would compose now** — the
     // system instructions, the tool schemas or the seat it hands a session have changed
     // since this one was seated, and a session keeps the prefix it was created with. A
@@ -1308,8 +1315,12 @@ mod the_register_census {
         //     `model_endpoint_retry`: the endpoint that did not answer came back, said ONCE per
         //     outage with the count and how long it was out. The operator's *"i dont need walls
         //     of this … a coutner is what is need"* is why neither code is per attempt.
-        assert_eq!(TABLE.len(), 167, "the table's size");
-        assert_eq!(count(Class::Routine), 65);
+        //   · **168, not 167**: `restart_nothing` (Routine) — a restart that had nothing to
+        //     restore, said anyway and for the clock (`restart::nothing_running`). Its own word
+        //     because it is its own sentence: `restart_reminded` over an empty list would tell a
+        //     head to draw *"reminded: nothing"*.
+        assert_eq!(TABLE.len(), 168, "the table's size");
+        assert_eq!(count(Class::Routine), 66);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 89);
         // A code with an id is read by its family.

@@ -57,6 +57,30 @@
 //! (a subagent resumed or delivered, a monitor re-armed), `restart_reminded` otherwise — a
 //! restart under the threshold whose only record was a job restored nothing, and saying
 //! *"restored where it could be"* over a list of reminders was wrong ([`Outcome`]).
+//!
+//! # And a restart with nothing running is said too
+//!
+//! The operator, 2026-10-30, after one restart had told the model something and the next had said
+//! nothing: *"mb always tell agent about restart? with the current time lol"*. That is not a
+//! courtesy, it is a clock: the model's sense of time went through a stop and a start, and only
+//! the daemon knows when. A session with nothing to restore therefore gets one sentence of its own
+//! ([`nothing_running`]), said once per (session, restart):
+//!
+//! ```text
+//! [restart] the daemon came back at 2026-10-12 08:10:56 UTC (down 1s, stopped at 2026-10-12
+//! 08:10:55 UTC): nothing was running
+//! ```
+//!
+//! **The return time leads it**, because the time is the whole of what this case is for; what was
+//! running is said too, and it is *nothing*. A stop no record dates is still said to be unknown,
+//! in this sentence as in the others.
+//!
+//! **And the two cases take different doors, because they are different news.** Something was
+//! running ⇒ there is work to continue, and the wake that continues it carries the notice. Nothing
+//! was running ⇒ there is nothing to continue, and the sentence is for the clock alone: it is
+//! filed into the session and read at the model's next turn (or at the next step boundary of a
+//! turn already running), never as a turn of its own. A generation spent to say *"the daemon came
+//! back at 21:28"* is a generation spent on a sentence.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -258,6 +282,9 @@ pub enum Outcome {
     NothingRestorable,
     /// Over the threshold, or the down time is unknown: nothing was even tried.
     Reminded,
+    /// **There was nothing to try** — no subagent, monitor or job was running at the stop. The
+    /// sentence is [`nothing_running`]'s, and it is said for the clock alone.
+    Nothing,
 }
 
 impl Outcome {
@@ -266,6 +293,9 @@ impl Outcome {
         match self {
             Outcome::Restored => "restart_restored",
             Outcome::NothingRestorable | Outcome::Reminded => "restart_reminded",
+            // **Its own word**, because it is its own sentence: a head that read this as
+            // `restart_reminded` would be told *"reminded"* about a list that does not exist.
+            Outcome::Nothing => "restart_nothing",
         }
     }
 }
@@ -285,6 +315,11 @@ pub fn span(d: Duration) -> String {
 /// **The first line of every restart notice**: how long the daemon was down (or that nobody
 /// knows), against which threshold, and what that meant.
 pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, outcome: Outcome) -> String {
+    // **The empty restart is its own sentence**, not this one with an empty list: there is no
+    // threshold clause to make, and the one thing it has to say is when the daemon came back.
+    if outcome == Outcome::Nothing {
+        return nothing_running(stop, back_ms);
+    }
     let (at_ms, estimated_from) = match stop {
         Stopped::At {
             at_ms,
@@ -332,7 +367,44 @@ pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, outcome: Outcom
             span(down),
             span(threshold)
         ),
+        // Unreachable — the empty restart returned above — and written out rather than as an
+        // `unreachable!()` so that a later arm cannot make this function lie.
+        Outcome::Nothing => nothing_running(stop, back_ms),
     }
+}
+
+/// **A restart that had nothing to restore, said anyway** — the operator, 2026-10-30: *"mb always
+/// tell agent about restart? with the current time lol"*.
+///
+/// The return time leads it because the time IS this case: the model's sense of how long it was
+/// away is the one fact only the daemon has, and the rest of the sentence is what was running —
+/// nothing. A stop no record dates is said to be unknown, here as everywhere else ([`Stopped`]).
+pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
+    let down = match stop {
+        Stopped::At {
+            at_ms,
+            estimated_from,
+        } => {
+            let span = span(Duration::from_millis(back_ms.saturating_sub(*at_ms)));
+            let estimate = match estimated_from {
+                Some(from) => format!(", estimated from {from}"),
+                None => String::new(),
+            };
+            format!(
+                "down {span}, stopped at {}{estimate}",
+                crate::subagent_record::utc(*at_ms)
+            )
+        }
+        // **Not "down 0s"**: nobody knows when it stopped, and a restart with nothing running is
+        // exactly the one with no record to read it from — see the module docs.
+        Stopped::Unknown { .. } => {
+            "down unknown, and no record says when the previous one stopped".to_string()
+        }
+    };
+    format!(
+        "[restart] the daemon came back at {} ({down}): nothing was running",
+        crate::subagent_record::utc(back_ms)
+    )
 }
 
 /// **The call that declares a monitor again**, as the model would write it.
@@ -396,6 +468,11 @@ pub fn monitor_reminded_line(m: &StoredMonitor) -> String {
 /// **The notice the model gets**: the header, a line per thing that was running, and — when
 /// nothing was brought back — the one sentence of what to do about it.
 pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
+    // **One sentence, and nothing after it**: there is no list, and the closing *"nothing above is
+    // running now"* would be a sentence about a list that is not there.
+    if outcome == Outcome::Nothing {
+        return header.to_string();
+    }
     let mut text = header.to_string();
     if !lines.is_empty() {
         text.push('\n');
@@ -413,9 +490,14 @@ pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
 /// **The hub warning's detail** — the notice's first line and one line per thing ([`said`]).
 /// The TUI's `restart_card` reads it as one line.
 pub fn warning_detail(notice: &str, said: &[String]) -> String {
+    let head = notice.lines().next().unwrap_or("");
+    // **A restart with nothing in it is one line** — no trailing newline, because there is no
+    // second line to end.
+    if said.is_empty() {
+        return head.to_string();
+    }
     format!(
-        "{}\n{}",
-        notice.lines().next().unwrap_or(""),
+        "{head}\n{}",
         said.iter()
             .map(|l| format!("  - {l}"))
             .collect::<Vec<_>>()
@@ -749,6 +831,88 @@ mod tests {
     use super::*;
 
     const AT: u64 = 1_791_806_400_000;
+
+    /// **A restart with nothing running is said anyway, and the time leads it** — the operator,
+    /// 2026-10-30: *"mb always tell agent about restart? with the current time lol"*. The whole
+    /// sentence is pinned, because the return time is the one fact the case exists for and a
+    /// fragment test would let it go missing.
+    #[test]
+    fn an_empty_restart_says_when_the_daemon_came_back() {
+        let back = AT + 1_000;
+        let orderly = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        assert_eq!(
+            nothing_running(&orderly, back),
+            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down 1s, stopped at \
+             2026-10-12 12:00:00 UTC): nothing was running"
+        );
+        // A crash: the time is the last heartbeat, and the sentence says so rather than claiming
+        // an orderly stop.
+        let crash = Stopped::At {
+            at_ms: AT,
+            estimated_from: Some("its last heartbeat (it did not stop in an orderly way)"),
+        };
+        assert_eq!(
+            nothing_running(&crash, back),
+            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down 1s, stopped at \
+             2026-10-12 12:00:00 UTC, estimated from its last heartbeat (it did not stop in an \
+             orderly way)): nothing was running"
+        );
+        // And a stop nobody dated is still said to be unknown — not `down 0s`.
+        assert_eq!(
+            nothing_running(&Stopped::Unknown { seen_ms: 0 }, back),
+            "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down unknown, and no \
+             record says when the previous one stopped): nothing was running"
+        );
+    }
+
+    /// **The empty case is one sentence and nothing else** — no list, and none of the closing
+    /// *"nothing above is running now"* the reminded notice ends with, because there is no list
+    /// for it to be about. Its header comes from `header`, so the two entry points cannot drift.
+    #[test]
+    fn an_empty_restart_is_one_sentence_with_nothing_after_it() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let back = AT + 1_000;
+        let text = notice(
+            &header(&stop, back, RESTORE_WITHIN, Outcome::Nothing),
+            &[],
+            Outcome::Nothing,
+        );
+        assert_eq!(text, nothing_running(&stop, back));
+        assert_eq!(text.lines().count(), 1, "{text}");
+        assert!(!text.contains("Nothing above is running now"), "{text}");
+        assert!(!text.contains("threshold"), "{text}");
+        // **And the warning's detail is that one line**, with no empty second line under it.
+        assert_eq!(warning_detail(&text, &[]), text);
+        assert_eq!(Outcome::Nothing.code(), "restart_nothing");
+    }
+
+    /// **The case with records is untouched** — same opening, same threshold clause, same list.
+    #[test]
+    fn a_restart_with_records_keeps_its_own_sentence() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let back = AT + 4_000;
+        let h = header(&stop, back, RESTORE_WITHIN, Outcome::NothingRestorable);
+        assert!(
+            h.starts_with("[restart] the daemon was down for 4s (stopped at "),
+            "{h}"
+        );
+        assert!(h.contains("back at 2026-10-12 12:00:04 UTC"), "{h}");
+        let text = notice(
+            &h,
+            &["- job `j9` was reminded".into()],
+            Outcome::NothingRestorable,
+        );
+        assert!(text.ends_with("`bash` for a job."), "{text}");
+    }
 
     #[test]
     fn the_header_says_how_long_and_which_side_of_the_threshold() {
