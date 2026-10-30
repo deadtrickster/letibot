@@ -4,7 +4,9 @@ Work queue. **The first section is everything that can be finished without the
 operator**; nothing in it waits on a decision, and each entry says how to check it
 is still open before starting.
 
-Settled work is in `TODO-settled.md` and is not repeated here.
+Settled work is in `TODO-settled.md`. An entry below whose status line says **SETTLED** is there
+too — its verdict, the tests that prove it and what is left are in that file, and the record below
+the status line is the entry as filed, kept so nothing is lost.
 
 ## If you are an agent picking work from this file
 
@@ -660,7 +662,7 @@ own right**, addressed as R93.<id>; the list below groups them by what to fix fi
 6. **Compaction/reseat/restart/stale notes**: `continue_after_wall` names the "context wall" and can fire with nothing compacted (`harness.rs:9037-9040`, `turn_tail.rs:177`); **literal 14-space gaps** in the cut note (`harness.rs:10520`); transcript ids, R27 and KV-cache internals (`event.rs:1061-1080`); reseat notes stacked 2–3× and `[reseat]` asks for a one-line restatement and re-plants `/reseat` (`harness.rs:2252-2283, :10581-10584`); the stale notice is 120 words of operator text (`:2205-2209, :2483-2514`); `[restart]` contradictions, nested tags, `pkill` hint missing the required `pattern`, `wait_on` named as a tool (`restart.rs:266-303, :353-354, :439-440, :480-482`; `subagent_record.rs:393-411`); `[cleared]` leaks ids (`harness/clear.rs:171-178`). [model E1–E16]
 7. **Tool descriptions and results contradict the code**: `wake_sentence` (F12) vs R79 and six other texts; `bash` says a foreground command is moved to the background at `timeout_ms` but it is killed (F14, subreviewer's claim, not re-read); `job_wait` says it blocks but returns at once (F16–F18); `task`'s schema lacks `model` (F21) and `task_start` lacks `wake` (F22); `monitor`'s description contradicts its schema (F28); `retire` renders "it had retired by the model" (F29); two list tools (`todo` vs `todo_write`) and the intent check names the unseated one (F30); merge-gate text tells the model to commit AGENTS.md to main (F31); **literal `{raw}`** in `notes.rs:374` (F42); **~18-space gap** in `gate.rs:218` (F10); duplicated clause in the predicate note, 436× (F27); the snapshot-budget note 5,611× (F38); `[repaired]` notes every call (F56); the intent-check threat on `todo`, 163×, for a check off by default (F58); and the rest F2–F59 in the report. [model F1–F58]
 8. **The base prompt** (`config.rs:987-1024 DEFAULT_SYSTEM`) says **"You have read-only tools."** to seats that have `edit`/`write` (G2); forbids tools for world questions even with `web_search` seated (G3); names tools many seats lack (G4); children inherit the parent's own-session and fabric blocks (G5); the fabric block names a `flowy get` action and a `skill load` form that do not exist (G6, G7); "Reasoning goes in a row" (G8); the gatekeeper's "reason as long as you like" vs the overthinking nag (G9); dead role tool names (G10). And it has no rule on waiting, jobs, todos, context or asking the operator, so nothing settles the contradictions above (G1). [model G1–G10]
-   - **G1–G10 BUILT on `fix/base-prompt` 2026-10-12 (not merged).** The base prompt is composed at open (`Config::compose_for_seat`, called from `Harness::open_with_registry` when `Config::seat_prompt` is set) from `SeatFacts` — the seated tool names after role and downgrade, the backend's real scratch path, subagent, linked worktree. Sections (`config::SECTION_NAMES`: identity, language, tree, find_and_read, edit_files, scratch, notes, working, tone) say only what is true for the seat; a section with nothing true is left out, overridden or not. New `working` section: the R79 delivery sentence, `ask_user_question` (blocks) vs a `todo_write` `wait_on` operator question (the plan goes on), the harness manages context (no numbers), stop/continue (root) or "your last reply is your parent's answer" (child), the queue rule. Children compose for their own seat (no own-session paragraph, no fabric block). Fabric block renders `skill` / `flowy get` (CLI through `bash`) only when the seat has them; "Reasoning goes in a row" dropped; gatekeeper and notes-keeper "reason as long as you like" → "explain what you found; keep to the evidence"; standing-notes index line has no token number; dead `researcher()`/`reviewer()` roles removed. `prompts.toml` keys renamed: `read_only_tools` → `tree`, `scratch_path` folded into `scratch`, `working` added. The scratch pid is masked in `prefix_fingerprint` (`harness::instructions_of`) so a restart does not call every session stale. Left: no tool reads a fabric memory body (only the CLI); the fabric block's "Read from the node at <time>" still changes per open, so seated roots read as stale after a restart (pre-existing).
+   - **G1–G10 are in main** (`Config::compose_for_seat`, `config.rs:2389`, called from `Harness::open_with_registry` when `Config::seat_prompt` is set; `SECTION_NAMES`, `config.rs:1126`; `default_section`, `:1192`) — the branch they were built on is gone. The base prompt is composed at open from `SeatFacts` — the seated tool names after role and downgrade, the backend's real scratch path, subagent, linked worktree. Sections (`config::SECTION_NAMES`: identity, language, tree, find_and_read, edit_files, scratch, notes, working, tone) say only what is true for the seat; a section with nothing true is left out, overridden or not. New `working` section: the R79 delivery sentence, `ask_user_question` (blocks) vs a `todo_write` `wait_on` operator question (the plan goes on), the harness manages context (no numbers), stop/continue (root) or "your last reply is your parent's answer" (child), the queue rule. Children compose for their own seat (no own-session paragraph, no fabric block). Fabric block renders `skill` / `flowy get` (CLI through `bash`) only when the seat has them; "Reasoning goes in a row" dropped; gatekeeper and notes-keeper "reason as long as you like" → "explain what you found; keep to the evidence"; standing-notes index line has no token number; dead `researcher()`/`reviewer()` roles removed. `prompts.toml` keys renamed: `read_only_tools` → `tree`, `scratch_path` folded into `scratch`, `working` added. The scratch pid is masked in `prefix_fingerprint` (`harness::instructions_of`) so a restart does not call every session stale. Left: no tool reads a fabric memory body (only the CLI); the fabric block's "Read from the node at <time>" still changes per open, so seated roots read as stale after a restart (pre-existing).
 
 ---
 
@@ -1052,6 +1054,7 @@ fails on `435bb88` and passes after. The four reviews these come from are in ful
 "The stabilization review of 2026-10-11, in full".
 
 ---
+
 ## R73 — A compaction is eight lines of notes and two numbers that read as 1.95M tokens — **the daemon half is on main (settled 2026-10-30, see `TODO-settled.md` R72); leticl's half OPEN**
 
 The operator, pasting what leticl's head showed for ONE compaction: *"this is how much text i get
@@ -1334,7 +1337,7 @@ What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut o
    repository's merge-queue lease; only the project's own daemon serves its queue.
 3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
 
-## R85 — A daemon restart brings back subagents and monitors, and reminds the model of jobs — **BUILT on `subagents-survive-restart` 2026-10-12 (not merged); store schema 26, no protocol bump. What is left is at the end of this entry.**
+## R85 — A daemon restart brings back subagents and monitors, and reminds the model of jobs — **SETTLED 2026-10-30: schema 26's records and the restart door are in main — see `TODO-settled.md` R85 for the tests and what is left. The record below is the entry as filed.**
 
 The operator, 2026-10-12: *"and here is one more thing about restart - we should bring subagents
 back - i cant afford to wait till they finish. we should record them (session persist anyway) and
@@ -1384,7 +1387,7 @@ own open), crash loop (3 resumes without an orderly stop → abandoned, parent t
    it); the operator may want that the other way.
 5. The review queue's reviewers are not recorded (the queue re-serves its own rows).
 
-## R77 — An operator's todo lands last and the nag never names it — **BUILT on `r77-operator-todos` 2026-10-11 (not merged). What was built and what is left are at the end of this entry.**
+## R77 — An operator's todo lands last and the nag never names it — **SETTLED 2026-10-30: the operator's row is the one the check names, and the first check says so — see `TODO-settled.md` R77. The record below is the entry as filed.**
 
 The operator: *"i added a todo to pg-noop session, but it was placed at the end, and didnt arrive
 the next nag"*. Read in the code:
@@ -1468,7 +1471,7 @@ Up twice → newest first).
 
 ---
 
-## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **BUILT on `r79-batched-delivery` 2026-10-11 (not merged); what was built and what is left are at the end of this entry**
+## R79 — Job and subagent results arrive in the middle of work and pull the model off it — **SETTLED 2026-10-30: a routine completion is held and batched, and only what the plan waits on interrupts — see `TODO-settled.md` R79. The record below is the entry as filed.**
 
 The operator: *"can job and agent results come mid turn? i think you guys are getting distracted
 when this happens"*. Read in the code:
@@ -1561,7 +1564,7 @@ to this design:
   batch rides along), `bash::tests::wake_is_now_or_later_and_the_result_says_which`, and
   `a_watched_subagent_is_not_waited_on` now asserts the want.
 
-**Changed on `idle-wake` 2026-10-11 (not merged) — nothing is held once a turn ends.** pg-noop:
+**Changed 2026-10-11, and in main (`idle-wake` is gone) — nothing is held once a turn ends.** pg-noop:
 *"[meanwhile] 1 result arrived while you were busy — …"* reached the model the moment the operator
 sent a prompt, long after it had gone idle, because nothing started a turn for held results between
 turns and the cap acts only inside a running turn. A 60-second "wake after quiet" was proposed and
@@ -1607,7 +1610,7 @@ endpoint, not a UI), so nothing was added there.
 
 ---
 
-## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **PHASE 1 BUILT on `metrics-phase1` 2026-10-11 (not merged); what landed and what is left are at the end of this entry** (R80 left free for the clear-context item being filed on `clear-context`)
+## R81 — Metrics and operator feedback: an event table, the instruments, and a way to mark a moment — **SETTLED 2026-10-30 (phase 1): the file, the instruments, the mark and `letibot stats` are in main — see `TODO-settled.md` R81. The record below is the entry as filed.**
 
 The operator: *"we need metrics design, there is simply not enough data to make decisions like
 this. i can't even live feedback so we can analyze sessions, and we need metrics - how often and
@@ -1768,7 +1771,8 @@ worker drains the hub (`sessionlog/tests/feedback.rs`); every `stats` verb again
   page is one more caller of the same queries.
 - "Done when" still needs a day of real use: every phase-1 kind present, counts checked against
   the turn-end log lines and the day's `adjudication` rows.
-## R80 — `/clear`: a fresh conversation for the same session — **BUILT on `clear-context` 2026-10-11 (not merged); what is left is at the end of this entry**
+
+## R80 — `/clear`: a fresh conversation for the same session — **SETTLED 2026-10-30: the fork, the orientation and the boundary row are in main — see `TODO-settled.md` R80. The record below is the entry as filed.**
 
 The operator, verbatim: *"I need to be able to clear context - fresh reseat without loosing session todos and jobs"*, *"and subagents"*, *"this will allow me to fix model degradation"*. MEASURED the same day on pg-noop: 710k of a 1M window, reasoning full of `✓ ✗ ✓ ✓` glyph spam and repeated boilerplate. `/compact` does not cure that — its summary is written by the drifted model in its own voice and becomes the base every later turn imitates — and `/reseat` carries the drift across verbatim.
 
@@ -1788,7 +1792,7 @@ Tests: `crates/harnessd/tests/clear_context.rs` — todos (both authors), a back
 3. leticl has no `cleared` row code yet (its `+compaction-row-codes+`), and the head does not fold the `cleared` note the way `COMPACTION_ROWS` folds `reseated`.
 4. Not live-tested on a metered provider: the first round after a clear should replace the unmeasured anchor with the provider's count, as it does after a compaction.
 
-## R82 — A row that is only waiting on a job is nagged every window, and nothing lets the model say so — **BUILT on `todo-wait-on` 2026-10-11 (not merged)**
+## R82 — A row that is only waiting on a job is nagged every window, and nothing lets the model say so — **SETTLED 2026-10-30: `wait_on` writes the edge, and the check then leaves the row alone — see `TODO-settled.md` R82. The record below is the entry as filed.**
 
 The operator: *"poor pg-noop gets hammered by this 'session · Todo CRITERION, NOT A TASK …' it
 usually replies blabla job is running, waiting. the todo was created before conditioned todo. lets
@@ -1815,7 +1819,7 @@ upsert's contract — the reply says so). The parent's and queue's halves cannot
 
 ---
 
-## R83 — The operator can pause a session's plan-checks, loudly — **BUILT on `nag-switch` 2026-10-11 (not merged); store schema 25, no protocol bump**
+## R83 — The operator can pause a session's plan-checks, loudly — **SETTLED 2026-10-30: `/nag`, the column, the rows and the resident line are in main — see `TODO-settled.md` R83. The record below is the entry as filed.**
 
 The operator: *"and i need a way to stop todo nags"*, then *"or rather - pause and the pause must
 be loud"*. Before this the only lever was per row (an operator `Postponed`).
@@ -1847,7 +1851,7 @@ of its own; the child's own arm does.
 
 ---
 
-## R60 — `!term` is built; the pane has three things it still does not do — **BUILT on `r60-term` 2026-10-11 (not merged): all three, plus R74 items 22 and 30; protocol 44. What is left is at the end of this entry.** Filed with the branch that built it (`agent/term-run`); the fourth was closed by `agent/term-attach`, and the two acts a pane can end with were split by `agent/term-detach` (protocol 34)
+## R60 — `!term` is built; the pane has three things it still does not do — **SETTLED 2026-10-30: scrollback, several panes and a confined pane are in main, and so are R74 items 22 and 30 — see `TODO-settled.md` R60. The record below is the entry as filed.** Filed against protocol 44; the fourth was closed afterwards, and the two acts a pane can end with were split out of it.
 
 The operator: *"i mean i want it broooo"* — `! mc`, `! nano` running **in the pane**, the
 conversation's rectangle given to the program with the composer keeping its rows. It runs:

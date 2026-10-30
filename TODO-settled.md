@@ -1336,7 +1336,22 @@ The entries as filed — every measurement, every argument, the whole record —
 commit `4fb39324`, which is where to read them; this is their verdict, what main has, and what the
 entry listed as left (kept so it is not lost, and so the next reader does not re-measure it).
 
-Of the twenty: **nineteen settled, one still open (R98), none could-not-establish.**
+Of the twenty: **eighteen settled, one settled in part (R70), one still open (R73 — the leticl
+half of the compaction entry, which stayed in `TODO.md`), none could-not-establish.**
+
+**Verified 2026-10-31**, independently of the pass above: every symbol these entries cite was
+re-read in the tree, and the tests were run (`LETIBOT_REQUIRE_APPARATUS=1`, a private
+`CARGO_TARGET_DIR`, `--offline`) — `restart_restore` 19/19, `session_lifecycle` 7/7,
+`term_pane_live` 13/13, `child_nag` 4/4, `clear_context` 2/2, `context_claim` 4/4, `nag_pause` 3/3,
+`delivery` 5/5, `metrics_instruments` 2/2, `turn_tail` 2/2, `worktree_build_cache` 3/3,
+`input_loop` 3/3, `background` 17/17, `feedback` 1/1, `letibot-metrics` 5/5, `todo` 98/98,
+the tui's `settings` 30/30 — plus the lib tests named in each entry (serve, gate, capacity, desk,
+context, delivery, surfaces, hits, bindings, pane, registry) — all green. A few line numbers are
+off by one or two (`REVIEW_SETTABLE`, the review card's two warning rows, `Screen::scrolled`);
+every symbol is where the entry says it is. Four sentences were wrong and are corrected below:
+**R68** (the release half is in for children, not for roots), **R70** (its own size rule is not met
+— six inline blocks are over 800 lines), **R76** (one cited test has no `#[test]` and never runs)
+and the count in this paragraph.
 
 ---
 
@@ -1422,7 +1437,7 @@ sentence.
 
 ---
 
-## R68 — One session lifecycle, one owner per session, one turn tail — **SETTLED 2026-10-30: the three classes are gone, with the tests that caught them**
+## R68 — One session lifecycle, one owner per session, one turn tail — **SETTLED 2026-10-30: one owner and one turn tail are in, and the release half is in for children — not for roots**
 
 *The entry claimed:* a child's hub had two readers, nothing was ever released, the turn tails had
 diverged and busy traffic starved the idle work; `r68-lifecycle` removed the classes.
@@ -1443,6 +1458,14 @@ and a child's prompt.
 `let _` sites remain; and R68.7's retry storm is quiet rather than gone: the gatekeeper's open is
 still retried on every review pass, and the failure is said once per distinct reason
 (`sessions.rs:3406-3431`, `gatekeeper_said`).
+
+And two residues of the release class, from the entry's own "not done" list — **"nothing is ever
+released" is gone for a CHILD, not for a root**: a root session is still never closed by the daemon
+(its lifetime is the operator's), so a resumed root keeps its harness and its `monitor-wake-*`
+thread until the daemon stops — the park rule walks children only
+(`Sessions::park_idle_children` filters on `registry.parent_of(id).is_some()`) — and
+`HostProcesses`' `reaps`, `promotions` and `Deadlines.fired` are still unbounded push-only vectors
+(`exec/host.rs:921`, `:924`, `:734`, pushed at `:1513`, `:1518`, `:867`).
 
 ---
 
@@ -1474,20 +1497,29 @@ by the entry's own note one the defect class does not reach.
 
 ---
 
-## R70 — Split the largest inline test blocks into sibling files — **SETTLED 2026-10-30: every block past the rule's size is a sibling file**
+## R70 — Split the largest inline test blocks into sibling files — **PARTLY SETTLED 2026-10-30: the large blocks moved, and six inline blocks over 800 lines remain**
 
 *The entry claimed:* the biggest inline `mod tests` blocks moved to `<module>/tests.rs` or a topic
 split, with the test count identical before and after.
 
-**Main has it.** `crates/tools/src/adjudicate/tests/` (mod + boundary, breaker, card, gate, grants,
-history, memory, outcomes), `crates/tools/src/builtins/todo/tests/`,
-`crates/harnessd/src/harness/tests/` (16 files: card_fixtures, children, citations, context,
-delivery, fallback, intent, jobs, misc, operator_ask, prefix_on_open, questions, restart_notice,
-store_writes, workspace), `crates/harnessd/src/sessions/idle_nag.rs`.
+**Main has it, in part.** `crates/tools/src/adjudicate/tests/` (mod + boundary, breaker, card, gate,
+grants, history, memory, outcomes, supervised, unasked), `crates/tools/src/builtins/todo/tests/`,
+`crates/harnessd/src/harness/tests/` (`mod.rs` and fifteen topic files: card_fixtures, children,
+citations, context, delivery, fallback, intent, jobs, misc, operator_ask, prefix_on_open, questions,
+restart_notice, store_writes, workspace), `crates/harnessd/src/sessions/idle_nag.rs`.
 
-*Left:* 29 inline blocks still over 40 % of their file, all under 700 lines. The entry's own rule
-was "past ~800 lines or ~40 % moves", and nothing past 800 is left inline; a sibling file for a
-100–370-line block in a file under 900 lines buys little, which is what the entry said.
+*Left, measured in this tree on 2026-10-31* — every inline `mod tests { … }` block under `crates/`
+(source files only; block lines against the file's own): **54 blocks are still over 40 % of their
+file, 13 are over 700 lines and 6 are over 800** — `crates/harnessd/src/plugins.rs` is the largest
+(2,469 lines, 53 % of a 4,648-line file), then `mergequeue/gate.rs` (1,302), `tools/src/runtime.rs`
+(1,281), `tools/src/firecode.rs` (975), `sessionlog/src/protocol.rs` (888) and `harnessd/src/cli.rs`
+(863); ten of the over-40 % blocks sit in a file over 900 lines. So **the entry's own rule ("past
+~800 lines or ~40 % moves") is not met, and this entry is settled only in part.** The small ones
+are as the entry said: 34 of the 54 are 100–370-line blocks.
+
+The figure this entry left behind was *29 blocks over 40 %, all under 700 lines, nothing past 800
+inline*; all three of those are wrong in this tree, and `plugins.rs`'s 2,469-line block is the size
+the rule was written for.
 
 ---
 
@@ -1546,7 +1578,8 @@ tool, nothing re-gated, a rewritten target left a review of a commit that no lon
 that could not judge was called RED, and a gate step ran in the daemon's cgroup.
 
 **Main has it.** `RepoQueue::ring_the_projects` (`serve.rs:650`) and
-`Harness::queue_emergency_notices` (`mergequeue/notices.rs`, the failing step first); the `queue`
+`Harness::queue_emergency_notices` (`harness.rs:10828`; the sentences it builds are
+`mergequeue/notices.rs`, the failing step first); the `queue`
 tool (`crates/tools/src/builtins/queue.rs`) over `mergequeue::desk::SessionQueue` (`desk.rs:78`)
 with `status`/`regate`/`restart`/`withdraw`/`propose_target`; `verbs::regate` and
 `verbs::regate_at_start` (`verbs.rs:638`); `mergequeue::setup::setup_failure` (`setup.rs:162`).
@@ -1554,11 +1587,22 @@ Items 6–7 as well: `exec::SiblingScope` (`tools/src/exec/scope.rs:751`), `[mem
 (`mergequeue/gate.rs`), `crates/harnessd/tests/gate_memory.rs`, and `[memory] default`/`ceiling` in
 a `leticode.toml` over the user's over the box's (`crates/leticode-config/src/lib.rs:597-663`).
 
-**Tests:** `serve::tests::{a_red_target_and_a_blocked_review_ring_the_project_once_each (:1499),
-a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue (:1398),
+**Tests:** `serve::tests::{a_red_target_is_told_to_a_session_not_only_rung (:1473 — item 1's
+delivery), a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue (:1398),
 an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one (:1317),
 a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_nothing (:1207)}`,
-`desk::tests::the_model_reads_regates_withdraws_and_only_proposes_the_target` (`desk.rs:824`).
+`harness::queue_e2e::a_red_target_is_told_to_the_projects_root_session_once_with_the_failing_step_first`,
+`desk::tests::the_model_reads_regates_withdraws_and_only_proposes_the_target` (`desk.rs:824`) — all
+**RUN**, green.
+
+**One correction to the evidence this entry cited:**
+`serve::tests::a_red_target_and_a_blocked_review_ring_the_project_once_each` (`serve/tests.rs:1499`)
+**is not a test.** Commit `7730d482` (2026-10-30, the delivery-of-the-sentence change) inserted a
+second `#[test]` between the attribute above `:1499` and the function, so both attributes now belong
+to `a_red_target_is_told_to_a_session_not_only_rung` — which is registered **twice** and runs twice
+— and the ring test is compiled and never run. `cargo test -- --list` is the check: the name is
+absent. The ring's behaviour is covered by the two tests named above; the test itself needs its
+`#[test]` back.
 
 *Left:* nobody held → nobody told (a ring finds only root sessions this daemon holds, and there is
 no cheap "roots by workspace" read); "once" is per daemon, so a restart tells again; the setup
