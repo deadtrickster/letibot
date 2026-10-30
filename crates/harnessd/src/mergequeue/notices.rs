@@ -368,13 +368,52 @@ pub fn refused_to_root(r: &ReviewRow, reasons: &[String], child: &str, missed: &
     )
 }
 
-/// **`refusal_undelivered`**: a refusal nobody could be told of (`review::deliver_refusal`).
-pub fn refusal_undelivered(r: &ReviewRow, missed: &str) -> String {
+/// **A refusal, to a live session of the branch's workspace when the branch's own tree is dead**
+/// (`review::deliver_refusal`); `missed` is why the author and its root were not told.
+///
+/// The sentence says WHY this session is the recipient — the author could not be told, and this is
+/// the live session of the same workspace — because a session handed another tree's refusal with
+/// no reason for it is a session asked to answer for somebody else's work on a stranger's word.
+pub fn refused_to_workspace(
+    r: &ReviewRow,
+    reasons: &[String],
+    child: &str,
+    workspace: &str,
+    missed: &str,
+) -> String {
+    let list = reason_list(reasons);
+    let wt = r.worktree.as_deref().unwrap_or("its worktree");
     format!(
-        "the review of `{}` (`{}`) refused it, and the complaints reached nobody ({}). The \
-         verdict stands and is on the row; `/queue restart {}`, `/queue approve {}` or \
-         `/queue rm {}`.",
-        r.branch, r.id, missed, r.id, r.id, r.id
+        "The review of `{branch}` — the branch of `{child}`, which could not be told ({why}) — \
+         REFUSED it at {head}, so it does not land. It comes to you because the branch's author \
+         could not be told and this session is the live one in {workspace}, a session of {repo}. \
+         The reviewer's reasons:\n\n{list}\n\nThe branch is in {wt}. Answer the reasons there \
+         and commit — a new head goes back to review by itself, and the verdict is bound to the \
+         head it judged — or ask the operator for `/queue approve {id}` or `/queue rm {id}`.",
+        branch = r.branch,
+        head = r.head_sha,
+        why = missed,
+        repo = r.repository,
+        id = r.id,
+    )
+}
+
+/// **`refusal_undelivered`**: a refusal nobody could be told of (`review::deliver_refusal`).
+///
+/// `tried` is every recipient the door attempted, in the order it attempted them — the branch's
+/// author, its root, and a live session of the branch's workspace (or the fact that there was
+/// none) — each in the failed party's own words, because *told nobody* is a claim that has to
+/// carry its evidence.
+///
+/// **The parenthesised list stays where it was**: the head's review card reads this detail by its
+/// opening (`review_card::warning_review`), and moving the evidence out of the brackets would make
+/// every undelivered refusal fall back to a generic warning line.
+pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
+    format!(
+        "the review of `{}` (`{}`) refused it, and the complaints reached nobody (every session \
+         they could have gone to was tried: {}). The verdict stands and is on the row; `/queue \
+         restart {}`, `/queue approve {}` or `/queue rm {}`.",
+        r.branch, r.id, tried, r.id, r.id, r.id
     )
 }
 

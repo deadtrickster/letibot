@@ -59,13 +59,20 @@ fn reasons() -> Vec<String> {
 }
 
 fn session(store: &Store, id: &str, parent: Option<&str>) {
+    seated(store, id, parent, "");
+}
+
+/// **A session row SEATED in a workspace** — the fact the refusal's last rung reads to decide *the
+/// same workspace* ([`super::super::repositories_of_workspace_cached`] over this folder, the
+/// queue's own reading of which repositories a workspace is a session of).
+fn seated(store: &Store, id: &str, parent: Option<&str>, workspace: &str) {
     store
         .put_session(&SessionRecord {
             id: id.to_string(),
             title: None,
             model_id: String::new(),
             dialect_sha: String::new(),
-            workspace_root: String::new(),
+            workspace_root: workspace.to_string(),
             owner: String::new(),
             approvers: Vec::new(),
             role: None,
@@ -185,6 +192,12 @@ fn a_tree(tag: &str) -> TempDir {
 /// **One reviewer's verdict, handed in and served** — the row claimed by this daemon with the
 /// reviewer on it, the desk opened for that reviewer, the submission at the desk, and then
 /// `passes` passes of [`serve`]: the first writes the verdict, the rest are the passes after it.
+///
+/// `live` is what the daemon's own liveness door ([`QueueDoor::session_live`], through
+/// [`Pool::live`]) answers for a session — the sessions this daemon holds. It is passed separately
+/// from the `deliver` seam on purpose: they are two different questions (who the daemon holds, and
+/// whether a message to it goes), and a fixture that answered both from one list could not tell a
+/// door that asked the wrong session from a door that asked a dead one.
 #[allow(clippy::too_many_arguments)]
 fn judge(
     store: &Store,
@@ -193,6 +206,7 @@ fn judge(
     decision: Decision,
     said: Vec<String>,
     deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+    live: &[&str],
     heard: Arc<Heard>,
     passes: usize,
 ) {
@@ -245,6 +259,8 @@ fn judge(
         }
     };
     let settings = |_: &Path| Ok(QueueSettings::default());
+    let live: Vec<String> = live.iter().map(|s| s.to_string()).collect();
+    let live = |id: &str| live.iter().any(|s| s == id);
     // **A directory of this helper's own, named as the queue's is** — `sweep_clones` refuses any
     // other name, so a fixture cannot be pointed at the box's real clone directory.
     let clones_dir = TempDir::new("review-judge-clones");
@@ -259,6 +275,7 @@ fn judge(
         events: &events,
         warn: &|_: &str, e| events(e),
         deliver,
+        live: &live,
         settings: &settings,
         clones,
         slots: &Vec::new,
@@ -269,6 +286,48 @@ fn judge(
 }
 
 // ===== Who a refusal reaches =====
+
+/// **The live session of the branch's workspace** the last rung may fall back to, a live session of
+/// a DIFFERENT workspace that it must not, and a child of the first that it must not either.
+const LIVE: &str = "s-live";
+const ELSEWHERE: &str = "s-elsewhere";
+const LIVE_CHILD: &str = "s-live-sub-1";
+
+/// **The queue when the branch's tree is dead and the workspace still has a session**: the same
+/// three parties, a real repository — so the queue's own reading of *which repositories a folder is
+/// a session of* can answer — and a review row whose `repository` is that repository's key, spelled
+/// as [`super::super::enqueue_finished`] spells it (`git::repository_key`: the canonical path of the
+/// main checkout).
+fn the_queue_in_a_repository(tag: &str) -> (TempDir, Store, String) {
+    let dir = TempDir::new(&format!("refusal-{tag}"));
+    let repo = crate::mergequeue::serve::tests::repo(&dir.0);
+    let key = crate::mergequeue::git::repository_key(&repo).expect("the repository's key");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    session(&store, ROOT, None);
+    session(&store, CHILD, Some(ROOT));
+    store
+        .enqueue_review(
+            &NewReview {
+                id: ID.into(),
+                repository: key.clone(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: BRANCH.into(),
+                worktree: Some(WORKTREE.into()),
+                base_sha: "base".into(),
+                head_sha: HEAD.into(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    (dir, store, key)
+}
 
 /// **The child that wrote the branch is told, and nobody else is** — as a message to that live
 /// session, carrying the reviewer's reasons WHOLE, the branch, the head it judged and the worktree.
@@ -289,6 +348,7 @@ fn the_child_that_wrote_the_branch_is_told_the_reviewers_own_words() {
         Decision::Reject,
         reasons(),
         &deliver,
+        &[CHILD, ROOT, STRANGER],
         heard.clone(),
         1,
     );
@@ -343,6 +403,7 @@ fn the_session_that_enqueued_it_is_told_when_the_child_is_gone() {
         Decision::Reject,
         reasons(),
         &deliver,
+        &[ROOT, STRANGER],
         heard.clone(),
         1,
     );
@@ -411,6 +472,9 @@ fn a_refusal_nobody_can_take_is_raised_with_both_attempts() {
         Decision::Reject,
         reasons(),
         &deliver,
+        // **No session at all is live in this daemon** — so the workspace fallback has no
+        // candidate, and the raise must say so rather than name a party it never tried.
+        &[],
         heard.clone(),
         1,
     );
@@ -470,6 +534,7 @@ fn a_child_nobody_can_walk_from_is_tried_alone_and_then_raised() {
         Decision::Reject,
         reasons(),
         &deliver,
+        &[],
         heard.clone(),
         1,
     );
@@ -492,6 +557,187 @@ fn a_child_nobody_can_walk_from_is_tried_alone_and_then_raised() {
     );
 }
 
+/// **The refusal reaches a live session of the branch's workspace when the branch's own tree is
+/// dead** — the operator's report of 2026-10-29: a child that finished hours earlier, a root that
+/// exists in the store with nobody attached, and five reasons that ended in a card saying
+/// `refused, told nobody`.
+///
+/// The three negatives are asserted with the positive one because each is a way to be wrong about
+/// the same thing: a live session of ANOTHER workspace, a live child of this one (a subagent is its
+/// root's business, and the rung above already asked the root), and a session ROW of this workspace
+/// that no daemon holds — which is [`a_refusal_nobody_anywhere_can_take_names_every_party_it_tried`]
+/// — are all sessions the chain must not hand this refusal to.
+#[test]
+fn a_refusal_reaches_the_live_session_of_the_workspace_when_the_branchs_tree_is_dead() {
+    let (dir, store, key) = the_queue_in_a_repository("workspace");
+    // **Seated in the FOLDER the repository is in**, not in the repository: that is how a session
+    // is seated on this box (`~/Projects/letibot` is a session of `~/Projects/letibot/letibot`),
+    // and it is the arm of the workspace rule a path comparison would pass by accident.
+    seated(&store, LIVE, None, &dir.0.display().to_string());
+    seated(
+        &store,
+        ELSEWHERE,
+        None,
+        "/a/workspace/that/is/not/this/repository",
+    );
+    seated(&store, LIVE_CHILD, Some(LIVE), &key);
+    let heard = Arc::new(Heard::default());
+    // The child is GONE and the root is dead — the operator's case — and one session of the
+    // workspace is live.
+    let deliver = a_daemon(&[LIVE, ELSEWHERE, LIVE_CHILD], heard.clone());
+    judge(
+        &store,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &deliver,
+        &[LIVE, ELSEWHERE, LIVE_CHILD],
+        heard.clone(),
+        1,
+    );
+
+    let went = heard.sent();
+    assert_eq!(went.len(), 1, "one refusal is one message: {went:?}");
+    assert_eq!(
+        went[0].0, LIVE,
+        "the live session of the branch's workspace, and no other"
+    );
+    let text = &went[0].1;
+    let asked: Vec<String> = vec![
+        // **Why this session**: the author could not be told, and this is the live one here.
+        "could not be told".into(),
+        "no session `s-root-sub-1` is live in this daemon".into(),
+        format!("this session is the live one in {}", dir.0.display()),
+        format!("a session of {key}"),
+        // **The reviewer's own words, whole**, with the branch, the head and the tree.
+        "the retry is not bounded: `loop` can run for ever".into(),
+        "the test it added asserts nothing".into(),
+        BRANCH.into(),
+        HEAD.into(),
+        WORKTREE.into(),
+        "REFUSED".into(),
+        // **And the operator's doors**, since the branch is somebody else's.
+        "`/queue approve s-root-sub-1`".into(),
+        "`/queue rm s-root-sub-1`".into(),
+    ];
+    for asked in &asked {
+        assert!(
+            text.contains(asked.as_str()),
+            "`{asked}` is missing from: {text}"
+        );
+    }
+    assert!(
+        !text.contains("Your branch"),
+        "the workspace's session is not told it wrote the branch: {text}"
+    );
+    assert!(
+        heard.raised("refusal_undelivered").is_empty(),
+        "somebody took it, so the operator is not raised: {:?}",
+        heard.raised("refusal_undelivered")
+    );
+    assert_eq!(
+        store.review_row(ID).unwrap().unwrap().state,
+        ReviewState::Rejected,
+        "the verdict stands whether or not a message went"
+    );
+}
+
+/// **One refusal is one message: the first party that takes it is the only one told** — with the
+/// root and a live session of the workspace both able to take it, the root is told and the
+/// workspace's session is not asked at all.
+///
+/// The negative half is the point: a chain that walked on past its first success would tell two
+/// sessions about one refusal, and the second would be answering for work it never saw.
+#[test]
+fn the_first_party_that_takes_it_is_the_only_one_told() {
+    let (_dir, store, key) = the_queue_in_a_repository("first-wins");
+    seated(&store, LIVE, None, &key);
+    let heard = Arc::new(Heard::default());
+    let deliver = a_daemon(&[ROOT, LIVE], heard.clone());
+    judge(
+        &store,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &deliver,
+        &[ROOT, LIVE],
+        heard.clone(),
+        1,
+    );
+    let went = heard.sent();
+    assert_eq!(went.len(), 1, "one refusal is one message: {went:?}");
+    assert_eq!(
+        went[0].0, ROOT,
+        "the root's rung comes before the workspace's, so the workspace's session is not told"
+    );
+    assert!(heard.raised("refusal_undelivered").is_empty());
+}
+
+/// **A refusal nothing can take names every party it tried** — the child, the root, and the fact
+/// that no live session of the branch's workspace was left.
+///
+/// The session row of this workspace that no daemon holds is never even messaged: a row in the
+/// store is not a session, which is exactly the operator's case (his root existed in the store
+/// with nobody attached), and a message into it is a message into a hole.
+#[test]
+fn a_refusal_nobody_anywhere_can_take_names_every_party_it_tried() {
+    let (_dir, store, key) = the_queue_in_a_repository("nobody-at-all");
+    seated(&store, LIVE, None, &key);
+    let heard = Arc::new(Heard::default());
+    let tried: Arc<Mutex<Vec<String>>> = Default::default();
+    let seen = tried.clone();
+    let deliver = move |to: &str, _text: &str| -> Result<String, String> {
+        seen.lock().unwrap().push(to.to_string());
+        if to == CHILD {
+            Err(format!(
+                "no session `{to}` is live in this daemon, so there is nothing to say it to"
+            ))
+        } else {
+            Err("the daemon's bell is closed (it is shutting down)".into())
+        }
+    };
+    judge(
+        &store,
+        ReviewState::Waiting,
+        "s-gatekeeper-sub-1",
+        Decision::Reject,
+        reasons(),
+        &deliver,
+        // **Nothing is live** — the workspace's session row has nobody attached to it.
+        &[],
+        heard.clone(),
+        1,
+    );
+
+    assert_eq!(
+        *tried.lock().unwrap(),
+        vec![CHILD.to_string(), ROOT.to_string()],
+        "the child, then the root — and the dead session of the workspace is never messaged"
+    );
+    let raised = heard.raised("refusal_undelivered");
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    let said = &raised[0];
+    let asked: Vec<String> = vec![
+        BRANCH.into(),
+        "reached nobody".into(),
+        // **Each attempt in its own party's name and its own words.**
+        "`s-root-sub-1`: no session `s-root-sub-1` is live in this daemon".into(),
+        "`s-root`: the daemon's bell is closed (it is shutting down)".into(),
+        // **And the scan that found nobody left to try.**
+        format!("no live top-level session of `{key}` is open in this daemon"),
+        "The verdict stands and is on the row".into(),
+        "`/queue approve s-root-sub-1`".into(),
+    ];
+    for asked in &asked {
+        assert!(
+            said.contains(asked.as_str()),
+            "`{asked}` is missing from: {said}"
+        );
+    }
+}
+
 // ===== How often =====
 
 /// **A refusal is delivered ONCE, not on every pass** — and the operator is not raised either.
@@ -509,6 +755,7 @@ fn a_refusal_is_delivered_once_not_on_every_pass() {
         Decision::Reject,
         reasons(),
         &deliver,
+        &[CHILD, ROOT],
         heard.clone(),
         5,
     );
@@ -539,6 +786,7 @@ fn a_second_refusal_of_the_same_row_is_a_second_message() {
         Decision::Reject,
         reasons(),
         &deliver,
+        &[CHILD, ROOT],
         heard.clone(),
         1,
     );
@@ -574,6 +822,7 @@ fn a_second_refusal_of_the_same_row_is_a_second_message() {
         Decision::Reject,
         vec!["the fix touched a file the brief did not name".into()],
         &deliver,
+        &[CHILD, ROOT],
         heard.clone(),
         3,
     );
@@ -614,6 +863,7 @@ fn needs_human_raises_for_the_operator_once_and_tells_no_session() {
         Decision::NeedsHuman,
         vec!["the brief does not say which behaviour is wanted".into()],
         &deliver,
+        &[CHILD, ROOT],
         heard.clone(),
         4,
     );
@@ -751,6 +1001,8 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
         events: &events,
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
+        // This fixture holds no session, and its `deliver` refuses every message.
+        live: &|_: &str| false,
         settings: &settings,
         clones,
         slots: &Vec::new,
@@ -910,6 +1162,8 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
         events: &events,
         warn: &|_: &str, _e| {},
         deliver: &deliver,
+        // This fixture holds no session, and its `deliver` refuses every message.
+        live: &|_: &str| false,
         settings: &settings,
         clones: clones.clone(),
         slots: &Vec::new,
@@ -1061,6 +1315,8 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         events: &events,
         warn: &|_: &str, _e| {},
         deliver: &deliver,
+        // This fixture holds no session, and its `deliver` refuses every message.
+        live: &|_: &str| false,
         settings: &settings,
         clones: clones.clone(),
         slots: &Vec::new,
