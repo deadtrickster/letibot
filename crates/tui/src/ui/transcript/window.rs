@@ -658,6 +658,10 @@ impl App {
         // the history's own lines are rows of the conversation with a span behind them — the
         // live pane and the tail below them are not — so the map stops where `hist_lines` does.
         self.file_rows = self.file_rows_in(start, end);
+        // **And which of them are lines of the open payload window**, for a click to take the
+        // reader there (see `payload_rows`) — the same walk over the same spans, so the line a
+        // click names is the line the frame drew.
+        self.payload_rows = self.payload_rows_in(start, end);
         // **And which are a job's completion notice**, for a click to open whole (see
         // `notice_rows`) — the same walk, the same window.
         self.notice_rows = self.notice_rows_in(start, end);
@@ -699,6 +703,7 @@ impl App {
             self.card_rows.retain(|(r, _)| *r != 0);
             self.marker_rows.retain(|m| m.y != 0);
             self.picture_rows.retain(|(r, _)| *r != 0);
+            self.payload_rows.retain(|(r, _)| *r != 0);
         }
         if !self.following() {
             let behind = total - end;
@@ -712,6 +717,7 @@ impl App {
             self.card_rows.retain(|(r, _)| *r != last);
             self.marker_rows.retain(|m| m.y != last);
             self.picture_rows.retain(|(r, _)| *r != last);
+            self.payload_rows.retain(|(r, _)| *r != last);
         }
         out
     }

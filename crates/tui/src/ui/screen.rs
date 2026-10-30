@@ -129,7 +129,19 @@ impl App {
         let h = h.max(1);
         // Click mapping has to redo this frame's arithmetic without a repaint;
         // the height the frame was composed for is the fact it needed.
+        //
+        // **And a HEIGHT the history was not rendered for is stale rows, not just a stale
+        // map.** A tool row's payload window is sized from the terminal's height
+        // (`ItemCtx::window_rows`), and the rendered row is cached in `hist_lines` — so a
+        // resize in height alone left the window drawing the body it was given on the old
+        // screen (measured: a 36-line body on a 24-row terminal, and a `payload_max` that
+        // clamped the arrows against a page the frame no longer had). `body_window` watches the
+        // width for the same reason; this is the other half of the same fact.
+        let resized = self.screen_rows != h;
         self.screen_rows = h;
+        if resized {
+            self.invalidate_history();
+        }
         // **The notice's clock, read rather than decremented.** A comparison against the
         // head's own clock is the whole mechanism: `say` sets a deadline and a key moves it
         // to now, and this is the frame either of those takes effect on. Nothing here
@@ -947,6 +959,10 @@ impl App {
         // whatever is covering it now.
         self.picture_rows.clear();
         self.picture_refs.clear();
+        // **And the open payload window's lines go with them** — a frame with no conversation on
+        // it draws no window, and a click measured against the last frame's lines would scroll a
+        // window under whatever is covering it now.
+        self.payload_rows.clear();
         // **What is drawn here is `drawn()`'s answer** (R69) — the same value `App::key` routes
         // on and the hint bar describes, so the three can no longer be three hand-written orders
         // that disagree about which of several open panes is in front.

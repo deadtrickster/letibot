@@ -1444,6 +1444,7 @@ mod notes;
 mod oneliners;
 mod pane;
 mod paste;
+mod payloadwindow;
 mod pictures;
 mod plugin_pane;
 mod queue;
