@@ -88,6 +88,21 @@ pub trait QueueDoor: Send + Sync {
             "this door rings no project session of {repository}"
         ))
     }
+    /// **Put the words on a session, not only on its bell** — the operator's complaint of
+    /// 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*, and a ring
+    /// says *that* something happened while this says *what*. A door that cannot deliver answers
+    /// by name rather than claiming a delivery it did not make.
+    fn deliver_repository(&self, repository: &str, text: &str) -> Result<String, String> {
+        let _ = (repository, text);
+        Err(format!("this door delivers to no session of {repository}"))
+    }
+    /// **Whether this door puts words on sessions at all** — a door with no sessions (a test's, a
+    /// bench's) answers `false` and the queue takes today's path exactly: the card, and nothing
+    /// said about nobody reading it. A door that does deliver answers `true`, and a delivery it
+    /// could not make is raised, because *"told nobody"* must never be silent.
+    fn delivers(&self) -> bool {
+        false
+    }
     /// **Whether `session_id` is live in this daemon now** — a branch's tree is not removed from
     /// under a session still working in it (R92.24), and a reviewed row is not re-seated under a
     /// reviewer that is still going. **A session this daemon has spawned and not yet opened
@@ -1983,10 +1998,25 @@ impl RepoQueue {
             }
         }
         if news {
-            self.raise(
-                "target_red",
-                super::notices::target_red_warning(h, &self.key, !fresh),
-            );
+            let words = super::notices::target_red_warning(h, &self.key, !fresh);
+            self.raise("target_red", words.clone());
+            // **And on a session, in the same words.** A ring wakes the repository's roots and
+            // leaves what happened to the store; the operator's report of 2026-10-30 — *"those red
+            // states must reach top session agent or a gatekeeper"* — is that the sentence itself
+            // has to reach a session, because a session that is merely woken cannot act on what it
+            // was not told. The card stays the record; this is the copy somebody can act on.
+            if self.env.door.delivers()
+                && let Err(why) = self.env.door.deliver_repository(&self.key, &words)
+            {
+                self.raise(
+                    "target_red",
+                    format!(
+                        "…and no session was told about it: {why}. The card is the record; the next \
+                         session of {} that wakes reads it",
+                        self.key
+                    ),
+                );
+            }
         }
         // **A red target halts BOTH queues** (R92.18): what was approved and waits to land goes
         // back to review now, not when it would have landed.
