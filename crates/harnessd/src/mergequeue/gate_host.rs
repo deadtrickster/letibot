@@ -81,7 +81,7 @@ use letibot_tools::rpc;
 
 use super::gate::{
     Done, GateControl, GateRun, GateVerdict, StepEnd, StepExit, StepMemory, assemble, clause_of,
-    judge, now_ms, read_tail, tempfile_in,
+    judge, now_ms, read_excerpt, tempfile_in,
 };
 use super::git;
 
@@ -824,7 +824,7 @@ impl Remote {
             if Instant::now() >= ctl.deadline {
                 self.kill(n);
                 return StepEnd::Deadline(said_with_misses(
-                    read_tail(log),
+                    read_excerpt(log),
                     missed,
                     &last_miss,
                     last_within,
@@ -832,14 +832,14 @@ impl Remote {
             }
             if ctl.stop.load(Ordering::Relaxed) {
                 self.kill(n);
-                return StepEnd::Stopped(read_tail(log), "the daemon is stopping".into());
+                return StepEnd::Stopped(read_excerpt(log), "the daemon is stopping".into());
             }
             if last_beat.elapsed() >= Duration::from_secs(5) {
                 last_beat = Instant::now();
                 if !(ctl.alive)() {
                     self.kill(n);
                     return StepEnd::Stopped(
-                        read_tail(log),
+                        read_excerpt(log),
                         "this daemon lost the repository's lease, so it may not land".into(),
                     );
                 }
@@ -863,7 +863,7 @@ impl Remote {
                         }
                     }
                     if let Some(code) = poll.exit {
-                        let tail = read_tail(log);
+                        let tail = read_excerpt(log);
                         return ended(code, tail);
                     }
                 }
