@@ -908,36 +908,84 @@ impl App {
                 // this walk holds the fields destructured and cannot call a method — and
                 // they must be the same question, or `/notes` and the screen disagree
                 // about what is hidden.
-                if !dismissed.contains(&note_key(&notes[*note_upto].1))
-                    && !already_read(read_marks, &notes[*note_upto].1)
-                {
-                    if !hist_lines.is_empty() {
-                        hist_lines.push(String::new());
+                if !crate::app::note_retired(dismissed, read_marks, &notes[*note_upto].1) {
+                    // **One row per kind, counted** — a burst of notices of the same kind that
+                    // arrived together is drawn once, at its first live member, with the count;
+                    // its other members draw nothing at all (not even the blank line above,
+                    // which is what makes a wall go rather than become a column of gaps). A
+                    // member is retired, listed and counted by its own key, so `/notes dismiss`
+                    // still acts on one notice and `ctrl-n` on the whole kind. See
+                    // `app::burst_at` for the window and `ui::panes::notes::burst_card` for the
+                    // words.
+                    let burst = crate::app::burst_at(notes, dismissed, read_marks, *note_upto);
+                    let drawn: Option<(
+                        Vec<String>,
+                        Option<(String, (String, rano::style::Role))>,
+                    )> = match &burst {
+                        crate::app::Burst::Drawn => None,
+                        // **Every note but a pane's ending is a card's one line** (R89); a
+                        // click on it opens the text whole: where it is, kept for the click
+                        // map, with the popup's title — the card's, since the popup no longer
+                        // has the code.
+                        crate::app::Burst::Single => {
+                            let n = &notes[*note_upto].1;
+                            let lines = note_lines(&cfg, n);
+                            let popup = note_card(n).map(|(card, text, _)| {
+                                // R89: the session rows this card stands for, under its own
+                                // text — and the event said once
+                                // (`one_event::card_popup_text`).
+                                let text = crate::app::one_event::card_popup_text(
+                                    &text,
+                                    &crate::app::one_event::absorbed_texts(
+                                        absorbed,
+                                        items,
+                                        &note_key(n),
+                                    ),
+                                );
+                                (text, (card.title, card.role))
+                            });
+                            Some((lines, popup))
+                        }
+                        crate::app::Burst::Counted(members) => {
+                            let ns: Vec<&Note> = members.iter().map(|&j| &notes[j].1).collect();
+                            let lines = crate::ui::panes::notes::burst_lines(&cfg, &ns);
+                            let popup =
+                                crate::ui::panes::notes::burst_card(&ns).map(|(card, text, _)| {
+                                    // The rows a burst stands for are its members' own: the
+                                    // event each member absorbed is under that member's text.
+                                    let rows: Vec<String> = members
+                                        .iter()
+                                        .flat_map(|&j| {
+                                            crate::app::one_event::absorbed_texts(
+                                                absorbed,
+                                                items,
+                                                &note_key(&notes[j].1),
+                                            )
+                                        })
+                                        .collect();
+                                    (
+                                        crate::app::one_event::card_popup_text(&text, &rows),
+                                        (card.title, card.role),
+                                    )
+                                });
+                            Some((lines, popup))
+                        }
+                    };
+                    if let Some((lines, popup)) = drawn {
+                        if !hist_lines.is_empty() {
+                            hist_lines.push(String::new());
+                        }
+                        if let Some((text, title)) = popup {
+                            note_cards.push(crate::app::diff_popup::NoteCard {
+                                at: hist_lines.len(),
+                                lines: lines.len(),
+                                text,
+                                title,
+                            });
+                        }
+                        hist_lines.extend(lines);
+                        *hist_class = Some(RowClass::Other);
                     }
-                    // **Every note but a pane's ending is a card's one line** (R89); a click on
-                    // it opens the text whole: where it is, kept for the click map, with the
-                    // popup's title — the card's, since the popup no longer has the code.
-                    let drawn = note_lines(&cfg, &notes[*note_upto].1);
-                    if let Some((card, text, _)) = note_card(&notes[*note_upto].1) {
-                        // R89: the session rows this card stands for, under its own text — and
-                        // the event said once (`one_event::card_popup_text`).
-                        let text = crate::app::one_event::card_popup_text(
-                            &text,
-                            &crate::app::one_event::absorbed_texts(
-                                absorbed,
-                                items,
-                                &note_key(&notes[*note_upto].1),
-                            ),
-                        );
-                        note_cards.push(crate::app::diff_popup::NoteCard {
-                            at: hist_lines.len(),
-                            lines: drawn.len(),
-                            text,
-                            title: (card.title, card.role),
-                        });
-                    }
-                    hist_lines.extend(drawn);
-                    *hist_class = Some(RowClass::Other);
                 }
                 *note_upto += 1;
             // `hist_upto` is "every row at or below this index is accounted for".
