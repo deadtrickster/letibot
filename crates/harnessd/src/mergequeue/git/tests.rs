@@ -284,12 +284,11 @@ fn a_folder_is_one_project_when_its_repositories_share_an_owner() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A github ssh url becomes the https one `gh`'s helper answers for** — and nothing else is
-/// translated. The translation exists because this box has no ssh key for github while `gh` is
-/// authenticated for https ([`push`]'s own note); the forms below are the ones a clone, a
-/// `--push` url and a forwarded agent actually write.
+/// **A github url becomes the https one `gh`'s helper answers for**, whatever spelling it arrived
+/// in — and another host is not translated. The forms below are the ones a clone, a `--push` url
+/// and a forwarded agent actually write.
 #[test]
-fn a_github_ssh_url_becomes_the_https_one_gh_answers_for() {
+fn a_github_url_becomes_the_https_one_gh_answers_for() {
     for (url, want) in [
         (
             "git@github.com:deadtrickster/letibot.git",
@@ -311,8 +310,26 @@ fn a_github_ssh_url_becomes_the_https_one_gh_answers_for() {
             "  git@github.com:o/r.git  ",
             Some("https://github.com/o/r.git"),
         ),
-        ("https://github.com/deadtrickster/letibot.git", None),
+        // **An https remote is a github remote too**: it is not translated, but it is not
+        // "nothing" either — which is what let an inherited helper answer it (see [`push`]).
+        (
+            "https://github.com/deadtrickster/letibot.git",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "https://github.com/deadtrickster/letibot",
+            Some("https://github.com/deadtrickster/letibot.git"),
+        ),
+        (
+            "http://github.com/o/r.git",
+            Some("https://github.com/o/r.git"),
+        ),
+        (
+            "https://token@github.com/o/r.git",
+            Some("https://github.com/o/r.git"),
+        ),
         ("git@gitlab.com:o/r.git", None),
+        ("https://gitlab.com/o/r.git", None),
         ("/Users/dead/Projects/letibot/letibot", None),
         ("git@github.com:", None),
     ] {
@@ -700,4 +717,121 @@ fn a_branch_whose_base_nobody_remembers_is_refused_in_words() {
     assert_eq!(sh(&lwt, &["rev-parse", "HEAD"]), new_tip, "nothing ran");
     assert_eq!(sh(&lwt, &["status", "--porcelain"]), "", "and no debris");
     let _ = base;
+}
+/// **A github remote is pushed on gh's helper BY NAME, in both forms** — the inherited helper list
+/// cleared first, because an empty `credential.helper` is what makes the named one the one asked
+/// (MEASURED: without it osxkeychain answers and gh's helper is never called). A remote that is not
+/// github, or a `gh` that is not logged in, keeps git's own argv and names no helper.
+#[test]
+fn a_github_push_names_ghs_helper_and_clears_the_inherited_ones() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let refspec = format!("{sha}:refs/heads/main");
+    for url in [
+        "git@github.com:o/r.git",
+        "ssh://git@github.com/o/r.git",
+        "https://github.com/o/r.git",
+        "https://github.com/o/r",
+    ] {
+        let plan = push_plan(url, "main", sha, true);
+        assert_eq!(
+            plan.args,
+            [
+                "-c",
+                "credential.helper=",
+                "-c",
+                "credential.helper=!gh auth git-credential",
+                "push",
+                "https://github.com/o/r.git",
+                refspec.as_str(),
+            ],
+            "{url}"
+        );
+        assert!(plan.gh, "{url}");
+    }
+
+    // The failure row a person reads keeps the helper as ONE word, not three.
+    let plan = push_plan("git@github.com:o/r.git", "main", sha, true);
+    let rendered: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+    assert!(
+        words(&rendered).contains("-c 'credential.helper=!gh auth git-credential'"),
+        "{}",
+        words(&rendered)
+    );
+
+    for (url, gh) in [
+        ("git@github.com:o/r.git", false),
+        ("https://github.com/o/r.git", false),
+        ("git@gitlab.com:o/r.git", true),
+        ("/srv/git/o/r.git", true),
+    ] {
+        let plan = push_plan(url, "main", sha, gh);
+        assert_eq!(
+            plan.args,
+            ["push", "origin", refspec.as_str()],
+            "{url} gh={gh}"
+        );
+        assert!(!plan.gh, "{url} gh={gh}");
+    }
+}
+
+/// **The row's sentence says whose credential answered** — a push on gh's credential reads
+/// differently from one on git's own, and a refusal keeps git's words AND the fact that gh
+/// answered, so "no access for this account" is not read as "no credential at all".
+#[test]
+fn the_pushes_sentence_says_whose_credential_answered() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let on_gh = push_plan("git@github.com:o/r.git", "main", sha, true);
+    let on_git = push_plan("git@github.com:o/r.git", "main", sha, false);
+
+    let gh = pushed_said(sha, "main", &on_gh);
+    let own = pushed_said(sha, "main", &on_git);
+    assert!(gh.contains("gh's credential"), "{gh}");
+    assert!(gh.contains("!gh auth git-credential"), "{gh}");
+    assert!(!own.contains("gh"), "{own}");
+    assert!(own.contains("git's own config"), "{own}");
+    assert_ne!(gh, own);
+
+    let refused = failed_said("git push origin main: remote: Permission denied", &on_gh);
+    assert!(
+        refused.contains("remote: Permission denied"),
+        "git's own words are kept: {refused}"
+    );
+    assert!(refused.contains("gh's"), "{refused}");
+    assert!(refused.contains("not a missing credential"), "{refused}");
+    assert_eq!(
+        failed_said("remote: Permission denied", &on_git),
+        "remote: Permission denied",
+        "a plain git push's refusal is git's words, unchanged"
+    );
+}
+
+/// **The old push still runs**: a remote that is not github goes to `origin` on git's own
+/// credential and the sentence says so — and a repository with no `origin` says that instead.
+/// A local bare repository, so nothing leaves the box.
+#[test]
+fn a_remote_that_is_not_github_is_pushed_to_origin() {
+    let dir = TempDir::new("push-plain");
+    let repo = repo(&dir.0);
+    let bare = dir.0.join("origin.git");
+    sh(
+        &dir.0,
+        &["init", "-q", "--bare", "-b", "main", "origin.git"],
+    );
+    sh(&repo, &["remote", "add", "origin", &bare.to_string_lossy()]);
+    let sha = sh(&repo, &["rev-parse", "main"]);
+    match push(&repo, "main", &sha) {
+        Pushed::Yes(s) => {
+            assert!(s.contains("git's own config"), "{s}");
+            assert!(!s.contains("gh"), "{s}");
+            assert_eq!(
+                sh(&bare, &["rev-parse", "main"]),
+                sha,
+                "the branch is there"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    sh(&repo, &["remote", "remove", "origin"]);
+    assert_eq!(push(&repo, "main", &sha), Pushed::NoRemote);
 }
