@@ -475,7 +475,7 @@ impl App {
                     &self.dismissed,
                     k,
                 )) || (open_run
-                    && crate::app::runclick::run_skips(self.run_show, &self.items[k])) =>
+                    && crate::app::runclick::run_skips(self.lift, &self.items[k])) =>
                 {
                     (RowClass::Other, Vec::new())
                 }
@@ -484,7 +484,7 @@ impl App {
                     &ItemCtx {
                         cfg: &row_cfg,
                         think: if open_run {
-                            crate::app::runclick::run_think(self.run_show, think)
+                            crate::app::runclick::run_think(self.lift, think)
                         } else {
                             think
                         },

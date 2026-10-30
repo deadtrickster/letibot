@@ -187,6 +187,18 @@ impl App {
                     turn_rows,
                     ..TurnPane::default()
                 });
+                // **A new TURN starts at the default** — the operator's *"then all subsequent
+                // turns go with think open"*.
+                //
+                // The lift a click throws belongs to the work it was thrown on, and a prompt of
+                // the operator's is a new subject: carrying it over is a mode following the
+                // reader into a conversation they did not ask it of. This is the only boundary
+                // allowed to CHANGE the switch — `carry_live_open` at a round's end moves its
+                // address and not its value, and a round of the same prompt is not a boundary
+                // at all (`same_turn` above).
+                if !same_turn {
+                    self.drop_lift();
+                }
                 // A new turn takes the pane away from the previous one, so the
                 // previous one's rows now own everything they proposed. Same
                 // reason as the terminal states above: the history is cached —

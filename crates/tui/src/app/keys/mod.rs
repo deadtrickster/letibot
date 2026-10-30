@@ -552,6 +552,22 @@ impl App {
             Key::Down => self.editor.vertical(false, cols),
             ref other => self.editor.key(other.composer()?, now),
         };
+        // **Esc returns the thinking to its default** — the closed state — from the spelling the
+        // panel arm above cannot reach: the fold `ctrl-r` moved, with no panel up to close.
+        //
+        // Placed HERE, after the composer has seen the key and before its reaction is acted on,
+        // on purpose: the editor arms its Esc-Esc interrupt pair on this press, so a head that
+        // took Esc first would have made *esc esc* unable to interrupt while the thinking was
+        // open — the same defect the subagent's `esc goes up` arm records in its own note. A
+        // press that answers `Interrupt` is the pair firing and is not this arm's to
+        // reinterpret.
+        //
+        // The lift needs no arm of its own: it is only ever set with the panel that carries its
+        // exit, and Esc reaches that arm first.
+        if matches!(k, Key::Esc) && !matches!(reaction, Reaction::Interrupt) && self.thinking_open()
+        {
+            self.set_thinking(false);
+        }
         match reaction {
             Reaction::Submit(text) => self.submit(text),
             Reaction::Interrupt => {

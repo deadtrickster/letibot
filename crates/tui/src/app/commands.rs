@@ -210,6 +210,13 @@ impl App {
         // avoid: *I opened a run, changed my mind about the rung, and a window appeared.*
         self.payload_sel = None;
         self.payload_page = 0;
+        // **And the one switch goes with it.** A lift names a run under the rendering it was
+        // thrown in, and the same id means a different thing on either side of a rung — the
+        // argument one line up, one field over. Clearing `payload_sel` and leaving the lift is
+        // exactly the orphan this change exists for: the panel is the lift's only exit, so a
+        // lift without one cannot be closed by any key. Through `drop_lift`, so the field has
+        // two writers and not three.
+        self.drop_lift();
         self.invalidate_history();
         // **And it is written down**, which is what *"persists headrestarts"* asks for: the
         // change and the file are one act from here, so a set cannot be chosen and then
@@ -649,9 +656,15 @@ impl App {
                 self.toggle_surface(Surface::Stats)
             }
             "think" | "r" => {
-                self.reasoning = self.reasoning.flip();
-                self.refold();
-                None
+                // **The one verb**, not a second writer of the fold: `/think`, `ctrl-r`, the
+                // config pane's row, a click on the marker's thinking clause and `esc` all ask
+                // [`App::flip_thinking`], so none of them can move a field the others do not
+                // read — which is how `ctrl-r` came to flip a fold that the click's lift was
+                // hiding. **No `refold`**: that reports all three folds in the head's own words
+                // and would say `thinking folded` at a rung that hides the thinking while the
+                // verb had just opened a run's — `flip_thinking` answers in the words of the
+                // thing it actually moved.
+                self.flip_thinking()
             }
             // **`/tools` asks what this conversation can call.** It used to be a
             // second spelling of ctrl-t, which already folds tool output and is

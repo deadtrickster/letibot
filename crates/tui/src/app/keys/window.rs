@@ -29,12 +29,20 @@ impl App {
                 Key::Esc => {
                     self.payload_sel = None;
                     self.payload_page = 0;
-                    self.run_show = None;
                     // **The live pane's lift is part of the same act** — a click on a run of rows
                     // and a click on the turn's own marker both lift a kind, and Esc is the one
-                    // way back for either. Without this a lift the pane carried had no undo: the
-                    // panel stayed open, its marker closed and its keys unnamed.
-                    self.live_open = None;
+                    // way back for either. One writer takes the switch and the panel together
+                    // (`App::drop_lift`), which is what stops the half a hand-written clear
+                    // forgot: `set_verbosity` used to empty `payload_sel` and leave the pane's
+                    // lift standing, and from then on no key could reach it — the operator's
+                    // *"then all subsequent turns go with think open"*.
+                    self.drop_lift();
+                    // **And the thinking returns to its default** — the closed state — from
+                    // either spelling of open: the lift this just dropped, or the fold `ctrl-r`
+                    // moved. A panel is a door onto one kind and Esc is the way back to the
+                    // default view, which is the same promise the seam `esc folds the run back`
+                    // makes one key wide.
+                    self.set_thinking(false);
                     // An open run's rows are in the history cache, so it is rebuilt — as
                     // ctrl-t's close does.
                     self.invalidate_history();

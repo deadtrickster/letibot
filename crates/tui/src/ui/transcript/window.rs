@@ -319,6 +319,10 @@ impl App {
         // Read before the disjoint borrow below, for the same reason: it asks the rows
         // which announcements are already drawing an echo. See `App::bound_prompts`.
         let echoes_on_screen = self.echoes_on_screen();
+        // **What a click lifted, read before the frame borrows the history.** It is one field
+        // (`App::lift`) read against the run `payload_sel` names — see `App::lifted`, which is
+        // the one reader — and it is taken here because `hist_lines` is lent to the frame below.
+        let lifted = self.lifted();
         // Disjoint field borrows, so the history can be lent to the frame while the
         // block caches are still being written to.
         let App {
@@ -485,7 +489,7 @@ impl App {
                 superseded,
                 live_joins,
                 walk_carried_live,
-                self.live_open,
+                lifted,
             );
         }
 
@@ -854,7 +858,7 @@ impl App {
             spans,
             note_cards,
             visibility,
-            run_show,
+            lift,
             dismissed,
             absorbed,
             ..
@@ -1089,7 +1093,7 @@ impl App {
                     None if (crate::app::one_event::is_absorbed(
                         absorbed, notes, dismissed, *hist_upto,
                     )) || (open_run
-                        && crate::app::runclick::run_skips(*run_show, &items[*hist_upto])) =>
+                        && crate::app::runclick::run_skips(*lift, &items[*hist_upto])) =>
                     {
                         (RowClass::Other, Vec::new())
                     }
@@ -1098,7 +1102,7 @@ impl App {
                         &ItemCtx {
                             cfg: &row_cfg,
                             think: if open_run {
-                                crate::app::runclick::run_think(*run_show, think)
+                                crate::app::runclick::run_think(*lift, think)
                             } else {
                                 think
                             },

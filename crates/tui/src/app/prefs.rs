@@ -554,8 +554,9 @@ impl App {
                         return None;
                     }
                     HeadSetting::Thinking => {
-                        self.reasoning = self.reasoning.flip();
-                        self.invalidate_history();
+                        // **The one verb** (`App::flip_thinking`), so the pane's row cannot
+                        // write a fold that `ctrl-r` and the marker's clause do not read.
+                        self.flip_thinking();
                     }
                     HeadSetting::Tools => {
                         self.tools = self.tools.flip();
