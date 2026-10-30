@@ -204,7 +204,13 @@ fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
         137,
         "warning: function `answer_frames` is never used\n".to_string(),
     );
-    let judged = judge("cargo test", killed, StepMemory::Elsewhere("lab".into()), 0);
+    let judged = judge(
+        "cargo test",
+        killed,
+        StepMemory::Elsewhere("lab".into()),
+        0,
+        Duration::from_secs(30 * 60),
+    );
     assert_eq!(judged.outcome, MergeGateOutcome::Killed);
     assert!(
         matches!(&judged.verdict, Some(GateVerdict::Infra(w)) if w.contains("UNJUDGED, not red")),
@@ -213,7 +219,13 @@ fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
     );
     // A code that failed is red, exactly as it is here.
     let red = ended(101, "test result: FAILED. 1 passed; 1 failed\n".to_string());
-    let judged = judge("cargo test", red, StepMemory::Elsewhere("lab".into()), 0);
+    let judged = judge(
+        "cargo test",
+        red,
+        StepMemory::Elsewhere("lab".into()),
+        0,
+        Duration::from_secs(30 * 60),
+    );
     assert_eq!(judged.outcome, MergeGateOutcome::Failed);
     assert!(matches!(judged.verdict, Some(GateVerdict::Failed(_))));
     // And a host step's row says its memory was not measured, and where it ran.
@@ -235,6 +247,7 @@ fn the_host_line_is_for_the_operator_and_not_the_model() {
         ended(0, "ok\n".to_string()),
         StepMemory::Elsewhere("lubuntu2".into()),
         0,
+        Duration::from_secs(30 * 60),
     );
     assert_eq!(judged.outcome, MergeGateOutcome::Passed);
     assert!(
@@ -259,6 +272,7 @@ fn an_undeclared_host_is_unjudged_with_a_sentence_that_names_the_file() {
     let alive = || true;
     let ctl = GateControl {
         deadline: Instant::now() + Duration::from_secs(30),
+        budget: Duration::from_secs(30),
         stop: &stop,
         alive: &alive,
     };
@@ -294,6 +308,7 @@ fn an_unset_host_runs_the_gate_here_and_a_set_one_does_not() {
     let alive = || true;
     let ctl = GateControl {
         deadline: Instant::now() + Duration::from_secs(60),
+        budget: Duration::from_secs(60),
         stop: &stop,
         alive: &alive,
     };

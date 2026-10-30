@@ -457,6 +457,12 @@ pub struct GateRun {
 /// own the repository must not land into it).
 pub struct GateControl<'a> {
     pub deadline: Instant,
+    /// **How much time the deadline is** — `deadline` is the instant it falls on, and a sentence
+    /// about a timeout has to name the *budget* it was given (`[queue]`'s `gate_deadline`, thirty
+    /// minutes unless set) rather than leave a reader guessing which clock ran out. Two clocks run
+    /// on a gate and they are not the same number: a poll on a declared host is bounded by
+    /// seconds, and the step is bounded by this.
+    pub budget: Duration,
     pub stop: &'a AtomicBool,
     pub alive: &'a dyn Fn() -> bool,
 }
@@ -539,7 +545,7 @@ pub fn run_with_memory(
         let started = now_ms();
         let (end, mem, leftover) = run_step(worktree, step, scratch.path(), cap, ctl, &place);
         let elapsed = now_ms().saturating_sub(started);
-        let judged = judge(step, end, mem, leftover);
+        let judged = judge(step, end, mem, leftover, ctl.budget);
         let last = judged.verdict.is_some();
         done.push(Done {
             command: step.clone(),
@@ -556,7 +562,13 @@ pub fn run_with_memory(
 
 /// **The one place a step's end becomes a row and a verdict** — shared by both machines, so a
 /// host gate cannot read a red step differently from a local one.
-pub(crate) fn judge(step: &str, outcome: StepEnd, mem: StepMemory, leftover: usize) -> Judged {
+pub(crate) fn judge(
+    step: &str,
+    outcome: StepEnd,
+    mem: StepMemory,
+    leftover: usize,
+    budget: Duration,
+) -> Judged {
     let exit = match &outcome {
         StepEnd::Red(_, e) => Some(*e),
         _ => None,
@@ -617,12 +629,17 @@ pub(crate) fn judge(step: &str, outcome: StepEnd, mem: StepMemory, leftover: usi
             }
         }
         StepEnd::Ok(out) => (MergeGateOutcome::Passed, with_memory(out), None),
+        // **The step's own bound, named.** This is the gate's deadline (`[queue]`'s
+        // `gate_deadline`) and not any poll's: a step is minutes, a question about the host is
+        // seconds, and a verdict has to say which clock ran out or a reader cannot tell a slow
+        // build from a slow machine.
         StepEnd::Deadline(out) => (
             MergeGateOutcome::TimedOut,
             with_memory(out),
             Some(GateVerdict::TimedOut(format!(
-                "`{step}` was still running at the gate's deadline and was killed with \
-                     its whole process group"
+                "`{step}` was still running when the gate's own deadline passed ({}) and was killed \
+                 with its whole process group",
+                clause_of(budget)
             ))),
         ),
         StepEnd::Stopped(out, why) => (
@@ -663,6 +680,16 @@ fn could_not_run(steps: &[String], why: String) -> GateRun {
     GateRun {
         steps: rows,
         verdict: GateVerdict::Infra(format!("the gate could not run: {why}")),
+    }
+}
+
+/// A duration as a sentence says it — `30 min`, `90 s`, `1500 ms`.
+pub(crate) fn clause_of(d: Duration) -> String {
+    let s = d.as_secs();
+    match s {
+        0 => format!("{} ms", d.as_millis()),
+        s if s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s} s"),
     }
 }
 
@@ -1105,6 +1132,7 @@ mod tests {
         let alive = || true;
         let ctl = GateControl {
             deadline: Instant::now() + Duration::from_secs(60),
+            budget: Duration::from_secs(60),
             stop: &stop,
             alive: &alive,
         };
@@ -1284,6 +1312,7 @@ mod tests {
         let alive = || true;
         let ctl = GateControl {
             deadline: Instant::now() + Duration::from_secs(60),
+            budget: Duration::from_secs(60),
             stop: &stop,
             alive: &alive,
         };
@@ -1356,6 +1385,7 @@ mod tests {
         let alive = || true;
         let ctl = GateControl {
             deadline: Instant::now() + Duration::from_secs(60),
+            budget: Duration::from_secs(60),
             stop: &stop,
             alive: &alive,
         };
@@ -1458,6 +1488,7 @@ mod tests {
         let alive = || true;
         let ctl = GateControl {
             deadline: Instant::now() + Duration::from_secs(60),
+            budget: Duration::from_secs(60),
             stop: &stop,
             alive: &alive,
         };

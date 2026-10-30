@@ -2402,6 +2402,147 @@ fn a_target_whose_gate_was_killed_at_its_cap_is_unjudged_not_red() {
     assert_eq!(*w.door.repositories.lock().unwrap(), vec![w.key()]);
 }
 
+/// **A gate that could not run** — the verdict a host produces when its poll was not answered, or
+/// when ssh could not dial it. Nothing about the code was read.
+struct CouldNotRunGate {
+    runs: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl CouldNotRunGate {
+    fn new() -> (CouldNotRunGate, Arc<std::sync::atomic::AtomicUsize>) {
+        let runs = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            CouldNotRunGate {
+                runs: runs.clone(),
+            },
+            runs,
+        )
+    }
+}
+
+impl GateRunner for CouldNotRunGate {
+    fn run(&self, _wt: &Path, steps: &[String], _ctl: &GateControl) -> GateRun {
+        self.runs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        GateRun {
+            steps: steps
+                .iter()
+                .map(|s| letibot_tokencore::store::MergeGateStep {
+                    command: s.clone(),
+                    outcome: letibot_tokencore::store::MergeGateOutcome::NotRun,
+                    output: String::new(),
+                    started_ms: 0,
+                    elapsed_ms: 0,
+                })
+                .collect(),
+            verdict: GateVerdict::Infra(
+                "the gate could not run on the declared host: asking how `lab2x1` is doing on \
+                 lab2x1 did not answer within 30 s and the ssh this daemon started was killed with \
+                 its whole process group. Nothing was judged — the tip is UNJUDGED, not red, and \
+                 the queue is not halted by it: it is gated again on a later pass."
+                    .into(),
+            ),
+        }
+    }
+}
+
+/// **A gate that could not run does not halt the queue** — the 2026-10-30 halt, pinned.
+///
+/// A first gate on `lab2x1` was killed by a poll that took longer than ten seconds on a machine
+/// busy compiling its own workspace, and the target went `blocked` — which stops BOTH queues, so
+/// four branches that had just been re-queued sat behind a host that was healthy. A run that could
+/// not start judged nothing, so the tip goes back to `gating` and is tried again by itself: not
+/// `blocked` (nothing may land while a tip is unjudged, which is right) and not `red` (nothing
+/// about the code was read).
+#[test]
+fn a_gate_that_could_not_run_leaves_the_target_gating_and_tries_again_by_itself() {
+    let w = World::new("unjudgedretry");
+    let (gate, runs) = CouldNotRunGate::new();
+    let q = w.worker(Arc::new(gate), "a");
+    run(&q, 2);
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Gating, "{h:?}");
+    assert!(h.evidence.starts_with(UNJUDGED_RETRY), "{}", h.evidence);
+    assert!(h.evidence.contains("UNJUDGED, not red"), "{}", h.evidence);
+    // Nothing is in doubt about the code: no red tip, no review of the target, no emergency.
+    assert!(!emergency_health(&h), "nothing to ring a project about");
+    assert!(w.door.warnings("target_red").is_empty(), "never RED");
+    assert!(
+        w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .all(|r| r.kind != ReviewKind::Target),
+        "nobody is sent to find what in the code broke it"
+    );
+    // Said once, on the hub, so an operator learns the host is not answering — and once per tip,
+    // not once per attempt.
+    let said = w.door.warnings("target_unjudged");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("UNJUDGED"), "{}", said[0]);
+    // **The window**: the very next pass does not dial the host again. Without it a broken
+    // `gate_host` would be one ssh attempt per second, because the worker goes again at once when
+    // a pass worked.
+    assert_eq!(runs.load(std::sync::atomic::Ordering::Relaxed), 1);
+    run(&q, 2);
+    assert_eq!(
+        runs.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the host is not asked again inside its retry window"
+    );
+    // ... and once the window is out, the next pass gates the tip again — by itself, which is the
+    // whole point: no `/queue regate`, no restart, no operator.
+    let mut backdated = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    backdated.checked_ms -= UNJUDGED_RETRY_MS;
+    w.store().set_target_health(&backdated, "test").unwrap();
+    run(&q, 2);
+    assert_eq!(
+        runs.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "the tip is gated again once the window is out"
+    );
+    // Still not blocked, and still not red — a host that keeps not answering is not a verdict.
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Gating, "{h:?}");
+    assert!(w.door.warnings("target_red").is_empty());
+}
+
+/// **A branch whose own gate could not run goes back in line, and waits its window too** — the
+/// landing half of the same rule: parked `blocked` it needed `/queue restart`, and taken again on
+/// the next pass it was one ssh attempt per second at a host that was down.
+#[test]
+fn a_landing_gate_that_could_not_run_goes_back_in_line_and_waits() {
+    let w = World::new("unjudgedlanding");
+    let (wt, base, head) = branch(&w.repo, "u", "u.txt");
+    w.enqueue("u", &wt, &base, &head);
+    let green = w.worker(Arc::new(GreenGate), "a");
+    run(&green, 1);
+    let m = w.accept("u", "test/a");
+    let (gate, runs) = CouldNotRunGate::new();
+    let q = {
+        let env = env(Arc::new(gate), w.door.clone(), "a");
+        RepoQueue::new(w.store(), w.repo.clone(), env)
+    };
+    run(&q, 2);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Queued, "{row:?}");
+    assert!(row.evidence.starts_with(UNJUDGED_RETRY), "{}", row.evidence);
+    assert!(row.evidence.contains("goes back in line"), "{}", row.evidence);
+    let attempts = runs.load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(attempts, 1, "one attempt, then the window");
+    run(&q, 2);
+    assert_eq!(
+        runs.load(std::sync::atomic::Ordering::Relaxed),
+        attempts,
+        "the branch is not taken again inside its window"
+    );
+    // And it is still the operator's to unstick or wait out: the row is not `blocked`.
+    assert_ne!(
+        w.store().merge_row(&m).unwrap().unwrap().state,
+        MergeState::Blocked
+    );
+}
+
 /// **A daemon seated ABOVE a repository is none of its session daemons** — the operator's
 /// `/home/dead` daemon took letibot's lease, gated its `main`, and showed `‼ main RED` to a
 /// session about the box's RSS. Seated in the directory that holds the repository, its worktree

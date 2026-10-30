@@ -61,6 +61,7 @@ fn main() {
     let alive = || true;
     let ctl = GateControl {
         deadline: Instant::now() + gate::GATE_DEADLINE,
+        budget: gate::GATE_DEADLINE,
         stop: &stop,
         alive: &alive,
     };

@@ -46,11 +46,27 @@
 //!
 //! Every call is bounded ([`letibot_tools::rpc::run_bounded`]) and goes through the same breaker
 //! the rest of the fleet path uses ([`letibot_tools::rpc::before`]), so a host that is down is a
-//! [`GateVerdict::Infra`] with a sentence in the first second — the tip UNJUDGED and blocked, not
-//! red. Every step is started **detached, under `setsid`, with a pid file**, so the group can be
-//! killed when the deadline passes, the daemon stops or the lease goes: the one window a step can
-//! outlive its gate is a daemon killed with `SIGKILL` between two polls, which is the window the
-//! local gate has too.
+//! [`GateVerdict::Infra`] with a sentence in the first second — the tip UNJUDGED and unblocked,
+//! not red. Every step is started **detached, under `setsid`, with a pid file**, so the group can
+//! be killed when the deadline passes, the daemon stops or the lease goes: the one window a step
+//! can outlive its gate is a daemon killed with `SIGKILL` between two polls, which is the window
+//! the local gate has too.
+//!
+//! # Two clocks, and which one is which
+//!
+//! A gate on a host is under **two** bounds and they are not the same number, which cost the
+//! queue a halt on 2026-10-30:
+//!
+//! * **The step's** — [`GateControl::deadline`], `[queue]`'s `gate_deadline`, thirty minutes. It is
+//!   the only thing that may end a step, and a first gate on a host needs all of it: a cold
+//!   `CARGO_TARGET_DIR` is a whole dependency tree compiled from nothing.
+//! * **One poll's** — [`POLL_BOUND`], seconds. It asks *can this machine fork a shell and answer*,
+//!   and the answer on a box whose own build holds every core can be many seconds.
+//!
+//! A poll that is not answered is therefore **retried, not a verdict**: the question is idempotent
+//! (its answer is `tail -c +<offset>`, so nothing is lost by asking again) and a miss says nothing
+//! about the code. What ends a step is its own deadline, or a poll that reaches no machine at all
+//! — which is the breaker's judgement, not this module's guess.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -66,14 +82,24 @@ use super::gate::{
 };
 use super::git;
 
+/// **How long one poll may take** — and this is the *health* question, not the step's deadline:
+/// *can this machine fork a shell and answer?* Over the connection's `ControlMaster` that is a few
+/// milliseconds on an idle box and **seconds** on a busy one — measured on lab2x1 while its own
+/// `cargo test --workspace` held 25 of 32 cores, where a poll took longer than the ten seconds this
+/// bound used to be, and the step was killed for it.
+///
+/// Thirty, because a machine that cannot answer a question in thirty seconds is not answering, and
+/// because a missed poll costs nothing ([`Remote::run_step_into`] asks again): the bound only
+/// decides when a poll stops waiting, never when a step stops running.
+pub const POLL_BOUND: Duration = Duration::from_secs(30);
+
 /// How often a running step is asked how it is — one ssh round trip, which over the connection's
 /// `ControlMaster` is a few milliseconds. A second is the same order as the local gate's 100 ms
 /// poll and 1/1800th of the calls a 30-minute step could make.
 pub const POLL_EVERY: Duration = Duration::from_millis(1000);
 
-/// The wall clock on one poll, on one arranging call (`mkdir`, a `git fetch`, a `git worktree`),
-/// on the transfer and on the kill. Each names what it bounds in the sentence it refuses with.
-const POLL_BOUND: Duration = Duration::from_secs(10);
+/// The wall clock on one arranging call (`mkdir`, a `git fetch`, a `git worktree`), on the
+/// transfer and on the kill. Each names what it bounds in the sentence it refuses with.
 const SETUP_BOUND: Duration = Duration::from_secs(120);
 const TRANSFER_BOUND: Duration = Duration::from_secs(900);
 const KILL_BOUND: Duration = Duration::from_secs(30);
@@ -95,15 +121,22 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
         Ok(r) => r,
         Err(why) => return infra(steps, why),
     };
-    if let Err(why) = remote.prepare(ctl) {
-        return infra(steps, why);
+    let mut cost = Cost::default();
+    if let Err(why) = remote.prepare(ctl, &mut cost) {
+        return infra(steps, format!("{why}{}", cost.said(&remote)));
     }
     let mut done: Vec<Done> = Vec::with_capacity(steps.len());
     for step in steps {
         let started = now_ms();
         let end = remote.run_step(step, ctl);
         let elapsed = now_ms().saturating_sub(started);
-        let judged = judge(step, end, StepMemory::Elsewhere(name.to_string()), 0);
+        let judged = judge(
+            step,
+            end,
+            StepMemory::Elsewhere(name.to_string()),
+            0,
+            ctl.budget,
+        );
         let last = judged.verdict.is_some();
         done.push(Done {
             command: step.clone(),
@@ -114,6 +147,17 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
         if last {
             break;
         }
+    }
+    // **Where the time went, on the first row of the log.** A first gate on a host pays for a
+    // transport and a build cache that are nobody's code, and a reader looking at a row that says
+    // *twenty minutes* has to be able to see which of the two it was.
+    if let Some(first) = done.first_mut() {
+        let note = cost.line(&remote);
+        first.judged.output = if first.judged.output.is_empty() {
+            note
+        } else {
+            format!("{}\n{note}", first.judged.output.trim_end())
+        };
     }
     assemble(steps, done)
 }
@@ -133,9 +177,9 @@ fn infra(steps: &[String], why: String) -> GateRun {
             .collect(),
         verdict: GateVerdict::Infra(format!(
             "the gate could not run on the declared host: {why}. Nothing was judged — the tip is \
-             UNJUDGED, not red, and it will be gated again when the host is back. \
-             `[queue] gate_host` in the project's leticode.toml (or `--gate-host`) chooses the \
-             machine, and an empty value runs the gate here."
+             UNJUDGED, not red, and the queue is not halted by it: it is gated again on a later \
+             pass. `[queue] gate_host` in the project's leticode.toml (or `--gate-host`) chooses \
+             the machine, and an empty value runs the gate here."
         )),
     }
 }
@@ -156,6 +200,14 @@ struct Remote {
     tree: String,
     target: String,
     run: String,
+    /// **Whether this gate is the one that makes the build cache** — asked before `mkdir` touches
+    /// it, because a cold gate on a host is a whole dependency tree compiled from nothing and the
+    /// row has to say so rather than let a reader call it a slow machine.
+    cold: bool,
+    /// Free KiB on the filesystem the gate's directory is on, as the host answered at open. A
+    /// first gate writes tens of gigabytes (`target/debug` of this workspace measured 35 GB on
+    /// lab2x1) and a machine with 6 GiB left is where a link fails with `Bus error`.
+    free_kb: Option<u64>,
     seq: AtomicU64,
 }
 
@@ -186,22 +238,46 @@ impl Remote {
             ));
         }
         let dir = format!("{}/gate/{}", root.trim_end_matches('/'), dir_name(worktree));
+        let src = format!("{dir}/src.git");
+        let tree = format!("{dir}/tree");
+        let target = format!("{dir}/target");
+        let run = format!("{dir}/run");
+        // **The cache and the room, asked in the call that makes the directories** — before
+        // `mkdir` has made `target`, so a cache this gate creates is `cold`, and `df` of the
+        // directory's filesystem answers how much room the build has. One round trip, not two.
+        let said = call_ok(
+            &ssh,
+            &format!("asking what `{}` already has and how much room", dir),
+            &format!(
+                "if [ -d '{target}' ] && [ -n \"$(ls -A '{target}')\" ]; then echo cache=warm; \
+                 else echo cache=cold; fi; \
+                 mkdir -p '{dir}' '{run}' '{target}'; \
+                 echo \"free=$(df -P -k '{dir}' | tail -1 | awk '{{print $4}}')\""
+            ),
+            SETUP_BOUND,
+        )?;
+        // Named fields, not line positions: a login shell is entitled to say something of its own
+        // before these lines, and a `motd` read as a cache state is a sentence about the wrong
+        // thing.
+        let field = |key: &str| -> Option<String> {
+            said.lines()
+                .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+        };
+        let cold = field("cache=").as_deref() != Some("warm");
+        let free_kb = field("free=").and_then(|kb| kb.parse::<u64>().ok());
         let r = Remote {
-            src: format!("{dir}/src.git"),
-            tree: format!("{dir}/tree"),
-            target: format!("{dir}/target"),
-            run: format!("{dir}/run"),
+            src,
+            tree,
+            target,
+            run,
+            cold,
+            free_kb,
             ssh,
             name: name.to_string(),
             local: worktree.to_path_buf(),
             dir: dir.clone(),
             seq: AtomicU64::new(0),
         };
-        r.call(
-            &format!("making `{}` on {name}", r.dir),
-            &format!("mkdir -p '{}' '{}' '{}'", r.dir, r.run, r.target),
-            SETUP_BOUND,
-        )?;
         // **From here the wrapper points at the tree**, because a toolchain is pinned by the
         // `mise.toml`/`.tool-versions` in the tree the work is in — and because `mise exec -C`
         // REFUSES a directory that does not exist, so the directory had to be made first.
@@ -247,7 +323,8 @@ impl Remote {
             within,
             None,
             true,
-        )?;
+        )
+        .map_err(|m| m.why)?;
         if answer.code == 0 {
             return Ok(String::from_utf8_lossy(&answer.out).into_owned());
         }
@@ -266,7 +343,8 @@ impl Remote {
             within,
             Some(bytes),
             true,
-        )?;
+        )
+        .map_err(|m| m.why)?;
         if answer.code == 0 {
             Ok(())
         } else {
@@ -278,7 +356,7 @@ impl Remote {
 
     /// **Put the landing tree on the host** — the bundle (the repository's metadata), the
     /// worktree at the tip, and then the tree itself over `rsync`.
-    fn prepare(&self, ctl: &GateControl) -> Result<(), String> {
+    fn prepare(&self, ctl: &GateControl, cost: &mut Cost) -> Result<(), String> {
         let head = git::rev_parse(&self.local, "HEAD").ok_or_else(|| {
             format!(
                 "the landing tree {} has no HEAD to send",
@@ -293,6 +371,7 @@ impl Remote {
         self.check(ctl)?;
         // What the host already has, as the bundle's prerequisites — its own refs are the record,
         // so there is no stamp file to fall out of step with the repository.
+        let began = Instant::now();
         let have = self.call(
             &format!("asking what {} already has", self.name),
             &format!(
@@ -310,14 +389,20 @@ impl Remote {
         if !have.contains(&head.as_str()) {
             self.send_bundle(&head, &branches, &have, ctl)?;
         }
+        cost.repo_ms = Some(began.elapsed().as_millis() as u64);
         self.check(ctl)?;
+        let began = Instant::now();
         self.call(
             &format!("putting the landing tree at {head} on {}", self.name),
             &worktree_script(&self.src, &self.tree, &head),
             SETUP_BOUND,
         )?;
+        cost.checkout_ms = Some(began.elapsed().as_millis() as u64);
         self.check(ctl)?;
-        self.rsync(ctl)
+        let began = Instant::now();
+        self.rsync(ctl)?;
+        cost.tree_ms = Some(began.elapsed().as_millis() as u64);
+        Ok(())
     }
 
     /// The tip and the target branch as one (usually thin) bundle, sent on the connection's stdin.
@@ -405,7 +490,8 @@ impl Remote {
             TRANSFER_BOUND,
             None,
             true,
-        )?;
+        )
+        .map_err(|m| m.why)?;
         if answer.code == 0 {
             return Ok(());
         }
@@ -480,10 +566,21 @@ impl Remote {
         }
         let mut offset: u64 = 0;
         let mut last_beat = Instant::now();
+        // **A poll that was not answered is a question to ask again, not a step to kill** — the
+        // 2026-10-30 halt, in one line: a first gate on lab2x1 ran `cargo test --workspace` on 25
+        // of its 32 cores, one poll took longer than the ten seconds a poll was once allowed, and
+        // a step that had been running for four minutes was killed and reported as *could not
+        // run*. What a miss says is *the machine was busy*; what ends a step is its own deadline.
+        let mut missed: u32 = 0;
+        let mut last_miss = String::new();
         loop {
             if Instant::now() >= ctl.deadline {
                 self.kill(n);
-                return StepEnd::Deadline(read_tail(log));
+                return StepEnd::Deadline(said_with_misses(
+                    read_tail(log),
+                    missed,
+                    &last_miss,
+                ));
             }
             if ctl.stop.load(Ordering::Relaxed) {
                 self.kill(n);
@@ -499,8 +596,12 @@ impl Remote {
                     );
                 }
             }
-            match self.poll(n, offset) {
+            // A poll never outlives the gate: the last one before the deadline is bounded by what
+            // is left of it, so the verdict arrives when the deadline says and not a bound later.
+            let within = POLL_BOUND.min(ctl.deadline.saturating_duration_since(Instant::now()));
+            match self.poll(n, offset, within) {
                 Ok(poll) => {
+                    missed = 0;
                     if !poll.bytes.is_empty() {
                         offset += poll.bytes.len() as u64;
                         use std::io::Write;
@@ -517,16 +618,21 @@ impl Remote {
                         return ended(code, tail);
                     }
                 }
-                Err(why) => {
-                    // **A poll that cannot answer is not a gate that hangs.** One is enough:
-                    // the sentence says the step is unjudged and the group is killed, so the
-                    // queue's next pass runs it again rather than waiting out a dead host.
+                Err(miss) if miss.unreached => {
+                    // **No machine answered, so there is nothing to wait for.** This is not a
+                    // slow host: ssh could not dial it, or the breaker has already decided it is
+                    // down after its own three failures. The group is killed here and the step is
+                    // UNJUDGED — never red, because nothing about the code was read.
                     self.kill(n);
                     return StepEnd::Infra(format!(
-                        "{why}: `{step}` was started on {} and its process group was killed \
-                         here. What it had written is above.",
-                        self.name
+                        "{}: `{step}` was started on {} and its process group was killed here. \
+                         What it had written is above, and nothing was judged about the code",
+                        miss.why, self.name
                     ));
+                }
+                Err(miss) => {
+                    missed += 1;
+                    last_miss = miss.why;
                 }
             }
             std::thread::sleep(POLL_EVERY);
@@ -535,7 +641,11 @@ impl Remote {
 
     /// **How the step is**, and whatever it has written since `offset` — one round trip, so a
     /// step's progress and its state cannot disagree about which moment they describe.
-    fn poll(&self, n: usize, offset: u64) -> Result<Poll, String> {
+    ///
+    /// `within` is [`POLL_BOUND`] or what is left of the gate, whichever is less; a miss comes back
+    /// as [`Missed`], which says whether the machine was reached at all, because *busy* and *gone*
+    /// are two different verdicts and only one of them ends the step.
+    fn poll(&self, n: usize, offset: u64, within: Duration) -> Result<Poll, Missed> {
         let tag = self.tag(n);
         let script = poll_script(
             &tag,
@@ -546,16 +656,19 @@ impl Remote {
         );
         let argv = self.ssh.argv(&self.ssh.remote_command(&script));
         let what = format!("asking how `{}` is doing", self.name);
-        let answer = run_poll(&what, &self.name, self.ssh.program(), &argv, POLL_BOUND)?;
+        let answer = run_poll(&what, &self.name, self.ssh.program(), &argv, within)?;
+        if answer.code == SSH_TROUBLE {
+            return Err(Missed::gone(answer.refusal(&what, &self.name)));
+        }
         if answer.code != 0 && answer.out.is_empty() {
-            return Err(answer.refusal(&what, &self.name));
+            return Err(Missed::gone(answer.refusal(&what, &self.name)));
         }
         let at = find(&answer.out, tag.as_bytes()).ok_or_else(|| {
-            format!(
+            Missed::gone(format!(
                 "{} answered without this gate's marker: {}",
                 self.name,
                 tail(&String::from_utf8_lossy(&answer.out), 400)
-            )
+            ))
         })?;
         let rest = &answer.out[at + tag.len()..];
         let nl = rest.iter().position(|b| *b == b'\n').unwrap_or(rest.len());
@@ -590,6 +703,102 @@ impl Remote {
 struct Poll {
     exit: Option<i32>,
     bytes: Vec<u8>,
+}
+
+/// **Why a call did not answer**, and whether the far side was reached at all — the same words to
+/// a person and two different verdicts to the gate.
+#[derive(Debug)]
+struct Missed {
+    why: String,
+    /// `true` when nothing reached the machine: ssh could not dial it, the breaker has already
+    /// decided it is down, or the far side ran nothing. `false` when the question was sent and this
+    /// box's own clock ran out first — a machine too busy to answer, which is asked again.
+    unreached: bool,
+}
+
+impl Missed {
+    /// The call was made and no answer came back in time — ask again.
+    fn slow(why: String) -> Missed {
+        Missed {
+            why,
+            unreached: false,
+        }
+    }
+    /// No machine answered — there is nothing to wait for.
+    fn gone(why: String) -> Missed {
+        Missed {
+            why,
+            unreached: true,
+        }
+    }
+}
+
+/// **Where a first gate's time went** — the three phases before the first step, measured, plus what
+/// the host's own build cache was. A cold cache is a whole dependency tree compiled inside the
+/// steps, and a reader who cannot see that reads a slow build as a slow machine.
+#[derive(Default)]
+struct Cost {
+    repo_ms: Option<u64>,
+    checkout_ms: Option<u64>,
+    tree_ms: Option<u64>,
+}
+
+impl Cost {
+    /// One line for the gate's log: what arrived, how long it took, and what the host had room for.
+    fn line(&self, r: &Remote) -> String {
+        let at = |v: Option<u64>| match v {
+            Some(ms) => format!("{:.2} s", ms as f64 / 1000.0),
+            None => "not reached".to_string(),
+        };
+        let transport = self.repo_ms.unwrap_or(0) + self.tree_ms.unwrap_or(0);
+        let cache = if r.cold {
+            "COLD — this gate made it, so the first step below pays for the whole dependency tree"
+        } else {
+            "warm"
+        };
+        format!(
+            "[gate on {}: the repository {}, the checkout {}, the tree {} — {:.2} s of transport; \
+             build cache {cache}; {}]",
+            r.name,
+            at(self.repo_ms),
+            at(self.checkout_ms),
+            at(self.tree_ms),
+            transport as f64 / 1000.0,
+            free_words(r.free_kb),
+        )
+    }
+
+    /// The same line as a paragraph on a failure, or nothing at all when no phase was measured.
+    fn said(&self, r: &Remote) -> String {
+        if self.repo_ms.is_none() && self.checkout_ms.is_none() && self.tree_ms.is_none() {
+            return String::new();
+        }
+        format!("\n\n{}", self.line(r))
+    }
+}
+
+/// Free space as a sentence says it.
+fn free_words(kb: Option<u64>) -> String {
+    match kb {
+        Some(kb) if kb >= 1024 * 1024 => {
+            format!("{:.1} GiB free on that filesystem", kb as f64 / (1024.0 * 1024.0))
+        }
+        Some(kb) => format!("{:.1} MiB free on that filesystem", kb as f64 / 1024.0),
+        None => "free space unknown there".to_string(),
+    }
+}
+
+/// **The step's tail, and what the gate was doing when its deadline came** — a verdict has to say
+/// that the last minutes of it were spent asking a question nobody answered.
+fn said_with_misses(tail: String, missed: u32, last: &str) -> String {
+    if missed == 0 {
+        return tail;
+    }
+    format!(
+        "{tail}\n\n[gate: {missed} poll(s) in a row were not answered within {} s while this step \
+         ran — the last said: {last}]",
+        POLL_BOUND.as_secs()
+    )
 }
 
 /// A far-side step's exit status as [`StepExit`] — and the difference matters, which is why this
@@ -858,11 +1067,11 @@ fn run(
     within: Duration,
     fed: Option<&[u8]>,
     report: bool,
-) -> Result<Answer, String> {
-    let pass = rpc::before(host).map_err(|why| format!("{what}: {why}"))?;
+) -> Result<Answer, Missed> {
+    let pass = rpc::before(host).map_err(|why| Missed::gone(format!("{what}: {why}")))?;
     let began = Instant::now();
     let ended = {
-        let _slot = rpc::enter(host, within).map_err(|why| format!("{what}: {why}"))?;
+        let _slot = rpc::enter(host, within).map_err(|why| Missed::slow(format!("{what}: {why}")))?;
         match fed {
             Some(bytes) => rpc::run_bounded_fed(program, argv, within, bytes),
             None => rpc::run_bounded(program, argv, within),
@@ -887,12 +1096,15 @@ fn run(
             err: out.stderr,
             code: out.status.code().unwrap_or(-1),
         }),
-        rpc::Ended::TimedOut => Err(format!(
+        // **The clock, not the machine.** This is the one failure that says nothing about whether
+        // the host is there — the question was sent and this box gave up waiting — so it comes back
+        // as a miss a caller may ask again rather than as an unreachable host.
+        rpc::Ended::TimedOut => Err(Missed::slow(format!(
             "{what} on {host} did not answer within {} s and the ssh this daemon started was \
              killed with its whole process group",
             within.as_secs()
-        )),
-        rpc::Ended::Unstartable(e) => Err(format!("{what}: {e}")),
+        ))),
+        rpc::Ended::Unstartable(e) => Err(Missed::gone(format!("{what}: {e}"))),
     }
 }
 
@@ -903,7 +1115,7 @@ fn run_poll(
     program: &Path,
     argv: &[String],
     within: Duration,
-) -> Result<Answer, String> {
+) -> Result<Answer, Missed> {
     run(what, host, program, argv, within, None, false)
 }
 
@@ -919,7 +1131,8 @@ fn call_ok(ssh: &Ssh, what: &str, script: &str, within: Duration) -> Result<Stri
         within,
         None,
         true,
-    )?;
+    )
+    .map_err(|m| m.why)?;
     if answer.code == 0 {
         Ok(String::from_utf8_lossy(&answer.out).into_owned())
     } else {

@@ -100,6 +100,7 @@ fn inner() {
     let alive = || true;
     let ctl = GateControl {
         deadline: Instant::now() + Duration::from_secs(120),
+        budget: Duration::from_secs(120),
         stop: &stop,
         alive: &alive,
     };

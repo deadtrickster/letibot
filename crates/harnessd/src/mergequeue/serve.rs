@@ -49,6 +49,20 @@ pub const MAX_REVIEW_ATTEMPTS: u32 = 3;
 /// Reviews a repository runs at once.
 pub const MAX_REVIEWING: usize = 2;
 
+/// **The clause a target's health row leads with when its gate could not run** — nothing was
+/// judged, so nothing is in doubt about the code, and the row stays `gating` until the retry window
+/// is out. Read off the row (`health`), so a restart in the middle of the window waits out what is
+/// left of it rather than starting the gate again.
+pub const UNJUDGED_RETRY: &str = "the gate could not run on this pass";
+
+/// **How long a tip whose gate could not run waits before it is gated again** — a minute.
+///
+/// The two bounds it sits between: short enough that a host that was merely busy costs the queue a
+/// minute and not a `/queue regate`, and long enough that a machine which is down or saturated is
+/// not dialled on every pass — the worker's pass loop goes again at once when it worked, so without
+/// a window a broken `gate_host` would be one ssh attempt per second, for ever.
+pub const UNJUDGED_RETRY_MS: u64 = 60 * 1000;
+
 /// **Where the queues reach sessions** — the review queue's session, a project's main session,
 /// and every hub. A trait so the tests record and the daemon rings.
 pub trait QueueDoor: Send + Sync {
@@ -618,6 +632,7 @@ impl RepoQueue {
         let lease = self.lease_ok.clone();
         let runner = self.env.gate.clone();
         let deadline = Instant::now() + self.env.gate_deadline;
+        let budget = self.env.gate_deadline;
         let stop = cancel.clone();
         let short: String = sha.chars().take(8).collect();
         let run = std::thread::Builder::new()
@@ -626,6 +641,7 @@ impl RepoQueue {
                 let alive = move || lease.load(Ordering::Relaxed);
                 let ctl = GateControl {
                     deadline,
+                    budget,
                     stop: &stop,
                     alive: &alive,
                 };
@@ -1574,6 +1590,19 @@ impl RepoQueue {
         {
             return Ok(Health::Known(h, false));
         }
+        // **A gate that could not run waits out its retry window.** The row is `gating` and carries
+        // the sentence that stopped it, so the tip is neither judged nor blocked — but the host is
+        // not dialled on every pass either: the window is what keeps a machine that is down or busy
+        // from being asked once a second. `Gating` with a plain *gating* evidence is a gate that is
+        // on its thread right now and has nothing to wait for.
+        if let Some(h) = self.store.target_health(&self.key, target)?
+            && h.sha == tip
+            && h.state == HealthState::Gating
+            && h.evidence.starts_with(UNJUDGED_RETRY)
+            && now.saturating_sub(h.checked_ms) < UNJUDGED_RETRY_MS
+        {
+            return Ok(Health::Known(h, false));
+        }
         let mut h = TargetHealth {
             repository: self.key.clone(),
             target: target.into(),
@@ -1657,6 +1686,17 @@ impl RepoQueue {
                 }
             }
             GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
+            // **A gate that could not run is not a verdict about the code, and it is not a halt.**
+            // The tip goes back to `gating` with the sentence that stopped it, and the next pass
+            // after the retry window gates it again: a machine that was slow, busy or briefly gone
+            // must not stop the queue landing anything, which is what `blocked` does.
+            //
+            // A step KILLED at the gate's memory cap is the exception, and stays `blocked`: that
+            // one ran, so re-running it with the same cap kills it the same way, and the backoff in
+            // `verbs::regate_at_start` is what keeps it from being a loop.
+            GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
+                return self.unjudged(h, w, run.steps);
+            }
             GateVerdict::Infra(w) => (HealthState::Blocked, w, run.steps),
             GateVerdict::Stopped(_) => {
                 // Judged nothing: the row stays `gating`, and the next pass (here or in the next
@@ -1665,6 +1705,38 @@ impl RepoQueue {
             }
         };
         self.judged(&mut h, state, evidence, steps)
+    }
+
+    /// **A gate that could not run** — the tip stays UNJUDGED, the queue keeps moving, and the row
+    /// says both. `HealthState::Blocked` is for a tip nobody can judge at all (no declared gate, a
+    /// landing tree that cannot be made); a host that did not answer in time is not that, and
+    /// treating it as that is what halted both queues on 2026-10-30.
+    fn unjudged(
+        &self,
+        mut h: TargetHealth,
+        why: String,
+        steps: Vec<letibot_tokencore::store::MergeGateStep>,
+    ) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        h.state = HealthState::Gating;
+        h.evidence = format!(
+            "{UNJUDGED_RETRY}: {why}\n\nNothing was judged about the code — the tip is UNJUDGED, \
+             not red, and the queue is not halted by it. It is gated again on the next pass once \
+             {} s have passed.",
+            UNJUDGED_RETRY_MS / 1000
+        );
+        h.gate_steps = steps;
+        h.checked_ms = gate::now_ms();
+        self.store.set_target_health(&h, &me)?;
+        self.announce_move("target", &h.target, "gating", &h.evidence);
+        // Once per tip (`alarm` is deduped on the store), so a host that is down for an hour is one
+        // warning and not sixty.
+        self.alarm(
+            &h,
+            "target_unjudged",
+            super::notices::target_unjudged(&h, &self.key),
+        )?;
+        Ok(())
     }
 
     /// **Write a target's verdict** and say what it means.
@@ -1944,6 +2016,14 @@ impl RepoQueue {
             .merge_rows(Some(&self.key))?
             .into_iter()
             .filter(|m| m.state == MergeState::Queued && m.target == target)
+            // **A row whose own gate could not run waits out its window.** It went back in line
+            // with the sentence that stopped it (`land`'s Infra arm), and without this it would be
+            // taken again on the very next pass — one ssh attempt per second at a host that is
+            // down, and a queue that never settles.
+            .filter(|m| {
+                !(m.evidence.starts_with(UNJUDGED_RETRY)
+                    && gate::now_ms().saturating_sub(m.state_ms) < UNJUDGED_RETRY_MS)
+            })
             .collect();
         if queued.is_empty() {
             return Ok(false);
@@ -2239,6 +2319,32 @@ impl RepoQueue {
                     MergeState::Queued,
                     Move::new(&me, format!("{w}; it goes back in line and is gated again"))
                         .set("gate_steps_json", rows_json(&run.steps)),
+                )?;
+                return Ok(());
+            }
+            GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
+                // **The branch was not judged, and nothing about it is in doubt** — so it goes back
+                // in line rather than being parked `blocked` behind a host that was slow to
+                // answer. `land_next` keeps it out of the next passes until its window is out.
+                self.raise(
+                    "queue_blocked",
+                    format!(
+                        "`{}` was not judged: {w}. Nothing lands until its gate can run, and it \
+                         goes back in line and is gated again",
+                        row.branch
+                    ),
+                );
+                self.gating_to(
+                    row,
+                    MergeState::Queued,
+                    Move::new(
+                        &me,
+                        format!(
+                            "{UNJUDGED_RETRY}: {w}\n\nNothing was judged about the branch, so it \
+                             goes back in line and is gated again"
+                        ),
+                    )
+                    .set("gate_steps_json", rows_json(&run.steps)),
                 )?;
                 return Ok(());
             }

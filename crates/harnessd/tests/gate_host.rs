@@ -144,6 +144,7 @@ impl Rig {
         let alive = || true;
         let ctl = GateControl {
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(seconds),
+            budget: std::time::Duration::from_secs(seconds),
             stop: &stop,
             alive: &alive,
         };
@@ -265,6 +266,16 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let run = rig.gate(&["echo started; sleep 60; echo finished"], 2);
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::TimedOut);
+    // **The sentence names the step's own bound** — the gate's deadline, here two seconds, and not
+    // any poll's: a step is minutes and a question about the host is seconds, and a verdict that
+    // does not say which clock ran out cannot be acted on.
+    let GateVerdict::TimedOut(why) = &run.verdict else {
+        unreachable!()
+    };
+    assert!(
+        why.contains("the gate's own deadline passed (2 s)"),
+        "{why}"
+    );
     assert!(
         run.steps[0].output.contains("started"),
         "{:#?}",
@@ -286,6 +297,120 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
         .filter(|l| l.contains("sleep 60") && l.contains(&rig.dir.display().to_string()))
         .collect();
     assert!(mine.is_empty(), "stranded on the host: {mine:?}");
+}
+
+/// **A fake ssh whose polls are slow** — the 2026-10-30 shape. The steps are `echo`s and finish in
+/// milliseconds; what takes the time is the QUESTION, because the machine was busy compiling
+/// something else. The first poll sleeps twelve seconds (longer than the ten a poll was once
+/// allowed), and the second sleeps thirty-five (longer than the thirty it is allowed now, so it
+/// misses).
+const SLOW_POLL_SSH: &str = "#!/bin/bash\n\
+     export HOME=\"$FAKE_HOME\"\n\
+     export PATH=\"$FAKE_PATH\"\n\
+     while [ $# -gt 0 ]; do\n\
+       case \"$1\" in\n\
+         -i|-o|-p|-l|-F|-e|-c) shift 2;;\n\
+         -*) shift;;\n\
+         *) break;;\n\
+       esac\n\
+     done\n\
+     shift\n\
+     if [ $# -gt 1 ]; then exec \"$@\"; fi\n\
+     case \"$1\" in\n\
+       *@@letibot-gate-*)\n\
+         n=$(cat \"$HOME/polls\" 2>/dev/null || echo 0)\n\
+         n=$((n+1))\n\
+         echo $n > \"$HOME/polls\"\n\
+         case $n in 1) sleep 12;; 2) sleep 35;; esac\n\
+         ;;\n\
+     esac\n\
+     exec bash -lc \"$1\"\n";
+
+/// **A host busy enough to be slow to answer is not a host that failed the gate** — the halt of
+/// 2026-10-30, pinned, twice over.
+///
+/// The first gate on `lab2x1` ran `cargo test --workspace` with 25 of its 32 cores busy, one poll
+/// took longer than the ten seconds a poll was allowed, and a step that had been running for four
+/// minutes was killed and reported as *the gate could not run* — which blocked the target and
+/// halted both queues. Two facts, and the incident needed both:
+///
+/// * a poll that takes twelve seconds **is an answer**, not a failure — the bound is a question
+///   about the machine, and a busy machine takes seconds to fork a shell;
+/// * a poll that misses is **asked again** — the answer is `tail -c +<offset>`, so nothing is lost,
+///   and only the step's own deadline (or a machine that is not there at all) may end it.
+#[test]
+fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
+    let _only = only_rig();
+    let rig = Rig::new("slowpoll", SLOW_POLL_SSH);
+    let began = std::time::Instant::now();
+    let run = rig.gate(&["echo the first step", "echo the second step"], 120);
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    assert_eq!(run.steps[0].outcome, MergeGateOutcome::Passed);
+    assert!(
+        run.steps[0].output.starts_with("the first step"),
+        "{:#?}",
+        run.steps[0]
+    );
+    assert_eq!(run.steps[1].outcome, MergeGateOutcome::Passed);
+    assert!(
+        run.steps[1].output.starts_with("the second step"),
+        "{:#?}",
+        run.steps[1]
+    );
+    // 12 s for the first poll, and 30 s for the second — which is where it was killed and asked
+    // again, and the retry answered at once. Both halves of the incident are in this number.
+    assert!(
+        began.elapsed() >= std::time::Duration::from_secs(42),
+        "the polls really were slow ({:?}) — otherwise this test proves nothing",
+        began.elapsed()
+    );
+}
+
+/// **The gate's log says where a first run's time went** — transport, checkout, and whether the
+/// build cache was this gate's own. A cold cache is a whole dependency tree compiled inside the
+/// steps, and a reader who cannot see that reads a slow build as a slow machine.
+#[test]
+fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold() {
+    let _only = only_rig();
+    let rig = Rig::new("costnote", FAKE_SSH);
+    // A step that puts something IN the cache, because an empty `target/` is not a cache — the
+    // question `open` asks is whether this gate is the one that makes it.
+    let first = rig.gate(
+        &["echo one > \"$CARGO_TARGET_DIR/made-by-the-first-gate\"; echo one"],
+        120,
+    );
+    assert_eq!(first.verdict, GateVerdict::Passed, "{first:#?}");
+    let note = first.steps[0]
+        .output
+        .lines()
+        .find(|l| l.starts_with("[gate on fake:"))
+        .unwrap_or_else(|| panic!("no cost note in {:#?}", first.steps[0]));
+    assert!(note.contains("the repository "), "{note}");
+    assert!(note.contains("the checkout "), "{note}");
+    assert!(note.contains("the tree "), "{note}");
+    assert!(note.contains("build cache COLD"), "{note}");
+    assert!(!note.contains("not reached"), "{note}");
+    // The second gate reuses the cache it made, and the note says so rather than claiming another
+    // cold build.
+    let second = rig.gate(&["echo two"], 120);
+    assert_eq!(second.verdict, GateVerdict::Passed, "{second:#?}");
+    assert!(
+        second.steps[0]
+            .output
+            .contains("[gate on fake: the repository "),
+        "{:#?}",
+        second.steps[0]
+    );
+    assert!(
+        second.steps[0].output.contains("build cache warm"),
+        "{:#?}",
+        second.steps[0]
+    );
+    assert!(
+        !second.steps[0].output.contains("build cache COLD"),
+        "{:#?}",
+        second.steps[0]
+    );
 }
 
 /// **A host that cannot be reached is a verdict with a sentence, in seconds** — not a hang and
