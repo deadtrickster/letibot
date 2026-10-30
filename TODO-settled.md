@@ -1012,7 +1012,8 @@ Routine — drawn dim, with the `·` the head already uses for a factual line, c
 | `mode_set` | the answer to the operator's own `/mode` |
 | `mode_set_next_session_only` | the project row moved; this one cannot carry the point |
 | `mode_session_only` | a consented `allow-all` is this session's, deliberately not written to the row |
-| `model_endpoint_retry` | the server did not answer and the round is being taken again |
+| `model_endpoint_retry` | the server did not answer and the round is being taken again — one row per outage, carrying the count |
+| `model_endpoint_answered` | the endpoint that did not answer came back; said once, with the count and how long it was out |
 | `interrupt_idle`, `promote_idle` | their interrupt / promote arrived between turns, with nothing to do |
 | `daemon_stopping` | somebody asked this daemon to stop; the session is on disk |
 | `resume_note`, `open_note` | the store's own note about what a resume or an open did |
