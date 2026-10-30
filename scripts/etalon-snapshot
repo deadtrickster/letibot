@@ -41,22 +41,42 @@ python3 "$HERE/scripts/etalon-extract.py" --out "$RAW" 2> >(tee "$DEST/$NAME.ext
 # The checks. Every pattern here has a story: the key body is the host's ground
 # truth; the password literal was found in 950 commands; the rest are the
 # fleet's own credential shapes. A hit fails the snapshot.
-declare -A CHECKS=(
-  [openssh_key_body]='b3BlbnNzaC1rZXktdjE[A-Za-z0-9+/]{20}'
+#
+# **Two parallel arrays and not `declare -A`.** This script is run by hand on the
+# operator's Mac, whose `/bin/bash` is 3.2.57: an associative array is bash 4's, and the
+# `declare` there answers `declare: -A: invalid option` and then dies on the SAME line —
+# 3.2 evaluates the rejected `[name]=` subscripts as arithmetic, so `set -u` makes the
+# first name an unbound variable (`openssh_key_body: unbound variable`, measured). No
+# check runs, and the snapshot fails for a reason that is not about the corpus. The names
+# are in the same order as the patterns, which also makes the manifest's list the written
+# order rather than a hash order.
+CHECK_NAMES=(
+  openssh_key_body
   # The header alone is not a key — a test fixture printf's one next to a
   # fakeagent (found in the laptop's transcripts). A key is the base64 after it.
-  [pem_key_body]='PRIVATE KEY-----(\\\\n|\\s)*[A-Za-z0-9+/=]{40}'
-  [ragflow_default_password]='infini_rag_flow'
-  [github_token]='gh[pous]_[A-Za-z0-9]{20}'
-  [bearer]='Bearer [A-Za-z0-9._-]{16}'
-  [flowy_token_value]='FLOWY_TOKEN=t[a-z0-9-]{8}'
+  pem_key_body
+  ragflow_default_password
+  github_token
+  bearer
+  flowy_token_value
+)
+CHECK_PATTERNS=(
+  'b3BlbnNzaC1rZXktdjE[A-Za-z0-9+/]{20}'
+  'PRIVATE KEY-----(\\\\n|\\s)*[A-Za-z0-9+/=]{40}'
+  'infini_rag_flow'
+  'gh[pous]_[A-Za-z0-9]{20}'
+  'Bearer [A-Za-z0-9._-]{16}'
+  'FLOWY_TOKEN=t[a-z0-9-]{8}'
 )
 FAILED=0
 CHECKLINES=""
-for k in "${!CHECKS[@]}"; do
-  n="$(grep -cE -e "${CHECKS[$k]}" "$RAW" || true)"
+i=0
+while [ "$i" -lt "${#CHECK_NAMES[@]}" ]; do
+  k="${CHECK_NAMES[$i]}"
+  n="$(grep -cE -e "${CHECK_PATTERNS[$i]}" "$RAW" || true)"
   CHECKLINES+="  $k: $n"$'\n'
   if [ "$n" != "0" ]; then FAILED=1; fi
+  i=$((i + 1))
 done
 if [ "$FAILED" = 1 ]; then
   echo "etalon-snapshot: a redaction check found hits — NOT snapshotting:" >&2

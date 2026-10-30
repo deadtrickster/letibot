@@ -604,6 +604,11 @@ jobs:
           key: aarch64-apple-darwin
       # The launcher runs under `/usr/bin/env bash`, which on a stock Mac is 3.2: an empty
       # array is "unbound" there under `set -u`, which killed the first macOS start.
+      #
+      # **A parse is the cheap half.** `declare -A` parses cleanly and dies at RUN time on
+      # 3.2, so the spelling grep — and the whole list of scripts it covers, which is the
+      # single copy of that list — lives in the guard at the top of `tests/launcher.sh`, run
+      # by the next step.
       - name: The launcher parses under the Mac's own bash 3.2
         run: |
           set -eu

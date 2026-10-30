@@ -92,6 +92,10 @@ pub mod attach;
 pub mod authorise;
 pub mod backend;
 pub mod builtins;
+/// **Which bash the operator's own `!` line is handed to** — `exec::console`'s flags, with
+/// the program chosen from what this box has, because `/bin/bash` on a stock Mac is 3.2 and
+/// the operator's rc is written for 4 or later. See the module note.
+pub mod console_bash;
 /// **A sweep of every gate decision a store ever recorded, replayed through today's
 /// parser and gate.** A development instrument rather than a runtime dependency: it is
 /// what makes *"the parser reads more than it did"* a number. See the module note, and
