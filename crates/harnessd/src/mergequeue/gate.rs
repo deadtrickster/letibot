@@ -88,10 +88,27 @@ pub const GATE_BUILD_JOBS: &str = "CARGO_BUILD_JOBS";
 /// linker and for the test run that follows in the same step.
 pub const GATE_JOB_MEMORY: u64 = 2 << 30;
 
-/// How much of a step's output the row keeps — **what failed, then the end**, because a failure
-/// says which test and why at the TOP of its own block and a workspace run then prints every
-/// other target after it. See [`excerpt`].
+/// **The most a step's row may carry** — the excerpt *and* the note the gate appends after it
+/// ([`StepMemory::evidence`]), because a cap two writers spend separately is not a cap. The row
+/// is **what failed, then the end**: a failure says which test and why at the TOP of its own
+/// block, and a workspace run then prints every other target after it. See [`excerpt`].
 pub const EVIDENCE_BYTES: usize = 4_096;
+
+/// **The room the row keeps for the note it appends after the excerpt** — [`StepMemory::evidence`],
+/// the line about the step's cgroup and the exit code.
+///
+/// MEASURED 2026-10-30 on `lab2x1`: that sentence is not a fixed size. When the daemon has no
+/// scope of its own it says so and NAMES the cgroup it shares — `/sys/fs/cgroup/user.slice/…/
+/// session-80945.scope` — which is ~370 bytes there and ~90 on a Mac, where the same sentence
+/// stops at `No such file or directory`. Two rows of one 4 KiB cap therefore came out 4 397 bytes
+/// on the host and under 4 096 here, on one commit and one fixture: the excerpt was inside its cap
+/// both times and the note was spent outside it. The room is now taken before the tail is cut,
+/// and [`judge`] clips the note to it, so the row is inside the cap on every platform.
+const NOTE_BYTES: usize = 512;
+
+/// **The most of a step's output the excerpt may take** — [`EVIDENCE_BYTES`] less the note and the
+/// newline before it. This is the cap [`read_excerpt`] hands [`excerpt`].
+const EXCERPT_BYTES: usize = EVIDENCE_BYTES - NOTE_BYTES - 1;
 
 /// **The marker of an INSTALL step** — run after the push, never before it (decision 7). The
 /// gate in `AGENTS.md` lists `sh scripts/install-gate-build.sh` as its last step; a landing that
@@ -705,7 +722,10 @@ pub(crate) fn judge(
         _ => None,
     };
     let evidence = mem.evidence(leftover, exit);
-    let with_memory = |out: String| match &evidence {
+    // **The note is inside the row's cap too** — [`read_excerpt`] leaves [`NOTE_BYTES`] for it,
+    // and this is what makes that a budget rather than an expectation.
+    let note = evidence.map(|line| cut_to(&line, NOTE_BYTES, " …"));
+    let with_memory = |out: String| match &note {
         Some(line) if out.is_empty() => line.clone(),
         Some(line) => format!("{out}\n{line}"),
         None => out,
@@ -1091,22 +1111,42 @@ pub(crate) fn tempfile_in(worktree: &Path) -> Result<PathBuf, String> {
     Ok(dir.join(name))
 }
 
+/// **A step's output as its row keeps it** — [`excerpt`] at [`EXCERPT_BYTES`], the room left of
+/// [`EVIDENCE_BYTES`] once the note [`judge`] appends after it has been paid for. Both machines
+/// read a step's output through here ([`super::gate_host`] included), so the row's arithmetic is
+/// the same on both.
 pub(crate) fn read_excerpt(log: &Path) -> String {
     let bytes = std::fs::read(log).unwrap_or_default();
-    excerpt(&String::from_utf8_lossy(&bytes), EVIDENCE_BYTES)
+    excerpt(&String::from_utf8_lossy(&bytes), EXCERPT_BYTES)
 }
 
-/// The end of `text`, at most `cap` bytes, saying what was left out — `what` names the bytes the
-/// reader is missing.
+/// The end of `text`, **at most `cap` bytes in all** — the line that says what was left out is
+/// inside the cap and not added to it, and it names the byte count it actually dropped. `what`
+/// names the bytes the reader is missing.
 fn end_of(text: &str, cap: usize, what: &str) -> String {
     if text.len() <= cap {
         return text.to_string();
     }
-    let mut start = text.len() - cap;
+    // **The marker's own width depends on the number in it**, so the room left for the tail is
+    // taken from the WIDEST marker this text can produce — its length's own digits. A narrower
+    // one then leaves a few bytes of the cap unused, which is the harmless direction.
+    let marker = |dropped: usize| format!("… [{dropped} byte(s) {what}]\n");
+    let room = cap.saturating_sub(marker(text.len()).len());
+    let mut start = text.len().saturating_sub(room);
     while start < text.len() && !text.is_char_boundary(start) {
         start += 1;
     }
-    format!("… [{start} byte(s) {what}]\n{}", &text[start..])
+    let out = format!("{}{}", marker(start), &text[start..]);
+    if out.len() <= cap {
+        return out;
+    }
+    // Only a cap too small to hold the marker itself reaches here, and the cap is a cap: what is
+    // left is cut at a character boundary rather than returned over it.
+    let mut end = cap;
+    while end > 0 && !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out[..end].to_string()
 }
 
 /// The end of `text`, at most `cap` bytes, saying how much was dropped from the front.
@@ -1128,8 +1168,9 @@ const PANIC_LINES: usize = 2;
 /// The width a quoted line is clipped to, so one long assertion cannot fill the section.
 const QUOTED_WIDTH: usize = 240;
 
-/// **The room reserved for the line that says the end follows** — [`end_of`]'s marker.
-const MARKER_BYTES: usize = 128;
+/// **What the failure section says when the cap cannot hold even it** — the LAST thing cut, and
+/// only when there is nothing else left to cut.
+const SECTION_CUT: &str = "\n[gate excerpt: the failure section itself was cut here]";
 
 /// **The least tail worth keeping** — below this the end is left out and the section says so,
 /// rather than the reader getting a marker and three lines.
@@ -1192,6 +1233,28 @@ fn clip(s: &str, width: usize) -> String {
         end -= 1;
     }
     format!("{} …", &s[..end])
+}
+
+/// `s` cut to **at most `room` bytes** and ending with `marker` — the marker is inside the room,
+/// not added to it. When even the marker does not fit, the marker is what gives way: the answer is
+/// never longer than the room, because a cap that is exceeded by the sentence about exceeding it
+/// is how the row came out 338 bytes over on `lab2x1`.
+fn cut_to(s: &str, room: usize, marker: &str) -> String {
+    let mut end = room.saturating_sub(marker.len()).min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut out = String::with_capacity(room);
+    out.push_str(&s[..end]);
+    out.push_str(marker);
+    if out.len() > room {
+        let mut at = room;
+        while at > 0 && !out.is_char_boundary(at) {
+            at -= 1;
+        }
+        out.truncate(at);
+    }
+    out
 }
 
 /// The number immediately before `what` in `s` — `782` for `… 782 passed; 1 failed; …`.
@@ -1432,10 +1495,7 @@ impl Failures {
         }
         let budget = budget.min(FAILURE_BYTES);
         if out.len() > budget {
-            out = format!(
-                "{}\n[gate excerpt: the failure section itself was cut here]",
-                clip(&out, budget)
-            );
+            out = cut_to(&out, budget, SECTION_CUT);
         }
         out
     }
@@ -1451,6 +1511,12 @@ impl Failures {
 /// `running 0 tests` — so the gate could not say which test, and the same command by hand passed
 /// both times. The failure is now extracted from the WHOLE stream ([`failures`]), the tail is what
 /// gets cut, and when even the tail has to go the section says so.
+///
+/// **The cap is a cap, and it is spent in this order**: the failure section and the footer first
+/// (they are what the excerpt is FOR), then the end of the step's output, and the section only
+/// when the cap cannot hold even it — so the tail of the output is the first thing clipped and the
+/// section is never clipped to make room for the tail. The line that says what was left out is
+/// inside the cap too, and its byte count is the one it really dropped.
 pub fn excerpt(text: &str, cap: usize) -> String {
     if text.len() <= cap {
         return text.to_string();
@@ -1461,22 +1527,37 @@ pub fn excerpt(text: &str, cap: usize) -> String {
     }
     let words = f.words(cap);
     let pointer = f.pointer();
-    let room = cap.saturating_sub(words.len() + pointer.len() + 2 + MARKER_BYTES);
-    if room < MIN_TAIL {
-        return format!(
-            "{words}\n[gate excerpt: the end of the step's output is left out — it is {} byte(s) \
-             in all — because what failed is above]\n{pointer}",
+    let room = cap.saturating_sub(words.len() + pointer.len() + 2);
+    let out = if room < MIN_TAIL {
+        // No room for the end. The section and the footer stay, and if the cap cannot hold both
+        // the section is what gives way — it is still the last thing to be cut.
+        let left_out = format!(
+            "[gate excerpt: the end of the step's output is left out — it is {} byte(s) in all — \
+             because what failed is above]",
             text.len()
         );
-    }
-    format!(
-        "{words}\n{}\n{pointer}",
-        end_of(
-            text,
-            room,
-            "of the step's output were left out here; its end follows"
+        let budget = cap.saturating_sub(left_out.len() + pointer.len() + 2);
+        format!(
+            "{}\n{left_out}\n{pointer}",
+            cut_to(&words, budget, SECTION_CUT)
         )
-    )
+    } else {
+        format!(
+            "{words}\n{}\n{pointer}",
+            end_of(
+                text,
+                room,
+                "of the step's output were left out here; its end follows"
+            )
+        )
+    };
+    // **Enforced, not aimed at.** Every budget above is exact, and this is what makes the cap a
+    // fact about the answer rather than about the arithmetic that produced it.
+    if out.len() <= cap {
+        out
+    } else {
+        cut_to(&out, cap, "")
+    }
 }
 
 /// `<worktree>/target`, absolute.
@@ -2251,7 +2332,7 @@ mod tests {
             "the notice's own cut still loses the test:\n{for_the_model}"
         );
         assert!(
-            ex.len() <= EVIDENCE_BYTES + 256,
+            ex.len() <= EVIDENCE_BYTES,
             "the excerpt is {} byte(s), over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
             ex.len()
         );
@@ -2388,7 +2469,79 @@ exit 101
             assert!(out.contains(want), "{want:?} is not on the row:\n{out}");
             assert!(why.contains(want), "{want:?} is not in the verdict:\n{why}");
         }
-        assert!(out.len() <= EVIDENCE_BYTES + 256, "{}", out.len());
+        assert!(
+            out.len() <= EVIDENCE_BYTES,
+            "the row is {} byte(s) against a {EVIDENCE_BYTES}-byte cap:\n{out}",
+            out.len()
+        );
         let _ = std::fs::remove_dir_all(&wt);
+    }
+
+    /// **The row's cap covers the note the gate writes after the excerpt** — the red `main` of
+    /// 2026-10-30 in one fixture, and it is the test that would have caught it.
+    ///
+    /// `lab2x1`'s gate came out **4 397 bytes** against a 4 096-byte cap and this Mac's came out
+    /// under it, on one commit and one fixture, because [`StepMemory::evidence`] appends a
+    /// sentence after the excerpt and that sentence NAMES the cgroup the daemon shares: a
+    /// `/sys/fs/cgroup/user.slice/…/session-N.scope` path on Linux, and a bare `No such file or
+    /// directory` on a Mac. The excerpt was inside its cap both times.
+    ///
+    /// **Nothing here is a number that happened to work**: the tail is the cap's own length of one
+    /// line — the boundary the marker's arithmetic is tightest at — and the note is the longest
+    /// one this gate can write.
+    #[test]
+    fn a_row_whose_end_is_as_big_as_the_cap_allows_still_fits_beside_the_gate_note() {
+        let why = format!(
+            "this daemon shares its cgroup \
+             `/sys/fs/cgroup/user.slice/user-1000.slice/session-{}.scope` with 4 other \
+             process(es) — it was not started in a scope of its own (the `letibot` launcher does \
+             that with `systemd-run --user --scope`), so tool calls run UNCAPPED",
+            9_999_999
+        );
+        let mut text = a_failing_workspace_run();
+        text.push_str(&"x".repeat(EVIDENCE_BYTES));
+        text.push('\n');
+
+        let log = std::env::temp_dir().join(format!("letibot-gate-cap-{}.log", std::process::id()));
+        std::fs::write(&log, &text).unwrap();
+        let row = judge(
+            "cargo test --workspace --no-fail-fast",
+            StepEnd::Red(read_excerpt(&log), StepExit::Code(101)),
+            StepMemory::Uncapped(why),
+            0,
+            Duration::from_secs(60),
+        )
+        .output;
+        let _ = std::fs::remove_file(&log);
+
+        for want in [
+            "first failing test `worker::a_test`",
+            "panicked at crates/harnessd/src/worker.rs:12:5",
+            "[gate memory: uncapped",
+            "[step: exit code 101]",
+        ] {
+            assert!(row.contains(want), "{want:?} is not on the row:\n{row}");
+        }
+        assert!(
+            row.len() <= EVIDENCE_BYTES,
+            "the row is {} byte(s) against a {EVIDENCE_BYTES}-byte cap — the note was spent \
+             outside it:\n{row}",
+            row.len()
+        );
+    }
+
+    /// **And the end of a stream that names no failure is inside the cap too** — [`tail`]'s marker
+    /// says what it dropped, and the marker is part of what it was given, not added to it.
+    #[test]
+    fn the_end_of_a_stream_that_names_nothing_is_within_the_cap() {
+        let text = "warning: function `f` is never used\n".repeat(EVIDENCE_BYTES / 8);
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        assert!(ex.starts_with("… ["), "the cut has to be admitted:\n{ex}");
+        assert!(ex.contains("byte(s) dropped from the front]"), "{ex}");
+        assert!(
+            ex.len() <= EVIDENCE_BYTES,
+            "the end is {} byte(s) against a {EVIDENCE_BYTES}-byte cap",
+            ex.len()
+        );
     }
 }
