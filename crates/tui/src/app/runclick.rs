@@ -198,8 +198,23 @@ impl App {
                 return None;
             }
             return match self.newest_run_id() {
-                Some(run) => {
+                // **A run with no thinking in it is not opened on the thinking.** `run_skips`
+                // drops every `ToolResult` row and every empty-text `Assistant` row when the kind
+                // asked for is the thinking, so lifting a run that holds none of it would hide
+                // the calls it DOES hold and draw nothing in their place — `[3 tool calls]`
+                // vanished, the run blank. That is the mirror of *"clicked on the tools counter —
+                // empty panel"*, on the rung the operator actually runs, and the honest answer is
+                // the sentence plus the way out rather than a press that eats the screen.
+                Some(run) if self.run_holds_thinking(&run) => {
                     self.set_lift(Some(Show::Thinking), &run);
+                    None
+                }
+                Some(_) => {
+                    self.say(
+                        "nothing to open: the newest run holds no thinking, and this rung hides \
+                         it — `/verbosity normal` draws the reasoning, or click a clause of its \
+                         marker for the kind it does hold",
+                    );
                     None
                 }
                 // Nothing is folded, so there is nothing to open — and a key that silently did
@@ -229,6 +244,42 @@ impl App {
     /// **Flip it** — what `ctrl-r`, `/think`, the config pane's row and a second click all ask.
     pub(crate) fn flip_thinking(&mut self) -> Option<Action> {
         self.set_thinking(!self.thinking_open())
+    }
+
+    /// **Does the run named hold any thinking** — the question a key that opens the thinking has
+    /// to ask before it lifts anything, because `run_skips` hides everything else.
+    ///
+    /// The live tail's answer is the pane's own count (the thinking streamed and not yet a row);
+    /// a run of rows is asked row by row, and only the rows the rung hides count — a reasoning row
+    /// the reader can already see is drawn by the rung and is not what the lift is for.
+    fn run_holds_thinking(&self, run: &str) -> bool {
+        if run == LIVE_RUN {
+            return self.live_work_now().think_lines > 0;
+        }
+        let Some(start) = self.items.iter().position(|it| it.item_id == run) else {
+            return false;
+        };
+        let Some((start, end)) = crate::ui::transcript::markers::unseen_run_at(
+            &self.items,
+            self.visibility,
+            &self.bound_prompts,
+            self.live_work_now(),
+            start,
+        ) else {
+            return false;
+        };
+        (start..end).any(|r| {
+            crate::ui::row_hidden(&self.items, self.visibility, r)
+                && matches!(
+                    self.items[r].item.as_ref(),
+                    // **A row with no words is not thinking.** The marker counts
+                    // `reasoning_display_lines(text)`, so an empty reasoning row is counted by
+                    // nothing and draws nothing — lifting a run that holds only those would hide
+                    // the calls beside them for a screenful of nothing.
+                    Some(letibot_transcript::TranscriptItem::Reasoning { text, .. })
+                        if !text.trim().is_empty()
+                )
+        })
     }
 
     /// **The newest run a key can address**, by the id `payload_sel` names — the live tail's

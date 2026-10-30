@@ -426,13 +426,17 @@ impl App {
                 },
                 None => cfg.clone(),
             };
-            let unseen = if open_run {
-                None
-            } else {
-                unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k)
-            };
+            // **The marker is drawn whether the run is open or not** — see the forward walk's
+            // note: an open run's marker is the header of the rows it lifted, and its clauses are
+            // the toggle that closes it again. The two walks keep the same three states.
+            let unseen = unseen_run_at(&self.items, self.visibility, &self.bound_prompts, live, k);
             carry = unseen.is_some_and(|(start, _)| start < k);
             let joinable = unseen.is_some_and(|(start, _)| run_continues_prose(&self.items, start));
+            // **A row of an OPEN run draws itself under that header**, and a row the click's kind
+            // skips draws nothing. A CLOSED run's rows are not lexed at all.
+            let absorbed_here =
+                crate::app::one_event::is_absorbed(&self.absorbed, &self.notes, &self.dismissed, k);
+            let skipped = open_run && crate::app::runclick::run_skips(self.lift, &self.items[k]);
             // **The marker's text, when this row is the first of the run.** The joining is
             // the assembly loop's, because that is where forward order exists — this walk
             // renders newest first, so the prose this marker continues has not been reached
@@ -458,28 +462,9 @@ impl App {
                     live_here,
                 )
             });
-            let (class, rows) = match unseen {
-                Some((start, _)) if start == k => (
-                    RowClass::Activity,
-                    vec![
-                        marker
-                            .as_ref()
-                            .expect("a marker was built for this row")
-                            .painted(&cfg),
-                    ],
-                ),
-                Some(_) => (RowClass::Other, Vec::new()),
-                None if (crate::app::one_event::is_absorbed(
-                    &self.absorbed,
-                    &self.notes,
-                    &self.dismissed,
-                    k,
-                )) || (open_run
-                    && crate::app::runclick::run_skips(self.lift, &self.items[k])) =>
-                {
-                    (RowClass::Other, Vec::new())
-                }
-                None => item_lines(
+            let (body_class, body) = if (open_run || unseen.is_none()) && !absorbed_here && !skipped
+            {
+                item_lines(
                     &self.items[k],
                     &ItemCtx {
                         cfg: &row_cfg,
@@ -537,7 +522,32 @@ impl App {
                         window_rows: self.screen_rows.saturating_sub(WINDOW_CHROME),
                         replied_to: question_before(&self.items, k).as_deref(),
                     },
-                ),
+                )
+            } else {
+                (RowClass::Other, Vec::new())
+            };
+            let (class, rows) = match unseen {
+                Some((start, _)) if start == k => {
+                    let mut rows = vec![
+                        marker
+                            .as_ref()
+                            .expect("a marker was built for this row")
+                            .painted(&cfg),
+                    ];
+                    rows.extend(body);
+                    (
+                        if open_run {
+                            body_class
+                        } else {
+                            RowClass::Activity
+                        },
+                        rows,
+                    )
+                }
+                // A row of an open run — its header was drawn at the run's first row — and a row
+                // of a closed one, which draws nothing.
+                Some(_) => (body_class, body),
+                None => (body_class, body),
             };
             if !rows.iter().all(|l| l.trim().is_empty()) {
                 // A marker that is about to be the top of the block needs the row above it,
@@ -575,6 +585,20 @@ impl App {
                     let joined = format!("{} {}", block[at].trim_end(), m.painted(&cfg));
                     if visible_width(&joined) <= cfg.width {
                         block[at] = joined;
+                        // **The rows the marker stands over still go in.** The header went onto
+                        // the sentence above it, so only the row's own lines are left — and they
+                        // are the whole of what an OPEN run shows under its marker. This arm
+                        // used to `continue` unconditionally, which was right while a marker was
+                        // only ever drawn for a closed run (where `rows` is the marker itself).
+                        if rows.len() > 1 {
+                            fresh.push(Span {
+                                row: *row,
+                                at: block.len(),
+                                lines: rows.len() - 1,
+                            });
+                            block.extend(rows[1..].iter().cloned());
+                            prev = Some(*class);
+                        }
                         continue;
                     }
                 }

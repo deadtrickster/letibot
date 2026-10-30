@@ -123,6 +123,19 @@ fn find(screen: &[String], needle: &str) -> (u16, u16) {
     panic!("{needle:?} not on screen:\n{}", screen.join("\n"));
 }
 
+/// Where the LAST `needle` starts on the screen — for a frame holding two markers of the same
+/// shape, where the test means the lower one.
+fn find_last(screen: &[String], needle: &str) -> (u16, u16) {
+    for (y, l) in screen.iter().enumerate().rev() {
+        let cells: String = crate::app::keyhints::cells(l).into_iter().collect();
+        if let Some(x) = cells.rfind(needle) {
+            let x = cells[..x].chars().count();
+            return (x as u16, y as u16);
+        }
+    }
+    panic!("{needle:?} not on screen:\n{}", screen.join("\n"));
+}
+
 #[test]
 fn a_click_on_the_tool_calls_opens_them_and_esc_folds_them_back() {
     let mut a = a_run();
@@ -186,6 +199,10 @@ fn hovering_a_part_of_the_marker_lights_it() {
 /// expanded reasoning and tools - when i click"*. The light is worked out from the frame that is
 /// drawn, so the rows the click put under the pointer are lit only if they are clickable
 /// themselves.
+///
+/// **And the marker is drawn again over them** — an open run's marker is its header and its
+/// clauses are the toggle (`a_second_click_on_the_same_clause_puts_it_back`), so the line under
+/// the pointer IS a button and lights. What must not light is the content it opened.
 #[test]
 fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
     let mut a = a_run();
@@ -198,12 +215,21 @@ fn a_click_that_opens_a_run_leaves_no_light_on_what_it_opened() {
     );
     a.key(Key::Click { x: x + 1, y });
     let open = a.screen(200, 40);
+    let (_, marker) = find(&open, "thinking lines");
     for (i, l) in open.iter().enumerate() {
+        if i == marker as usize {
+            continue;
+        }
         assert!(
             !l.contains("\x1b[22;1m"),
             "row {i} is lit after the click: {l:?}"
         );
     }
+    assert!(
+        open[marker as usize].contains("\x1b[22;1m"),
+        "the clause under the pointer is a button and does not say so: {:?}",
+        open[marker as usize]
+    );
 }
 
 /// **A run opened by a click still scrolls, both ways and to both ends** — the operator: *"when i
@@ -403,28 +429,166 @@ fn a_click_on_thinking_and_ctrl_r_are_one_verb() {
 }
 
 /// **A second click on the same clause puts it back** — the operator's *"click once opens, click
-/// again closes"*. The old click only ever set the lift, so the second press was a third way to
-/// open it and the only way back was a key that could not reach the field.
+/// again closes"*, pressed with a real `Key::Click` on a **landed** run: the case in their report,
+/// and the case that needs the marker to still be drawn while the run is open (an open run's
+/// marker is its header). The old click only ever set the lift, so a second press was a third way
+/// to open it, and nothing on the frame produced the toggle's hit at all.
 #[test]
 fn a_second_click_on_the_same_clause_puts_it_back() {
-    const THOUGHT: &str = "THINK-TWICE the round's thinking";
+    let mut a = a_run();
+    let (x, y) = find(&a.screen(200, 40), "3 thinking lines");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 40).join("\n");
+    assert!(
+        open.contains("let me check the file"),
+        "the first click opens the thinking:\n{open}"
+    );
+    // **The marker is still on the screen**, and its clause is still a target — that is what makes
+    // the second press a click at all.
+    let (x, y) = find(&a.screen(200, 40), "3 thinking lines");
+    a.key(Key::Click { x: x + 1, y });
+    assert!(!a.thinking_open(), "the second click did not close it");
+    let closed = a.screen(200, 40).join("\n");
+    assert!(
+        !closed.contains("let me check the file"),
+        "and it is off the screen:\n{closed}"
+    );
+    assert_eq!(a.lift, None);
+}
+
+/// **The marker is drawn while the run it opened is open** — requirement 4, and the exit R29 asks
+/// a disclosure to carry.
+///
+/// Both walks used to ask `unseen_run_at` only when the run was CLOSED (`let unseen = if open_run
+/// { None } else { … }`), so the moment a click lifted a run its marker was gone: the counts line
+/// that says what is open, and the only thing on the frame that toggles it back. A state whose
+/// marker is not drawn is the defect one key removed.
+#[test]
+fn an_open_runs_marker_is_drawn_over_the_rows_it_lifted() {
+    let mut a = a_run();
+    let before = a.screen(200, 40).join("\n");
+    assert!(
+        before.contains("[4 tool calls, 3 thinking lines]"),
+        "the premise: one marker, closed:\n{before}"
+    );
+    let (x, y) = find(&a.screen(200, 40), "3 thinking lines");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 40).join("\n");
+    assert!(
+        open.contains("[4 tool calls, 3 thinking lines]"),
+        "the marker went away when the run opened:\n{open}"
+    );
+    assert!(
+        open.contains("let me check the file"),
+        "and the rows it stands over are drawn under it:\n{open}"
+    );
+    // **The header comes first** — it is the run's first line, not a line under its content.
+    let header = open
+        .lines()
+        .position(|l| l.contains("4 tool calls"))
+        .expect("the marker is on the screen");
+    let body = open
+        .lines()
+        .position(|l| l.contains("let me check the file"))
+        .expect("the thinking is on the screen");
+    assert!(
+        header < body,
+        "the marker is under the rows it lifted:\n{open}"
+    );
+}
+
+/// **`ctrl-r` will not open a run that holds no thinking** — the reviewer's find, and the mirror of
+/// *"clicked on the tools counter — empty panel"*.
+///
+/// At a rung that hides the working, `ctrl-r` opens the newest run's thinking. `run_skips` hides
+/// every `ToolResult` row and every empty-text `Assistant` row when the kind asked for is the
+/// thinking — so lifting a CALLS-ONLY run would hide the calls it does hold and draw nothing in
+/// their place: `[3 tool calls]` vanished, the run blank. The base refused this press with a
+/// sentence; so does this, and the marker is still on the screen.
+#[test]
+fn ctrl_r_will_not_open_a_run_that_holds_no_thinking() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::READ_EDITS);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // A run of calls and nothing else: three results, no reasoning row at all.
+    for i in 0..3u64 {
+        let id = format!("s.{i}");
+        a.apply(ServerFrame::Event(env(
+            1 + i * 2,
+            testing::appended(&id, "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            2 + i * 2,
+            SessionEvent::TranscriptContent {
+                item_id: id,
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: format!("c{i}"),
+                    name: "bash".into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!("CONTENTS-{i}"),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+    }
+    let before = a.screen(100, 30).join("\n");
+    assert!(
+        before.contains("[3 tool calls]"),
+        "the premise: a calls-only run, folded:\n{before}"
+    );
+    a.key(Key::CtrlR);
+    assert_eq!(
+        a.lift, None,
+        "the press lifted a run with no thinking in it"
+    );
+    let after = a.screen(100, 30).join("\n");
+    assert!(
+        after.contains("[3 tool calls]"),
+        "the run's marker is gone and nothing is in its place:\n{after}"
+    );
+    assert!(
+        after.contains("nothing to open"),
+        "the press said nothing, so it reads as a key that does not work:\n{after}"
+    );
+}
+
+/// **A new round drops the pane's lift even when the boundary carries no clock** — the reviewer's
+/// minor find, and the reason the reset does not rest on `same_turn`.
+///
+/// `TurnStarted` fires once per ROUND. `same_turn` compares `began_ms`, and its `None` arm asks
+/// whether the previous pane still reads `Running` — so a wake turn (a job settling, a monitor
+/// firing: `Sessions::wake` stamps no clock) arriving over a running turn is indistinguishable
+/// from another round of it. A lift addressed at the live tail belongs to the round that is over,
+/// so it goes on every boundary whatever the clock says.
+#[test]
+fn a_new_round_drops_the_panes_lift_without_a_clock() {
+    const THOUGHT: &str = "THINK-WAKE the round that is over";
     let mut a = a_live_thought(THOUGHT);
     let (x, y) = find(&a.screen(100, 30), "thinking line");
     a.key(Key::Click { x: x + 1, y });
-    assert!(frame(&mut a).contains(THOUGHT), "the first click opens it");
-    // The marker is gone from the screen once the block is open (the pane draws the thinking in
-    // its place), so the second click is on the same *state* and not on a row: the clause is
-    // recorded from the frame that is drawn, and the open block still draws its own marker when
-    // the round has calls to count. Either way the toggle is the state's.
-    a.open_marker(super::runclick::MarkerHit {
-        y: 0,
-        from: 0,
-        to: 1,
-        run: super::runclick::LIVE_RUN.into(),
-        show: Some(Show::Thinking),
-    });
-    assert!(!a.thinking_open(), "the second click did not close it");
-    assert!(!frame(&mut a).contains(THOUGHT), "and it is off the screen");
+    assert_eq!(
+        a.lift,
+        Some(Show::Thinking),
+        "the premise: the click lifted it"
+    );
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_200,
+        SessionEvent::TurnStarted {
+            turn_id: "r2".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            // **No clock**: a turn the daemon ran without stamping it.
+            began_ms: None,
+        },
+    )));
+    assert_eq!(a.lift, None, "the pane's lift followed into the next round");
 }
 
 /// **A click on a different run's counter does not leave the first one latched** — one panel, one
@@ -492,9 +656,11 @@ fn a_click_on_another_runs_counter_does_not_leave_the_first_open() {
     a.key(Key::Click { x: x + 1, y });
     assert!(frame(&mut a).contains(FIRST), "the first run opened");
     assert_eq!(a.lift, Some(Show::Thinking));
-    // And now a click on the SECOND run's thinking clause.
+    // And now a click on the SECOND run's thinking clause — the lower of the two markers, which
+    // is why the locator is `find_last`: both say `1 thinking line`, and the first run's header
+    // stays on the screen now that it is open.
     let screen = a.screen(100, 30);
-    let (x, y) = find(&screen, "thinking line");
+    let (x, y) = find_last(&screen, "thinking line");
     a.key(Key::Click { x: x + 1, y });
     let now = frame(&mut a);
     assert!(

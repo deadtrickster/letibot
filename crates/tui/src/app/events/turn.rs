@@ -187,16 +187,21 @@ impl App {
                     turn_rows,
                     ..TurnPane::default()
                 });
-                // **A new TURN starts at the default** — the operator's *"then all subsequent
-                // turns go with think open"*.
+                // **A new round's pane starts at the default, and a new TURN drops any panel.**
                 //
-                // The lift a click throws belongs to the work it was thrown on, and a prompt of
-                // the operator's is a new subject: carrying it over is a mode following the
-                // reader into a conversation they did not ask it of. This is the only boundary
-                // allowed to CHANGE the switch — `carry_live_open` at a round's end moves its
-                // address and not its value, and a round of the same prompt is not a boundary
-                // at all (`same_turn` above).
-                if !same_turn {
+                // The operator's *"then all subsequent turns go with think open"*, and the brief's
+                // *"no latching across rounds"*. Two facts and not one:
+                //
+                // * **The pane's half goes on every boundary, unconditionally.** `TurnStarted` is
+                //   one event per ROUND, and the pane is that round's — a lift addressed at
+                //   [`runclick::LIVE_RUN`] belongs to the turn that is over and must not be read
+                //   against the next one. No heuristic decides this, because `same_turn` below is
+                //   a guess about `began_ms` (a wake turn arrives unstamped) and a state reset
+                //   must not rest on one.
+                // * **A panel on a run of ROWS is the reader's**, and only a new prompt — a new
+                //   subject — closes it. A further round of the same prompt leaves it where they
+                //   put it (`carry_live_open` moved its address there at the round's end).
+                if !same_turn || self.payload_sel.as_deref() == Some(runclick::LIVE_RUN) {
                     self.drop_lift();
                 }
                 // A new turn takes the pane away from the previous one, so the
