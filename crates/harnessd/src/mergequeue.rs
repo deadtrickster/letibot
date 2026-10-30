@@ -488,9 +488,84 @@ impl serve::QueueDoor for RegistryDoor {
         }
         Ok(format!("rang {}", roots.join(", ")))
     }
+
+    /// **The same recipients, told in words.** [`ring_repository`] wakes a project's roots and
+    /// leaves what happened to the store; a target that went red has a sentence a person needs and
+    /// a session must act on, so this puts it on each root's own queue — which is a turn for a
+    /// parked one and a message at the next round boundary for a running one.
+    ///
+    /// It answers with who was told and who was not, because *"told nobody"* is the failure this
+    /// exists to make impossible to claim falsely.
+    fn delivers(&self) -> bool {
+        true
+    }
+
+    fn deliver_repository(&self, repository: &str, text: &str) -> Result<String, String> {
+        let store = Store::open(&self.store_path).map_err(|e| e.to_string())?;
+        let roots = self.roots_of(&store, repository);
+        if roots.is_empty() {
+            return Err(format!(
+                "no root session of {repository} is open in this daemon, so nothing would read a \
+                 message about it"
+            ));
+        }
+        let mut told: Vec<String> = Vec::new();
+        let mut missed: Vec<String> = Vec::new();
+        for r in &roots {
+            match self.deliver(r, text) {
+                Ok(_) => told.push(r.clone()),
+                Err(e) => missed.push(format!("`{r}`: {e}")),
+            }
+        }
+        if told.is_empty() {
+            return Err(missed.join("; "));
+        }
+        Ok(format!("told {}", told.join(", ")))
+    }
 }
 
 impl RegistryDoor {
+    /// **A message on one session's own queue, from the queue** — [`RegistryDoor::deliver_repository`]'s
+    /// unit. `Hub::submit` does not refuse a command on a closed hub (it queues it into a queue
+    /// nothing will drain), so `wake_its_own_reader` is the only liveness answer this door has.
+    fn deliver(&self, session_id: &str, text: &str) -> Result<String, String> {
+        let Some(hub) = self.registry.get(session_id) else {
+            return Err(format!(
+                "no session `{session_id}` is live in this daemon, so nothing would read a message \
+                 to it"
+            ));
+        };
+        let from = self
+            .registry
+            .held_ids()
+            .into_iter()
+            .find(|id| letibot_sessionlog::is_gatekeeper_session(id))
+            .unwrap_or_else(|| "the merge queue".to_string());
+        let frame = hub.submit(
+            letibot_sessionlog::hub::DAEMON_SUBMITTER,
+            &format!(
+                "queue-notice-{}",
+                letibot_sessionlog::registry::short_id(session_id)
+            ),
+            0,
+            letibot_sessionlog::CommandKind::Message {
+                from,
+                text: text.to_string(),
+            },
+        );
+        match &frame {
+            letibot_sessionlog::ServerFrame::Accepted { .. } => {
+                if !hub.wake_its_own_reader() {
+                    return Err(format!(
+                        "`{session_id}`'s session went away as the message reached it: its hub is \
+                         closed, so no turn will be started for it"
+                    ));
+                }
+                Ok(format!("`{session_id}` was told"))
+            }
+            other => Err(format!("`{session_id}` refused the message: {other:?}")),
+        }
+    }
     /// **The root sessions this daemon holds whose workspace is `repository`** — not a review
     /// queue's own session, and not a subagent (its root is the one that hears).
     fn roots_of(&self, store: &Store, repository: &str) -> Vec<String> {

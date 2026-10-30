@@ -115,6 +115,11 @@ pub(crate) struct Door {
     pub(crate) scoped: Mutex<Vec<(String, String)>>,
     /// The sessions [`QueueDoor::session_live`] answers `true` for.
     pub(crate) live: Mutex<Vec<String>>,
+    /// `(repository, text)` of every message this door put on a session.
+    pub(crate) delivered: Mutex<Vec<(String, String)>>,
+    /// Whether [`QueueDoor::delivers`] answers true — off by default, so every existing test keeps
+    /// the card-only path exactly.
+    pub(crate) delivers: Mutex<bool>,
 }
 
 impl QueueDoor for Door {
@@ -140,6 +145,16 @@ impl QueueDoor for Door {
     fn ring_repository(&self, repository: &str) -> Result<String, String> {
         self.repositories.lock().unwrap().push(repository.into());
         Ok(format!("rang the roots of {repository}"))
+    }
+    fn delivers(&self) -> bool {
+        *self.delivers.lock().unwrap()
+    }
+    fn deliver_repository(&self, repository: &str, text: &str) -> Result<String, String> {
+        self.delivered
+            .lock()
+            .unwrap()
+            .push((repository.to_string(), text.to_string()));
+        Ok(format!("told the roots of {repository}"))
     }
     fn session_live(&self, session_id: &str) -> bool {
         self.live.lock().unwrap().iter().any(|s| s == session_id)
@@ -1447,6 +1462,40 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
 /// review rings the root of its tree, once** (R76 item 1). FAILS before R76: the only door was
 /// `raise`, a warning on every hub that no model reads.
 #[test]
+/// **A red target puts its sentence on a session, not only on a bell** — the operator's report of
+/// 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring wakes a
+/// project's roots and leaves what happened to the store; a session that is merely woken cannot
+/// act on what it was not told, so the same words the card carries are delivered.
+///
+/// And a door with no sessions (`delivers()` false, every other test here) takes today's path
+/// exactly: the card, and no claim that nobody listened.
+#[test]
+fn a_red_target_is_told_to_a_session_not_only_rung() {
+    let w = World::new("redwords");
+    *w.door.delivers.lock().unwrap() = true;
+    commit(&w.repo, "broken", "x\n", "red");
+    let (wt, base, head) = branch(&w.repo, "b", "b.txt");
+    w.enqueue("b", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+
+    let told = w.door.delivered.lock().unwrap().clone();
+    assert_eq!(told.len(), 1, "one delivery, once: {told:?}");
+    assert_eq!(told[0].0, w.key(), "to the repository the target is");
+    assert!(
+        told[0].1.contains("RED"),
+        "the words name the state: {}",
+        told[0].1
+    );
+    assert!(
+        told[0].1.contains("cargo") || told[0].1.contains("gate"),
+        "and the failing step, so the reader knows what broke: {}",
+        told[0].1
+    );
+    // The card is still the record — a session missing the message finds it there.
+    assert_eq!(w.door.warnings("target_red").len(), 1, "one card too");
+}
+
 fn a_red_target_and_a_blocked_review_ring_the_project_once_each() {
     let w = World::new("ring");
     commit(&w.repo, "broken", "x\n", "red");
