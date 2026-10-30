@@ -1786,7 +1786,21 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
 /// **A reviewer has started on `id` and handed its verdict in at the desk** — the two acts that
 /// belong to the child, and the state the queue's worker then has to read correctly. The row is
 /// left `reviewing` under that child and owned by `me`, which is what the claim wrote.
-fn a_reviewer_has_judged(store: &Store, desk: &ReviewDesk, id: &str, child: &str, branch: &str) {
+///
+/// `tree` is the checkout the reviewer was given, and it is load-bearing rather than decoration:
+/// `review::verdict` asks whether that tree is still there before it writes a judgement (a verdict
+/// about a tree that is gone is not a verdict about the branch, so it is a WAIT). A fixture that
+/// named `""` there would hand the pass a reviewer whose tree does not exist, and the row would
+/// wait for a tree for ever — which is what this fixture did, and what the two tests below caught
+/// when `main` grew that rule (2026-10-30).
+fn a_reviewer_has_judged(
+    store: &Store,
+    desk: &ReviewDesk,
+    id: &str,
+    child: &str,
+    branch: &str,
+    tree: &Path,
+) {
     assert!(
         store
             .move_review(
@@ -1808,7 +1822,7 @@ fn a_reviewer_has_judged(store: &Store, desk: &ReviewDesk, id: &str, child: &str
             branch: branch.into(),
             base_sha: "base".into(),
             head_sha: String::new(),
-            cwd: String::new(),
+            cwd: tree.display().to_string(),
         },
     );
     desk.submit(
@@ -1858,7 +1872,7 @@ fn a_verdict_waiting_at_the_desk_is_not_a_dead_reviewer() {
         ReviewState::Reviewing,
         "claimed by this worker"
     );
-    a_reviewer_has_judged(&s, &desk, "vw", "sub-1", "agent/vw");
+    a_reviewer_has_judged(&s, &desk, "vw", "sub-1", "agent/vw", &wt);
     assert!(
         w.door.live.lock().unwrap().is_empty(),
         "and its session is gone, as a reviewer's is the moment its turn ends"
@@ -1921,7 +1935,7 @@ fn a_verdict_waiting_at_the_deadline_is_not_a_stopped_reviewer() {
     );
     run(&q, 1);
     let s = w.store();
-    a_reviewer_has_judged(&s, &desk, "vd", "sub-1", "agent/vd");
+    a_reviewer_has_judged(&s, &desk, "vd", "sub-1", "agent/vd", &wt);
     // **Alive and past its deadline**: only the deadline is true, so this is the `late` branch and
     // not the `gone` one. Its reviewer is held here so the two cannot be confused.
     w.door.live.lock().unwrap().push("sub-1".into());
@@ -1967,7 +1981,8 @@ fn a_reviewer_that_died_without_handing_a_verdict_in_is_still_re_seated() {
     run(&q, 1);
     let s = w.store();
     // The desk KNOWS this child — the queue's session opened a review on it — and nothing has been
-    // handed in: the reviewer died with its judgement unwritten.
+    // handed in: the reviewer died with its judgement unwritten. Its tree is the branch's worktree,
+    // as a host reviewer's is the checkout it was given.
     desk.opened(
         QUEUE_SESSION,
         "sub-1",
@@ -1977,7 +1992,7 @@ fn a_reviewer_that_died_without_handing_a_verdict_in_is_still_re_seated() {
             branch: "agent/gn".into(),
             base_sha: "base".into(),
             head_sha: String::new(),
-            cwd: String::new(),
+            cwd: wt.display().to_string(),
         },
     );
     assert!(!desk.verdict_waiting("sub-1"), "nothing was handed in");
