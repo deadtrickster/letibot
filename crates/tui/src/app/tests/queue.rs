@@ -1270,7 +1270,7 @@ fn lines_with(rows: &[String], needle: &str) -> Vec<usize> {
 /// **An entry is ONE line, and the id and the sha are on the picked one only.**
 #[test]
 fn an_entry_is_one_line_and_the_id_is_on_the_picked_row_only() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(three_parked_and_a_landing()));
@@ -1335,7 +1335,7 @@ fn an_entry_is_one_line_and_the_id_is_on_the_picked_row_only() {
 /// the first line: the evidence's second line is the overlay's.
 #[test]
 fn a_parked_rows_reason_is_on_its_own_line() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(three_parked_and_a_landing()));
@@ -1410,7 +1410,7 @@ fn a_row_names_its_repository_only_when_the_snapshot_holds_more_than_one() {
 /// row's verbs both say it.
 #[test]
 fn the_lease_the_unqueued_repositories_and_the_archive_are_one_line() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(Vec::new(), Vec::new());
