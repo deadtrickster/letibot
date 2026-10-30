@@ -1,4 +1,4 @@
-<!-- abstract: MEASURED 2026-10-31: `plan_cut` is `Hopeless` when the prompt leaves less than WRITE_ROOM+CUT_MARGIN (24 576) of the window, and the prompt is a fact about `$HOME` (6 709 empty / 7 669 Mac, 6 717 empty / ~8 209 lab2x1) — so every fixture window must be measured, not 32 768. -->
+<!-- abstract: MEASURED 2026-10-31: `plan_cut` is `Hopeless` when the prompt leaves less than WRITE_ROOM+CUT_MARGIN (24 576) of the window, and the prompt is a fact about `$HOME` — so every fixture window must be measured, not 32 768. Plus lab2x1's verification numbers and the 8-token gap between `prefix_tokens()` and the compaction's PROMPT. -->
 
 # A fixture's window is the box's prompt, and the prompt is the HOME's
 
@@ -85,3 +85,32 @@ notes added only 575 tokens because each was indexed), then run the test binary 
 `HOME=<that dir>` and `LETIBOT_VOCAB_GGUF=<absolute path>` (the default GGUF is found under
 `$HOME`). On the Mac that took the prompt 6 709 → 9 283 and turned the four size-shaped
 tests in `wall_refusal.rs` red at `aa6c1b8d`.
+
+## Verified on lab2x1, and the 8-token gap between the two prompt counts
+
+MEASURED 2026-10-31 on lab2x1 at `eeaddc23`, one binary
+(`wall_refusal-7d87b6670f5191e7`), `LETIBOT_REQUIRE_APPARATUS=1`, `env -i` with the same
+`PATH` in every arm, vocabulary = `qwen3.8-flash-next` shard 1 of 6:
+
+| arm | home | prompt | `refused-stuck-test` window | 9 tests |
+|---|---|---|---|---|
+| A | empty (`$HOME` with only `tmp`/`wallfix-target`) | **6 717** | 33 333 | 9 passed |
+| B | + `~/.claude/CLAUDE.md` (14 777 B) + six 1 931 B notes | **9 024** | 35 691 | 9 passed |
+| C | B's home, file reverted to `aa6c1b8d` | 9 024 | 32 768 (hard-coded) | 1 FAILED |
+
+C's words: `compaction FAILED: this session's PROMPT is 9016 token(s) of a 32768 token
+window … Nothing was compacted.` then
+`Err(ContextWall { rounds: 0, resident: 9024, window: 32768 })`. The control that closes it:
+the SAME old binary under arm A's empty home passes (`6717 of 32768`).
+
+**`prefix_tokens()` and the compaction's `PROMPT` differ by 8 tokens on this box** — the
+seated prefix is 9 024 and `plan_cut` is handed 9 016 (and 6 717 / 6 709 for arm A, which is
+why the note above records 6 709 where the log says 6 717). So the fixture's assert
+(`seated + CUT_ROOM < window`) is 8 tokens pessimistic, and a window built from the probe's
+`prefix_tokens()` leaves exactly that much less room than the arithmetic says. Not a bug —
+but do not chase the 8, and do not use 6 709 and 6 717 as if they were two boxes.
+
+The arithmetic all closes, which is how to check a new fixture by hand: `a_session_at_the_wall`
+puts the window at `prompt + 24 576 + (ten_reads − 24 576)/2`, and `ten_reads` is 40 500 in
+this vocabulary — so 39 247 (A) and 41 554 (B), a difference of exactly the prompt's 2 307.
+`a_first_round_already_past_the_window_is_not_sent` uses `2 × prompt`: 13 418 and 18 032.

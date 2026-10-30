@@ -237,7 +237,7 @@ const CUT_MARGIN: u64 = 8_192;
 /// `WRITE_ROOM` and `CUT_MARGIN`. `plan_cut` answers `Hopeless` when the prompt leaves less
 /// than this, and a `Hopeless` fold leaves the refusal it was asked to fold standing — which
 /// is why a window is not a number a fixture may choose: 32 768 leaves 8 192 for the prompt,
-/// and message zero is bigger than that on a box whose `CLAUDE.md` and notes are in it.
+/// and message zero is bigger than that on a box whose instruction file and notes are in it.
 const CUT_ROOM: u64 = letibot_turn::compaction::WRITE_ROOM + CUT_MARGIN;
 
 /// **The prompt this box composes for this seat, in tokens — measured, through the door the
@@ -248,10 +248,11 @@ const CUT_ROOM: u64 = letibot_turn::compaction::WRITE_ROOM + CUT_MARGIN;
 /// So the prompt's size is a fact about the HOME a test runs under, not about the tree.
 /// MEASURED 2026-10-31, one binary and one vocabulary (`qwen3.8-flash-next` shard 1 of 6,
 /// the same file on both boxes): **6 709 on the Mac and 6 717 on lab2x1 with an empty
-/// `$HOME`, and 7 669 / ≈8 209 with each box's real one** — `~/.claude/CLAUDE.md` (8 531 B
-/// on the Mac) and `~/.config/letibot/notes/*.md` are the whole of the difference. A fixture
-/// that wants a window for something — a two-half fold, a history — has to start from this
-/// number, because the same constant is a different fraction of the prompt on every home.
+/// `$HOME`, and 7 669 / ≈8 209 with each box's real one** — the seat's canonical instruction
+/// file under `~/.claude/` (8 531 B on the Mac) and `~/.config/letibot/notes/*.md` are the
+/// whole of the difference. A fixture that wants a window for something — a two-half fold, a
+/// history — has to start from this number, because the same constant is a different fraction
+/// of the prompt on every home.
 ///
 /// `Sessions::open_first` and not `Harness::open`: the daemon's door composes the seat's own
 /// prompt (`Config::seat_prompt`), which is 217 tokens of the difference on the Mac.
@@ -358,7 +359,7 @@ fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
 /// `prompt + CUT_ROOM`, or the two-half fold is `Hopeless` and the wall it was asked to
 /// fold stands; below `prompt + ten reads`, or the reads never overrun it and there is no
 /// wall at all. A hard-coded 32 768 is inside that band on a home whose prompt is small and
-/// outside it on one whose `CLAUDE.md` and notes are in message zero — see
+/// outside it on one whose instruction file and notes are in message zero — see
 /// [`the_prompt_this_box_composes`].
 #[test]
 fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall() {
@@ -588,7 +589,7 @@ fn a_refusal_on_a_stuck_session_still_folds() {
     let vocab = &parts.vocab;
 
     // The window: this box's prompt, the room a two-half fold needs beyond it, and the
-    // reserve a turn needs. Nothing here is a number that fits one home's `CLAUDE.md`.
+    // reserve a turn needs. Nothing here is a number that fits one home's instruction file.
     let prompt = the_prompt_this_box_composes("harnessd-refused-stuck-prompt", &parts, &cfg);
     let window = a_window_the_fold_fits_in(&cfg, prompt);
     let reserve = {
@@ -1057,7 +1058,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
 /// both) — and the turn must stop at round 0 with the wall, and the canned server's one
 /// spare answer must not be what comes back. A 32 768 here was the same platform-shaped
 /// constant as everywhere else in this file: the paste's ~40k is a fact about the
-/// vocabulary, the window's is a fact about the box's `CLAUDE.md`.
+/// vocabulary, the window's is a fact about the box's home.
 #[test]
 fn a_first_round_already_past_the_window_is_not_sent() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
