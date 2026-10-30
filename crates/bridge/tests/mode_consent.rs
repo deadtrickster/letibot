@@ -370,14 +370,29 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     let watched = start("mode-marker: a person is at this one");
     // The ask BLOCKS until the answer settles it, so the person answers from its own thread —
     // which is also the only shape the daemon allows: one head asks, another answers.
+    //
+    // **The ask waits for the person to be ATTACHED, not for a clock.** A daemon with no head
+    // that may decide answers `no head that may decide is attached … besides the one that
+    // asked`, so a spawn followed straight by `set_mode` is a race — and on a busy box the ask
+    // wins it: MEASURED 2026-10-30 on lab2x1, sixteen of these binaries in parallel, **48 of 48
+    // runs failed at `a person confirmed it`** and 0 of 25 alone. `Person::attach` returns once
+    // the daemon has greeted the head, and the daemon attaches the seat BEFORE it writes the
+    // greeting (`serve_conn`'s `seat_in`), so that greeting is the fact to wait for.
     let socket = world.socket.clone();
+    let (attached, is_attached) = mpsc::channel();
     let answering = {
         let watched = watched.clone();
         std::thread::spawn(move || {
             let person = Person::attach(&socket, &watched);
+            attached
+                .send(())
+                .expect("the test is still waiting for the person's head");
             person.answer_the_card(true, PATIENCE)
         })
     };
+    is_attached
+        .recv_timeout(PATIENCE)
+        .expect("the person's head is attached before the ask");
     let yes = bridge
         .set_mode(&watched, "allow-all")
         .expect("a person confirmed it");
@@ -407,13 +422,22 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     // --- and their NO applies nothing ----------------------------------------
     let declined = start("mode-marker: a person says no here");
     let socket = world.socket.clone();
+    let (attached, is_attached) = mpsc::channel();
     let answering = {
         let declined = declined.clone();
         std::thread::spawn(move || {
             let person = Person::attach(&socket, &declined);
+            attached
+                .send(())
+                .expect("the test is still waiting for the person's head");
             person.answer_the_card(false, PATIENCE)
         })
     };
+    // The same fact as the yes above: a head that has not attached is not a head the daemon
+    // will ask, and a `no` it never asked for is a refusal this test would read as the answer.
+    is_attached
+        .recv_timeout(PATIENCE)
+        .expect("the person's head is attached before the ask");
     let no = bridge
         .set_mode(&declined, "allow-all")
         .expect("a no is an answer, not a failure");
