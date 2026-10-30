@@ -228,13 +228,17 @@ fn write_the_big_file(dir: &TempDir, cfg: &mut Config) -> String {
     "big.txt".to_string()
 }
 
+/// The margin `plan_cut` adds beside `WRITE_ROOM`. It is private in `letibot_turn`, so it is
+/// a number here — and the assertion in `a_refusal_on_a_stuck_session_still_folds` is what
+/// fails, with the numbers, if it ever grows.
+const CUT_MARGIN: u64 = 8_192;
+
 /// **The room a two-half fold needs beyond the prompt itself** — `letibot_turn::compaction`'s
-/// `WRITE_ROOM` (16 384) and its `CUT_MARGIN` (8 192). `plan_cut` answers `Hopeless` when
-/// the prompt leaves less than this, and a `Hopeless` fold leaves the refusal it was asked
-/// to fold standing — which is why a window is not a number a fixture may choose: 32 768
-/// leaves 8 192 for the prompt, and message zero is bigger than that on a box whose
-/// `CLAUDE.md` and notes are in it.
-const CUT_ROOM: u64 = 16_384 + 8_192;
+/// `WRITE_ROOM` and `CUT_MARGIN`. `plan_cut` answers `Hopeless` when the prompt leaves less
+/// than this, and a `Hopeless` fold leaves the refusal it was asked to fold standing — which
+/// is why a window is not a number a fixture may choose: 32 768 leaves 8 192 for the prompt,
+/// and message zero is bigger than that on a box whose `CLAUDE.md` and notes are in it.
+const CUT_ROOM: u64 = letibot_turn::compaction::WRITE_ROOM + CUT_MARGIN;
 
 /// **The prompt this box composes for this seat, in tokens — measured, through the door the
 /// daemon uses.**
