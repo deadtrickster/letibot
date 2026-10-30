@@ -119,7 +119,7 @@ impl App {
                 }
             }
         }
-        for (y, row) in out.iter().enumerate() {
+        for (y, row) in out.iter().enumerate().take(self.body_rows) {
             if !row.contains("\u{1b}]8;") {
                 continue;
             }
@@ -580,6 +580,10 @@ impl App {
             out.insert(0, l);
             body_rows += 1;
         }
+        // **The body's height, kept on the head** — the first row of the chrome is where a link
+        // stops being a target: a URL the operator is typing is text, and a click in the middle
+        // of it belongs to the caret. See [`App::draw_links`].
+        self.body_rows = body_rows;
         // Rows the backstop took off the front of the chrome, read before the extend
         // below consumes it — the edge's index has to come down by exactly this many.
         let drained = pre_chrome - chrome.len();

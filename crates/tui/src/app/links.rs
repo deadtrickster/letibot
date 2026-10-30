@@ -56,7 +56,7 @@ pub(crate) fn osc8_spans(row: &str) -> Vec<(usize, usize, String)> {
         }
     }
     // An opener whose closer the row never got — a cut row, which `rano::width::text::truncate`
-    // closes, so this is the belt under that braces. The span is the rest of the row.
+    // closes, so this is the belt under that pair of braces. The span is the rest of the row.
     if let Some((url, from)) = open
         && col > from
     {

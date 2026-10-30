@@ -200,6 +200,22 @@ fn a_row_with_no_link_records_no_link_target() {
     assert!(!a.hits.iter().any(|h| h.target == Target::Link));
 }
 
+/// **A URL in the composer is text, not a link** — a click in the middle of one the operator is
+/// typing belongs to the caret, so the chrome is where a link stops being a target.
+#[test]
+fn a_url_in_the_composer_is_text_and_not_a_link() {
+    let mut a = app();
+    a.set_features(rano::term::Features::ALL);
+    typed(&mut a, "look at https://example.com/x");
+    let frame = a.screen(80, 20);
+    assert!(
+        frame.iter().any(|l| l.contains("https://example.com/x")),
+        "the composer draws the URL: {frame:#?}"
+    );
+    assert!(a.link_targets.is_empty(), "{:?}", a.link_targets);
+    assert!(!a.hits.iter().any(|h| h.target == Target::Link));
+}
+
 /// **`path:line` in a reply is a link, and it opens the file at the line** — through the editor
 /// pane this head already opens files with, which is the door an edit row and a note use.
 #[test]

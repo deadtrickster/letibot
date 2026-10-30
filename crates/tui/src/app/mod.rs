@@ -1302,6 +1302,10 @@ pub struct App {
     /// index into this, so a click answers with the URL the frame drew and not with a second read
     /// of the row. Rebuilt with the frame by `App::draw_links`; see `app::links`.
     pub(crate) link_targets: Vec<String>,
+    /// **The first row of the frame's chrome** — the status row, a card in the slot, the composer
+    /// and the hint bar — as the last frame put it. A link is a target only above this row: a URL
+    /// the operator is TYPING is text, and a click in the middle of it belongs to the caret.
+    pub(crate) body_rows: usize,
     /// **The last frame's key hints** — every `key label` on the glass, a button that types its
     /// key. See `app::keyhints`.
     pub(crate) hint_rows: Vec<keyhints::HintRow>,
@@ -2218,6 +2222,7 @@ impl App {
             surfaces: Vec::new(),
             hits: Vec::new(),
             link_targets: Vec::new(),
+            body_rows: 0,
             hint_rows: Vec::new(),
             injected: Vec::new(),
             pointer_at: None,
