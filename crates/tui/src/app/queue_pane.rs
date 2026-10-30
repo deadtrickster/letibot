@@ -222,6 +222,16 @@ impl App {
                         .then(|| running.get(m.repository.as_str()).cloned())
                         .flatten(),
                     "gate_steps": m.gate_steps.iter().map(step_of).collect::<Vec<Value>>(),
+                    // **The step its gate is running right now**, in the pane's own words — the
+                    // one fact that tells a person whether a `gating` row is working or stuck
+                    // without opening a file on the daemon's box.
+                    "running_gate": m.running_gate.as_ref().map(|g| json!({
+                        "command": g.command,
+                        "step": g.step,
+                        "of": g.of,
+                        "running_ms": now.saturating_sub(g.started_ms),
+                        "bytes": g.log_bytes,
+                    })),
                     "verbs": verbs_of(&Selected::Merge(m)),
                 })
             })

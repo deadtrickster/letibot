@@ -1077,6 +1077,11 @@ pub struct App {
     /// When the pane last asked for a snapshot, so an open pane re-reads the heartbeats every
     /// few seconds and not on every frame.
     pub(crate) queues_asked_ms: u64,
+    /// **What each running gate's tail was when this head last looked, and when it last changed**
+    /// — keyed by `entry#step` (see `ui::panes::queue::GateTail`). The daemon's snapshot says what
+    /// the tail IS; only a head that has seen two of them can say *it has not moved in 4m*, which is
+    /// the difference between a slow step and a stuck one.
+    pub(crate) gate_tails: std::collections::HashMap<String, crate::ui::panes::queue::GateTail>,
     /// **Which row the cursor is on** — an index into the CURRENT view's rows
     /// (`App::queue_rows`), the same enumeration the drawn `▸`, the arrows and Enter read.
     pub(crate) queue_sel: usize,
@@ -2174,6 +2179,7 @@ impl App {
             queue_scope: QueueScope::default(),
             queues_got_ms: 0,
             queues_asked_ms: 0,
+            gate_tails: Default::default(),
             queue_sel: 0,
             queue_stop_rows: Vec::new(),
             queue_view: QueueView::default(),

@@ -66,6 +66,7 @@ fn a_merge(id: &str, state: &str) -> QueueMerge {
             elapsed_ms: 600_000,
         }],
         fixes: None,
+        running_gate: None,
         created_ms: 1_000_000,
         state_ms: 1_500_000,
     }
@@ -100,6 +101,7 @@ fn a_snapshot() -> QueueSnapshot {
             checked_ms: 1_650_000,
             evidence: "the gate's step 2 failed".into(),
             gate_steps: vec![],
+            running_gate: None,
         }],
         // **One project, two repositories, one of which never asked for a queue** — the shape the
         // `not_queued` list exists for, and the only shape in which the scope filter keeps it: a

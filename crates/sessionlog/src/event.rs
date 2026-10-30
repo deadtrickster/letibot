@@ -499,6 +499,12 @@ pub struct QueueMerge {
     pub gate_steps: Vec<MergeGateStep>,
     #[serde(default)]
     pub fixes: Option<String>,
+    /// **The step its gate is running RIGHT NOW** — `Some` only while the row is `gating`, and the
+    /// one thing that answers *is it stuck?*: which step of how many, since when, and the end of
+    /// what it has written so far. An added, defaulted field on an existing struct: no
+    /// `PROTOCOL_VERSION` bump.
+    #[serde(default)]
+    pub running_gate: Option<QueueRunningGate>,
     pub created_ms: u64,
     pub state_ms: u64,
 }
@@ -526,6 +532,38 @@ pub struct TargetHealthView {
     pub evidence: String,
     #[serde(default)]
     pub gate_steps: Vec<MergeGateStep>,
+    /// The step the target's own gate is running, while it is `gating` — see
+    /// [`QueueMerge::running_gate`].
+    #[serde(default)]
+    pub running_gate: Option<QueueRunningGate>,
+}
+
+/// **The step a gate is running now** — what a `gating` row's detail reads to answer *is it stuck?*
+/// without opening the gate's log file.
+///
+/// The gate streams a step into a log on the daemon's box ([`QueueRunningGate::tail`] is the end of
+/// it, bounded), so the same value is available whether the step runs here or on a declared host —
+/// a host gate writes what it polls back into the same local file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueRunningGate {
+    /// The step's command, as the project declared it.
+    pub command: String,
+    /// **Which step, 1-based** — the `2` of `2 of 4`.
+    #[serde(default)]
+    pub step: usize,
+    /// How many steps the gate has.
+    #[serde(default)]
+    pub of: usize,
+    /// When the step started, Unix ms — the clock the pane's `running 6m` is measured from.
+    #[serde(default)]
+    pub started_ms: u64,
+    /// **The end of the step's output so far**: at most 40 lines of the last 4 KiB it has written.
+    #[serde(default)]
+    pub tail: String,
+    /// **Every byte the step has written** — a number that only grows while it works, so a reader
+    /// can tell *the tail has not moved* from *the step is quiet between two lines*.
+    #[serde(default)]
+    pub log_bytes: u64,
 }
 
 /// **One move of one row** — the transition history (R61 requirement 2).

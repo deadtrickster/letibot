@@ -188,8 +188,26 @@ struct Merge {
     fixes: Option<String>,
     #[serde(default)]
     waits_on: Option<String>,
+    /// **The step its gate is running now** — `Some` only while the row is `gating`.
+    #[serde(default)]
+    running_gate: Option<RunningGate>,
     #[serde(default)]
     verbs: Vec<VerbWhy>,
+}
+
+/// The step a gate is running, as the feed carries it: which of how many, since when, and how much
+/// it has written. **The tail itself is not here** — a guest cannot read a file and the row is one
+/// line; the detail the host draws on Enter has it.
+#[derive(Debug, Default, Deserialize)]
+struct RunningGate {
+    #[serde(default)]
+    step: usize,
+    #[serde(default)]
+    of: usize,
+    #[serde(default)]
+    running_ms: u64,
+    #[serde(default)]
+    bytes: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -382,7 +400,18 @@ fn merge_row(m: &Merge, show_repo: bool, picked: bool) -> Out {
     let mut under = vec![match &m.waits_on {
         // **What it is waiting for**, in the pane's own words (`gate running on 1f2a3b4 for 2m`).
         Some(w) => format!("waits: {w}"),
-        None => reason_of(m.fixes.as_deref(), None, &[], &m.evidence),
+        // **Or what its own gate is doing**, when the row is the one gating — the question a
+        // `gating` row is asked and could not answer: `gate 2 of 4 · 6m · 12 345 byte(s)`.
+        None => match &m.running_gate {
+            Some(g) => format!(
+                "gate step {} of {} · running {} · {} byte(s) written",
+                g.step.max(1),
+                g.of.max(1),
+                age(g.running_ms),
+                g.bytes
+            ),
+            None => reason_of(m.fixes.as_deref(), None, &[], &m.evidence),
+        },
     }];
     if picked {
         under.push(format!("{} · approved {}", m.id, m.short_sha));
