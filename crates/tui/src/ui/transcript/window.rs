@@ -856,6 +856,7 @@ impl App {
             visibility,
             run_show,
             dismissed,
+            read_marks,
             absorbed,
             ..
         } = self;
@@ -889,7 +890,17 @@ impl App {
                 // makes the wall go rather than becoming a column of gaps; the
                 // note itself is still in `notes`, still counted on `/status`,
                 // and still listed by `/notes`.
-                if !dismissed.contains(&note_key(&notes[*note_upto].1)) {
+                //
+                // **Two ways to be retired, and the walk asks both** — the key set the
+                // reader pressed on, and the watermark `ctrl-n` leaves (`read_marks`, and
+                // `App::read_marks` is the argument for why one without the other is a
+                // hide). The same pair `App::is_retired` asks, as a free function because
+                // this walk holds the fields destructured and cannot call a method — and
+                // they must be the same question, or `/notes` and the screen disagree
+                // about what is hidden.
+                if !dismissed.contains(&note_key(&notes[*note_upto].1))
+                    && !already_read(read_marks, &notes[*note_upto].1)
+                {
                     if !hist_lines.is_empty() {
                         hist_lines.push(String::new());
                     }

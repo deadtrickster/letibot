@@ -1403,6 +1403,13 @@ impl App {
             "restore" | "back" | "undismiss" => {
                 let back = self.dismissed.len();
                 self.dismissed.clear();
+                // **And the watermark goes with the key set, because it is the same
+                // statement.** A restore asserts that *nothing* this head was hiding stays
+                // hidden; leaving the marks up would leave the wall hidden while `/notes`
+                // said every note was live again — two answers about one screen, which is
+                // the defect `RetiredWrite::Replace` exists to end, one layer up. The undo is
+                // as cheap as the act.
+                self.read_marks.clear();
                 self.invalidate_history();
                 self.redraw = true;
                 // **`Replace`, and this is the whole of the third item.** `restore` clears
@@ -1434,6 +1441,12 @@ impl App {
                 // `dismiss` is the word itself: `/notes dismiss` and `/dismiss all`
                 // both land here.
                 let arg = other.strip_prefix("dismiss").map(str::trim).unwrap_or("");
+                // **`ctrl-n`'s arm, and the one place the watermark is set.** *All* of them
+                // is a statement about the reader's reading, not about a list of copies, so
+                // it leaves a mark per kind (`App::mark_read`) as well as the key set — and
+                // a single `/notes dismiss N` deliberately does not: one note is one copy,
+                // and a mark over its kind would swallow the next real one.
+                let all = matches!(arg, "" | "all");
                 let keys: Vec<String> = match arg {
                     "" | "all" => self.notes.iter().map(|(_, n)| note_key(n)).collect(),
                     n => {
@@ -1458,6 +1471,33 @@ impl App {
                     }
                 };
                 let hidden = self.retire(keys);
+                // **The mark AFTER the keys, and the order is load-bearing**: `retire`
+                // answers how many notes this press newly hid, and a mark set first would
+                // have hidden them through `hide_read` and made the answer `0` — the first
+                // press reporting *nothing to retire*. Set second, it is the same act's
+                // second half: what the key set covered by identity, the mark covers by
+                // kind, so a copy of any of these that arrives later is read whatever words
+                // it comes in.
+                if all {
+                    self.mark_read();
+                }
+                // **"Nothing to retire" means nothing LEFT to retire**, not "no notes held".
+                //
+                // A retired note stays in `notes` on purpose (R10: retired is not deleted), so
+                // after a first press the set is *all retired* rather than *empty* — and a
+                // guard on `notes.is_empty()` would say `retired 0 note(s)`, which is a true
+                // sentence an operator should not be shown. The count makes the reflex
+                // idempotent and honest: the first press retires N and says so, the second says
+                // this. **Answered here rather than by the chord**, so `ctrl-n` and `/notes
+                // dismiss all` cannot come to disagree about which sentence an empty press gets.
+                //
+                // **Nothing is written in that case**: the mark above is the only thing that
+                // could have moved, it lives in this process, and a union that adds nothing is
+                // a write to a file another head may be writing for its own reasons.
+                if all && hidden == 0 {
+                    self.say("nothing to retire");
+                    return None;
+                }
                 // **Union.** A dismissal asserts a key IS retired, and no other head's save
                 // is evidence to the contrary — this is the write `merge_retired` exists for.
                 let saved = self.save_prefs(RetiredWrite::Union);
