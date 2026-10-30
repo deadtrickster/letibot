@@ -11676,7 +11676,14 @@ impl Harness {
                     .any(|l| l.stopped_ms.is_some() && l.instance != me)
             })
             .unwrap_or(false);
+        // **And only the sessions a person reads.** The review queue's own session is opened by
+        // this daemon too, and it is nobody's conversation: the operator saw the restart twice —
+        // once for his session and once for the gatekeeper's — and asked for one
+        // (*"i dont need two"*). A subagent is nobody's either; it reads what its parent tells it.
+        let a_persons_session = !letibot_sessionlog::is_gatekeeper_session(&sid)
+            && !matches!(store.session_parent(&sid), Ok(Some(Some(p))) if !p.is_empty());
         let came_back = a_daemon_stopped
+            && a_persons_session
             && store
                 .session(&sid)
                 .ok()
