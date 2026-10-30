@@ -1,11 +1,10 @@
-<!-- abstract: MEASURED 2026-10-30 (branch agent/a-click-that-cannot-be-undone): the thinking's openness had four carriers and five doors; `set_verbosity` cleared `payload_sel` and left the lift pair standing (an orphan no key could reach — the latch), and `carry_live_open` re-applied the pane's half at every round's end (the oscillation); also `thinking=folded` at `conversation` is `normal`, so you cannot close the thinking by writing the fold at a bottom rung. -->
+<!-- abstract: MEASURED 2026-10-30 (branch agent/a-click-that-cannot-be-undone): the thinking's openness had four carriers and five doors; `set_verbosity` cleared `payload_sel` and left the lift pair standing (an orphan no key could reach — the latch), `carry_live_open` re-applied the pane's half at every round's end (the oscillation), and the review found the rest: an open run's marker must stay drawn (it is the toggle), `run_open_at` answered the LIVE_RUN sentinel row-independently, and `ctrl-r` at a bottom rung could lift a calls-only run into a blank. -->
 
-# An orphaned lift is a state no key can reach — and the fold at a bottom rung opens rather than closes
+# An orphaned lift is a state no key can reach — and four more things the review of it found
 
 MEASURED 2026-10-30, branch `agent/a-click-that-cannot-be-undone` (`crates/tui`), from the
 operator's *"sometimes when i click on thinking counter it gets stuck … then all subsequent turns go
-with think open. ctrl-r doesnt help, esc too"* and then *"sometimes it latches, sometimes
-oscillates"*.
+with think open. ctrl-r doesnt help, esc too"*, then *"sometimes it latches, sometimes oscillates"*.
 
 ## The shape: N carriers, and the doors that empty one of them
 
@@ -36,26 +35,50 @@ So "close the thinking" cannot be spelled as the fold at a hiding rung (an `esc`
 rung), and "open the thinking" there is only the run lift. The branch that picks a spelling must be
 `visibility.hides_the_working()`, **not** `!shows(Thinking)` — `terse` hides the thinking yet draws
 its rows, and a `!shows(Thinking)` test sent `ctrl-r` at `terse` down the lift branch, where there
-is no run to lift and it answered *"nothing is folded to open"*. A key that works at `normal` and
-dies one rung below it is the defect being fixed, one level up.
+is no run to lift and it answered *"nothing is folded to open"*.
+
+## What the review found, and each is a rule worth keeping
+
+1. **An open run's marker must stay drawn.** Both walks asked `unseen_run_at` only when the run was
+   CLOSED (`let unseen = if open_run { None } else { … }`), so a click made the counts line vanish
+   and the only thing naming the state was the hint bar. The marker is the run's HEADER and the
+   toggle: **the hit record a click is tested against comes from the drawn frame**
+   (`marker_rows_in` reads `hist_lines`), so a suppressed marker is a state no click can toggle.
+   The forward walk pushes the marker then the row's lines in one group; the backward walk's join
+   arm used to `continue` (dropping the body) and now pushes `rows[1..]`.
+2. **`run_open_at` answered the `LIVE_RUN` sentinel with a value that had no `row` in it** —
+   `live.work() > 0 && !live_tail_covered(..)` — so a panel on the pane's own marker made EVERY
+   row read as *inside the open run*: the whole conversation at `Visibility::lifted()`, and
+   `run_skips` applied to rows the click was never about (a `thinking` click hid every tool row in
+   the session). A row is never the live tail: the walks get `false`, and `App::run_is_open` — which
+   asks *is the panel open* — answers the sentinel itself.
+3. **A key that opens the thinking must ask whether the run holds any.** `run_skips(Some(Thinking))`
+   hides every `ToolResult` and every empty-text `Assistant` row, so lifting a calls-only run hid
+   the calls it held and drew nothing: `[3 tool calls]` gone, the run blank. `run_holds_thinking`
+   checks the rows (a reasoning row with no words is not thinking — the marker counts display
+   lines) and the press says a sentence naming `/verbosity normal` instead.
+4. **A state reset must not rest on a heuristic.** `TurnStarted` is one event per ROUND, and
+   `same_turn`'s `began_ms: None` arm is *the previous pane reads Running* — so a wake turn
+   (`Sessions::wake` stamps no clock) over a running turn kept the lift. The pane's half now goes on
+   every `TurnStarted` unconditionally; a panel on a run of ROWS is the reader's and only a new
+   prompt closes it.
 
 ## Two smaller facts worth not rediscovering
 
 * **`Editor::key(Esc)` answers `Reaction::Changed`, not `Idle`** — the first press of the
-  interrupt pair. An arm written in `Reaction::Idle` never fires for Esc. And the arm has to sit
-  AFTER the composer has seen the key, or `esc esc` can no longer interrupt while the thinking is
-  open (the same defect `esc goes up` in a subagent records).
-* **A run whose marker counts live calls needs the pane's half of the lift as well.** The panel on
-  such a run is empty of the kind that was clicked (the calls are not rows yet) — the operator's
-  *"clicked on the tools counter — empty panel"*. So `lifted()` (the pane) is true when
-  `payload_sel` is `LIVE_RUN` **or** the named run is the one the in-flight work will join
-  (`run_carries_live_now`), and the expensive question is only asked while a lift is set.
+  interrupt pair. An arm written in `Reaction::Idle` never fires for Esc, and it has to sit AFTER
+  the composer or `esc esc` can no longer interrupt while the thinking is open.
+* **`item_lines` returns `(RowClass, Vec<String>)`, not `Vec<String>`** — a `let body = if … {
+  item_lines(..) } else { Vec::new() }` does not typecheck, and the class it returns is what the
+  blank-line rule reads. And a test that locates a marker by its words needs `find_last` once two
+  markers on one frame say `1 thinking line`.
 
-## How the latch was proved, not argued
+## How each claim was proved
 
-The field rename makes the new tests uncompilable on the old tree, so the proof is a revert of one
-hunk: drop `on_turn_event`'s `if !same_turn { self.drop_lift() }` and
-`a_click_does_not_follow_into_the_next_turn` goes red (13 markerclick tests, 12 green). The
-oscillation test (`a_round_boundary_does_not_touch_the_thinking`) passes either way when no click has
-been made, which is the honest limit of it: it asserts the *state* is untouched by a boundary, not
-that the lines are identical — a round's content differs, so the counts differ.
+The field rename makes the new tests uncompilable on the base tree, so the proof is a revert of one
+hunk at a time: drop `on_turn_event`'s reset → `a_click_does_not_follow_into_the_next_turn` red;
+restore `if open_run { None }` in the walks → `an_open_runs_marker_is_drawn_over_the_rows_it_lifted`,
+`a_second_click_on_the_same_clause_puts_it_back` and
+`a_click_that_opens_a_run_leaves_no_light_on_what_it_opened` red; drop `run_holds_thinking` →
+`ctrl_r_will_not_open_a_run_that_holds_no_thinking` red; key the reset on `!same_turn` alone →
+`a_new_round_drops_the_panes_lift_without_a_clock` red.
