@@ -521,4 +521,28 @@ fn a_reattach_asks_for_the_board_and_draws_nothing_the_board_no_longer_has() {
             .find("WAITING ON YOU")
             .is_none()
     );
+
+    // **And a resync is the same fact said another way** — the daemon saying this head fell
+    // behind. The board is not in a snapshot, so a head that dropped the events would keep the
+    // copy it had; the resync asks for the board too.
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(!line(&mut a).is_empty());
+    a.queued.clear();
+    a.apply(ServerFrame::Resync {
+        reason: "the head fell behind".into(),
+        dropped: 4,
+        snapshot: Box::new(Hub::new("s1").snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert!(
+        a.queued.contains(&Action::ListTodos),
+        "a resync re-reads the board: {:?}",
+        a.queued
+    );
+    board(&mut a, vec![taken_back("deploy")]);
+    assert!(
+        line(&mut a).is_empty(),
+        "and what the resync draws comes from that read: {:?}",
+        line(&mut a)
+    );
 }

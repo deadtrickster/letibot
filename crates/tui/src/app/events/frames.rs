@@ -413,6 +413,13 @@ impl App {
                 // one writer that starts a clock.
                 self.say(&format!("resync: {reason}"));
                 self.load(*snapshot);
+                // **And the board is re-read, for the reason the attach reads it** — a resync is
+                // the daemon saying this head fell behind, and the board is not in a snapshot, so
+                // the copy in hand may name a row whose question was taken back while the events
+                // were being dropped. See [`App::asks_board`].
+                if !self.queued.contains(&Action::ListTodos) {
+                    self.queued.push(Action::ListTodos);
+                }
                 Disposition::Control
             }
             ServerFrame::Accepted { note, seq, .. } => {
