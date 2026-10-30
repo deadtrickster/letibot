@@ -6,18 +6,25 @@
 //! is lexed, so rano draws the block as a citation — numbered as the file numbers it — and the
 //! label grows a note when there is something to say: the daemon could not read the lines, or
 //! the file on this machine no longer says what it said.
+//!
+//! **Which fences those are is [`letibot_transcript::citation`]'s rule, not a second copy of it
+//! here.** The daemon scans the same text with the same function, so a citation it recognised is
+//! a citation this fills — including the one-liner (` ```a/b.go:2-3``` `, opener and closer on one
+//! line), which this head used to read as a block whose label had the closer glued onto it and so
+//! left empty.
 
 use std::borrow::Cow;
 use std::path::Path;
 
 use letibot_sessionlog::Citation;
+use letibot_transcript::citation;
 
 /// What a citation's label says when the file on disk no longer has the lines it cited.
 pub(crate) const DRIFTED: &str = "changed since the reply";
 
 /// **`text` with every cited fence filled**, or `text` itself when it cites nothing. Each empty
 /// fence whose label is a citation takes the next citation with that label; one the daemon sent
-/// nothing for is left as written.
+/// nothing for is left as written, and so is every block with something in it.
 pub(crate) fn fill<'t>(text: &'t str, cits: &[Citation], workspace: &str) -> Cow<'t, str> {
     if cits.is_empty() {
         return Cow::Borrowed(text);
@@ -27,34 +34,28 @@ pub(crate) fn fill<'t>(text: &'t str, cits: &[Citation], workspace: &str) -> Cow
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i];
-        let t = line.trim_start();
-        let fence = ["```", "~~~"].into_iter().find(|f| t.starts_with(f));
-        let filled = fence.and_then(|fence| {
-            let label = t[fence.len()..].trim();
-            rano::markdown::citation(label)?;
-            // The body up to the closing fence must be empty: the model's own code is its own.
-            let mut j = i + 1;
-            while j < lines.len() && lines[j].trim().is_empty() {
-                j += 1;
+        let Some(fence) = citation::fence_at(&lines, i) else {
+            out.push(lines[i].to_string());
+            i += 1;
+            continue;
+        };
+        // The label the daemon keyed the citation by is the label's first word, so a label that
+        // says more than the range (`a/b.go:2-3 the loop`) still finds its lines.
+        let hit = fence
+            .cites()
+            .then(|| citation::range(fence.label))
+            .flatten()
+            .and_then(|r| (0..cits.len()).find(|&k| !used[k] && cits[k].label == r.label));
+        match hit {
+            Some(k) => {
+                used[k] = true;
+                out.push(block(fence.run, &cits[k], workspace));
             }
-            if j >= lines.len() || lines[j].trim() != fence {
-                return None;
-            }
-            let k = (0..cits.len()).find(|&k| !used[k] && cits[k].label == label)?;
-            used[k] = true;
-            Some((j, block(fence, &cits[k], workspace)))
-        });
-        match filled {
-            Some((close, block)) => {
-                out.push(block);
-                i = close + 1;
-            }
-            None => {
-                out.push(line.to_string());
-                i += 1;
-            }
+            // Not one of ours: the block goes back exactly as written — the model's own code is
+            // its own, and a fence inside it is text, not a fence.
+            None => out.extend(lines[i..=fence.end].iter().map(|l| l.to_string())),
         }
+        i = fence.end + 1;
     }
     Cow::Owned(out.join("\n"))
 }
@@ -132,6 +133,67 @@ mod tests {
         assert_eq!(
             got,
             "See:\n\n```a/b.go:2-3\nx := 1\ny := 2\n```\n\nMine:\n\n```a/b.go:2-3\nmy own\n```\n"
+        );
+    }
+
+    /// **The reply that found the defect**: prose, the one-liner alone on its line, prose — the
+    /// daemon cites it now, so the head must fill it.
+    ///
+    /// Asserted by its parts rather than byte for byte, because the label is an ABSOLUTE path and
+    /// this box may well have that file: when it does and the lines differ, the label grows
+    /// [`DRIFTED`], which is `a_citation_the_file_no_longer_matches_is_marked`'s subject.
+    #[test]
+    fn a_citation_written_on_one_line_is_filled() {
+        const LABEL: &str = "/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97";
+        const PATH: &str = "/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py";
+        let text = "The poll loop:\n\n\
+            ```/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97```\n\n\
+            It waits on the socket.\n";
+        let got = fill(
+            text,
+            &[cite(LABEL, PATH, 60, &["sock = connect()", "poll(sock)"])],
+            "",
+        );
+        assert!(
+            got.starts_with(&format!("The poll loop:\n\n```{LABEL}")),
+            "the one-liner became a block labelled as the model wrote it: {got}"
+        );
+        assert!(
+            got.contains("\nsock = connect()\npoll(sock)\n```\n"),
+            "the lines it named are in the fence: {got}"
+        );
+        assert!(
+            got.ends_with("It waits on the socket.\n"),
+            "and the prose after it is untouched: {got}"
+        );
+    }
+
+    /// **An unclosed fence does not take the closer of the block below it**, and the well-formed
+    /// block is still filled — the head reads fences by the same rule the daemon does.
+    #[test]
+    fn an_unclosed_fence_does_not_swallow_the_citation_below_it() {
+        let text = "```a/b.go:2-3\nleft open\n\n```a/b.go:2-3```\n";
+        assert_eq!(
+            fill(
+                text,
+                &[cite("a/b.go:2-3", "a/b.go", 2, &["x := 1", "y := 2"])],
+                ""
+            ),
+            "```a/b.go:2-3\nleft open\n\n```a/b.go:2-3\nx := 1\ny := 2\n```\n"
+        );
+    }
+
+    /// A label that says more than the range still finds its citation: the daemon keys one by the
+    /// label's first word, and this head matches that word rather than the whole label.
+    #[test]
+    fn a_label_with_words_after_the_range_still_finds_its_lines() {
+        assert_eq!(
+            fill(
+                "```a/b.go:2-3 the loop\n```",
+                &[cite("a/b.go:2-3", "a/b.go", 2, &["x := 1", "y := 2"])],
+                ""
+            ),
+            "```a/b.go:2-3\nx := 1\ny := 2\n```"
         );
     }
 

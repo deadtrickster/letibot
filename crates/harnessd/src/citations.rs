@@ -12,6 +12,12 @@
 //! ```
 //! ````
 //!
+//! — or the same fence as a one-liner, its opening and closing runs on one line, which is the
+//! spelling a model uses most and the one that was read as an *opening* fence with the closer
+//! glued onto its label, and so was never filled. Both spellings, and the rule for a block that
+//! is never closed, are [`letibot_transcript::citation`]'s: the head fills these fences, and the
+//! two halves must not disagree about which fences there are.
+//!
 //! # A snapshot, kept beside the reply
 //!
 //! The lines are read once, when the reply lands, through the session's own backend (so a session
@@ -22,6 +28,7 @@
 //! file's own line numbers, and marks it when the file on its disk no longer says the same.
 
 use letibot_sessionlog::event::Citation;
+use letibot_transcript::citation;
 
 /// **The most lines one citation reads.** A citation is a passage, and a fence naming a whole
 /// file is read up to here and says so, rather than pouring the file into the reply.
@@ -39,53 +46,36 @@ pub struct Cited {
 /// **The range a fence label names**, or `None` for an ordinary fence (`rust`, `sql`, empty).
 ///
 /// `path:N` or `path:N-M`, the label's first word; the path must look like one — it has a `/` or
-/// a `.` in it — so a label like `rust:2` is not read as a file. `M < N` is not a range.
+/// a `.` in it — so a label like `rust:2` is not read as a file. `M < N` is not a range. The rule
+/// itself is [`letibot_transcript::citation::range`]'s, so the head that fills the fence reads a
+/// label exactly as this does.
 pub fn parse_label(label: &str) -> Option<Cited> {
-    let word = label.split_whitespace().next()?;
-    let (path, range) = word.rsplit_once(':')?;
-    if path.is_empty() || !(path.contains('/') || path.contains('.')) {
-        return None;
-    }
-    let (a, b) = match range.split_once('-') {
-        Some((a, b)) => (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?),
-        None => {
-            let a = range.parse::<u32>().ok()?;
-            (a, a)
-        }
-    };
-    (a >= 1 && b >= a).then(|| Cited {
-        label: word.to_string(),
-        path: path.to_string(),
-        start: a,
-        end: b,
+    let r = citation::range(label)?;
+    Some(Cited {
+        label: r.label.to_string(),
+        path: r.path.to_string(),
+        start: r.start,
+        end: r.end,
     })
 }
 
-/// **Every empty fence in `text` whose label names a range**, in order. A fence with anything
-/// in it is the model's own code, quoted, and is left alone; an unclosed one is not a citation.
+/// **Every empty fence in `text` whose label names a range**, in order — whether it was written
+/// as a block or on one line. A fence with anything in it is the model's own code, quoted, and is
+/// left alone; an unclosed one is not a citation.
 pub fn cited_fences(text: &str) -> Vec<Cited> {
+    let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
-    let mut lines = text.lines().peekable();
-    while let Some(line) = lines.next() {
-        let t = line.trim_start();
-        let Some(fence) = ["```", "~~~"].into_iter().find(|f| t.starts_with(f)) else {
+    let mut i = 0;
+    while i < lines.len() {
+        let Some(fence) = citation::fence_at(&lines, i) else {
+            i += 1;
             continue;
         };
-        let label = t[fence.len()..].trim().to_string();
-        let mut empty = true;
-        let mut closed = false;
-        for body in lines.by_ref() {
-            if body.trim_start().starts_with(fence) && body.trim() == fence {
-                closed = true;
-                break;
-            }
-            if !body.trim().is_empty() {
-                empty = false;
-            }
-        }
-        if closed
-            && empty
-            && let Some(c) = parse_label(&label)
+        // Past the whole block, so a fence inside quoted code is not read as one of these — and
+        // so an unclosed fence cannot lend its own body to the scanner.
+        i = fence.end + 1;
+        if fence.cites()
+            && let Some(c) = parse_label(fence.label)
         {
             out.push(c);
         }
@@ -171,6 +161,51 @@ mod tests {
                     ```rust\n```\n~~~c.py:5\n\n~~~\n```d.rs:1\n";
         let got: Vec<String> = cited_fences(text).into_iter().map(|c| c.label).collect();
         assert_eq!(got, vec!["a/b.go:2-3", "c.py:5"]);
+    }
+
+    /// **The reply that found the defect**: prose, the one-liner alone on its line, prose. It was
+    /// read as an opening fence with the closing run glued onto its label, so nothing was cited
+    /// and the operator's screen showed an empty box with a path in it.
+    const ONE_LINER: &str = "The poll loop:\n\n\
+        ```/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97```\n\n\
+        It waits on the socket.\n";
+
+    #[test]
+    fn a_citation_written_on_one_line_is_cited() {
+        assert_eq!(
+            cited_fences(ONE_LINER),
+            vec![Cited {
+                label: "/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97"
+                    .to_string(),
+                path: "/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py".to_string(),
+                start: 60,
+                end: 97,
+            }]
+        );
+        // A labelled one-liner with no range, and a bare run, are not citations either.
+        assert!(cited_fences("```bash```\n").is_empty());
+        assert!(cited_fences("```\n```\n").is_empty());
+    }
+
+    #[test]
+    fn a_snapshot_of_a_one_line_citation_reads_its_lines() {
+        let file = (1..=120).map(|i| format!("line {i}\n")).collect::<String>();
+        let cited = cited_fences(ONE_LINER);
+        let s = snapshot(&cited[0], |_| Ok(file.clone().into_bytes()));
+        assert_eq!(s.lines.len(), 38, "60 through 97");
+        assert_eq!(s.lines.first().map(String::as_str), Some("line 60"));
+        assert_eq!(s.lines.last().map(String::as_str), Some("line 97"));
+        assert_eq!(s.error, None);
+    }
+
+    /// **A fence with no closing line must not swallow the reply** — and must not take a later
+    /// block's closer for its own: it ends on the line before the next fence begins.
+    #[test]
+    fn an_unclosed_fence_does_not_eat_the_block_below_it() {
+        let text = "```a/b.go:1-2\nnever closed\n\n```c/d.go:3-4\n```\n";
+        let got: Vec<String> = cited_fences(text).into_iter().map(|c| c.label).collect();
+        assert_eq!(got, vec!["c/d.go:3-4"], "the closed one, and only it");
+        assert!(cited_fences("```a/b.go:1-2\n\n").is_empty());
     }
 
     #[test]

@@ -17,6 +17,11 @@ pub mod sanitize;
 /// crates that need a picture in a test are not this one. See the module for what it replaced.
 pub mod testing;
 
+/// **What a fence that cites code looks like** — the daemon reads the lines and the head fills
+/// the fence, so the two spellings of that fence (an empty block, and the one-liner) and the
+/// rule for a block that is never closed live here, once. Same reason as `media` above.
+pub mod citation;
+
 /// **Who asked for a tool call** — R24 part two, decision 1.
 ///
 /// One variant today, and the enum exists rather than a `bool` or an `Option<String>` for the
