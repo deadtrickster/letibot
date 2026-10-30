@@ -232,6 +232,47 @@ fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// **Where this session's tools run, from the two asks the command line can carry** — R100.
+///
+/// A VM and a machine are two placements and this build can make one at a time. What
+/// combining them *should* mean is a VM **on** that machine: `firecode up` driven over the
+/// session's ssh link, the guest on `lab2x1`'s own `/dev/kvm`, the copy made from the remote
+/// checkout `SshBackend::place` arranges, and the commits coming back the way every remote
+/// placement's do. That is not built, and it is not a wiring detail:
+/// [`letibot_tools::firecode::FirecodeBackend`] runs a `firecode` binary *here* and holds
+/// paths *here* — the CLI ([`FirecodeSpec::bin`]), the copy under `~/.cache/letibot/firecode`,
+/// the scratch file a promoted job writes, the `.git` it reads to decide a worktree is
+/// mounted — so a guest on another machine has no transport to reach it through. Booting a
+/// VM here while the operator asked for one on `lab2x1` would be the worse answer: the session
+/// would run somewhere nobody asked for and say so in no line at all.
+///
+/// So the pair is refused, by name, and *after* the whole line is read: the flags used to be
+/// one field, so `--host lab2x1 --where firecode` was a VM here and
+/// `--where firecode --host lab2x1` was a session on `lab2x1` — the operator's other ask
+/// dropped without a word, and which one survived decided by argument order.
+fn placement_from_flags(
+    vm: bool,
+    host: Option<&str>,
+) -> Result<letibot_tools::builtins::task::Placement, String> {
+    use letibot_tools::builtins::task::Placement;
+    match (vm, host) {
+        (true, Some(host)) => Err(format!(
+            "`--host {host}` and `--vm` are two placements and this build can make one at a \
+             time. What the pair should mean is a VM on `{host}` — its own `firecode`, its own \
+             `/dev/kvm`, booted on a copy of the checkout this session would work in — and \
+             that is not built: the firecode backend runs a `firecode` binary on THIS box and \
+             holds this box's paths (the CLI, the copy under ~/.cache/letibot/firecode, a \
+             promoted job's scratch file), so it has no way to reach a guest on `{host}`. \
+             Nothing was started. Say one of them: `--host {host}` alone runs the session's \
+             tools on `{host}` in a checkout of this repository, and `--where firecode` alone \
+             boots a VM here on a copy of it."
+        )),
+        (true, None) => Ok(Placement::Firecode),
+        (false, Some(host)) => Ok(Placement::Remote(host.to_string())),
+        (false, None) => Ok(Placement::Host),
+    }
+}
+
 /// **A `provider/model` name a file set that this box cannot reach**, as a sentence.
 ///
 /// No network and no endpoint, so this is asked of every model name in either file:
@@ -488,7 +529,11 @@ fn usage() -> String {
      \x20                           store and the gate stay here; bash, read, write,\n\
      \x20                           jobs and the rest run there, and the repository's\n\
      \x20                           HEAD goes over as a checkout (branch remote/<id>)\n\
-     \x20                           whose commits come back as remote/NAME/<id>\n\
+     \x20                           whose commits come back as remote/NAME/<id>. A\n\
+     \x20                           remote session is NOT in a VM, and --host with\n\
+     \x20                           --where firecode is refused by name (R100): the VM\n\
+     \x20                           backend runs this box's `firecode` and holds this\n\
+     \x20                           box's paths, so it cannot reach a guest on NAME\n\
      \x20 --web-search brave        attach a provider behind `web_search`. Without\n\
      \x20                           it the tool refuses and says so\n\
      \x20 --brave-key KEY           for this run; else $BRAVE_API_KEY, else\n\
@@ -754,6 +799,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // `--vm-copy` said anywhere on the line wins over `--where firecode`'s mount, before it or
     // after: the operator who asked for a copy must never get the folder itself read-write.
     let mut vm_copy = false;
+
+    // **R100: where this session's tools run, as the two asks the flags actually are.** A VM
+    // (`--where firecode`) and a machine (`--host`, `--where host:NAME`) used to be one field
+    // written by both arms, so the flag that came LAST won and the other was dropped without a
+    // word. They are two asks and they are recorded as two, resolved once after the loop by
+    // [`placement_from_flags`].
+    let mut vm_asked = false;
+    let mut host_asked: Option<String> = None;
 
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
@@ -1034,25 +1087,27 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // allow-all — the same placement a subagent gets from `where`.
             "--where" => {
                 let w = next()?;
-                cfg.placement = letibot_tools::builtins::task::Placement::parse(&w)
+                let asked = letibot_tools::builtins::task::Placement::parse(&w)
                     .map_err(|e| format!("--where: {e}"))?;
-                // `--where host:NAME` is `--host NAME` under another name, and the name
-                // is checked the same way: one rule, whichever flag spelled it.
-                if let Some(name) = cfg.placement.host() {
-                    let hosts = letibot_tools::remote::Hosts::load();
-                    if hosts.get(name).is_none() {
-                        return Err(hosts.refusal(name));
+                match asked {
+                    // **R100: the VM and the host are TWO asks, and the pair is refused** —
+                    // see [`placement_from_flags`]. Recorded here rather than resolved, so
+                    // the refusal does not depend on which flag came first.
+                    letibot_tools::builtins::task::Placement::Firecode => vm_asked = true,
+                    // `--where host:NAME` is `--host NAME` under another name, and the name
+                    // is checked the same way: one rule, whichever flag spelled it.
+                    letibot_tools::builtins::task::Placement::Remote(name) => {
+                        let hosts = letibot_tools::remote::Hosts::load();
+                        if hosts.get(&name).is_none() {
+                            return Err(hosts.refusal(&name));
+                        }
+                        host_asked = Some(name);
                     }
+                    letibot_tools::builtins::task::Placement::Host => {}
                 }
-                // The session's VM works in the workspace itself, mounted (a Mac).
-                cfg.vm_mount =
-                    !vm_copy && cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
             }
             // A copy of one repository instead of the workspace mounted - the old placement.
-            "--vm-copy" => {
-                vm_copy = true;
-                cfg.vm_mount = false;
-            }
+            "--vm-copy" => vm_copy = true,
             // **Where this daemon's REVIEWERS run** — `host` (the default: a reviewer child on
             // this machine, in a checkout of the head it judges, as the subagents that author the
             // branches already run) or `vm` (each reviewer booted in a firecode microVM).
@@ -1095,10 +1150,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 if hosts.get(&name).is_none() {
                     return Err(hosts.refusal(&name));
                 }
-                cfg.placement = letibot_tools::builtins::task::Placement::Remote(name);
-                // A remote session is not in a VM: nothing is mounted and nothing is
-                // copied — the tree goes over as a git bundle (`SshBackend::place`).
-                cfg.vm_mount = false;
+                host_asked = Some(name);
             }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),
@@ -1251,6 +1303,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if cfg.one_shot {
         cfg.serve_queues = false;
     }
+
+    // **Where this session's tools run** — one answer from the two asks, and the pair this
+    // build cannot honour is refused here rather than silently resolved to one of them.
+    cfg.placement = placement_from_flags(vm_asked, host_asked.as_deref())?;
+    // The session's VM works in the workspace itself, mounted (a Mac), unless the operator
+    // asked for a copy — said anywhere on the line, before or after `--where`.
+    cfg.vm_mount = !vm_copy && cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
 
     // **Where this daemon's gate runs**, told to the queue once — the queue builds one runner for
     // the whole daemon (`QueueEnv::production`), so this is the seam and `mergequeue::gate`
@@ -3583,6 +3642,29 @@ fn term_cols() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **R100: the two asks, and the one pair that is refused** — the mapping `run` calls once
+    /// the whole command line has been read. Each half alone is what it always was; the pair is
+    /// a sentence rather than a silent pick between them.
+    #[test]
+    fn a_vm_and_a_host_are_two_asks_and_the_pair_is_refused() {
+        use letibot_tools::builtins::task::Placement;
+        assert_eq!(placement_from_flags(false, None), Ok(Placement::Host));
+        assert_eq!(
+            placement_from_flags(true, None),
+            Ok(Placement::Firecode),
+            "`--where firecode` alone is a VM, and this is the flag pair it is not"
+        );
+        assert_eq!(
+            placement_from_flags(false, Some("lab2x1")),
+            Ok(Placement::Remote("lab2x1".into()))
+        );
+        let said = placement_from_flags(true, Some("lab2x1")).expect_err("the pair is refused");
+        assert!(
+            said.contains("`--host lab2x1`") && said.contains("`--vm`"),
+            "{said}"
+        );
+    }
 
     /// **The Claude Code listing** (Package H): the id a person types, then the facts a
     /// picker row needs — and the two forms, because a script should not parse a table.
