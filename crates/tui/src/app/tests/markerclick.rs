@@ -591,6 +591,43 @@ fn a_new_round_drops_the_panes_lift_without_a_clock() {
     assert_eq!(a.lift, None, "the pane's lift followed into the next round");
 }
 
+/// **The pane's own marker opens a PANEL, not a ctrl-v window** — `payload_sel` names both, and
+/// `run_open_at` answers *is this row of the open run*, which for the live tail's sentinel is no row
+/// at all. Answering it with the row-independent `live.work() > 0 && !live_tail_covered(..)` made
+/// every row of the transcript read as inside the open run; answering it with `false` (the right
+/// answer for a row) made `run_is_open()` false for the pane's own panel, so the bar offered
+/// `page the result` for a window nobody draws. `App::run_is_open` answers the sentinel itself.
+#[test]
+fn the_live_markers_panel_is_a_run_and_not_a_window() {
+    const THOUGHT: &str = "THINK-PANEL the round's thinking";
+    let mut a = a_live_thought(THOUGHT);
+    let (x, y) = find(&a.screen(100, 30), "thinking line");
+    a.key(Key::Click { x: x + 1, y });
+    assert!(
+        a.run_is_open(),
+        "the panel on the pane's own marker does not read as a run"
+    );
+    // **One sentinel for one panel**: what the click stored is what the chord addresses.
+    assert_eq!(
+        a.payload_sel.as_deref(),
+        a.newest_openable().as_deref(),
+        "a click and `ctrl-t` address the live tail by different strings"
+    );
+    assert!(
+        !a.payload_window_open(),
+        "and it reads as a ctrl-v window, which it is not"
+    );
+    let open = frame(&mut a);
+    assert!(
+        open.contains("esc folds the run back"),
+        "the exit is not named:\n{open}"
+    );
+    assert!(
+        !open.contains("page the result"),
+        "a window's keys for a window that is not there:\n{open}"
+    );
+}
+
 /// **A click on a different run's counter does not leave the first one latched** — one panel, one
 /// kind, one run: the lift names the run it was thrown on, and the run before it is drawn as the
 /// rung draws it.

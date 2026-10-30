@@ -233,13 +233,15 @@ pub(crate) fn run_open_at(
     unseen_run_at(items, vis, bound, live, start).is_some_and(|(s, e)| row >= s && row < e)
 }
 
-/// **The run with no row yet** — the sentinel [`App::newest_openable`] returns for the work in
-/// flight, so the marker that stands for it can name a chord and that chord can reach it.
+/// **The run with no row yet** — the sentinel `App::payload_sel` carries for the work in flight, so
+/// the marker that stands for it can name a chord and that chord can reach it.
 ///
-/// Not an item id: an item id is minted by the daemon and this run has no item. A constant
-/// that cannot collide with one (`s-…`/`t…r…` ids are alphanumeric) and that reads as what it
-/// is in a debugger.
-pub const LIVE_RUN: &str = "<live>";
+/// **ONE constant, and it is `app::runclick`'s.** There used to be two — this one said `"<live>"`
+/// and the click path said `"\u{0}live"` — so a panel opened with `ctrl-t` was a run and a panel
+/// opened by a click on the same marker was not: `run_open_at` and `App::run_is_open` recognised
+/// only the first, and the second read as a ctrl-v window (the bar offered `page the result` for a
+/// window nobody draws). Two spellings of one state, which is this branch's whole subject.
+pub(crate) use crate::app::runclick::LIVE_RUN;
 
 /// **The newest run of invisible rows, by its first row** — what `ctrl-t` opens.
 ///

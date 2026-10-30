@@ -714,14 +714,23 @@ impl App {
         let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
             return false;
         };
-        // The live tail's sentinel names no row, and `run_open_at` answers it without one.
-        let row = if id == LIVE_RUN {
-            0
-        } else {
-            match self.items.iter().position(|it| it.item_id == id) {
-                Some(row) => row,
-                None => return false,
-            }
+        // **The live tail's sentinel names no row**, so it is answered here and not by
+        // [`run_open_at`] — which asks about a row and answers no for every one of them (see
+        // there: it used to answer the sentinel with a value that had no `row` in it, and every
+        // row of the transcript then read as inside the open run). The panel is open while there
+        // is work in flight and no run of rows has taken it over: that is the state the pane
+        // draws its own marker in, and the state `esc folds the run back` is about.
+        if id == LIVE_RUN {
+            let live = self.live_work_now();
+            return live.work() > 0
+                && !crate::ui::transcript::markers::live_tail_covered(
+                    &self.items,
+                    self.visibility,
+                    &self.bound_prompts,
+                );
+        }
+        let Some(row) = self.items.iter().position(|it| it.item_id == id) else {
+            return false;
         };
         run_open_at(
             &self.items,
