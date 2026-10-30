@@ -75,16 +75,18 @@ fn post(c: &Client, id: &str, tag: &str, body: &str) -> u64 {
 
 fn wait_for(rx: &Receiver<Event>, what: &str, within: Duration) -> Event {
     let deadline = Instant::now() + within;
-    loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            panic!("nothing arrived about {what}");
-        }
-        match rx.recv_timeout(left) {
-            Ok(e) => return e,
-            Err(mpsc::RecvTimeoutError::Timeout) => panic!("nothing arrived about {what}"),
-            Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the client went away"),
-        }
+    // **Not a `loop`**: every arm of the match below returns or panics, so a wrapping loop would be
+    // dead — and `clippy::never_loop` is denied by default, which is how this was found: the gate's
+    // `cargo clippy --all-targets` compiles THIS test target, and `cargo test -p letibot-room`, which
+    // is what verified the branch, does not lint it.
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        panic!("nothing arrived about {what}");
+    }
+    match rx.recv_timeout(left) {
+        Ok(e) => e,
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("nothing arrived about {what}"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => panic!("the client went away"),
     }
 }
 

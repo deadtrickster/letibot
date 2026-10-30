@@ -338,8 +338,10 @@ impl App {
                     action: event,
                 })
             }
-            // A row with no act, or one this surface cannot perform: the detail.
-            Some(pv::Act::Fold { .. }) | None => {
+            // A row with no act, or one this surface cannot perform: the detail. `Verb` is the
+            // queue's — performed on the queue's own surface against the snapshot the head holds
+            // (`queue_pane.rs`), not by a generic pane that has no queue to act on.
+            Some(pv::Act::Fold { .. }) | Some(pv::Act::Verb { .. }) | None => {
                 self.plugin_detail = Some((self.plugin_screen, self.plugin_sel));
                 self.push_surface(Surface::PluginDetail);
                 None

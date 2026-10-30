@@ -1456,6 +1456,9 @@ fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
         warn: &|_: &str, _e| {},
         deliver: &deliver,
         settings: &settings,
+        // Every session this fixture names counts as live: these two tests are about a
+        // verdict and a deadline, not about liveness.
+        live: &|_: &str| true,
         clones: clones.clone(),
         slots: &Vec::new,
     };
@@ -1602,6 +1605,9 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         warn: &|_: &str, _e| {},
         deliver: &deliver,
         settings: &settings,
+        // Every session this fixture names counts as live: these two tests are about a
+        // verdict and a deadline, not about liveness.
+        live: &|_: &str| true,
         clones: clones.clone(),
         slots: &Vec::new,
     };
@@ -1742,6 +1748,7 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
         settings: &settings,
+        live: &|_: &str| true,
         clones: clones.clone(),
         slots: &Vec::new,
     };
@@ -1875,6 +1882,9 @@ fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
         warn: &|_: &str, _e| {},
         deliver: &deliver,
         settings: &settings,
+        // Every session this fixture names counts as live: these two tests are about a
+        // verdict and a deadline, not about liveness.
+        live: &|_: &str| true,
         clones: clones.clone(),
         slots: &Vec::new,
     };

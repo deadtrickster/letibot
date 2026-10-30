@@ -1788,6 +1788,7 @@ fn served(store: &Store, desk: &ReviewDesk, me: &str) -> crate::mergequeue::revi
         warn: &|_: &str, e| events(e),
         deliver: &deliver,
         settings: &settings,
+        live: &|_: &str| true,
         clones: std::env::temp_dir(),
         slots: &Vec::new,
     };
