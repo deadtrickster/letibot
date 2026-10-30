@@ -206,9 +206,8 @@ fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canne
 }
 
 /// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read`
-/// renders them. Ten of those past a 32768-token window is the `Cut` state —
-/// a history that does not fit with any room for a tail, which is exactly the
-/// state `plan_overrun` exists for and the one the wedge never reached.
+/// renders them — ten of those is what overruns a window in the tests below, and
+/// [`ten_reads_of`] measures that rather than trusting this number.
 ///
 /// **It also seats the session at `dir`**, and returns the path `read` is given relative to
 /// it. `config` seats every session at `/tmp`, and this used to strip `/tmp` off the file's
@@ -781,10 +780,15 @@ fn a_non_context_400_stays_a_backend_error() {
     let path = dir.path().join("sessions.db");
     let session_id = "refused-other-test";
     let mut cfg = config(&path, session_id);
-    cfg.context_window = Some(32768);
-
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let vocab = &parts.vocab;
+    // A window this session fits in with room to spare, so the round-0 wall check cannot be
+    // what answers: the 400 must come from the provider and stay a backend error. It was
+    // 32 768 here too, which is the same constant that made the fold `Hopeless` elsewhere
+    // in this file — a prompt big enough would have had this test reporting the wall as
+    // "the matcher is too wide".
+    let prompt = the_prompt_this_box_composes("harnessd-refused-other-prompt", &parts, &cfg);
+    cfg.context_window = Some(a_window_the_fold_fits_in(&cfg, prompt));
 
     let scripts = vec![
         Reply::Status {
