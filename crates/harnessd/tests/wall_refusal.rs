@@ -1102,6 +1102,11 @@ fn a_first_round_already_past_the_window_is_not_sent() {
 /// head said *"compacted: 20999 → 20755 tokens"*. Now the count is rolled before the
 /// fork, so `resident` is the conversation the operator compacted; the window and its
 /// reserve are the window as given.
+///
+/// **"The window as given" is measured here too**, and the pair asserted is whatever this
+/// box's prompt left: a 32 768 with 2 048 pinned meant the same window as every other test
+/// in this file, and a home whose notes are in message zero makes the manual fold
+/// `Hopeless` at about a 25 000-token prompt.
 #[test]
 fn a_manual_compact_reports_the_count_it_compacted_from() {
     use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
@@ -1112,9 +1117,11 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
     let path = dir.path().join("sessions.db");
     let session_id = "manual-compact-test";
     let mut cfg = config(&path, session_id);
-    cfg.context_window = Some(32768);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let vocab = &parts.vocab;
+    let prompt = the_prompt_this_box_composes("harnessd-manual-compact-prompt", &parts, &cfg);
+    let window = a_window_the_fold_fits_in(&cfg, prompt);
+    cfg.context_window = Some(window);
     let answer = a_plain_answer_turn(vocab, "thinking", "the long answer, said once", 30);
     let summary = a_plain_answer_turn(
         vocab,
@@ -1182,7 +1189,7 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
     );
     assert_eq!(
         (report.window, report.headroom),
-        (32768, 2048),
+        (window, cfg.headroom()),
         "the window as given"
     );
 }
