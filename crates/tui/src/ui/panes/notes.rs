@@ -178,6 +178,94 @@ pub(crate) fn card_row(cfg: &RenderConfig, n: &Note) -> Option<Vec<String>> {
     Some(crate::ui::session_card_block(&[line], ts, cfg))
 }
 
+/// **A burst, as ONE row with a count** — the shape the retry row already has, applied to a kind
+/// rather than to one endpoint's attempts.
+///
+/// ```text
+/// · 5 branches queued · click for details
+/// ! 5 reviews could not run · click for details
+/// × 3 reviews need you · click for details
+/// ```
+///
+/// The line is the count and the kind, in the kind's own register (`class_mark`, so a red burst
+/// is red and a refusal's is not), and the clock is the NEWEST member's — the row is news about
+/// the newest thing in it. At one member there is no burst at all: the walk draws the notice's
+/// own card, byte for byte what this head drew before there were bursts.
+///
+/// **The details are not lost and are not a second click.** The popup lists every member newest
+/// first, each with its own line — its clock and its first clause, which for the queue's raises
+/// names the branch — and its whole text under it. A member is retired and listed and counted by
+/// its own key, so `/notes dismiss N` and `ctrl-n` still act on one notice or on the whole kind.
+pub(crate) fn burst_card(
+    members: &[&Note],
+) -> Option<(crate::ui::transcript::line_cards::Card, String, u64)> {
+    use crate::ui::transcript::line_cards::{CLICK, Card};
+    let first = members.first()?;
+    let kind = crate::app::note_kind(first)?.to_string();
+    let (mark, role) = class_mark(&kind);
+    let words = crate::app::counted_as(&kind).to_string();
+    let n = members.len();
+    // **The routine mark is the frame's own `·`** (`notice_card::warning_notice`'s rule, one
+    // register over): drawn twice it reads as a stutter, so the quiet register is the count
+    // alone — and still not red.
+    let line = if mark == "·" {
+        format!("{n} {words} · {CLICK}")
+    } else {
+        format!("{mark} {n} {words} · {CLICK}")
+    };
+    let card = Card::new(line, 0, &words, role, format!("{n} × {kind}"));
+    let ts = members
+        .iter()
+        .filter_map(|n| crate::app::note_stamp(n))
+        .max()
+        .unwrap_or(0);
+    Some((card, burst_popup(&kind, members), ts))
+}
+
+/// **The popup a burst's row opens** — the rows the burst replaced, one line each, newest first.
+///
+/// **The member's line is the line the head would have drawn for it alone** — [`note_card`]'s
+/// reading, which for the queue's raises is `review · <branch> · <verdict> · <first clause>`. That
+/// is the half of the brief's *an actionable notice keeps its own identity inside the row*: a
+/// refusal or a blocked row names its branch on its own line, without reading the text under it
+/// and without expanding anything else in the burst. The whole detail follows, so nothing the
+/// daemon wrote is behind a second click.
+///
+/// Newest first, and the order is the CLOCK's rather than the list's: a snapshot's replant and a
+/// live arrival can leave `notes` out of order by a millisecond, and a list that says *newest
+/// first* while it is not is a lie about the one thing the reader is looking for.
+fn burst_popup(kind: &str, members: &[&Note]) -> String {
+    use crate::ui::transcript::blocks::clock_time;
+    use crate::ui::transcript::line_cards::CLICK;
+    let n = members.len();
+    let mut text = format!("{n} × {kind} — the {n} rows this one stands for, newest first.");
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(crate::app::note_stamp(members[i]).unwrap_or(0)));
+    for i in order {
+        let Some((card, detail, _)) = note_card(members[i]) else {
+            continue;
+        };
+        let at = crate::app::note_stamp(members[i]).unwrap_or(0);
+        let one = card.line.trim_end_matches(&format!(" · {CLICK}"));
+        text.push_str(&format!("\n\n── {} · {one}", clock_time(at)));
+        let detail = detail.trim_end();
+        if !detail.is_empty() {
+            text.push('\n');
+            text.push_str(detail);
+        }
+    }
+    text
+}
+
+/// A burst, as the transcript draws it: the one line, framed the way every session row is.
+pub(crate) fn burst_lines(cfg: &RenderConfig, members: &[&Note]) -> Vec<String> {
+    let Some((card, _, ts)) = burst_card(members) else {
+        return Vec::new();
+    };
+    let line = card.cut(crate::ui::session_text_cols(ts, cfg));
+    crate::ui::session_card_block(&[line], ts, cfg)
+}
+
 /// The whole note, with no fold — what `/notes` lists and what the transcript shows the head
 /// of. One renderer for both, so the listing cannot disagree with the screen about the text.
 #[cfg(test)]

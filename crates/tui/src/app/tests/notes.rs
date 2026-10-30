@@ -651,11 +651,18 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
             },
         )));
     }
+    // **The premise, since bursts: three notices of one kind in one window are ONE counted
+    // row** (`app::COALESCE_MS`) — so this is a count to clear, not a wall, and every assertion
+    // below is about the mark rather than about how many lines there were.
     let wall = a.screen(120, 40).join("\n");
     assert_eq!(
         wall.matches("model_endpoint_retry").count(),
-        3,
-        "the premise — three notices, three lines:\n{wall}"
+        1,
+        "the premise — three notices, one counted row:\n{wall}"
+    );
+    assert!(
+        wall.contains("3 model_endpoint_retry"),
+        "the count does not say three:\n{wall}"
     );
 
     assert_eq!(a.key(Key::CtrlN), None);

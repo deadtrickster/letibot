@@ -772,15 +772,25 @@ pub const TABLE: &[(&str, Class)] = &[
 /// **Which register a code is drawn in.** See [`TABLE`], and the module doc for why an
 /// unknown code is a failure rather than a guess.
 pub fn class(code: &str) -> Class {
-    // **A code with an id in it is classified by its family** — `denied:<request id>`, one code
-    // a request, is `denied`.
-    let code = match code.split_once(':') {
-        Some(("denied", _)) => "denied",
-        _ => code,
-    };
+    let code = family(code);
     match TABLE.iter().find(|(c, _)| *c == code) {
         Some((_, class)) => *class,
         None => Class::Failure,
+    }
+}
+
+/// **A code's FAMILY** — the code without the id some of them carry.
+///
+/// `denied:<request id>` is one code a request: the id is the notice's IDENTITY (the head's row
+/// leads with it and `/gate` finds the request by it) and what kind of thing it is — a call
+/// somebody decided to refuse — is `denied`. The two questions are asked in different places and
+/// this is the one answer to the second: [`class`] asks it for the register, and `letibot-tui`'s
+/// `note_kind` asks it for the watermark and for the count a burst of notices is drawn with. Two
+/// copies of the rule would drift, which is why it is here rather than in the head.
+pub fn family(code: &str) -> &str {
+    match code.split_once(':') {
+        Some(("denied", _)) => "denied",
+        _ => code,
     }
 }
 

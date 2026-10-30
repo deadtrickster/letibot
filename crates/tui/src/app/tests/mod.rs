@@ -1423,6 +1423,7 @@ mod askedcard;
 mod asks;
 mod attention;
 mod bindings;
+mod bursts;
 mod cardkeys;
 mod cite;
 mod commands;
