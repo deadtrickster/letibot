@@ -224,7 +224,7 @@ impl App {
                 self.scroll_into_view(self.todos_row_of());
             }
             Surface::Queue => {
-                let n = self.queue_rows().len();
+                let n = self.queue_stop_count();
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
@@ -304,13 +304,25 @@ impl App {
             Surface::Config => ControlFlow::Break(self.config_change()),
             Surface::Todos => self.todos_read(),
             Surface::Queue => {
+                // **A row that folds is folded by Enter**, before Enter means *open the entry*: the
+                // history's own row says `enter opens it` and carries `{"fold": true}`, and a
+                // pane whose key does nothing over the twelve finished rows is a pane whose history
+                // — the `failed` landings, the `rejected` reviews — cannot be reached at all.
+                if self.queue_fold() {
+                    return ControlFlow::Break(None);
+                }
                 // **What Enter opens is the ENTRY, and everything the queue knows about it**: the
                 // ask it was produced under, the state and its reason, and the verdict's evidence
                 // — the two rows the pane already holds, in full.
-                let Some(row) = self.queue_selected() else {
+                //
+                // **The id comes from the row that was DRAWN.** A plugin row names its entry in
+                // the act it carries (`Act::Verb`), so a pane drawn by a layer opens the entry the
+                // person is looking at rather than whichever one the host's own enumeration would
+                // have had there.
+                let Some(id) = self.queue_selected_id() else {
                     return ControlFlow::Continue(());
                 };
-                self.queue_open = Some(self.queue_row_id(row));
+                self.queue_open = Some(id);
                 self.push_surface(Surface::QueueEntry);
                 ControlFlow::Break(None)
             }
@@ -578,19 +590,47 @@ impl App {
     ///
     /// **Only on an empty composer**, the binding's guard: typing "deploy" with `/queue` open
     /// sent `queue rm` on its `d` and `queue approve` on its `a` (R67 item 1).
+    ///
+    /// **The id is the row's own** ([`App::queue_selected_id`]) and not the host pane's selection:
+    /// a plugin row names the entry it means in the act it carries, so the key acts on the entry the
+    /// person is looking at. `queue_verb_on` is the one door both paths go through.
     fn queue_verb(&mut self, verb: Verb) -> ControlFlow<Option<Action>> {
-        let Some(row) = self.queue_selected() else {
+        let Some(id) = self.queue_selected_id() else {
             return ControlFlow::Continue(());
         };
-        let (selected, branch) = match row {
-            QRow::Review(i) => (
-                Selected::Review(&self.queues.reviews[i]),
-                self.queues.reviews[i].branch.clone(),
+        ControlFlow::Break(self.queue_verb_on(verb, &id))
+    }
+
+    /// **One verb, on one entry** — the key's act, and the act a plugin row carries.
+    ///
+    /// The row is looked up in the snapshot by id, because whether the daemon would take the verb
+    /// is a question about the row's STATE (`verb_moves`) and the branch's name is what the refusal
+    /// is said about. A row that is not in the last snapshot is said, not sent.
+    pub(crate) fn queue_verb_on(&mut self, verb: Verb, id: &str) -> Option<Action> {
+        let review = self.queues.reviews.iter().find(|r| r.id == id);
+        let merge = self.queues.merges.iter().find(|m| m.id == id);
+        let (selected, branch, repository, target) = match (review, merge) {
+            (Some(r), _) => (
+                Selected::Review(r),
+                r.branch.clone(),
+                r.repository.clone(),
+                r.target.clone(),
             ),
-            QRow::Merge(i) => (
-                Selected::Merge(&self.queues.merges[i]),
-                self.queues.merges[i].branch.clone(),
+            (None, Some(m)) => (
+                Selected::Merge(m),
+                m.branch.clone(),
+                m.repository.clone(),
+                m.target.clone(),
             ),
+            (None, None) => {
+                let said = format!(
+                    "`{id}` is not in the last snapshot of the queue — it may have moved out of \
+                     the window. Nothing was sent."
+                );
+                self.say(&said);
+                self.redraw = true;
+                return None;
+            }
         };
         if let Err(why) = verb_moves(verb, &selected) {
             let said = format!(
@@ -599,34 +639,21 @@ impl App {
             );
             self.say(&said);
             self.redraw = true;
-            return ControlFlow::Break(None);
+            return None;
         }
         // **`regate` is about the row's TARGET** (R76 item 3), named with its repository so the
         // re-gate reaches the project the row is in and not the session's own.
         let line = if verb == Verb::Regate {
-            let (repo, target) = match row {
-                QRow::Review(i) => (
-                    self.queues.reviews[i].repository.clone(),
-                    self.queues.reviews[i].target.clone(),
-                ),
-                QRow::Merge(i) => (
-                    self.queues.merges[i].repository.clone(),
-                    self.queues.merges[i].target.clone(),
-                ),
-            };
-            format!("queue regate {repo} {target}").trim().to_string()
+            format!("queue regate {repository} {target}")
+                .trim()
+                .to_string()
         } else {
             // **In the scope the pane shows** (R92 item 5): the daemon acts in this session's
             // repository unless the line names another, so a row the pane drew under `/queue
             // all` is sent under `all`.
-            format!(
-                "queue {}{} {}",
-                self.queue_scope.prefix(),
-                verb.word(),
-                self.queue_row_id(row)
-            )
+            format!("queue {}{} {id}", self.queue_scope.prefix(), verb.word())
         };
-        ControlFlow::Break(Some(Action::Slash { line }))
+        Some(Action::Slash { line })
     }
 
     /// **Enter on the jobs pane reads the row it is on — or folds the group.** The same shape

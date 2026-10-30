@@ -34,7 +34,7 @@ use rano::agent::card;
 use rano::agent::header as progress;
 use rano::width::text as width;
 
-fn app() -> App {
+pub(crate) fn app() -> App {
     App::new(RenderConfig {
         width: 80,
         color: false,
@@ -1446,6 +1446,7 @@ mod paste;
 mod pictures;
 mod plugin_pane;
 mod queue;
+mod queue_plugin;
 mod reach;
 mod redcard;
 mod render;

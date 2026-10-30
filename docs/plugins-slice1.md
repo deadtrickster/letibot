@@ -223,17 +223,25 @@ tell which host is asking.
 declares which facts it reads in its `plugin.toml` and the host hands it exactly those, by name:
 
 ```toml
-feeds = ["sessions"]       # sessions | monitors | jobs | todos | git
+feeds = ["sessions"]       # sessions | queue | monitors | jobs | todos | git
 ```
 
 ```jsonc
 {"v":2, "feeds":{"sessions":{…}}}   // only the feeds the answering layer declared
 ```
 
-`sessions` is fed today. `monitors`, `jobs`, `todos` and `git` are named in the contract — the
-operator's next panes — and each is one more feed, not a format change. A feed is data the host
-already shows (the daemon's session list, the repository's own state), so it adjudicates nothing
-and is granted by being declared and reviewed with the layer.
+`sessions` and `queue` are fed today. `monitors`, `jobs`, `todos` and `git` are named in the
+contract — the operator's next panes — and each is one more feed, not a format change. A feed is
+data the host already shows (the daemon's session list, the merge queue the head holds), so it
+adjudicates nothing and is granted by being declared and reviewed with the layer.
+
+**`queue` is the second fed feed, and it is fed by the HEAD** (`App::queue_feed`,
+`crates/tui/src/app/queue_pane.rs`): the `QueueSnapshot` the head already holds, cut to this
+session's repository, in the daemon's own words, with every age in milliseconds against the host's
+`now_ms` — a guest has no clock. Its two load-bearing fields are `live` (is the queue working on
+this row or finished with it) and `verbs` (which of the four would move it, and why each that would
+not), both answered by the host because both are the daemon's rules and a second copy of a rule is
+a copy that drifts.
 
 **Acts the host performs.** A row may carry an `enter` act — what Enter does on it — and the verbs
 are declared too, so a view cannot reach one nobody reviewed:
@@ -246,11 +254,23 @@ actions = ["switch", "fold"]
 "enter": {"switch": "s-1793…"}   // go to that session
        | {"fold": true}          // open or close this row; the HOST keeps the fold state
        | {"event": "expand"}     // call the pane again with {"item","action"}
+       | {"verb": "approve", "id": "r-1f2…"}   // a queue verb, on the entry the row names
 ```
 
 A view carrying an act its layer did not declare is refused (`View::validate_for`), and the head
 draws what is below it. The next verb a pane needs — `disarm` a monitor, `fire` one now — is one
 more word in that list.
+
+**`{"verb", "id"}` is the fourth act, and it exists because a row has to be able to say WHICH entry
+it means.** A pane whose keys are the HEAD's (`a` approve, `v` veto, `r` restart, `d` rm on the
+queue) had no way to learn which row the plugin drew under the cursor: before this act, a plugin row
+could draw one entry and the keys would act on whichever entry the host's own enumeration happened
+to have there. The act carries the entry; the keys act on it. **The verb word is what the manifest
+gates**, so a layer whose rows ask for `rm` must declare `rm` in `actions` — the allowlist is the
+list of words that can be sent, and `View::validate_for` refuses a row reaching past it.
+
+This is an added WORD, not a version: `"v"` stays 2 and the manifest's `contract` stays 1, because a
+layer written against either still loads and still draws.
 
 **Fold state is the host's, by row id.** `Input::folded` carries what the person has opened and
 closed; the layer decides which rows CAN fold and how they start. A fold is then instant (a map and

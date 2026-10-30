@@ -460,7 +460,7 @@ list, this session's monitors, its jobs, its todos, the repository's state — s
 which of those it reads and is handed exactly those, under their names:
 
 ```toml
-feeds = ["sessions"]        # session list (fed) · monitors · jobs · todos · git (planned)
+feeds = ["sessions"]        # session list · queue (fed) · monitors · jobs · todos · git (planned)
 ```
 
 ```jsonc
@@ -479,6 +479,24 @@ change:
 | `jobs` | the session's background jobs: handle, command, state, bytes, tail | a jobs pane |
 | `todos` | the session's todo rows, with their waits and their questions | a todo board |
 | `git` | the head's own reading of the repository — `GitState` in `crates/tui/src/gitfield.rs`: branch, detached, ahead/behind, stash, the action in progress, conflict/staged/unstaged/untracked counts — plus the changed-file list a pane would show | a repo/status pane |
+| `queue` | the merge queue as the head holds it: `reviews` and `merges` with their state, their reason and their age, `targets` with the target branches' health, `leases` with the heartbeat and a `stale` flag, `recent` moves, `not_queued`, `archived` — plus `scope` (whose queues these are, in words), `view` (`review`/`merge`), `cursor` (the entry the person's cursor is on), `counts`, and the host's own `now_ms` | the queue pane (built) |
+
+**Two things a feed says so a plugin does not have to infer them**, and both are in `queue` because
+both were measured as the ways a pane gets the queue wrong:
+
+* **`live`**, per row — is the queue WORKING on this row or finished with it. The states that mean
+  in-flight are the daemon's (`review_open`/`merge_open`), and a plugin grepping them out of a state
+  word would be a second copy of that rule. A pane that ignores `live` draws the past tense over the
+  present, which is what *"illegible mess"* was.
+* **`verbs`**, per row — which of `approve`/`veto`/`restart`/`rm` would MOVE it, and for each that
+  would not, the reason. That is `mergequeue::verbs`' rule, so the answer comes from the host; a row
+  can then say the one verb that would do something instead of printing four and leaving the person
+  to find out.
+
+**Every age in the feed is milliseconds against the host's `now_ms`, never a timestamp.** A guest
+cannot read a clock — `std::time::SystemTime::now()` panics on `wasm32-unknown-unknown`, and a panic
+in a guest is a trap (`.letibot/notes/the-pane-contracts-two-look-keys.md`) — so `now_ms` is handed
+over and an age is one subtraction.
 
 A feed is read-only data the host is already showing; it adjudicates nothing, and declaring it is
 the whole of the grant. **A pane gets no `exec` look today**: `look::EXEC_REFUSED`
@@ -490,20 +508,35 @@ a pane, and a model's may not. Nothing here builds that.
 reviewer reads it:
 
 ```toml
-actions = ["switch", "fold"]          # today: switch to a session, fold a row
+actions = ["switch", "fold"]          # switch to a session, fold a row
 ```
 
 ```jsonc
 "enter": {"switch":"s-1793…"} | {"fold":true} | {"event":"expand"}
+      | {"verb":"approve","id":"r-1f2…"}
 ```
 
 A view carrying an undeclared act is refused (`View::validate_for`) and the head draws what is
 below it. The next verb (`disarm`, `fire`, `open`) is one more word in that list and one more arm in
 the head — not a new mechanism.
 
+**`{"verb", "id"}` is the fourth act, and it exists because a row must be able to say WHICH entry it
+means.** The queue pane's keys are `a` approve, `v` veto, `r` restart, `d` rm — the head's own keys,
+not a plugin's action letters — and before this act a plugin row could draw one entry while the keys
+acted on whichever entry the HOST's cursor happened to be over. So a row carries the entry, and the
+keys act on it (`App::queue_verb_on`). **The verb word is what the manifest gates**: a layer whose
+rows ask for `rm` must declare `rm` in `actions`, and a row asking for a verb the manifest does not
+name is refused by the same `validate_for` that gates `switch`.
+
 **As built (2026-10-27)**: `crates/plugin-sdk/src/pane.rs` (the input, `Feed`, `Act`, `Fold`,
 `Cell`), `crates/sessionlog/src/pane.rs` (C3's `Row`/`Tree` grown to match), `crates/plugins`'s
 `Manifest` (`feeds`, `actions`). The first pane to use all of it is the session list below.
+
+**And the second (2026-10-29): `plugins/builtin/queue`.** Two things about it are worth a reader's
+attention. It is run by the HEAD, not by the daemon — `App::queue_feed` builds its feed out of the
+`QueueSnapshot` the head already holds and has already cut to this session's repository, so a
+daemon-side layer would have to be handed the snapshot back. And it is the first pane to use
+`{"verb", "id"}`, because the queue's keys are the head's and a row has to name its own entry.
 
 #### The feeds a `command_` hook is handed (built 2026-10-28)
 

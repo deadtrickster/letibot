@@ -1089,6 +1089,21 @@ pub struct App {
     /// The overlay reads the entry and its review out of `queues` at DRAW time,
     /// so a move while it is open shows the new state rather than the state at the keypress.
     pub(crate) queue_open: Option<String>,
+    /// **The row folds the plugin's queue pane keeps**, by row id — the ledger C3 gives the host so
+    /// a fold is instant and survives the next answer. Sent as `Input::folded`, and **written by
+    /// [`App::queue_fold`]**: Enter on a row whose act is `{"fold": true}` toggles this map, which
+    /// is how the history row's `enter opens it` is a key that opens it.
+    pub(crate) queue_folds: std::collections::BTreeMap<String, bool>,
+    /// **The view the plugin last answered**, kept so a keypress reads the row that was DRAWN — the
+    /// entry a row's act names, which is what `a`/`v`/`r`/`d` act on.
+    pub(crate) queue_held: Option<letibot_sessionlog::pane::View>,
+    /// How many stops that view has, so the arrows walk what was drawn rather than the host's own
+    /// rows. Unused when the pane is the head's own (`queue_rows`).
+    pub(crate) queue_plugin_stops: usize,
+    /// **`/queue builtin`** — the head's own pane, drawn from the snapshot instead of from a layer.
+    /// The way out when a layer is broken or unwanted, and the thing that keeps
+    /// `ui/panes/queue.rs` reachable now that `/queue` opens the plugin's.
+    pub(crate) queue_builtin: bool,
     /// Which job row the cursor is on. Arrows move it, Enter asks the daemon for
     /// that job's output — the pane counted the bytes and had no way to show them.
     ///
@@ -2154,6 +2169,10 @@ impl App {
             queue_view: QueueView::default(),
             queue_tabs: None,
             queue_open: None,
+            queue_folds: std::collections::BTreeMap::new(),
+            queue_held: None,
+            queue_plugin_stops: 0,
+            queue_builtin: false,
             jobs_sel: 0,
             jobs_finished_open: false,
             jobs_stop_rows: Vec::new(),
@@ -2477,6 +2496,7 @@ mod pictures;
 mod plugin;
 mod pointer;
 mod prefs;
+mod queue_pane;
 mod reach;
 pub(crate) mod reseat;
 pub(crate) mod runclick;

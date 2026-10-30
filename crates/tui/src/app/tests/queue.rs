@@ -1,12 +1,28 @@
-//! The review queue and the merge queue (R61), as this head draws them.
+//! The review queue and the merge queue (R61), as the HEAD's own pane draws them.
+//!
+//! **These are `ui/panes/queue.rs`'s tests**, so each one asks for that pane by name: `/queue`
+//! opens the `queue` layer's pane now (`app/tests/queue_plugin.rs` is its tests), and the head's
+//! own is what a person gets from `/queue builtin`, from a layer that is disabled, and from one
+//! whose answer the host refuses. A pane that is only reachable through an escape still has to be
+//! right, so it keeps its own tests rather than losing them to the conversion.
 
 use super::*;
+
+/// **The head's own queue pane** — `/queue builtin`, as a fixture.
+///
+/// The one difference from `app()`: the `queue` layer installed in this binary is told to stand
+/// aside, so what these tests read is `ui/panes/queue.rs` and not whatever the layer draws today.
+fn builtin() -> App {
+    let mut a = app();
+    a.queue_builtin = true;
+    a
+}
 
 /// **`/queue` asks for the snapshot and draws nothing it was not sent** — and until one arrives
 /// it says it is asking, rather than drawing an empty queue.
 #[test]
 fn the_queue_pane_asks_for_the_queues_and_draws_what_comes_back() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     assert_eq!(a.command("queue"), Some(Action::ListMergeQueue));
     assert!(a.is_open(Surface::Queue));
@@ -34,7 +50,7 @@ fn the_queue_pane_asks_for_the_queues_and_draws_what_comes_back() {
 /// merge queues"*; `tab` switches, and the strip counts each.
 #[test]
 fn tab_switches_between_the_review_queue_and_the_merge_queue() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(queues(
@@ -75,7 +91,7 @@ fn tab_switches_between_the_review_queue_and_the_merge_queue() {
 /// was one of the three fields the operator was reading past.
 #[test]
 fn a_row_says_time_in_state_and_names_an_owner_only_from_elsewhere() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut r = queue_review_row("one", "reviewing");
@@ -104,7 +120,7 @@ fn a_row_says_time_in_state_and_names_an_owner_only_from_elsewhere() {
 /// a heartbeat past the lease's lifetime is STALE. And no lease at all is said.
 #[test]
 fn the_pane_says_who_serves_each_repository_and_a_stale_heartbeat() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(queues(Vec::new(), Vec::new())));
@@ -135,7 +151,7 @@ fn the_pane_says_who_serves_each_repository_and_a_stale_heartbeat() {
 /// daemon keeps them out of `targets` (`mergequeue::snapshot`) and names them here.
 #[test]
 fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(Vec::new(), Vec::new());
@@ -157,7 +173,7 @@ fn a_repository_that_is_not_queued_is_one_muted_line_and_no_count() {
 /// first row of the review queue.
 #[test]
 fn a_red_target_is_drawn_at_emergency_severity_first() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(
@@ -213,7 +229,7 @@ impl QueueReviewExt for letibot_sessionlog::event::QueueReview {
 /// **A snapshot that could not be read says so** — never drawn as an empty queue (defect 12).
 #[test]
 fn an_unreadable_snapshot_is_said_not_drawn_empty() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(Vec::new(), Vec::new());
@@ -227,7 +243,7 @@ fn an_unreadable_snapshot_is_said_not_drawn_empty() {
 /// history the v23 pane had none of.
 #[test]
 fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(vec![queue_review_row("one", "reviewing")], Vec::new());
@@ -264,7 +280,7 @@ fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
 #[test]
 fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
     use letibot_sessionlog::event::MergeGateOutcome as O;
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut m = queue_merge_row("m-two", "timed_out");
@@ -292,7 +308,7 @@ fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
 /// approve on a merge row is nothing.
 #[test]
 fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(queues(
@@ -342,7 +358,7 @@ fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would(
 /// is one read. FAILS before R92.5: a closed pane asked nothing.
 #[test]
 fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.apply(queue_frame(queues(Vec::new(), Vec::new())));
     let moved = || {
@@ -380,7 +396,7 @@ fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
 /// before R92.5.
 #[test]
 fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
-    let mut a = app();
+    let mut a = builtin();
     a.apply(hello("s", Vec::new(), Hub::new("s").snapshot()));
     assert!(
         a.take_actions().contains(&Action::ListMergeQueue),
@@ -450,7 +466,7 @@ fn two_repositories() -> letibot_sessionlog::event::QueueSnapshot {
 /// counted.
 #[test]
 fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(two_repositories()));
@@ -505,7 +521,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
 /// other project's standing.
 #[test]
 fn a_session_outside_every_repository_is_told_and_offered_all() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = two_repositories();
@@ -535,7 +551,7 @@ fn a_session_outside_every_repository_is_told_and_offered_all() {
 /// counting once the target is green. FAILS before R92.5: only `red` was counted.
 #[test]
 fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     for state in ["timed_out", "blocked"] {
         let mut snap = queues(Vec::new(), Vec::new());
@@ -577,7 +593,7 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
 /// what is being landed, what is STUCK, and what landed today.
 #[test]
 fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     // **Nothing that stands** — an approved review is the merge queue's business now, and a
     // rejected one, a withdrawn one and a landing that moved on are the queue's past.
@@ -770,7 +786,7 @@ fn column_of(row: &str, needle: &str) -> usize {
 /// door, and the hover mark covers exactly the words the frame drew.
 #[test]
 fn a_click_on_the_standings_opens_the_queue() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
     snap.here = Some(here_in(LETIBOT));
@@ -883,7 +899,7 @@ fn the_standings_target_covers_the_words_they_grew_into() {
 /// rather than agreeing with itself.
 #[test]
 fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
     snap.here = Some(here_in(LETIBOT));
@@ -919,7 +935,7 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
         ("timed_out", "⚠ 1 target(s) unjudged"),
         ("red", "‼ 1 red target(s)"),
     ] {
-        let mut a = app();
+        let mut a = builtin();
         a.session_id = "s1".into();
         let mut snap = queues(Vec::new(), Vec::new());
         snap.targets.push(target(LETIBOT, state));
@@ -954,7 +970,7 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
 /// leaves, exactly as the count labels do for their panes.
 #[test]
 fn a_click_on_the_standings_of_an_open_queue_closes_it() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
     snap.here = Some(here_in(LETIBOT));
@@ -982,7 +998,7 @@ fn a_click_on_the_standings_of_an_open_queue_closes_it() {
 /// are: a click from the subagents pane opens the queue just as one from the conversation does.
 #[test]
 fn the_standings_are_a_target_from_another_pane_too() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
     snap.here = Some(here_in(LETIBOT));
@@ -1008,7 +1024,7 @@ fn the_standings_are_a_target_from_another_pane_too() {
 /// see land, which is the failure `drawn_span` exists to make safe.
 #[test]
 fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
     snap.here = Some(here_in(LETIBOT));
@@ -1036,7 +1052,7 @@ fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
 /// (the merge queue's business now) and a landing that moved on.
 #[test]
 fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.apply(queue_frame(queues(
         vec![queue_review_row("a", "approved")],
@@ -1067,7 +1083,7 @@ fn a_head_whose_queue_stands_nothing_records_no_standings_target() {
 /// **A click on a row selects it, and Enter opens THAT row.**
 #[test]
 fn a_click_on_a_queue_row_selects_the_row_drawn_there() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(queues(
@@ -1097,7 +1113,7 @@ fn a_click_on_a_queue_row_selects_the_row_drawn_there() {
 /// **The wheel and the page keys scroll the pane, not the conversation under it.**
 #[test]
 fn the_wheel_and_page_keys_scroll_the_queue_pane() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let rows = (0..30)
@@ -1116,7 +1132,7 @@ fn the_wheel_and_page_keys_scroll_the_queue_pane() {
 /// **The bar names the verbs** — generated from the `QUEUE` table.
 #[test]
 fn the_hint_line_names_the_person_verbs() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let bar = a.hint_bar(160);
@@ -1129,7 +1145,7 @@ fn the_hint_line_names_the_person_verbs() {
 /// how long it has run, rather than sitting `queued` with no reason.
 #[test]
 fn a_running_gate_is_said_and_the_queued_landings_wait_for_it() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut gating = queue_merge_row("m-one", "gating");
@@ -1157,7 +1173,7 @@ fn a_running_gate_is_said_and_the_queued_landings_wait_for_it() {
 /// the pane hold every one of them, and nothing of a repository outside it.
 #[test]
 fn a_one_project_folder_sees_the_queues_of_each_of_its_repositories() {
-    let mut a = app();
+    let mut a = builtin();
     a.command("queue");
     let mut snap = two_repositories();
     snap.here = Some(letibot_sessionlog::event::QueueHere {
@@ -1246,7 +1262,7 @@ fn lines_with(rows: &[String], needle: &str) -> Vec<usize> {
 /// **An entry is ONE line, and the id and the sha are on the picked one only.**
 #[test]
 fn an_entry_is_one_line_and_the_id_is_on_the_picked_row_only() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(three_parked_and_a_landing()));
@@ -1311,7 +1327,7 @@ fn an_entry_is_one_line_and_the_id_is_on_the_picked_row_only() {
 /// the first line: the evidence's second line is the overlay's.
 #[test]
 fn a_parked_rows_reason_is_on_its_own_line() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(three_parked_and_a_landing()));
@@ -1386,7 +1402,7 @@ fn a_row_names_its_repository_only_when_the_snapshot_holds_more_than_one() {
 /// row's verbs both say it.
 #[test]
 fn the_lease_the_unqueued_repositories_and_the_archive_are_one_line() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut snap = queues(Vec::new(), Vec::new());
@@ -1418,7 +1434,7 @@ fn the_lease_the_unqueued_repositories_and_the_archive_are_one_line() {
 /// nobody is reviewing says so.
 #[test]
 fn o_goes_into_the_reviewers_session() {
-    let mut a = app();
+    let mut a = builtin();
     a.session_id = "s1".into();
     a.command("queue");
     let mut reviewing = queue_review_row("one", "reviewing");
