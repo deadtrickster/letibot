@@ -1086,3 +1086,122 @@ fn a_queued_landing_shows_the_step_of_the_gate_it_waits_on() {
         "and the end of what it has written:\n{screen}"
     );
 }
+
+/// **The detail asks for a fresh snapshot on the pane's own clock** — the reviewer's blocking
+/// finding, as a test.
+///
+/// `Surface::QueueEntry` is a surface of its own and `main_area` draws exactly one surface, so the
+/// ask inside `queue_lines` never ran while a row was open. The consequence was worse than a still
+/// picture: `track_gate_tails` runs only on a `Queues` frame, so its stamp froze while `queue_now()`
+/// went on advancing, and after `GATE_QUIET_MS` the screen built to answer *is it stuck?* said
+/// *may be stuck* about a gate that was writing. Nothing here applies a frame: the assertion is
+/// that the DETAIL asked.
+#[test]
+fn the_detail_asks_for_a_snapshot_on_the_panes_clock() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000,
+        vec![gating_with_a_step("m-three", "building\nlinking")],
+    )));
+    a.command("queue");
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    a.screen(120, 40);
+    a.take_actions();
+    // **Five seconds later, on the detail, with no frame applied** — the ask is the head's.
+    a.now_ms += crate::ui::panes::queue::REFRESH_MS;
+    a.redraw = true;
+    a.screen(120, 40);
+    assert!(
+        a.take_actions().contains(&Action::ListMergeQueue),
+        "the detail asks for the snapshot it is drawing a live gate from"
+    );
+    // And inside the clock it does not ask twice — one field, two surfaces.
+    a.redraw = true;
+    a.screen(120, 40);
+    assert!(
+        !a.take_actions().contains(&Action::ListMergeQueue),
+        "a second frame inside the same five seconds is not a second ask"
+    );
+}
+
+/// **A tail that grew between two answers is not called stuck** — the same detail, drawn twice,
+/// where the second answer is the one the ask in the test above produced.
+#[test]
+fn a_growing_tail_is_not_called_stuck_on_the_detail() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000,
+        vec![gating_with_a_step("m-three", "building")],
+    )));
+    a.command("queue");
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    let first = a.screen(120, 40).join("\n");
+    assert!(first.contains("building"), "{first}");
+    // **The answer to the ask** — the step has written another line since.
+    a.now_ms += crate::ui::panes::queue::REFRESH_MS;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000 + crate::ui::panes::queue::REFRESH_MS,
+        vec![gating_with_a_step("m-three", "building\nlinking")],
+    )));
+    let second = a.screen(120, 40).join("\n");
+    assert!(
+        second.contains("linking"),
+        "the tail the second answer carries:\n{second}"
+    );
+    assert!(
+        second.contains("the tail moved just now"),
+        "and it moved, so it is not stuck:\n{second}"
+    );
+    assert!(!second.contains("may be stuck"), "{second}");
+}
+
+/// **No answer is said as no answer, never as *stuck*** — twenty minutes on the detail with nothing
+/// arriving (a daemon that died, an ask that was dropped). The head is reading its own clock and not
+/// the gate's, so the one thing it must not do is turn its own silence into the verdict the screen
+/// exists to establish.
+#[test]
+fn a_detail_with_no_answer_does_not_call_the_gate_stuck() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.now_ms = 3_662_000;
+    a.apply(queue_frame(a_snapshot_at(
+        3_662_000,
+        vec![gating_with_a_step("m-three", "building\nlinking")],
+    )));
+    a.command("queue");
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::build(
+        "s1",
+        &std::env::temp_dir(),
+    ));
+    a.screen(120, 40);
+    a.queue_sel = 0;
+    a.key(Key::Enter);
+    // **Twenty minutes of the head's clock, and not one frame.**
+    a.now_ms += 20 * 60_000;
+    a.redraw = true;
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("no snapshot for 20m00s"),
+        "the silence is said:\n{screen}"
+    );
+    assert!(
+        !screen.contains("may be stuck"),
+        "and it is not turned into a verdict about the gate:\n{screen}"
+    );
+}
