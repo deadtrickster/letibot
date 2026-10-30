@@ -1109,8 +1109,10 @@ fn moves_lines(recent: &[QueueMove], id: &str, n: usize, now: u64, w: usize) -> 
         .collect()
 }
 
-/// **What the queue is DOING, in four columns** — drawn on the composer's bottom edge, and the
-/// subject of [`standings_where`]'s reading of the snapshot.
+/// **What the queue is DOING, in six words** — drawn on the composer's bottom edge, and the
+/// subject of [`standings_where`]'s reading of the snapshot: the four columns (what a reviewer has,
+/// what is being landed, what is stuck, what landed today) and the two things a TARGET can be that
+/// no row of either queue can say — red, and unjudged.
 ///
 /// **The third column is `stuck`, and the word is the operator's** (2026-10-29): *"wtf parked
 /// means?"*, then *"so, label it as such - stuck?"*. `parked` was this head's word for a row the
@@ -1141,25 +1143,40 @@ pub(crate) struct Standings {
 }
 
 impl Standings {
+    /// **The words, and a count of nothing is not a word.**
+    ///
+    /// Measured 2026-10-31, from the operator's *"main is red, tests are going — nothing shows as
+    /// in review or merged or stuck"*: every row of that repository was terminal, so all four
+    /// columns were zero, and the one live fact the queue held — a red target — came after four
+    /// zeros that read as an idle queue. A word is drawn when it has a count, so that repository
+    /// reads `1 red`.
+    ///
+    /// **The order is the pane's, and `red` leads it.** The edge is cut from its right end
+    /// (`rano`'s `truncate`, through `box_edge`), so the leftmost word is the last one a narrow
+    /// terminal loses — and the emergency is the word that must survive. Then a target nobody
+    /// could judge, then the four columns in the order they have always had.
     pub(crate) fn words(&self) -> Option<String> {
+        let mut words: Vec<String> = Vec::new();
+        if self.red > 0 {
+            words.push(format!("{} red", self.red));
+        }
+        if self.unjudged > 0 {
+            words.push(format!("{} unjudged", self.unjudged));
+        }
         // **A landing is a standing** — the operator asked for the count, so it is drawn on its
         // own: a queue that landed two branches today and holds nothing else still has something
         // to say. Only a queue that has stood nothing and landed nothing for a day is silent.
-        let standing =
-            self.review + self.merging + self.stuck + self.landed + self.red + self.unjudged;
-        (standing > 0).then(|| {
-            let mut s = format!(
-                "{} in review · {} being merged · {} stuck · {} landed",
-                self.review, self.merging, self.stuck, self.landed
-            );
-            if self.unjudged > 0 {
-                s = format!("⚠ {} target(s) unjudged · {s}", self.unjudged);
+        for (n, word) in [
+            (self.review, "in review"),
+            (self.merging, "being merged"),
+            (self.stuck, "stuck"),
+            (self.landed, "landed"),
+        ] {
+            if n > 0 {
+                words.push(format!("{n} {word}"));
             }
-            if self.red > 0 {
-                s = format!("‼ {} red target(s) · {s}", self.red);
-            }
-            s
-        })
+        }
+        (!words.is_empty()).then(|| words.join(" · "))
     }
 
     pub(crate) fn role(&self) -> Role {

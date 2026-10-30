@@ -209,8 +209,8 @@ fn a_red_target_is_drawn_at_emergency_severity_first() {
         .expect("the branch's row");
     assert!(red_at < one_at, "the red tip's review is first: {screen}");
     assert!(
-        screen.contains("‼ 1 red target(s)"),
-        "and the edge says so: {screen}"
+        screen.contains("1 red"),
+        "and the edge says so, in the target's own words: {screen}"
     );
 }
 
@@ -472,7 +472,8 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     a.session_id = "s1".into();
     a.command("queue");
     a.apply(queue_frame(two_repositories()));
-    let screen = a.screen(160, 40).join("\n");
+    let rows = a.screen(160, 40);
+    let screen = rows.join("\n");
     assert!(screen.contains("agent/mine"), "{screen}");
     assert!(!screen.contains("agent/theirs"), "{screen}");
     assert!(
@@ -481,21 +482,22 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     );
     assert!(screen.contains("this session's repository"), "{screen}");
     assert!(
-        screen.contains("1 in review · 0 being merged · 0 stuck · 0 landed")
-            && !screen.contains("red target"),
-        "the edge counts this repository only: {screen}"
+        edge_row(&rows).contains("1 in review") && !edge_row(&rows).contains("red"),
+        "the edge counts this repository only: {:?}",
+        edge_row(&rows)
     );
 
     // **Explicitly every repository** — and a verb sent from it carries the scope.
     assert_eq!(a.command("queue all"), None, "the open pane is re-cut");
-    let screen = a.screen(160, 40).join("\n");
+    let rows = a.screen(160, 40);
+    let screen = rows.join("\n");
     assert!(screen.contains("agent/theirs"), "{screen}");
     assert!(screen.contains("EMERGENCY"), "{screen}");
     assert!(screen.contains("every repository"), "{screen}");
     assert!(
-        screen.contains("1 in review · 0 being merged · 0 stuck · 0 landed")
-            && !screen.contains("red target(s)"),
-        "the EDGE stays this session's repository's whatever the pane shows: {screen}"
+        edge_row(&rows).contains("1 in review") && !edge_row(&rows).contains("red"),
+        "the EDGE stays this session's repository's whatever the pane shows: {:?}",
+        edge_row(&rows)
     );
     let theirs = a
         .queue_rows()
@@ -533,15 +535,17 @@ fn a_session_outside_every_repository_is_told_and_offered_all() {
         repositories: Vec::new(),
     });
     a.apply(queue_frame(snap));
-    let screen = a.screen(160, 40).join("\n");
+    let rows = a.screen(160, 40);
+    let screen = rows.join("\n");
     assert!(
         screen.contains("/home/dead is in no repository") && screen.contains("`/queue all`"),
         "{screen}"
     );
     assert!(!screen.contains("agent/"), "{screen}");
     assert!(
-        !screen.contains("in review ·"),
-        "no edge standing for a session of no repository: {screen}"
+        !edge_row(&rows).contains("in review") && !edge_row(&rows).contains(" red"),
+        "no edge standing for a session of no repository: {:?}",
+        edge_row(&rows)
     );
     a.command("queue all");
     let screen = a.screen(160, 40).join("\n");
@@ -561,10 +565,7 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
         snap.here = Some(here_in(LETIBOT));
         a.apply(queue_frame(snap));
         let screen = a.screen(160, 24).join("\n");
-        assert!(
-            screen.contains("⚠ 1 target(s) unjudged"),
-            "{state}: {screen}"
-        );
+        assert!(screen.contains("1 unjudged"), "{state}: {screen}");
     }
     let mut snap = queues(
         vec![QueueReviewExt::target(queue_review_row(
@@ -577,16 +578,15 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
     snap.here = Some(here_in(LETIBOT));
     a.apply(queue_frame(snap.clone()));
     let screen = a.screen(160, 24).join("\n");
-    assert!(
-        screen.contains("‼ 1 red target(s) · 1 in review"),
-        "{screen}"
-    );
+    assert!(screen.contains("1 red · 1 in review"), "{screen}");
     snap.targets[0].state = "green".into();
     a.apply(queue_frame(snap));
-    let screen = a.screen(160, 24).join("\n");
+    let rows = a.screen(160, 24);
+    let screen = rows.join("\n");
     assert!(
-        !screen.contains("red target") && !screen.contains("in review ·"),
-        "green clears the alarm and the moot red-tip review: {screen}"
+        !edge_row(&rows).contains(" red") && !edge_row(&rows).contains("in review"),
+        "green clears the alarm and the moot red-tip review: {:?}",
+        edge_row(&rows)
     );
 }
 
@@ -624,15 +624,16 @@ fn the_edge_counts_the_queues_and_is_silent_when_nothing_stands() {
     )));
     let screen = a.screen(120, 24).join("\n");
     assert!(
-        screen.contains("1 in review · 1 being merged · 2 stuck · 0 landed"),
+        screen.contains("1 in review · 1 being merged · 2 stuck"),
         "{screen}"
     );
 }
 
-/// **The words, exactly** — the operator's two sentences of 2026-10-29: *"i definitely want to
-/// see landed counter after parked, and wtf parked means?"*, then *"so, label it as such -
-/// stuck?"*. And a landing is a STANDING: a queue that landed two branches today and holds
-/// nothing else still has something to say, so the words are drawn on the count alone.
+/// **A landing is a standing, and the zeros are not** — the operator's two sentences of
+/// 2026-10-29: *"i definitely want to see landed counter after parked, and wtf parked means?"*,
+/// then *"so, label it as such - stuck?"*. A queue that landed two branches today and holds
+/// nothing else still has something to say, so the words are drawn on the count alone: `2 landed`
+/// and no `0 in review` in front of it.
 #[test]
 fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
     let mut a = app();
@@ -645,10 +646,8 @@ fn the_edge_says_the_four_columns_and_a_landing_stands_on_its_own() {
         ],
     )));
     let screen = a.screen(140, 24).join("\n");
-    assert!(
-        screen.contains("0 in review · 0 being merged · 0 stuck · 2 landed"),
-        "{screen}"
-    );
+    assert!(screen.contains("2 landed"), "{screen}");
+    assert!(!screen.contains("0 in review"), "a zero is drawn: {screen}");
 }
 
 /// **A terminal row inflates no live column, and the operator's own shape is both halves of
@@ -668,10 +667,7 @@ fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
         vec![queue_merge_row("m-one", "failed")],
     )));
     let screen = a.screen(140, 24).join("\n");
-    assert!(
-        screen.contains("0 in review · 0 being merged · 1 stuck · 0 landed"),
-        "{screen}"
-    );
+    assert!(screen.contains("1 stuck"), "{screen}");
     assert_eq!(
         a.queue_standings().stuck,
         1,
@@ -687,10 +683,11 @@ fn a_rejected_review_is_not_stuck_and_a_failed_landing_is() {
         ],
         Vec::new(),
     )));
-    let screen = a.screen(140, 24).join("\n");
+    let rows = a.screen(140, 24);
     assert!(
-        !screen.contains("in review ·"),
-        "a terminal row drew a standing: {screen}"
+        !edge_row(&rows).contains("stuck") && !edge_row(&rows).contains("in review"),
+        "a terminal row drew a standing: {:?}",
+        edge_row(&rows)
     );
     assert_eq!(a.queue_standings().stuck, 0);
 }
@@ -721,15 +718,12 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
     snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS - 1_000);
     a.apply(queue_frame(snap));
     let screen = a.screen(140, 24).join("\n");
-    assert!(
-        screen.contains("0 in review · 0 being merged · 0 stuck · 1 landed"),
-        "{screen}"
-    );
+    assert!(screen.contains("1 landed"), "{screen}");
 }
 
 /// **A red target still leads at its own severity, in front of the columns it grew into** —
-/// `‼ 1 red target(s)` is the alarm and `Role::Failure` is what it is drawn in, and neither is a
-/// function of how many columns follow it.
+/// `1 red` is the alarm, `Role::Failure` is what it is drawn in, and neither is a function of how
+/// many columns follow it.
 #[test]
 fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
     let mut a = app();
@@ -739,14 +733,156 @@ fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
     snap.here = Some(here_in(LETIBOT));
     a.apply(queue_frame(snap));
     let screen = a.screen(160, 24).join("\n");
-    assert!(
-        screen.contains("‼ 1 red target(s) · 0 in review · 0 being merged · 0 stuck · 1 landed"),
-        "{screen}"
-    );
+    assert!(screen.contains("1 red · 1 landed"), "{screen}");
     assert_eq!(
         a.queue_standings().role(),
         rano::style::Role::Failure,
         "the emergency is still the severity of the whole line"
+    );
+}
+
+// -- what the line says when the news is a TARGET's --------------------------------------
+//
+// The operator, 2026-10-31, from a session in another repository: *"main is red, tests are
+// going — nothing shows as in review or merged or stuck"*. Every row of that repository was
+// terminal (11 approved, 2 rejected and 6 withdrawn reviews; 2 landed and 9 withdrawn landings),
+// so all four columns were zero — and the only live fact the queue held was the red target. The
+// four words were true and the line was a lie by omission, which is what a zero is: a count of
+// nothing drawn where the reader is asking what there is.
+
+/// **A repository whose only live fact is a red `main` reads `1 red`** — the four columns have
+/// nothing to say and are not drawn, and the target is drawn in the register a stuck row's `[!]`
+/// is drawn in. This is the operator's own shape: no open row anywhere, a red target.
+#[test]
+fn a_red_target_alone_reads_as_one_red_and_no_zeros() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(
+        vec![
+            queue_review_row("a", "approved"),
+            queue_review_row("b", "rejected"),
+            queue_review_row("c", "withdrawn"),
+        ],
+        vec![
+            queue_merge_row("m-a", "landed"),
+            queue_merge_row("m-b", "withdrawn"),
+        ],
+    );
+    // The two landed rows are ten days old, so even `landed` has nothing to say today.
+    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
+    for m in &mut snap.merges {
+        m.state_ms = 1_000;
+    }
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(120, 24);
+    let edge = edge_row(&rows);
+    assert!(edge.contains("1 red"), "{edge:?}");
+    for zero in ["0 in review", "0 being merged", "0 stuck", "0 landed"] {
+        assert!(!edge.contains(zero), "a zero is drawn — {zero} in {edge:?}");
+    }
+    assert_eq!(a.queue_standings().words().as_deref(), Some("1 red"));
+    assert_eq!(
+        a.queue_standings().role(),
+        rano::style::Role::Failure,
+        "the red target is the register a stuck row is drawn in"
+    );
+    // **And it is the badge**: the pane was never opened, so this is what a reader's edge says.
+    assert!(!a.is_open(Surface::Queue));
+}
+
+/// **A red target and a stuck landing are both said** — the emergency and the row a person has
+/// to move, with neither of them hiding the other and no zero between them.
+#[test]
+fn a_red_target_and_a_stuck_landing_are_both_said() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-a", "failed")]);
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(120, 24);
+    let edge = edge_row(&rows);
+    assert!(edge.contains("1 red · 1 stuck"), "{edge:?}");
+    assert!(!edge.contains("in review"), "{edge:?}");
+    assert!(!edge.contains("landed"), "{edge:?}");
+}
+
+/// **A green target adds no word, and the columns read as they always have** — the four in their
+/// order, each only while it has a count.
+#[test]
+fn an_all_green_repository_reads_the_columns_and_no_target_word() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(
+        vec![queue_review_row("one", "waiting")],
+        vec![queue_merge_row("m-a", "gating")],
+    );
+    snap.targets.push(target(LETIBOT, "green"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(120, 24);
+    let edge = edge_row(&rows);
+    assert!(edge.contains("1 in review · 1 being merged"), "{edge:?}");
+    assert!(
+        !edge.contains("red"),
+        "a green target says nothing: {edge:?}"
+    );
+    assert!(!edge.contains("unjudged"), "{edge:?}");
+    assert!(!edge.contains("stuck"), "{edge:?}");
+    assert!(!edge.contains("landed"), "{edge:?}");
+    assert_eq!(
+        a.queue_standings().words().as_deref(),
+        Some("1 in review · 1 being merged")
+    );
+}
+
+/// **The longest line this head can draw fits an 80-column edge** — both target words and all
+/// four columns non-zero is 70 cells, and the composer's edge is 76 inside the gutters, so the
+/// whole line is drawn whole and keeps its click target. A cell narrower and `rano`'s `truncate`
+/// eats the right end: `landed` first, `stuck`, `being merged`, `in review`, `unjudged` — and
+/// `red` last, which is why the emergency leads the line.
+#[test]
+fn the_longest_standings_fit_on_an_eighty_column_edge() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(
+        vec![queue_review_row("one", "waiting")],
+        vec![
+            queue_merge_row("m-a", "gating"),
+            queue_merge_row("m-b", "failed"),
+            queue_merge_row("m-c", "landed"),
+            queue_merge_row("m-d", "landed"),
+        ],
+    );
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.targets.push(target(LETIBOT, "timed_out"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(80, 24);
+    let edge = edge_row(&rows);
+    let words = "1 red · 1 unjudged · 1 in review · 1 being merged · 1 stuck · 2 landed";
+    assert!(edge.contains(words), "the whole line at 80: {edge:?}");
+    // **The composer is 76 cells inside its two-cell gutter** (`App::GUTTER`), and the row is
+    // the gutter plus the edge — 78, with the right-hand gutter trimmed as every row's is.
+    assert_eq!(
+        line_width(&edge),
+        78,
+        "the edge is the 80-column edge's row"
+    );
+    assert_eq!(words.chars().count(), 70, "the premise: seventy cells");
+    // **Drawn whole means clickable whole** — the record is the drawn span's own columns.
+    let rect = standings_rect(&a);
+    assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
+    assert_eq!(rect.w, 70, "the target is the whole line");
+    assert_eq!(
+        a.key(Key::Click {
+            x: rect.x as u16,
+            y: rect.y as u16
+        }),
+        Some(Action::ListMergeQueue),
+        "the line is a door at 80 columns too"
     );
 }
 
@@ -759,6 +895,16 @@ fn a_red_target_still_leads_the_grown_columns_at_its_own_severity() {
 // at the rectangle that frame recorded, because the whole feature is that the target is where
 // the draw put it: a click measured against columns a test worked out for itself would pass
 // while the operator clicked the edge.
+
+/// **The composer's bottom edge** — the row the standings are drawn on, and the row a reader
+/// who never opens the pane reads them off.
+fn edge_row(rows: &[String]) -> String {
+    rows.iter()
+        .rev()
+        .find(|l| l.contains('╰'))
+        .expect("the composer's bottom edge")
+        .clone()
+}
 
 /// **The standings' rectangle, as the last frame recorded it.**
 fn standings_rect(a: &App) -> crate::app::hits::Rect {
@@ -795,7 +941,7 @@ fn a_click_on_the_standings_opens_the_queue() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review · 0 being merged · 0 stuck · 0 landed";
+    let words = "1 in review";
     // The record and the glass agree — the rectangle IS the span the frame drew, gutter and
     // all — or the click below proves nothing.
     let row = screen
@@ -866,8 +1012,7 @@ fn the_standings_target_covers_the_words_they_grew_into() {
     a.apply(queue_frame(snap));
     let screen = a.screen(200, 30);
     let rect = standings_rect(&a);
-    let words = "‼ 1 red target(s) · ⚠ 1 target(s) unjudged · 1 in review · 1 being merged · 1 \
-                 stuck · 2 landed";
+    let words = "1 red · 1 unjudged · 1 in review · 1 being merged · 1 stuck · 2 landed";
     let row = screen
         .get(rect.y)
         .unwrap_or_else(|| panic!("the recorded row is not in the frame: {rect:?}"));
@@ -908,7 +1053,7 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     a.apply(queue_frame(snap));
     let screen = a.screen(120, 24);
     let rect = standings_rect(&a);
-    let words = "1 in review · 0 being merged · 0 stuck · 0 landed";
+    let words = "1 in review";
     let row = screen
         .get(rect.y)
         .expect("the recorded row is in the frame");
@@ -928,15 +1073,12 @@ fn a_click_one_cell_outside_the_standings_asks_for_nothing() {
     }
 }
 
-/// **The two live cases carry their alarm prefix, and the click still opens the queue** — an
-/// unjudged target's `⚠` and a red one's `‼` are part of the span the frame draws, so they are
-/// part of the target, not a thing beside it.
+/// **The two target alarms carry their own word, and the click still opens the queue** — a
+/// target nobody could judge says `1 unjudged` and a red one `1 red`, in the span the frame
+/// draws, so they are part of the target and not a thing beside it.
 #[test]
 fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
-    for (state, prefix) in [
-        ("timed_out", "⚠ 1 target(s) unjudged"),
-        ("red", "‼ 1 red target(s)"),
-    ] {
+    for (state, prefix) in [("timed_out", "1 unjudged"), ("red", "1 red")] {
         let mut a = builtin();
         a.session_id = "s1".into();
         let mut snap = queues(Vec::new(), Vec::new());
@@ -945,7 +1087,7 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
         a.apply(queue_frame(snap));
         let screen = a.screen(120, 24);
         let rect = standings_rect(&a);
-        let words = format!("{prefix} · 0 in review · 0 being merged · 0 stuck · 0 landed");
+        let words = prefix.to_string();
         let row = screen
             .get(rect.y)
             .expect("the recorded row is in the frame");
@@ -954,6 +1096,11 @@ fn a_click_on_the_standings_with_an_alarm_prefix_opens_the_queue() {
             column_of(row, &words),
             rect.x,
             "{state}: the target is not the span the frame drew: {row:?}"
+        );
+        assert_eq!(
+            rect.w,
+            words.chars().count(),
+            "{state}: the target is not the word's width"
         );
         assert_eq!(
             a.key(Key::Click {
@@ -1024,11 +1171,23 @@ fn the_standings_are_a_target_from_another_pane_too() {
 /// and the standings are the last thing on it, so a terminal too narrow to hold the words draws
 /// a piece of them and records nothing. A target for words the frame cut is a click nobody can
 /// see land, which is the failure `drawn_span` exists to make safe.
+///
+/// The fixture is the LONGEST line this head can draw (both target words and all four columns),
+/// because that is the one a narrow edge cuts.
 #[test]
 fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
     let mut a = builtin();
     a.session_id = "s1".into();
-    let mut snap = queues(vec![queue_review_row("one", "waiting")], Vec::new());
+    let mut snap = queues(
+        vec![queue_review_row("one", "waiting")],
+        vec![
+            queue_merge_row("m-a", "gating"),
+            queue_merge_row("m-b", "failed"),
+            queue_merge_row("m-c", "landed"),
+        ],
+    );
+    snap.targets.push(target(LETIBOT, "red"));
+    snap.targets.push(target(LETIBOT, "timed_out"));
     snap.here = Some(here_in(LETIBOT));
     a.apply(queue_frame(snap));
     let screen = a.screen(30, 24);
@@ -1037,7 +1196,7 @@ fn a_narrow_edge_records_no_standings_target_for_words_it_cut() {
         .find(|l| l.contains('╰'))
         .expect("the composer's bottom edge");
     assert!(
-        !edge.contains("0 landed"),
+        !edge.contains("landed"),
         "the premise: thirty columns cut the words: {edge:?}"
     );
     assert!(
