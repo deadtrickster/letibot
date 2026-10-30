@@ -63,6 +63,16 @@ pub const UNJUDGED_RETRY: &str = "the gate could not run on this pass";
 /// a window a broken `gate_host` would be one ssh attempt per second, for ever.
 pub const UNJUDGED_RETRY_MS: u64 = 60 * 1000;
 
+/// **The clause a merge row leads with when the TRAIN it rode in was red** — its own gate has not
+/// run, and it is next in line to be gated alone.
+///
+/// It is what keeps a red train from becoming a loop: the rows that were in it go back to `queued`
+/// with this sentence, and [`RepoQueue::land_train`] will not put a row carrying it into another
+/// train. Its own single gate overwrites the evidence whatever it says, so the sentence lasts
+/// exactly until the branch has been judged on its own — which is the one thing a red train could
+/// not tell anybody.
+pub const TRAIN_SPLIT: &str = "this branch was in a train whose gate was red";
+
 /// **Where the queues reach sessions** — the review queue's session, a project's main session,
 /// and every hub. A trait so the tests record and the daemon rings.
 pub trait QueueDoor: Send + Sync {
@@ -314,9 +324,17 @@ enum GateFor {
     },
     /// A branch rebased onto the target, before the compare-and-swap.
     Land(Box<Landing>),
+    /// **Several branches rebased one onto the last, gated once** (`[queue] gate_train`).
+    Train(Box<Train>),
     /// The install steps, after the landing was pushed (decision 7).
     Install {
         landing: Box<Landing>,
+        gate: GateRun,
+        pushed: String,
+    },
+    /// The install steps of a TRAIN, after its last car was pushed.
+    InstallTrain {
+        train: Box<Train>,
         gate: GateRun,
         pushed: String,
     },
@@ -331,6 +349,79 @@ struct Landing {
     wt: PathBuf,
     carried: Vec<String>,
     install: Vec<String>,
+}
+
+/// **A train** — several approved branches, rebased one onto the last, judged by ONE gate run on
+/// the final tree (`[queue] gate_train`).
+///
+/// The cars are in the order they were rebased and are to be landed: each one's `rebased` is a
+/// commit on top of the previous car's, so `tip → car 1 → car 2 → …` is a chain of single commits
+/// and the target moves once per car. That is what keeps a train bisectable: every row's
+/// `landed_sha` is the tip at its own landing, exactly as a lone landing's is.
+///
+/// It lives in the gate's slot, on this worker, for the length of the gate — so a daemon that dies
+/// mid-train leaves its rows `gating` with no gate, which is what `adopt_orphans` already puts back
+/// in line. Nothing about a train needs the store to remember it.
+struct Train {
+    /// The target tip the train was built on — the first compare-and-swap expects exactly this.
+    tip: String,
+    /// The cars, oldest first.
+    cars: Vec<TrainCar>,
+    wt: PathBuf,
+    carried: Vec<String>,
+    install: Vec<String>,
+}
+
+/// **One branch in a train** — the row, the head it was approved at, and the commit it became.
+struct TrainCar {
+    row: MergeRow,
+    head: String,
+    /// The commit this car's branch became on top of the car before it. `''` until it is rebased.
+    rebased: String,
+}
+
+impl Train {
+    /// **This car's landing, as `landed` wants it** — the tip it was put onto, and the commit it
+    /// became. `landed` writes the row, the target's health at that commit, and retires the
+    /// branch; every one of those is true of a car in a train, one car at a time.
+    fn landing(&self, i: usize) -> Landing {
+        let car = &self.cars[i];
+        let tip = match i {
+            0 => self.tip.clone(),
+            n => self.cars[n - 1].rebased.clone(),
+        };
+        Landing {
+            row: car.row.clone(),
+            tip,
+            head: car.head.clone(),
+            rebased: car.rebased.clone(),
+            wt: self.wt.clone(),
+            carried: self.carried.clone(),
+            install: self.install.clone(),
+        }
+    }
+
+    /// The branches in the order they were rebased — `agent/a`, `agent/b` — for a sentence.
+    fn branches(&self) -> Vec<String> {
+        self.cars.iter().map(|c| c.row.branch.clone()).collect()
+    }
+
+    /// **The order, written out** — `1. `agent/a` (m-a) at 0f2d9550` — what a red train hands the
+    /// reviewer and every one of its rows.
+    fn order(&self) -> String {
+        self.cars
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{}. `{}` ({}) at {}", i + 1, c.row.branch, c.row.id, c.head))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// **What a row that landed in a train says about the train** — `, in a train of 3 (car 2)`. `''`
+/// for a lone landing, whose sentence is the one it has always been.
+fn train_note(n: usize, i: usize) -> String {
+    format!(", in a train of {n} (car {})", i + 1)
 }
 
 /// What [`RepoQueue::health`] found.
@@ -540,7 +631,7 @@ impl RepoQueue {
             if stop.load(Ordering::Relaxed) {
                 return Ok(Pass::Worked);
             }
-            worked |= self.land_next(&target, &h)?;
+            worked |= self.land_next(&target, &h, &settings)?;
             if self.gate_in_flight() {
                 break;
             }
@@ -739,11 +830,17 @@ impl RepoQueue {
                 carried,
             } => self.finish_health(health, &wt, &carried, run),
             GateFor::Land(landing) => self.finish_land(landing, run),
+            GateFor::Train(train) => self.finish_train(train, run),
             GateFor::Install {
                 landing,
                 gate,
                 pushed,
             } => self.finish_install(landing, gate, pushed, run),
+            GateFor::InstallTrain {
+                train,
+                gate,
+                pushed,
+            } => self.finish_install_train(*train, gate, pushed, run),
         }
     }
 
@@ -2106,7 +2203,17 @@ impl RepoQueue {
 
     /// **Take the next approved branch for `target` and land it** — only while the target is
     /// green at its current tip, or, while it is red, only a branch opened to fix it.
-    fn land_next(&self, target: &str, h: &TargetHealth) -> Result<bool, StoreError> {
+    ///
+    /// `[queue] gate_train` above 1 makes the taking a TRAIN ([`Self::land_train`]): up to that
+    /// many approved rows, rebased one onto the last, judged by ONE gate run. At the default `1`
+    /// nothing here differs from the queue that never had a train — not the order, not the
+    /// sentences, not the number of gates.
+    fn land_next(
+        &self,
+        target: &str,
+        h: &TargetHealth,
+        settings: &QueueSettings,
+    ) -> Result<bool, StoreError> {
         let mut queued: Vec<MergeRow> = self
             .store
             .merge_rows(Some(&self.key))?
@@ -2144,7 +2251,23 @@ impl RepoQueue {
                 m.id.clone(),
             )
         });
-        let Some(row) = queued.into_iter().find(|m| allowed(m)) else {
+        let eligible: Vec<MergeRow> = queued.into_iter().filter(|m| allowed(m)).collect();
+        // **The train** — and only when every branch at the front of the line is a plain one: a
+        // fix lands alone (it is the one thing that may move a red target), and a row that has
+        // just come out of a red train is gated on its own first (see [`TRAIN_SPLIT`]). So the
+        // train is always exactly the front of the line, never a re-ordering of it.
+        if settings.gate_train > 1
+            && h.state == HealthState::Green
+            && current
+            && eligible.len() > 1
+            && eligible
+                .iter()
+                .all(|m| m.fixes.is_none() && !m.evidence.starts_with(TRAIN_SPLIT))
+            && self.land_train(target, settings.gate_train, &eligible)?
+        {
+            return Ok(true);
+        }
+        let Some(row) = eligible.into_iter().next() else {
             return Ok(false);
         };
         let me = self.me().to_string();
@@ -2358,6 +2481,339 @@ impl RepoQueue {
             steps,
             &rebased,
         );
+        Ok(())
+    }
+
+    // ===== The train =====
+
+    /// **One gate for several branches** — `[queue] gate_train` (`N > 1`).
+    ///
+    /// The order is DERIVED, not guessed: the queue's own order (priority, then the time the
+    /// approval made the row — FIFO within a priority), lifted so that a branch cut from another
+    /// branch in the train comes after it ([`Self::train_order`]). The cars are rebased one onto
+    /// the last in the landing worktree, and the target's gate runs ONCE on the final tree.
+    ///
+    /// `false` means *no train was taken, and no row was written*: fewer than two branches can be
+    /// in one, so the caller's single path takes the first row exactly as it always did. A train
+    /// of one is not a train.
+    fn land_train(
+        &self,
+        target: &str,
+        most: usize,
+        candidates: &[MergeRow],
+    ) -> Result<bool, StoreError> {
+        let me = self.me().to_string();
+        let Some(tip) = git::branch_head(&self.repo, target) else {
+            return Ok(false);
+        };
+        // What can be a car, asked before anything is written: the branch is still where its
+        // approval left it (a branch that moved goes back to review, by the single path), and it
+        // carries something the target has not got (a branch already on the target settles).
+        let mut could: Vec<MergeRow> = Vec::new();
+        for row in self.train_order(candidates) {
+            let Some(head) = git::branch_head(&self.repo, &row.branch) else {
+                continue;
+            };
+            if head != row.approved_sha {
+                continue;
+            }
+            if git::is_ancestor(&self.repo, &head, &tip).unwrap_or(false) {
+                continue;
+            }
+            could.push(row);
+            if could.len() == most {
+                break;
+            }
+        }
+        if could.len() < 2 {
+            return Ok(false);
+        }
+        // Taken in order. A row a person moved between the read above and the take is dropped
+        // rather than judged: the take is a compare-and-swap on `queued`.
+        let mut cars: Vec<TrainCar> = Vec::new();
+        for row in could {
+            let why = format!(
+                "taken by {me}: car {} of a train of up to {most} onto `{target}` at {tip}",
+                cars.len() + 1
+            );
+            if !self.merge_to(
+                &row,
+                MergeState::Queued,
+                MergeState::Gating,
+                Move::new(&me, why).set("owner", &me),
+            )? {
+                continue;
+            }
+            let row = self.store.merge_row(&row.id)?.unwrap_or(row);
+            let head = row.approved_sha.clone();
+            cars.push(TrainCar {
+                row,
+                head,
+                rebased: String::new(),
+            });
+        }
+        if cars.len() < 2 {
+            // Nothing to ride with: put back what was taken, and let the single path take it.
+            let why = "nothing to ride with: the rest of the train was taken out of line, so this \
+                       branch is gated on its own";
+            for c in &cars {
+                self.gating_to(&c.row, MergeState::Queued, Move::new(&me, why))?;
+            }
+            return Ok(false);
+        }
+        let root = match (self.env.landing_root)(&self.repo) {
+            Ok(r) => r,
+            Err(e) => {
+                self.train_park(&cars, MergeState::Blocked, &e, &[])?;
+                self.raise(
+                    "queue_blocked",
+                    format!("a train onto `{target}` cannot land: {e}"),
+                );
+                return Ok(true);
+            }
+        };
+        let wt = match git::landing_worktree_in(&root, &self.repo, &tip) {
+            Ok(wt) => wt,
+            Err(e) => {
+                self.train_park(&cars, MergeState::Blocked, &e, &[])?;
+                self.raise(
+                    "queue_blocked",
+                    format!("a train onto `{target}` cannot land: {e}"),
+                );
+                return Ok(true);
+            }
+        };
+        // **The rebases, in order** — each car onto the last, in ONE worktree, so the final HEAD
+        // is the tree the gate will judge. A car that will not rebase is parked `conflict` and
+        // left out; the train is what is left.
+        let mut at = tip.clone();
+        let mut kept: Vec<TrainCar> = Vec::new();
+        let mut lost = 0usize;
+        for c in cars {
+            let bases = [
+                c.row.onto_sha.clone().unwrap_or_default(),
+                self.base_of(&c.row),
+            ];
+            match git::rebase_in(&wt, &c.head, &at, target, &bases) {
+                Ok(sha) => {
+                    at = sha.clone();
+                    kept.push(TrainCar { rebased: sha, ..c });
+                }
+                Err(e) => {
+                    lost += 1;
+                    let why = e.sentence(&c.row.branch, target, &tip);
+                    self.raise(
+                        "merge_conflict",
+                        format!("{why} (it was in a train onto `{target}` at {tip})"),
+                    );
+                    self.gating_to(
+                        &c.row,
+                        MergeState::Conflict,
+                        Move::new(&me, why).set("onto_sha", tip.clone()),
+                    )?;
+                }
+            }
+        }
+        if kept.len() < 2 {
+            // A train is two or more: what is left goes back in line and is gated alone.
+            let why = format!(
+                "the train lost {} of its cars to a rebase conflict, so this branch is gated on \
+                 its own",
+                lost
+            );
+            for c in &kept {
+                self.gating_to(&c.row, MergeState::Queued, Move::new(&me, &why))?;
+            }
+            return Ok(true);
+        }
+        let (steps, install) = match gate::declared_gate(&self.repo, &tip) {
+            Ok(Some(s)) => s,
+            Ok(None) => {
+                let why = format!(
+                    "{}: `{target}` declares no gate at {tip}",
+                    super::WAITING_FOR_GATE
+                );
+                for c in &kept {
+                    self.gating_to(&c.row, MergeState::Queued, Move::new(&me, &why))?;
+                }
+                return Ok(true);
+            }
+            Err(e) => {
+                self.raise(
+                    "queue_blocked",
+                    format!("a train onto `{target}` was not gated: {e}"),
+                );
+                self.train_park(&kept, MergeState::Blocked, &e, &[])?;
+                return Ok(true);
+            }
+        };
+        // Each row says where it was put and what is about to judge it, so a row read on its own
+        // is a whole sentence about a train and not a fragment of one.
+        let mut prev = tip.clone();
+        for (i, c) in kept.iter().enumerate() {
+            let why = format!(
+                "car {} of {}: rebased onto {prev} as {}; the train's gate runs once on the final \
+                 tree ({} step(s), {} gate)",
+                i + 1,
+                kept.len(),
+                c.rebased,
+                steps.len(),
+                self.env.gate.name()
+            );
+            self.merge_to(
+                &c.row,
+                MergeState::Gating,
+                MergeState::Gating,
+                Move::new(&me, why)
+                    .owned_by(&me)
+                    .set("onto_sha", prev.clone())
+                    .set("rebased_sha", c.rebased.clone()),
+            )?;
+            prev = c.rebased.clone();
+        }
+        // The gitignored inputs the project names, copied in AFTER the rebases (a fresh landing
+        // tree has none), exactly as the single landing does.
+        let carried = self.gate_carry();
+        if let Err(e) = carry::carry(&self.repo, &wt, &carried) {
+            self.raise(
+                "queue_blocked",
+                format!("a train onto `{target}` was not gated: {e}"),
+            );
+            self.train_park(&kept, MergeState::Blocked, &e, &[])?;
+            return Ok(true);
+        }
+        self.start_gate(
+            GateFor::Train(Box::new(Train {
+                tip: tip.clone(),
+                cars: kept,
+                wt: wt.clone(),
+                carried,
+                install,
+            })),
+            wt,
+            steps,
+            &at,
+        );
+        Ok(true)
+    }
+
+    /// **The order a train's cars go in** — the queue's own order, and a branch cut from another
+    /// branch in the train after it.
+    ///
+    /// The first half is [`Self::land_next`]'s comparator (priority, then the time the approval
+    /// made the row, then its id), so a train lands its branches in the order they would have
+    /// landed one by one. The second half is the one fact a row records and a clock cannot:
+    /// [`Self::stacks_on`]. The sort is stable, so unrelated rows keep their FIFO.
+    fn train_order(&self, rows: &[MergeRow]) -> Vec<MergeRow> {
+        let mut rows: Vec<MergeRow> = rows.to_vec();
+        rows.sort_by_key(|m| (m.priority.rank(), m.created_ms, m.id.clone()));
+        let n = rows.len();
+        let bases: Vec<String> = rows.iter().map(|m| self.base_of(m)).collect();
+        // `stacks[c][p]`: car `c` was cut from car `p`'s own work, so `p` is rebased first.
+        let mut stacks = vec![vec![false; n]; n];
+        for c in 0..n {
+            for p in 0..n {
+                if c != p {
+                    stacks[c][p] = self.stacks_on(&bases[c], &rows[p], &bases[p]);
+                }
+            }
+        }
+        let mut order: Vec<usize> = Vec::with_capacity(n);
+        let mut left: Vec<usize> = (0..n).collect();
+        while !left.is_empty() {
+            // The first row whose parents are all placed. A cycle — two branches each cut from the
+            // other's work, which only a rewritten branch can produce — keeps the first of them,
+            // because the queue's order is a better guess than no order at all.
+            let pick = left
+                .iter()
+                .position(|&c| !left.iter().any(|&p| p != c && stacks[c][p]))
+                .unwrap_or(0);
+            order.push(left.remove(pick));
+        }
+        order.into_iter().map(|i| rows[i].clone()).collect()
+    }
+
+    /// **Was `child` cut from `parent`'s own work?** — the child's recorded base against the
+    /// parent's head and the base the parent itself was cut from.
+    ///
+    /// The child's base is on the parent's head and NOT on the parent's base: the commits between
+    /// them are the parent's own, so the child is a branch of that branch and rebasing the child
+    /// first would replay it without its parent. Two branches cut from one tip are not stacked
+    /// (their bases are equal), which is what keeps a queue of unrelated branches in FIFO order.
+    fn stacks_on(&self, child_base: &str, parent: &MergeRow, parent_base: &str) -> bool {
+        if child_base.is_empty() || parent.approved_sha.is_empty() {
+            return false;
+        }
+        if child_base == parent.approved_sha {
+            return true;
+        }
+        if !git::is_ancestor(&self.repo, child_base, &parent.approved_sha).unwrap_or(false) {
+            return false;
+        }
+        // A base nobody recorded could be anything, so the parent goes first: the safe side.
+        parent_base.is_empty()
+            || !git::is_ancestor(&self.repo, child_base, parent_base).unwrap_or(false)
+    }
+
+    /// **The base the row's branch was cut from**, as the store remembers it — the base its review
+    /// recorded, and failing that the tip it was last rebased onto.
+    fn base_of(&self, m: &MergeRow) -> String {
+        self.store
+            .review_row(&m.review_id)
+            .ok()
+            .flatten()
+            .map(|r| r.base_sha)
+            .filter(|b| !b.is_empty())
+            .or_else(|| m.onto_sha.clone())
+            .unwrap_or_default()
+    }
+
+    /// **Put every car still this gate's back in `Queued`**, with one sentence and the gate's steps.
+    fn train_back(
+        &self,
+        cars: &[TrainCar],
+        why: &str,
+        steps: &[letibot_tokencore::store::MergeGateStep],
+    ) -> Result<(), StoreError> {
+        self.train_move(cars, MergeState::Queued, why, steps)
+    }
+
+    /// **Park every car still this gate's in `to`** — `blocked`, `timed_out`.
+    fn train_park(
+        &self,
+        cars: &[TrainCar],
+        to: MergeState,
+        why: &str,
+        steps: &[letibot_tokencore::store::MergeGateStep],
+    ) -> Result<(), StoreError> {
+        self.train_move(cars, to, why, steps)
+    }
+
+    /// The one move [`Self::train_back`] and [`Self::train_park`] are — a car a person has already
+    /// taken out of the train is not moved, whatever this gate said.
+    fn train_move(
+        &self,
+        cars: &[TrainCar],
+        to: MergeState,
+        why: &str,
+        steps: &[letibot_tokencore::store::MergeGateStep],
+    ) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        let json = serde_json::to_string(steps).unwrap_or_else(|_| "[]".into());
+        for c in cars {
+            let ours = self
+                .store
+                .merge_row(&c.row.id)?
+                .is_some_and(|r| r.state == MergeState::Gating);
+            if !ours {
+                continue;
+            }
+            self.gating_to(
+                &c.row,
+                to,
+                Move::new(&me, why).set("gate_steps_json", json.clone()),
+            )?;
+        }
         Ok(())
     }
 
@@ -2584,7 +3040,385 @@ impl RepoQueue {
             );
         }
         let steps = run.steps.clone();
-        self.landed(&landing, run, steps, pushed_text, install_note)
+        self.landed(&landing, run, steps, pushed_text, install_note, "")
+    }
+
+    /// **The verdict of a train's gate** — every car lands when it passed, and the whole train
+    /// dissolves when it did not.
+    ///
+    /// A train is ONE tree, so it is judged as one: a car a person took out of line while the gate
+    /// ran takes the whole train with it, and the cars that are still this gate's go back in line.
+    /// Nothing has moved at that point — a train is judged before its first compare-and-swap.
+    fn finish_train(&self, train: Box<Train>, run: GateRun) -> Result<(), StoreError> {
+        let n = train.cars.len();
+        let mut taken_out: Option<String> = None;
+        for c in &train.cars {
+            if !self
+                .store
+                .merge_row(&c.row.id)?
+                .is_some_and(|r| r.state == MergeState::Gating)
+            {
+                taken_out = Some(c.row.branch.clone());
+                break;
+            }
+        }
+        if let Some(branch) = taken_out {
+            let why = format!(
+                "the train of {n} was dissolved before it landed: `{branch}` was taken out of line \
+                 while the train's gate ran, so nothing of the train landed and this branch goes \
+                 back in line"
+            );
+            self.train_back(&train.cars, &why, &run.steps)?;
+            return Ok(());
+        }
+        match run.verdict.clone() {
+            GateVerdict::Passed => self.land_the_train(train, run),
+            GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {
+                // The branches were never judged: their gate's own setup failed after the build
+                // and the tests passed. Parked as `blocked` — `/queue restart` once the gate is
+                // fixed — never `failed`, which says a branch is bad.
+                let setup = super::setup::setup_failure(&run.steps).unwrap_or_default();
+                self.raise(
+                    "queue_blocked",
+                    format!("a train of {n} was not judged: {setup}"),
+                );
+                self.train_park(
+                    &train.cars,
+                    MergeState::Blocked,
+                    &format!("{setup}\n\n{w}"),
+                    &run.steps,
+                )?;
+                Ok(())
+            }
+            GateVerdict::Failed(w) => {
+                let w = self.with_carry_hint(w, &train.wt, &train.carried);
+                self.red_train(&train, w, &run.steps)
+            }
+            GateVerdict::TimedOut(w) => {
+                self.raise(
+                    "queue_blocked",
+                    format!("the gate of a train of {n} timed out: {w}"),
+                );
+                self.train_park(&train.cars, MergeState::TimedOut, &w, &run.steps)?;
+                Ok(())
+            }
+            GateVerdict::Stopped(w) => {
+                let why = format!("{w}; it goes back in line and is gated again");
+                self.train_back(&train.cars, &why, &run.steps)?;
+                Ok(())
+            }
+            GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
+                // **Not judged, and nothing about the branches is in doubt** — so they go back in
+                // line rather than being parked `blocked` behind a host that was slow to answer.
+                // Said once per train's tip, not once per attempt: the window re-gates it every
+                // minute, and a host down for an hour must not be sixty identical warnings.
+                if self.first_time(&format!("train-unjudged:{}:{}", self.key, train.tip))? {
+                    self.raise(
+                        "queue_blocked",
+                        format!(
+                            "a train of {n} was not judged: {w}. Nothing lands until its gate can \
+                             run, and its branches go back in line and are gated again"
+                        ),
+                    );
+                }
+                let why = format!(
+                    "{UNJUDGED_RETRY}: {w}\n\nNothing was judged about the train, so its branches \
+                     go back in line and are gated again"
+                );
+                self.train_back(&train.cars, &why, &run.steps)?;
+                Ok(())
+            }
+            GateVerdict::Infra(w) => {
+                let said = if w.starts_with(gate::GATE_KILLED) {
+                    format!("the gate of a train of {n} was killed: {w}")
+                } else {
+                    format!("the gate of a train of {n} could not run: {w}")
+                };
+                self.raise("queue_blocked", said);
+                self.train_park(&train.cars, MergeState::Blocked, &w, &run.steps)?;
+                Ok(())
+            }
+        }
+    }
+
+    /// **Every car lands** — one commit each, in the order it was rebased.
+    ///
+    /// The target moves once per car (`tip → car 1 → car 2 → …`), each move a real
+    /// compare-and-swap, so the history a person's bisect walks is the tree the gate judged and
+    /// every row's `landed_sha` is the tip at its own landing. The push is once, at the end: the
+    /// target is one branch, and a push of its last tip carries every commit before it.
+    fn land_the_train(&self, train: Box<Train>, run: GateRun) -> Result<(), StoreError> {
+        let me = self.me().to_string();
+        let target = train.cars[0].row.target.clone();
+        let n = train.cars.len();
+        let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
+            serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
+        };
+        // The gate ran on its own thread while the pass went on: the lease is asked again before
+        // anything is written into the repository.
+        if !self.beat().unwrap_or(true) {
+            let why = "this daemon lost the repository's lease, so it may not land; the train goes \
+                       back in line and is gated again";
+            self.train_back(&train.cars, why, &run.steps)?;
+            return Ok(());
+        }
+        let mut prev = train.tip.clone();
+        let mut landed = 0usize;
+        let mut stopped: Option<String> = None;
+        for (i, c) in train.cars.iter().enumerate() {
+            if let Err(e) = git::update_ref_cas(&self.repo, &target, &c.rebased, &prev) {
+                stopped = Some(format!(
+                    "`{target}` moved while the train's gate ran (it was {prev}): {e}. The train \
+                     stopped at car {} of {n}, and the branches from there on go back in line and \
+                     are rebased onto the new tip and gated again",
+                    i + 1
+                ));
+                break;
+            }
+            if let Err(e) = git::follow_checkouts(&self.repo, &target, &prev, &c.rebased) {
+                let undone = git::update_ref_cas(&self.repo, &target, &prev, &c.rebased);
+                stopped = Some(format!(
+                    "{e}. Car {} of {n} was {}: `{target}` is at {prev} as before, and the \
+                     branches from there on go back in line",
+                    i + 1,
+                    if undone.is_ok() {
+                        "undone"
+                    } else {
+                        "NOT undone (the ref moved again)"
+                    }
+                ));
+                break;
+            }
+            prev = c.rebased.clone();
+            landed = i + 1;
+        }
+        if let Some(why) = stopped {
+            // **A ref moved is a landing**, so the cars that are on the target say so — a row left
+            // `gating` about a commit the target holds would be a lie. The rest go back in line.
+            // Nothing is pushed: the train never reached its last car.
+            let pushed = format!("nothing was pushed: the train stopped after car {landed} of {n}");
+            self.raise(
+                "queue_blocked",
+                format!("a train onto `{target}` stopped: {why}"),
+            );
+            for i in 0..landed {
+                self.landed(
+                    &train.landing(i),
+                    run.clone(),
+                    run.steps.clone(),
+                    pushed.clone(),
+                    String::new(),
+                    &train_note(n, i),
+                )?;
+            }
+            for c in &train.cars[landed..] {
+                if self
+                    .store
+                    .merge_row(&c.row.id)?
+                    .is_some_and(|r| r.state == MergeState::Gating)
+                {
+                    self.gating_to(
+                        &c.row,
+                        MergeState::Queued,
+                        Move::new(&me, &why).set("gate_steps_json", rows_json(&run.steps)),
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+        // **Push, then install** (decision 7) — once, on the last car's tip.
+        let pushed = git::push(&self.repo, &target, &prev);
+        let (pushed_text, may_install) = match &pushed {
+            git::Pushed::Yes(s) => (s.clone(), true),
+            git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
+            git::Pushed::Failed(e) => (format!("the push FAILED: {e}"), false),
+        };
+        if !train.install.is_empty() && may_install {
+            let wt = train.wt.clone();
+            let install = train.install.clone();
+            self.start_gate(
+                GateFor::InstallTrain {
+                    train,
+                    gate: run,
+                    pushed: pushed_text,
+                },
+                wt,
+                install,
+                &prev,
+            );
+            return Ok(());
+        }
+        let mut install_note = String::new();
+        if !may_install {
+            // R92.33: a failed push is said whether or not the project has an install step.
+            install_note = " Not installed: the push failed, and nothing is installed that is not \
+                            where it was pushed (decision 7)."
+                .into();
+            self.raise(
+                "queue_push_failed",
+                format!(
+                    "a train of {n} landed on `{target}` locally but {pushed_text}.{install_note}"
+                ),
+            );
+        }
+        for i in 0..n {
+            self.landed(
+                &train.landing(i),
+                run.clone(),
+                run.steps.clone(),
+                pushed_text.clone(),
+                install_note.clone(),
+                &train_note(n, i),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// **The verdict of a train's install**, after its last car was pushed (decision 7) — the same
+    /// arm as a lone landing's, written on every car's row.
+    fn finish_install_train(
+        &self,
+        train: Train,
+        gate: GateRun,
+        pushed: String,
+        inst: GateRun,
+    ) -> Result<(), StoreError> {
+        let mut all_steps = gate.steps.clone();
+        all_steps.extend(inst.steps);
+        let n = train.cars.len();
+        let install_note = match inst.verdict {
+            GateVerdict::Passed => " Installed after the push.".into(),
+            other => {
+                let w = format!("{other:?}");
+                // Landed, so nothing is blocked: its own code (R92.33).
+                self.raise(
+                    "queue_install_failed",
+                    format!("a train of {n} landed but its install did not: {w}"),
+                );
+                format!(" The install did not complete: {w}")
+            }
+        };
+        for i in 0..n {
+            self.landed(
+                &train.landing(i),
+                gate.clone(),
+                all_steps.clone(),
+                pushed.clone(),
+                install_note.clone(),
+                &train_note(n, i),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// **A train's gate was red** — the train dissolves, and the gatekeeper is asked which branch
+    /// to fix or drop.
+    ///
+    /// Nothing was landed and the target never moved: a train is judged BEFORE its first
+    /// compare-and-swap, so the tip is still the one the train was built on. What is left behind,
+    /// row by row:
+    ///
+    /// * **one review row** (`train-<target>-<sha>`) — the train's own. It names every branch in
+    ///   the order it was rebased, the failing step and the end of its output, and it is a
+    ///   `Branch` row about a branch the queue CREATED at the train's final commit
+    ///   (`agent/train-…`), so a reviewer started on it works in the exact tree the gate judged —
+    ///   the only tree in which the failure can be reproduced — and `git log` reaches every car's
+    ///   own commits from there.
+    /// * **every merge row back to `queued`**, its evidence leading with [`TRAIN_SPLIT`] and
+    ///   carrying the gate's steps. Each is gated ON ITS OWN next: a row carrying that sentence is
+    ///   not put into another train, so the queue cannot re-form this train and fail it again.
+    /// * **the review rows untouched** — each is still `approved`, bound to the head it judged.
+    fn red_train(
+        &self,
+        train: &Train,
+        words: String,
+        steps: &[letibot_tokencore::store::MergeGateStep],
+    ) -> Result<(), StoreError> {
+        let target = train.cars[0].row.target.clone();
+        let n = train.cars.len();
+        let at = train.cars[n - 1].rebased.clone();
+        let short: String = at.chars().take(8).collect();
+        let branches = train.branches();
+        let order = train.order();
+        // **The train's own tree, as a branch** — the tree the gate judged, at a ref a reviewer can
+        // be given. It is the queue's, it is disposable, and it is named for the commit it is at.
+        let branch = format!("agent/train-{}-{short}", target.replace('/', "-"));
+        if let Err(e) = git::git(&self.repo, &["branch", "-f", &branch, &at]) {
+            // Not fatal: the review row is still the record, and its brief says the tree may be
+            // gone.
+            eprintln!("  merge queue: the train's tree could not be kept as `{branch}`: {e}");
+        }
+        let id = format!("train-{}-{short}", target.replace('/', "-"));
+        let failing = steps
+            .iter()
+            .find(|s| s.outcome == letibot_tokencore::store::MergeGateOutcome::Failed)
+            .map(|s| s.command.clone())
+            .unwrap_or_default();
+        let brief = format!(
+            "A train of {n} branches was rebased onto `{target}` at {tip} and gated ONCE, together, \
+             and that gate is RED. The branches, in the order they were rebased:\n\n{order}\n\nThe \
+             tree the gate judged is the branch `{branch}` at {at}, which is this row's tree: \
+             reproduce there, and `git log`/`git show` reach each branch's own commits from it.\n\n\
+             Decide which branch to fix or drop{step}. The failing output's end:\n\n{out}",
+            tip = train.tip,
+            step = if failing.is_empty() {
+                String::new()
+            } else {
+                format!(" at `{failing}`")
+            },
+            out = super::gate::for_the_model(&words),
+        );
+        let fresh = self.store.enqueue_review(
+            &NewReview {
+                id: id.clone(),
+                repository: self.key.clone(),
+                target: target.clone(),
+                kind: ReviewKind::Branch,
+                session_id: String::new(),
+                branch: branch.clone(),
+                worktree: None,
+                base_sha: train.tip.clone(),
+                head_sha: at.clone(),
+                brief,
+                priority: letibot_tokencore::store::MergePriority::Urgent,
+                fixes: None,
+                evidence: format!(
+                    "the gate of a train of {n} ({}) was red at {at}",
+                    branches.join(", ")
+                ),
+            },
+            self.me(),
+            gate::now_ms(),
+        )?;
+        if fresh {
+            self.announce_move(
+                "review",
+                &id,
+                "waiting",
+                "the train's red gate goes to review: which branch to fix or drop",
+            );
+        }
+        // **The rows go back in line, one at a time** — and the sentence is what keeps them out of
+        // the next train, so the queue cannot re-form this one and fail it again.
+        let why = format!(
+            "{TRAIN_SPLIT}: the train of {n} ({}) onto `{target}` at {tip} failed its gate, so this \
+             branch is gated on its own next. The train's evidence is the review row `{id}`",
+            branches.join("`, `"),
+            tip = train.tip,
+        );
+        self.train_back(&train.cars, &why, steps)?;
+        self.raise(
+            "merge_failed",
+            format!(
+                "the gate of a train of {n} onto `{target}` at {tip} is RED — nothing landed and \
+                 the branches ({}) are back in line, each to be gated on its own. Which of them to \
+                 fix or drop is the review row `{id}`'s question.\n\nThe failing output's end:\n\n{}",
+                branches.join("`, `"),
+                super::gate::for_the_model(&words),
+                tip = train.tip,
+            ),
+        );
+        Ok(())
     }
 
     /// **The verdict of the install** that followed a pushed landing (decision 7).
@@ -2612,10 +3446,14 @@ impl RepoQueue {
                 format!(" The install did not complete: {w}")
             }
         };
-        self.landed(&landing, gate, all_steps, pushed, install_note)
+        self.landed(&landing, gate, all_steps, pushed, install_note, "")
     }
 
     /// **Landed** — the row, the target's health at the landed tree, the branch retired.
+    ///
+    /// `train_note` is what a row that rode in a train adds to its own sentence (`, in a train of
+    /// 3 (car 2)`, [`train_note`]); it is `""` for a lone landing, whose sentence is the one it has
+    /// always been.
     fn landed(
         &self,
         landing: &Landing,
@@ -2623,6 +3461,7 @@ impl RepoQueue {
         all_steps: Vec<letibot_tokencore::store::MergeGateStep>,
         pushed_text: String,
         install_note: String,
+        train_note: &str,
     ) -> Result<(), StoreError> {
         let me = self.me().to_string();
         let repo = &self.repo;
@@ -2632,8 +3471,9 @@ impl RepoQueue {
         let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
             serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
         };
-        let why =
-            format!("landed on `{target}` at {rebased} (onto {tip}); {pushed_text}.{install_note}");
+        let why = format!(
+            "landed on `{target}` at {rebased} (onto {tip}){train_note}; {pushed_text}.{install_note}"
+        );
         self.gating_to(
             row,
             MergeState::Landed,

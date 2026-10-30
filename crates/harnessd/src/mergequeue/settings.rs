@@ -20,6 +20,10 @@
 //! gate_host = "lab2x1"             # decision 9's machine, when it is not this one: the gate's
 //!                                 #   steps run on a host the operator declared in
 //!                                 #   `hosts.toml` (default: empty — this machine)
+//! gate_train = 3                  # how many approved branches one gate may judge together:
+//!                                 #   they are rebased one onto the last, gated ONCE, and
+//!                                 #   landed one commit at a time (default: 1 — one branch,
+//!                                 #   one gate, exactly as before)
 //! ```
 //!
 //! The first three are the operator's own rulings of 2026-10-11, and each per PROJECT because
@@ -121,6 +125,20 @@ pub struct QueueSettings {
     pub gate_carry: Vec<String>,
     /// Where this project's reviewers run ([`Reviewers`]). `Host` unless the project says `vm`.
     pub reviewers: Reviewers,
+    /// **How many approved branches one gate may judge together** — `[queue] gate_train`.
+    ///
+    /// `1` is one branch and one gate, which is what every project gets until it says otherwise
+    /// and what the queue did before this key existed: nothing about the default path changed.
+    /// Above `1` the queue takes up to this many approved rows, rebases them one onto the last in
+    /// approval order (a stacked child after its parent), and runs the target's gate **once** on
+    /// the final tree — see `serve.rs`'s `land_train`. A train of fewer than two branches is not a
+    /// train: a lone row takes the single path, bit for bit.
+    ///
+    /// The trade is the one the operator made on 2026-10-30 (*"we can batch merges at this point"*):
+    /// the gate is most of a landing's cost and it pays it per branch, while the REVIEW stays per
+    /// branch and is what says the branch is sound. A red train costs the review of its branches
+    /// again; a green one buys `N-1` gate runs.
+    pub gate_train: usize,
     /// **Where this project's GATE runs** — `[queue] gate_host`, a name from the operator's
     /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
     /// it says otherwise).
@@ -148,6 +166,7 @@ impl Default for QueueSettings {
             red_target: RedTarget::Fix,
             gate_carry: Vec::new(),
             reviewers: Reviewers::Host,
+            gate_train: 1,
             gate_host: None,
             path: None,
         }
@@ -169,6 +188,10 @@ struct QueueTable {
     reviewers: Option<String>,
     #[serde(default)]
     gate_host: Option<String>,
+    /// `i64`, not `usize`, so that `0` and a negative number are refused with a sentence naming
+    /// the key rather than with a deserialiser's complaint about a type.
+    #[serde(default)]
+    gate_train: Option<i64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -217,6 +240,18 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         None => Reviewers::Host,
         Some(w) => Reviewers::parse(w).map_err(|e| format!("{}: [queue] {e}", path.display()))?,
     };
+    let gate_train = match q.gate_train {
+        None => 1,
+        Some(n) if n >= 1 => n as usize,
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] gate_train = {other} — it is how many approved branches one gate may \
+                 judge together, so it is 1 (one branch, one gate — the default) or more. `0` would \
+                 mean a train that never runs a gate",
+                path.display()
+            ));
+        }
+    };
     let mut gate_carry = Vec::new();
     for entry in &q.gate_carry {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -235,6 +270,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .filter(|t| !t.is_empty()),
         merge_via_session: q.merge_via_session.unwrap_or(false),
         red_target,
+        gate_train,
         path: Some(path.to_path_buf()),
     })
 }
@@ -337,6 +373,32 @@ mod tests {
         );
         std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_host = \"  \"\n").unwrap();
         assert_eq!(for_repository(&repo).unwrap().gate_host, None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// **`gate_train` is one branch and one gate unless a project says more**, and `0` is refused
+    /// by name rather than read as *a train that never runs a gate*.
+    #[test]
+    fn gate_train_is_one_unless_named_and_zero_is_refused() {
+        let (dir, repo) = file("main_model = \"local\"\n[queue]\ntarget = \"main\"\n");
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_train,
+            1,
+            "the default is today's behaviour: one branch, one gate"
+        );
+        assert_eq!(QueueSettings::default().gate_train, 1);
+        std::fs::write(dir.join("leticode.toml"), "[queue]\ngate_train = 3\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().gate_train, 3);
+        for bad in ["0", "-2"] {
+            std::fs::write(
+                dir.join("leticode.toml"),
+                format!("[queue]\ngate_train = {bad}\n"),
+            )
+            .unwrap();
+            let e = for_repository(&repo).unwrap_err();
+            assert!(e.contains("gate_train"), "{bad}: {e}");
+            assert!(e.contains(bad), "{bad}: {e}");
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 
