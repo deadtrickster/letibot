@@ -52,6 +52,18 @@ pub(crate) struct TurnPane {
     pub(crate) turn_id: String,
     pub(crate) model: String,
     pub(crate) text: IncrementalMarkdown,
+    /// **The thinking no row holds yet** — not the whole round's reasoning.
+    ///
+    /// A `Reasoning` row is appended with the round's thinking in it, so the same words exist
+    /// twice for as long as this buffer keeps them: once in the transcript, where they belong, and
+    /// once here. [`TurnPane::hand_over_reasoning`] spends what the rows hold off the front of this
+    /// buffer at the row's body — the rule the reply one field up already had — and what is left is
+    /// what the pane draws and what `live_work` counts.
+    ///
+    /// **It used to keep the whole round and be trimmed only where it was counted**, which is the
+    /// defect the fold found: `[N thinking lines]` measured the unlanded part while the fold, opened
+    /// with `ctrl-r`, drew all of it, so a landed thought was on the screen twice and the number
+    /// beside it described only half of what was there.
     pub(crate) reasoning: IncrementalMarkdown,
     pub(crate) text_cache: BlockCache,
     pub(crate) reasoning_cache: BlockCache,
@@ -143,20 +155,34 @@ pub(crate) struct TurnPane {
     /// stayed yellow for the rest of the session on a call whose `ToolFinished` this head never
     /// received.
     pub(crate) settled_calls: usize,
-    /// **How much of `reasoning` has already landed as a row** — bytes of `reasoning.raw()`.
+    /// **How far down [`TurnPane::appended`] this pane's thinking has been handed over** — an
+    /// index into that list, not a byte offset into [`TurnPane::reasoning`].
     ///
     /// The mark `settled_calls` is for calls, and it is here for the reason that one exists: work
-    /// the transcript has taken over must not be counted a second time by the live pane.
+    /// the transcript has taken over must not be drawn — or counted — a second time by the live
+    /// pane. What it was before is worth keeping: `reasoned_upto`, a byte offset into the whole
+    /// round's reasoning, honoured by the COUNT and by nothing else. The count was therefore
+    /// trimmed and the text was not, and with the fold open (`ctrl-r`) one thinking line was drawn
+    /// twice — the row where it belongs, then the same words again inside the pane, which is what
+    /// the operator saw (*"yeah when reasoning is open wiered things happen, saw it too"*).
     ///
-    /// **Its absence is a count that went DOWN**, which is impossible from the arithmetic —
-    /// `reasoning_display_lines` is `ceil(width / cols)` summed, so adding text can only add lines.
-    /// The operator saw it happen: *"lol, just saw how thinking lines count went from 22 to 15."*
-    /// What the number was counting was the reasoning *plus* the rows that reasoning had already
-    /// become; the round boundary rebuilds the pane — empty `reasoning`, mark at zero — and the
-    /// inflation vanished with it. A count of work done fell, which is the same defect leticl
-    /// measured on the calls side: *"2 (in yellow) tool calls dropping to 1 (in yellow) tool calls
-    /// and then changing back to 2 (in white) tool calls."*
-    pub(crate) reasoned_upto: usize,
+    /// **An index, and the buffer trimmed, because a frozen prefix cannot be sliced.** See
+    /// [`TurnPane::hand_over_reasoning`] for the rule and for why the offset is not a thing that
+    /// can be trusted: `reasoning` is lexed by `IncrementalMarkdown`, whose settled half is frozen,
+    /// so *draw the slice after byte N* is a second document rather than a suffix of this one —
+    /// and the count read one document while the fold drew another. Here there is one document:
+    /// the pane's `reasoning` **is** the thinking no row holds, so the count and the fold cannot
+    /// disagree about it, and the only state this cursor keeps is *which rows have been spent*.
+    ///
+    /// **A count that went DOWN is what a mark with no drawing behind it costs.** Impossible from
+    /// the arithmetic — `reasoning_display_lines` is `ceil(width / cols)` summed, so adding text
+    /// can only add lines. The operator saw it happen: *"lol, just saw how thinking lines count
+    /// went from 22 to 15."* What the number was counting was the reasoning *plus* the rows that
+    /// reasoning had already become; the round boundary rebuilds the pane — empty `reasoning`, mark
+    /// at zero — and the inflation vanished with it. A count of work done fell, which is the same
+    /// defect leticl measured on the calls side: *"2 (in yellow) tool calls dropping to 1 (in
+    /// yellow) tool calls and then changing back to 2 (in white) tool calls."*
+    pub(crate) reasoned_rows: usize,
     /// The `ts` of `TurnStarted`, and of the last event seen for this turn. The
     /// difference is how long the turn has been going, taken from the log's own
     /// clock rather than from a wall clock in the head — a head that reads a
@@ -199,29 +225,93 @@ impl TurnPane {
         })
     }
 
-    /// **Does a row this round appended already hold the reasoning this pane is counting?**
+    /// **Give the thinking up, up to what this round's rows hold** — the handover for BOTH doors.
     ///
-    /// `reasoned_upto`'s sibling of [`TurnPane::prose_taken_over`], and it exists for the same
-    /// reason: the live door advances the mark when a reasoning row's BODY lands
-    /// ([`App::record_item`]), and a snapshot is a door with no body event behind it. Zero there
-    /// means the pane counts thinking the transcript already holds — the count the operator
-    /// caught going *up* on a re-attach, which is the same defect as the one that made it go down
-    /// (a number that is a count of work done may not move because the head was not watching).
+    /// The live door is [`App::record_item`] (a `Reasoning` row's body landing); the snapshot door
+    /// is `App::load` (rows that arrived already holding their bodies, with no event behind them).
+    /// Both ask the same question, so both call this.
     ///
-    /// **The mark, not the text.** The pane keeps the reasoning it accumulated, exactly as the
-    /// live door leaves it: what is drawn from `reasoning` is the rung's business, and what is
-    /// *counted* is what no row holds.
-    pub(crate) fn reasoning_taken_over(
-        &self,
+    /// **A PREFIX, not an equality**, and that is where this parts company with
+    /// [`TurnPane::prose_taken_over`]: a round can produce more than one `Reasoning` row (the model
+    /// thought, spoke, thought again — `turn::items`' `only_the_last_thought_can_be_the_open_one`
+    /// pins the three-item shape), while the pane accumulates a round's reasoning into one buffer.
+    /// So the rows hold a prefix of it, in order, and the walk spends them oldest first against the
+    /// front of the buffer, stopping at the first one that is not a prefix of what is left. A row
+    /// that is missing, bodyless, out of order or simply not this round's therefore leaves the rest
+    /// of the text exactly where it was.
+    ///
+    /// **The failure is a duplicate, never a hole.** A mismatch stops the walk rather than clearing
+    /// anything, because the two mistakes are not equal: text drawn twice is what the operator
+    /// reports, and text drawn nowhere is a thought they watched arrive that has gone. That is also
+    /// why the comparison is exact bytes — the pane's copy has been through `without_control_lines`
+    /// and a row's has not, and a sanitised delta is a mismatch that leaves the words on the screen
+    /// rather than swallowing them.
+    ///
+    /// **Re-seated rather than sliced, and this is what the frozen prefix forced.**
+    /// `IncrementalMarkdown` settles blocks and never re-lexes them, so its `raw()` is a document
+    /// with a frozen half and there is no `raw_from(n)` to hand the renderer: a slice of it would
+    /// be a *different* document (a fence opened above the cut, a list numbered from the middle)
+    /// and would need its own lexer and its own cache anyway. Re-seating is the same trade the
+    /// reply makes one field up — [`App::record_item`] clears `text` rather than slicing it — and
+    /// it costs one lex of what is left, at a row's landing: at most once per reasoning row, and
+    /// normally zero bytes, because a round's thinking lands whole.
+    ///
+    /// **And the count needs no second mark.** `live_work` measures `reasoning.raw()` and
+    /// `ui::transcript::live` draws it; with the landed part gone from the buffer, one string is
+    /// the whole answer to both — which is the count and the fold agreeing by construction rather
+    /// than by two pieces of arithmetic that happen to match.
+    ///
+    /// Returns whether anything was handed over, so a caller can say so rather than guess.
+    pub(crate) fn hand_over_reasoning(
+        &mut self,
         items: &[letibot_sessionlog::view::SnapshotItem],
     ) -> bool {
-        self.a_row_holds(self.reasoning.raw(), items, |it| match it {
-            letibot_transcript::TranscriptItem::Reasoning { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
+        let mut rest = self.reasoning.raw();
+        let mut cursor = self.reasoned_rows;
+        loop {
+            let Some(id) = self.appended.get(cursor) else {
+                break;
+            };
+            let Some(row) = items.iter().find(|r| &r.item_id == id) else {
+                // The row is not in the window at all (a snapshot replaced it). It says nothing
+                // about the text either way, so it is stepped over rather than stopping the walk.
+                cursor += 1;
+                continue;
+            };
+            let Some(item) = row.item.as_ref() else {
+                // Announced and its body is not here yet. Bodies land in the order the rows were
+                // announced, so the walk waits here rather than spending a later row's words.
+                break;
+            };
+            match item {
+                letibot_transcript::TranscriptItem::Reasoning { text, .. } => {
+                    match rest.strip_prefix(text.as_str()) {
+                        Some(tail) => {
+                            rest = tail;
+                            cursor += 1;
+                        }
+                        None => break,
+                    }
+                }
+                // A row of any other kind is not thinking: stepped over.
+                _ => cursor += 1,
+            }
+        }
+        let landed = self.reasoning.raw().len() - rest.len();
+        if landed == 0 {
+            return false;
+        }
+        let rest = rest.to_string();
+        self.reasoning = rano::markdown::IncrementalMarkdown::new();
+        self.reasoning.push(&rest);
+        // The cache goes with the document for the same reason the blocks do: it holds ROWS of
+        // the document it was given, and this is not that document any more.
+        self.reasoning_cache = BlockCache::new();
+        self.reasoned_rows = cursor;
+        true
     }
 
-    /// **Is `words` a body this round's rows already carry?** — the one rule behind both marks.
+    /// **Is `words` a body this round's rows already carry?** — the rule behind the PROSE's mark.
     ///
     /// **The pairing is by TEXT and only within `appended`**, because that is the whole of what a
     /// snapshot proves. `appended` is this round's rows — the round whose deltas this pane is
@@ -231,6 +321,11 @@ impl TurnPane {
     /// duplicate this exists to remove. A row still waiting for its body matches nothing, so the
     /// R2 window (a row announced, its words not yet here) is untouched — the live door closes
     /// that one when the body lands.
+    ///
+    /// **This is the PROSE's rule, and the thinking's is a prefix walk** —
+    /// [`TurnPane::hand_over_reasoning`]. The difference is what one row can hold: a round commits
+    /// one assistant paragraph and as many `Reasoning` blocks as the model opened, so the reply is
+    /// either wholly in a row or not at all, while the thinking is spent a block at a time.
     fn a_row_holds(
         &self,
         words: &str,

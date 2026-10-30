@@ -25,11 +25,23 @@ use rano::style::Role;
 /// everything below it every frame.
 pub(crate) fn reasoning_cfg(cfg: &RenderConfig) -> RenderConfig {
     let mut r = cfg.inside(Role::Reasoning);
-    r.width = cfg
-        .width
-        .saturating_sub(activity_indent(cfg.width) + card::REASONING_RAIL_WIDTH)
-        .max(20);
+    r.width = reasoning_body_width(cfg.width);
     r
+}
+
+/// **The columns a reasoning body is actually drawn in** — the frame's width, less the step it is
+/// set in and the rail every row carries.
+///
+/// One definition, because the body's wrap ([`reasoning_cfg`]) and the number that says how much
+/// of the terminal the body costs ([`reasoning_display_lines`]) must be the same arithmetic. They
+/// were not: the count wrapped at the frame's width while the body wraps four columns narrower, so
+/// a wrapped thought read one line short of what opening it showed. The operator's own words for
+/// the number are *"how much of the terminal this is about to cost"*, and a figure not measured at
+/// the width it is drawn at is not that.
+pub(crate) fn reasoning_body_width(frame: usize) -> usize {
+    frame
+        .saturating_sub(activity_indent(frame) + card::REASONING_RAIL_WIDTH)
+        .max(20)
 }
 
 pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
@@ -62,8 +74,13 @@ pub(crate) fn reasoning_decor(cfg: &RenderConfig) -> Decor {
 /// and the marker says `43 thinking lines`, and a reader who opens the run sees the 43.
 /// A long unwrapped line is several display lines and counts as several — the same
 /// arithmetic, and the same reason, as `visible_width(...).div_ceil(w)`.
+///
+/// **The width is the FRAME's and this takes the step and the rail off itself** — see
+/// [`reasoning_body_width`]. It used to divide by the frame's width while the body is drawn four
+/// columns narrower, which made the number one line short of the fold on any thought that wrapped:
+/// the third disagreement between a count and the text it counted, after the landed slice.
 pub(crate) fn reasoning_display_lines(text: &str, w: usize) -> usize {
-    let w = w.max(20);
+    let w = reasoning_body_width(w);
     let text = without_control_lines(text);
     text.lines()
         .map(|l| visible_width(l).div_ceil(w).max(1))

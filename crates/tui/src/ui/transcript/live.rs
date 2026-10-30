@@ -52,6 +52,14 @@ pub(crate) fn push_turn_pane<'a>(
     // here as it is hidden in the transcript, so the rung does not depend on whether
     // a row has been committed yet — a reader who switched mid-turn would otherwise
     // watch the thinking appear when it settles.
+    //
+    // **And `reasoning` here is only the part NO ROW HOLDS** (`TurnPane::reasoning`,
+    // `TurnPane::hand_over_reasoning`). A round's thinking lands as a `Reasoning` row, and from that
+    // moment the row is the copy — drawing it here as well put one thought on the screen twice
+    // whenever the fold was open, which is what the operator saw (*"when reasoning is open wiered
+    // things happen"*). The rung's answer is unchanged: what the reader sees is either the row or
+    // this block, at the same switch, and the buffer is empty rather than duplicated when the row
+    // has it.
     // **The rung's own count of the work in flight** — R37 AMENDED, the operator's
     // *"display looks frozen, while in fact it is just say cargo testing with yellow
     // dot"*. Everything below this line is the working and this rung does not draw it,
@@ -71,6 +79,11 @@ pub(crate) fn push_turn_pane<'a>(
         // wrong makes the block one row taller than the space reserved for
         // it, which moves everything below it by a line every frame — which
         // is one of the things being called flicker.
+        //
+        // **The header's number and this body are the same text by construction** — the count is
+        // `reasoning_display_lines(raw)` and the rows are the render of `raw`, both at the width
+        // [`reasoning_body_width`] gives. It used to be a count over the unlanded slice beside a
+        // body of the whole buffer, which is how `[3 thinking lines]` came to sit over forty rows.
         let rcfg = reasoning_cfg(&cfg);
         reasoning_cache.set_decor(reasoning_decor(&cfg));
         segs.push(Seg::Owned(step_in(

@@ -572,13 +572,15 @@ impl App {
         // operator's own prompt, which is what made it read as *"the reply started before my
         // question was visible and then duplicated after"*. See [`TurnPane::prose_taken_over`].
         //
-        // **The same door needs the other two marks the live one advances**, because they answer
-        // the same question about the working rather than the prose: which of this round's calls
-        // the transcript already holds a result row for (`settled_calls`), and how much of the
-        // reasoning it already holds (`reasoned_upto`). Both are zero in a snapshot and both are
-        // what keeps the pane from counting — and drawing — work that is on the screen above it.
-        // The frontier is [`round_answered`]'s and the loop is `record_item`'s, verbatim: one
-        // definition of *the transcript has this call*, asked at both doors.
+        // **The same door needs the working, and it is the SAME question the reply asks.** A
+        // snapshot's turn carries the round's accumulated reasoning (`Snapshot::turn`) beside the
+        // rows that hold it — the daemon never trims `TurnView::reasoning` when a row lands — and
+        // this head was not there for the body event that would have handed it over
+        // ([`TurnPane::hand_over_reasoning`]). Both doors call that one method, so a re-attach
+        // mid-round cannot end up counting, or drawing, thinking that is a row above it.
+        //
+        // The calls have their own mark and it is the loop `record_item` runs, verbatim: one
+        // definition of *the transcript has this call* (`round_answered`), asked at both doors.
         if let Some(t) = self.turn.as_mut() {
             let answered = round_answered(t, &self.items);
             while t
@@ -588,10 +590,8 @@ impl App {
             {
                 t.settled_calls += 1;
             }
-            if t.reasoning_taken_over(&self.items) {
-                t.reasoned_upto = t.reasoning.raw().len();
-            }
             t.hand_over_prose(&self.items);
+            t.hand_over_reasoning(&self.items);
         }
         self.scroll = 0;
         self.redraw = true;
@@ -1094,15 +1094,12 @@ impl App {
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
-        // **A reasoning row takes over the reasoning it carries** — the mark advances to the end
-        // of what has arrived, so the live count is only ever the part no row holds. See
-        // [`TurnPane::reasoned_upto`]: without this the count includes landed reasoning twice, and
-        // the round boundary then makes it fall.
-        if matches!(item, TranscriptItem::Reasoning { .. })
-            && let Some(t) = self.turn.as_mut()
-        {
-            t.reasoned_upto = t.reasoning.raw().len();
-        }
+        // **A reasoning row takes over the reasoning it carries** — see
+        // [`TurnPane::hand_over_reasoning`], which is called at the end of this method, once the
+        // body is IN `items` for it to read. It used to advance a byte mark here, before the body
+        // was placed, which is why the mark could only ever trim the COUNT: the drawing read the
+        // whole buffer and the fold, opened, showed what the number had already spent.
+        let reasoning = matches!(item, TranscriptItem::Reasoning { .. });
         // **Content ends the binding, either way.** Confirmed: the row renders from
         // its real body and the echo retires by text below. Contradicted: the row was
         // never this head's prompt — a steering notice, a §5.7 salvage notice,
@@ -1255,6 +1252,15 @@ impl App {
         {
             t.text = IncrementalMarkdown::new();
             t.text_cache = BlockCache::new();
+        }
+        // **And the thinking, by the same rule and at the same moment** — the row's body is in
+        // `items` by now, so the walk that spends what this round's rows hold can read it. That is
+        // what stops a landed thought being drawn twice with the fold open (`ctrl-r`), and it is
+        // what makes the count (`live_work`) and the fold agree: both read the one buffer that is
+        // left. See [`TurnPane::hand_over_reasoning`] for the walk and for what the frozen prefix
+        // forced (a re-seat, not a slice).
+        if reasoning && let Some(t) = self.turn.as_mut() {
+            t.hand_over_reasoning(&self.items);
         }
     }
 }

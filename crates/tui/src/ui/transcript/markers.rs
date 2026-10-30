@@ -557,14 +557,15 @@ pub(crate) fn live_work(
         .filter(|c| matches!(c.state, CallState::Running))
         .filter(|c| !answered.contains(&c.call_id.as_str()))
         .count();
-    // **Only the reasoning no row has taken over** — `reasoned_upto` is the mark, and the slice is
-    // what is left of the stream. `get` rather than an index so a mark from a longer text (a
-    // rebuilt pane, a replay) cannot panic; an impossible mark reads as *nothing unlanded*.
-    let unlanded = t.reasoning.raw().get(t.reasoned_upto..).unwrap_or("");
-    let think_lines = if unlanded.is_empty() {
+    // **The thinking no row holds** — and that is the WHOLE of `t.reasoning`, because the pane's
+    // buffer is emptied as its rows land ([`TurnPane::hand_over_reasoning`]). This used to slice
+    // it at a byte mark (`reasoned_upto`), which trimmed the NUMBER while `ui::transcript::live`
+    // drew the whole buffer: with the fold open, one thinking line was on the screen twice and the
+    // count described half of what the fold showed. One string now answers both questions.
+    let think_lines = if t.reasoning.is_empty() {
         0
     } else {
-        reasoning_display_lines(unlanded, cfg.width)
+        reasoning_display_lines(t.reasoning.raw(), cfg.width)
     };
     LiveWork {
         calls,

@@ -4121,11 +4121,12 @@ fn two_complete_turns_draw_each_reply_once() {
 /// the other two buffers.
 ///
 /// The pane's prose was the paragraph the operator photographed; the WORKING has the same shape
-/// and the same door. `settled_calls` and `reasoned_upto` are the two marks that say *the
-/// transcript has this much of the working*, and the live path advances both when a row's BODY
-/// lands (`App::record_item`). A snapshot carries neither, so a head that re-attaches mid-round
-/// started both at zero and counted — and, on a rung that shows the working, drew — a call and a
-/// block of thinking that were already rows above it.
+/// and the same door. `settled_calls` is the mark that says *the transcript has this much of the
+/// working*, and the reasoning buffer is emptied as its rows land
+/// (`TurnPane::hand_over_reasoning`); the live path advances both when a row's BODY lands
+/// (`App::record_item`). A snapshot carries neither, so a head that re-attaches mid-round started
+/// both at zero and counted — and, on a rung that shows the working, drew — a call and a block of
+/// thinking that were already rows above it.
 ///
 /// Measured on this fixture before the marks were seeded: `[2 tool calls, 2 thinking lines]` for
 /// one call and one thinking line. The number is the same defect the operator caught going the
@@ -4180,10 +4181,10 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
         t.settled_calls, 1,
         "the pane still believes the transcript owes it a card for `call_0`"
     );
-    assert_eq!(
-        t.reasoned_upto,
-        t.reasoning.raw().len(),
-        "the pane still counts thinking the reasoning row holds"
+    assert!(
+        t.reasoning.is_empty(),
+        "the pane still holds thinking the reasoning row holds: {:?}",
+        t.reasoning.raw()
     );
     // And the marker the reader sees counts each once — one call, one thinking line, both of them
     // the rows' own.
@@ -4195,5 +4196,312 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
     assert!(
         !frame.contains("2 tool calls") && !frame.contains("2 thinking lines"),
         "the marker counts work the transcript already holds:\n{frame}"
+    );
+}
+
+// **And with the fold OPEN the thinking itself was the second copy.**
+//
+// The reply's handover is above; the thinking had the same two buffers and only half a rule —
+// `reasoned_upto` trimmed the COUNT and nothing trimmed the text, so with `ctrl-r` open a landed
+// thought was drawn twice: once as its row, and again inside the live pane, which was still
+// holding the whole round's reasoning. The operator saw it independently (*"yeah when reasoning is
+// open wiered things happen, saw it too"*). The pane's buffer is now the thinking no row holds —
+// `TurnPane::hand_over_reasoning`, called at the row's BODY and again at the snapshot — so the row
+// is the only copy, and the count and the fold read one string.
+
+/// **The state `ctrl-r` leaves a `loud` head in**: the thinking switch OPEN and the fold open.
+///
+/// Written as the two fields `App::set_verbosity` writes rather than by pressing the chord, because
+/// the chord also writes the preference file — the one side effect a test does not want.
+fn thinking_open(a: &mut App) {
+    a.visibility = Visibility::of(Profile::LOUD).with(Show::Thinking, Level::Open);
+    a.reasoning = Fold::Open;
+}
+
+/// The rows of the frame that carry a reasoning body — the ones drawn under the `┃` rail.
+fn railed(frame: &str) -> usize {
+    frame.lines().filter(|l| l.contains('┃')).count()
+}
+
+/// **The number in `[N thinking lines]`, read off the frame** — what a reader sees, not the field.
+fn thinking_count(frame: &str) -> Option<usize> {
+    frame.lines().find_map(|l| {
+        let (_, rest) = l.split_once('[')?;
+        let body = rest.split(']').next()?;
+        body.split(", ").find_map(|p| {
+            p.trim()
+                .strip_suffix(" thinking lines")
+                .or_else(|| p.trim().strip_suffix(" thinking line"))
+                .and_then(|n| n.trim().parse().ok())
+        })
+    })
+}
+
+/// **A thought that has landed as a row is drawn ONCE, and the pane draws none of it.**
+///
+/// With the fold open the pane used to draw the whole round's reasoning — the row above it and the
+/// same words again under every row that landed after — and the count beside it described only the
+/// unlanded half. The mid-stream half is asserted first, so a fix that simply stopped drawing the
+/// pane's thinking would fail here rather than pass.
+#[test]
+fn landed_thinking_is_drawn_once_when_the_fold_is_open() {
+    const THOUGHT: &str = "THINK-ALPHA one short thought";
+    let mut a = app();
+    thinking_open(&mut a);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    shell_row(&mut a, 1, "s.u1", "user", operator_row("what changed?"));
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    // It thinks, and nothing has landed yet: the pane is the only copy.
+    a.apply(ServerFrame::Event(env_at(
+        4,
+        1_100,
+        testing::reasoning("r1", THOUGHT),
+    )));
+    let streaming = a.screen(90, 40).join("\n");
+    assert_eq!(
+        drawn_times(&streaming, THOUGHT),
+        1,
+        "the thinking the pane is streaming is not drawn exactly once:\n{streaming}"
+    );
+    assert!(
+        streaming.contains("Thinking…"),
+        "the pane is drawing no thinking block at all:\n{streaming}"
+    );
+
+    // The round's thinking lands as a row, and the pane has nothing left to draw.
+    shell_row(
+        &mut a,
+        5,
+        "s.r1",
+        "reasoning",
+        TranscriptItem::Reasoning {
+            text: THOUGHT.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    let landed = a.screen(90, 40).join("\n");
+    assert_eq!(
+        drawn_times(&landed, THOUGHT),
+        1,
+        "the thought is drawn {} time(s) with the fold open:\n{landed}",
+        drawn_times(&landed, THOUGHT)
+    );
+    assert!(
+        landed.contains("Thought"),
+        "the row is not drawing it either:\n{landed}"
+    );
+    assert!(
+        !landed.contains("Thinking…"),
+        "the pane is still drawing a thinking block of its own:\n{landed}"
+    );
+}
+
+/// **The number and the text it is a number about agree** — in both states, on one frame.
+///
+/// This is the rung where a reader sees BOTH: the working hidden, the marker clicked open
+/// (`live_open`), so `[N thinking lines]` and the thinking itself are on the screen together. The
+/// count used to be taken over a different string than the fold drew — the unlanded slice against
+/// the whole buffer — and then over a different WIDTH: `reasoning_display_lines` wrapped at the
+/// frame's width while the body is drawn four columns narrower (the step and the `┃` rail), so a
+/// wrapped thought read one line short of what opening it costs.
+#[test]
+fn the_thinking_count_equals_what_the_fold_draws() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    shell_row(&mut a, 1, "s.u1", "user", operator_row("what changed?"));
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    // **Long enough that the arithmetic and the drawing can part company**: 169 columns of
+    // five-column words at an eighty-six-column frame is two lines by the frame's width and three
+    // by the eighty-two the step and the rail leave — which is what the fold actually draws.
+    let thought = format!("{}word", "word ".repeat(33));
+    a.apply(ServerFrame::Event(env_at(
+        4,
+        1_100,
+        testing::reasoning("r1", &thought),
+    )));
+    // The marker, clicked — which is how a reader opens the working at this rung.
+    a.live_open = Some(Show::Thinking);
+    let screen = a.screen(90, 40).join("\n");
+    let counted = thinking_count(&screen).unwrap_or_else(|| panic!("no marker:\n{screen}"));
+    assert!(
+        counted > 1,
+        "the fixture's thought is one line, so it cannot tell the two arithmetics apart:\n{screen}"
+    );
+    assert_eq!(
+        railed(&screen),
+        counted,
+        "the marker says {counted} thinking line(s) and the fold draws {}:\n{screen}",
+        railed(&screen)
+    );
+}
+
+/// **A re-attach mid-thought does not redraw the part that landed before it.**
+///
+/// The snapshot door, with the thinking half in: a row holds the first block, the round's second
+/// block has streamed and not landed, and the snapshot's `TurnView::reasoning` carries **both** —
+/// the daemon never trims it when a row lands. So the pane has to spend what the rows hold and
+/// draw the rest, which is a PREFIX walk (`TurnPane::hand_over_reasoning`) and not an equality:
+/// a round that thought, spoke and thought again has more than one row, and their texts
+/// concatenate to a prefix of the buffer rather than to the whole of it.
+///
+/// Before this the pane drew the landed block twice — once as its row, once from the snapshot's
+/// copy — which is the same defect the prose had, one buffer over.
+#[test]
+fn a_reattach_mid_thinking_draws_it_once() {
+    const LANDED: &str = "THINK-ONE landed as a row";
+    const ALSO_LANDED: &str = "THINK-TWO the second block, also a row";
+    const STREAMING: &str = "THINK-THREE still arriving";
+    let hub = Hub::new("s");
+    hub.publish(testing::appended("s.u1", "user"));
+    hub.record_item("s.u1", operator_row("what changed?"));
+    hub.publish(testing::turn_started("r1"));
+    // The model thought, spoke, thought again — `turn::items`' three-item shape — and both
+    // thoughts are rows.
+    hub.publish(testing::reasoning("r1", LANDED));
+    hub.publish(testing::appended("s.r1", "reasoning"));
+    hub.record_item(
+        "s.r1",
+        TranscriptItem::Reasoning {
+            text: LANDED.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    hub.publish(testing::reasoning("r1", ALSO_LANDED));
+    hub.publish(testing::appended("s.r2", "reasoning"));
+    hub.record_item(
+        "s.r2",
+        TranscriptItem::Reasoning {
+            text: ALSO_LANDED.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    // And a third block is still arriving when the head joins.
+    hub.publish(testing::reasoning("r1", STREAMING));
+
+    let mut a = app();
+    thinking_open(&mut a);
+    a.apply(hello("s", vec![brief("s", "one", true)], hub.snapshot()));
+    let frame = a.screen(90, 40).join("\n");
+    for (what, words) in [
+        ("the first landed block", LANDED),
+        ("the second landed block", ALSO_LANDED),
+        ("the block still streaming", STREAMING),
+    ] {
+        assert_eq!(
+            drawn_times(&frame, words),
+            1,
+            "{what} is drawn {} time(s) after a re-attach:\n{frame}",
+            drawn_times(&frame, words)
+        );
+    }
+}
+
+/// **A round that thinks in two blocks hands each one over as its row lands.**
+///
+/// One round can produce `[Reasoning, Assistant, Reasoning]` — the model thought, spoke, thought
+/// again — and the daemon appends all three at the round's end, so a head watching sees two
+/// reasoning BODIES land in a row. The handover walks the round's rows in order and remembers how
+/// far it got (`TurnPane::reasoned_rows`); without that cursor the second landing would compare the
+/// FIRST row's text against a buffer that already had it spent, find no prefix, and leave the
+/// second block on the screen twice.
+#[test]
+fn a_round_that_thinks_in_two_blocks_hands_each_over() {
+    const FIRST: &str = "THINK-FIRST before the words";
+    const SECOND: &str = "THINK-SECOND after them";
+    let mut a = app();
+    thinking_open(&mut a);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    shell_row(&mut a, 1, "s.u1", "user", operator_row("what changed?"));
+    a.apply(ServerFrame::Event(env_at(
+        3,
+        1_000,
+        SessionEvent::TurnStarted {
+            turn_id: "r1".into(),
+            model: "qwen3-next-80b".into(),
+            ledger_head: "0000".into(),
+            began_ms: Some(1_000),
+        },
+    )));
+    for (seq, text) in [(4, FIRST), (5, SECOND)] {
+        a.apply(ServerFrame::Event(env_at(
+            seq,
+            1_100 + seq,
+            testing::reasoning("r1", text),
+        )));
+    }
+    // Both blocks are on the screen once, from the pane.
+    let streaming = a.screen(90, 40).join("\n");
+    assert_eq!(drawn_times(&streaming, FIRST), 1, "{streaming}");
+    assert_eq!(drawn_times(&streaming, SECOND), 1, "{streaming}");
+
+    // And the round's rows land, in the order the daemon appends them.
+    shell_row(
+        &mut a,
+        6,
+        "s.r1",
+        "reasoning",
+        TranscriptItem::Reasoning {
+            text: FIRST.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    shell_row(
+        &mut a,
+        8,
+        "s.r2",
+        "reasoning",
+        TranscriptItem::Reasoning {
+            text: SECOND.into(),
+            field: letibot_transcript::ReasoningField::ReasoningContent,
+            truncated: false,
+        },
+    );
+    let landed = a.screen(90, 40).join("\n");
+    for (what, words) in [("the first block", FIRST), ("the second block", SECOND)] {
+        assert_eq!(
+            drawn_times(&landed, words),
+            1,
+            "{what} is drawn {} time(s) once both rows hold it:\n{landed}",
+            drawn_times(&landed, words)
+        );
+    }
+    assert!(
+        !landed.contains("Thinking…"),
+        "the pane is still drawing a thinking block of its own:\n{landed}"
     );
 }
