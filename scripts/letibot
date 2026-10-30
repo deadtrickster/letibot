@@ -46,6 +46,80 @@
 
 set -euo pipefail
 
+# **THE OPEN-FILE LIMIT IS RAISED HERE, ONCE, BEFORE ANYTHING IS STARTED — and every process
+# this launcher starts inherits it: the daemon, a one-shot, the head, and every `bash`, `git`
+# and `cargo` the daemon runs in turn.**
+#
+# Darwin's soft limit is 256 (`ulimit -Sn` in a shell; `launchctl limit maxfiles` says
+# `256 unlimited`), and this daemon is not a 256-descriptor process. MEASURED 2026-10-30 on
+# the operator's Mac, on the daemon serving the worktree this was written in (pid 99166, up
+# one hour): **253 descriptors, the highest numbered 254** — three to spare — and a reviewer
+# could not start:
+#
+#     git checkout --quiet --detach 0200fe9a…: Too many open files (os error 24)
+#
+# because the `git` the daemon forked could not open one more file. The census of those 253:
+# 210 were `sessions.db` + `sessions.db-wal` + `-shm` (105 + 104 + 1 — sqlite keeps three
+# files per connection and a harness opens two connections), 22 the token ledger's temp
+# files, the rest logs, `metrics.db`, four unix sockets and four pipes.
+#
+# **Why here and not in harnessd.** A soft limit can only be raised up to the HARD limit the
+# process was born with, and a process is born with its parent's — so a daemon cannot give
+# itself room it was not started with. The launcher is the thing that decides what the daemon
+# is, so the raise belongs to it, and rlimits survive `fork` and `exec`: every child inherits
+# it, including the `git checkout` and the `cargo` that were hitting the wall.
+#
+# **A daemon that is ALREADY RUNNING keeps the limit it was started with**, and this cannot
+# change that: attaching to it is a socket conversation, and no process may move another's
+# rlimits. So a folder's daemon picks this up when it is next started — `letibot --stop &&
+# letibot` — and a daemon somebody else started (a systemd unit, a test, an older `~/bin`
+# copy of this file) keeps whatever it was given. That is the one gap, and it is not silent:
+# a daemon still on 256 says `Too many open files` in the same place it always did.
+#
+# **`ulimit -Sn`, never `ulimit -n`.** Without `-S` the builtin moves the soft AND the HARD
+# limit — MEASURED here, `ulimit -n 8192` leaves `soft=8192 hard=8192` where the box gave
+# `hard=unlimited`, so a daemon that later needed more could never get it, and neither could
+# a child of it. The same trap is in `a-session-on-its-own-thread-is-a-court.md` (trap 4),
+# where a fixture's `ulimit -n 256` dropped the hard limit and made its own check fail.
+#
+# **The request is a number, not "as high as it goes".** `unlimited` here means the kernel's
+# `kern.maxfilesperproc` (MEASURED: 245760), so a leak would hold a quarter of a million
+# descriptors before anything said so. 8192 is thirty-two times the ceiling that failed
+# tonight, and a process leaking one descriptor per unit of work still trips on it — later
+# than 256, but it trips, and this is the number to grep for when it does.
+#
+# A hard limit BELOW the request is a fact about the box, not a failure: the launcher takes
+# what the box will give and says so, once, naming both numbers. A box that cannot raise it
+# at all keeps working exactly as it did.
+OPEN_FILES_WANTED=8192
+raise_open_files() { # raise_open_files ASKED
+  local asked="$1" want hard soft got
+  want="$asked"
+  hard="$(ulimit -Hn 2>/dev/null || true)"
+  # `unlimited` is the usual answer on this box and it is not a number: the request stands
+  # as asked. A hard limit that IS a number caps the request.
+  case "$hard" in
+    '' | *[!0-9]*) : ;;
+    *) if [ "$hard" -lt "$want" ]; then want="$hard"; fi ;;
+  esac
+  soft="$(ulimit -Sn 2>/dev/null || true)"
+  case "$soft" in
+    '' ) : ;;
+    # Already unlimited, or already above the request: **never lower one**, and say nothing —
+    # a person who started this from a shell with `ulimit -n 20000` meant it.
+    *[!0-9]*) return 0 ;;
+    *) if [ "$soft" -ge "$asked" ]; then return 0; fi ;;
+  esac
+  ulimit -Sn "$want" 2>/dev/null || true
+  got="$(ulimit -Sn 2>/dev/null || true)"
+  case "$got" in
+    '' | *[!0-9]*) return 0 ;; # unlimited now, or unreadable: nothing to report
+  esac
+  if [ "$got" -ge "$asked" ]; then return 0; fi
+  echo "letibot: open files: got $got, not the $asked asked for (this box's hard limit is ${hard:-unreadable}) - a fact about the box, not a failure; a long shift may still run out of them" >&2
+}
+raise_open_files "$OPEN_FILES_WANTED"
+
 # Where the binaries are: **beside this launcher, unless told otherwise.**
 #
 # The default used to be an absolute path into the operator's build tree
