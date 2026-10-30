@@ -562,6 +562,37 @@ impl App {
             }
             pane
         });
+        // **And the prose the rows it just handed us already hold is not ours to draw again.**
+        //
+        // A snapshot's turn carries the round's accumulated text beside the rows that hold it —
+        // the daemon's view never trims `TurnView::text` when a row lands, and the head's own
+        // handover (`record_item`) fires on a BODY EVENT, which this head was not there for. So a
+        // head that re-attaches, resyncs or switches back mid-turn drew one paragraph twice: the
+        // row where it belongs, then the pane's copy under every row that landed after it — the
+        // operator's own prompt, which is what made it read as *"the reply started before my
+        // question was visible and then duplicated after"*. See [`TurnPane::prose_taken_over`].
+        //
+        // **The same door needs the other two marks the live one advances**, because they answer
+        // the same question about the working rather than the prose: which of this round's calls
+        // the transcript already holds a result row for (`settled_calls`), and how much of the
+        // reasoning it already holds (`reasoned_upto`). Both are zero in a snapshot and both are
+        // what keeps the pane from counting — and drawing — work that is on the screen above it.
+        // The frontier is [`round_answered`]'s and the loop is `record_item`'s, verbatim: one
+        // definition of *the transcript has this call*, asked at both doors.
+        if let Some(t) = self.turn.as_mut() {
+            let answered = round_answered(t, &self.items);
+            while t
+                .calls
+                .get(t.settled_calls)
+                .is_some_and(|c| answered.contains(&c.call_id.as_str()))
+            {
+                t.settled_calls += 1;
+            }
+            if t.reasoning_taken_over(&self.items) {
+                t.reasoned_upto = t.reasoning.raw().len();
+            }
+            t.hand_over_prose(&self.items);
+        }
         self.scroll = 0;
         self.redraw = true;
     }
@@ -1212,9 +1243,15 @@ impl App {
         // Safe against a race only because the engine appends a round's assistant
         // row before generating the next round (`harnessd::harness`), so no delta
         // of round N+1 can arrive before round N's row.
+        //
+        // **And the same question is asked at the other door** — a snapshot, which is where the
+        // rows arrive already holding their bodies and no event will ever say so
+        // ([`TurnPane::prose_taken_over`], and `App::load`). The identity test below is the
+        // stronger of the two and stays first: *this row is one this pane appended* is a fact,
+        // while *this row's words are mine* is a comparison of two strings.
         if prose
             && let Some(t) = self.turn.as_mut()
-            && t.appended.iter().any(|a| a == item_id)
+            && (t.appended.iter().any(|a| a == item_id) || t.prose_taken_over(&self.items))
         {
             t.text = IncrementalMarkdown::new();
             t.text_cache = BlockCache::new();
