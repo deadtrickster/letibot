@@ -1217,7 +1217,10 @@ struct Failures {
     tests_failed: u64,
     /// Cargo's verdict verbatim: `error: N target(s) failed:` and the names under it.
     summary: Vec<String>,
-    /// One per failing target, in the order the targets' output ended.
+    /// The names under that verdict without their backticks — cargo's own names for the failing
+    /// targets, which is what a target's segment is matched against.
+    named: Vec<String>,
+    /// One per failing target, in the order the targets ran.
     targets: Vec<FailingTarget>,
     /// Lines from anywhere in the stream that say the machine refused the step something.
     exhausted: Vec<String>,
@@ -1315,66 +1318,236 @@ fn running_descriptor(s: &str) -> Option<String> {
     })
 }
 
-/// **One failing target, read out of its own segment of the output** — the first test it named
-/// and the first panic it printed. `clause` is cargo's name for it, empty when nothing named it.
-fn failing_target(seg: &[&str], clause: &str) -> Option<FailingTarget> {
-    let mut names: Vec<String> = Vec::new();
-    let mut panic: Vec<String> = Vec::new();
-    let mut i = 0;
-    while i < seg.len() {
-        let s = seg[i].trim();
-        if let Some(name) = test_failed_name(s).or_else(|| block_name(s)) {
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        } else if panic.is_empty() && s.contains("panicked at") {
-            panic.push(clip(s, QUOTED_WIDTH));
-            // The panic's own message follows it: the assertion, the io error, the sentence.
-            let mut j = i + 1;
-            while j < seg.len() && panic.len() <= PANIC_LINES {
-                let said = seg[j].trim();
-                if said.is_empty() {
-                    break;
-                }
-                panic.push(clip(said, QUOTED_WIDTH));
-                j += 1;
-            }
-        }
-        i += 1;
-    }
-    if names.is_empty() && panic.is_empty() {
+/// **Where one target's output begins** — cargo's own line for it: `     Running unittests
+/// src/lib.rs (target/debug/deps/x-1)`, `     Running tests/httphead.rs (…)`, or `   Doc-tests
+/// letibot-harnessd`. Cargo prints one before every target it runs, which is the only thing in the
+/// stream that says where one target's output ends and the next begins.
+///
+/// **Indented, and shaped like cargo's.** A test's own words reach the stream too — the gate's
+/// steps run with `-- --nocapture`, so they reach it verbatim — and a line that merely begins
+/// `Running ` is therefore not a boundary: cargo's `Running` lines are indented and end with the
+/// binary's path in parentheses, and its `Doc-tests` line names one crate and nothing else.
+fn target_start(raw: &str) -> Option<String> {
+    if !raw.starts_with(char::is_whitespace) {
         return None;
     }
-    let target = if clause.is_empty() {
-        seg.iter()
-            .rev()
-            .find_map(|l| running_descriptor(l.trim()))
-            .unwrap_or_else(|| "the step's own output".to_string())
-    } else {
+    let s = raw.trim();
+    if s.starts_with("Running ") && s.contains(" (") && s.ends_with(')') {
+        return running_descriptor(s);
+    }
+    let doc = s.strip_prefix("Doc-tests ")?;
+    (!doc.is_empty() && !doc.contains(char::is_whitespace)).then(|| s.to_string())
+}
+
+/// **The clause cargo runs a target again by**, derived from the descriptor cargo printed for it —
+/// `unittests src/lib.rs` is `--lib`, `tests/httphead.rs` is `--test httphead`. This is what ties a
+/// target's segment to its name in cargo's own `error: N target(s) failed:` list.
+fn descriptor_clause(descriptor: &str) -> Option<String> {
+    if let Some(doc) = descriptor.strip_prefix("Doc-tests ") {
+        return (!doc.is_empty()).then(|| "--doc".to_string());
+    }
+    let path = descriptor.strip_prefix("unittests ").unwrap_or(descriptor);
+    if path == "src/lib.rs" {
+        return Some("--lib".to_string());
+    }
+    if let Some(rest) = path.strip_prefix("tests/") {
+        let name = rest.strip_suffix(".rs")?;
+        let name = name.strip_suffix("/main").unwrap_or(name);
+        return (!name.is_empty()).then(|| format!("--test {name}"));
+    }
+    let bin = path.strip_prefix("src/bin/")?.strip_suffix(".rs")?;
+    (!bin.is_empty()).then(|| format!("--bin {bin}"))
+}
+
+/// Whether `clause` is cargo's name for a target that `want` would be run as — `-p letibot-harnessd
+/// --test httphead` for `--test httphead`, and `--lib` for `--lib`.
+fn names_clause(clause: &str, want: &str) -> bool {
+    clause == want || clause.ends_with(&format!(" {want}"))
+}
+
+/// **One target's slice of a step's output**, cut at the line cargo printed before running it.
+/// `descriptor` is empty for the lines before the first one — the build.
+struct Segment<'a> {
+    descriptor: String,
+    lines: &'a [&'a str],
+}
+
+impl<'a> Segment<'a> {
+    /// **The stream cut into targets**, in the order the targets ran. A stream with no `Running`
+    /// line at all — an older cargo, a hand-written step, a runner that is not cargo — comes back
+    /// as ONE segment holding the whole of it, which is the honest reading: nothing said where a
+    /// target began, so nothing may claim to know.
+    fn all(lines: &'a [&'a str]) -> Vec<Segment<'a>> {
+        let mut out: Vec<Segment<'a>> = Vec::new();
+        let mut from = 0usize;
+        let mut descriptor = String::new();
+        for (i, raw) in lines.iter().enumerate() {
+            let Some(d) = target_start(raw) else {
+                continue;
+            };
+            if i > from || !descriptor.is_empty() {
+                out.push(Segment {
+                    descriptor: std::mem::take(&mut descriptor),
+                    lines: &lines[from..i],
+                });
+            }
+            from = i;
+            descriptor = d;
+        }
+        if from < lines.len() {
+            out.push(Segment {
+                descriptor,
+                lines: &lines[from..],
+            });
+        }
+        out
+    }
+
+    /// The `error: test failed, to rerun pass …` cargo wrote INSIDE this target's own output —
+    /// cargo writes it once per failing target, after that target's block and before the next
+    /// `Running` line, which is what makes it this target's name and not a neighbour's.
+    fn clause(&self) -> Option<String> {
+        self.lines.iter().find_map(|raw| rerun_clause(raw.trim()))
+    }
+}
+
+/// Whether two spellings name one test — libtest adds ` - should panic` to the name it prints in
+/// the run and not to the header of the test's own output block, so one test has two names.
+fn same_test(a: &str, b: &str) -> bool {
+    a == b
+        || a.strip_prefix(b).is_some_and(|r| r.starts_with(" - "))
+        || b.strip_prefix(a).is_some_and(|r| r.starts_with(" - "))
+}
+
+/// `thread 'worker::a_test' (472254183) panicked at crates/…:12:5:` → `worker::a_test`. libtest runs
+/// a test on a thread named after it, which is what ties a panic printed in the run to its test.
+///
+/// **The name ends at the closing quote, not at the end of the head** — MEASURED 2026-10-30 against
+/// this box's cargo, whose panic line carries the thread's id after the name. A parse that expected
+/// the quote to be last would find no thread at all, and every real `--nocapture` panic would fall
+/// back to the `FAILED` line.
+fn panic_thread(s: &str) -> Option<&str> {
+    let at = s.find("panicked at")?;
+    let rest = s[..at].trim().strip_prefix("thread '")?;
+    rest.split_once('\'').map(|(name, _)| name)
+}
+
+/// Every test a segment reported FAILED, in the order it reported them — the `test <name> ...
+/// FAILED` lines, and the `---- <name> stdout ----` headers (libtest writes one per failed test,
+/// and for no other kind of test).
+fn failed_names(seg: &[&str]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for raw in seg {
+        let s = raw.trim();
+        if let Some(name) = test_failed_name(s).or_else(|| block_name(s))
+            && !names.iter().any(|n| same_test(n, &name))
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
+/// **What the failed test printed — and only if it failed.** libtest writes a failing test's own
+/// output under `---- <name> stdout ----`, and with `-- --nocapture` (which this gate's steps use)
+/// it prints it in the run instead, above the `test <name> ... FAILED` line. Both are tied to the
+/// test by NAME, and a `panicked at` tied to neither belongs to some other test — a `#[should_panic]`
+/// that passed, a test that panics on purpose — so quoting it would give the right-looking panic
+/// of the wrong test, which is worse than saying nothing.
+fn evidence(seg: &[&str], test: &str) -> Vec<String> {
+    let mut block: Option<String> = None;
+    for (i, raw) in seg.iter().enumerate() {
+        let s = raw.trim();
+        if let Some(name) = block_name(s) {
+            block = Some(name);
+            continue;
+        }
+        if s == "failures:" || s.starts_with("test result: ") {
+            block = None;
+        }
+        if !s.contains("panicked at") {
+            continue;
+        }
+        let in_its_block = block.as_deref().is_some_and(|b| same_test(b, test));
+        let its_thread = panic_thread(s).is_some_and(|t| same_test(t, test));
+        if !in_its_block && !its_thread {
+            continue;
+        }
+        let mut out = vec![clip(s, QUOTED_WIDTH)];
+        // The panic's own message follows it: the assertion, the io error, the sentence.
+        let mut j = i + 1;
+        while j < seg.len() && out.len() <= PANIC_LINES {
+            let said = seg[j].trim();
+            if said.is_empty() {
+                break;
+            }
+            out.push(clip(said, QUOTED_WIDTH));
+            j += 1;
+        }
+        return out;
+    }
+    // **No panic this test printed** — a `#[should_panic]` that did not panic, a test that failed
+    // on a status libtest reported only by name. The NAME is what a person needs, so the line
+    // libtest wrote is what the row quotes instead of a panic from somewhere else.
+    vec![clip(&format!("test {test} ... FAILED"), QUOTED_WIDTH)]
+}
+
+/// **One failing target, read out of its OWN segment of the output** — the first test that segment
+/// reported FAILED and the panic that test printed. `clause` is cargo's name for the target, empty
+/// when nothing named it; `descriptor` is the line cargo printed before the target ran.
+///
+/// `None` when the segment says nothing failed: a target's segment is asked about because it may
+/// have failed, and most of them did not.
+fn failing_target(seg: &[&str], clause: &str, descriptor: &str) -> Option<FailingTarget> {
+    let names = failed_names(seg);
+    let cargo_said = !clause.is_empty();
+    let libtest_said = !names.is_empty()
+        || seg
+            .iter()
+            .any(|raw| raw.trim().starts_with("test result: FAILED."));
+    if !cargo_said && !libtest_said {
+        return None;
+    }
+    let target = if !clause.is_empty() {
         clause.to_string()
+    } else if !descriptor.is_empty() {
+        descriptor.to_string()
+    } else {
+        seg.iter()
+            .find_map(|l| target_start(l))
+            .unwrap_or_else(|| "the step's own output".to_string())
     };
+    let Some(test) = names.first().cloned() else {
+        // A target that failed and named no test: its binary never started, or it was killed
+        // before libtest could report. Saying so is the honest answer.
+        return Some(FailingTarget {
+            target,
+            test: None,
+            panic: Vec::new(),
+            failed: 0,
+        });
+    };
+    let panic = evidence(seg, &test);
     Some(FailingTarget {
         target,
-        test: names.first().cloned(),
+        test: Some(test),
         panic,
         failed: names.len(),
     })
 }
 
 /// **Read a step's whole output once**, for what it says about the code.
+///
+/// The stream is cut into ONE SEGMENT PER TARGET at the line cargo prints before running it, and
+/// each target is then read on its own. MEASURED 2026-10-30 by a reviewer: the previous cut was
+/// per `error: test failed, to rerun pass` line starting at `from = 0`, so the first segment held
+/// every target that ran BEFORE the failing one — and the first `panicked at` in it was a lib unit
+/// test that panics on purpose and passes, which the row then named as the failure.
 fn failures(text: &str) -> Failures {
     let lines: Vec<&str> = text.lines().collect();
     let mut f = Failures::default();
-    let mut from = 0usize;
     for (i, raw) in lines.iter().enumerate() {
         let s = raw.trim();
-        if let Some(clause) = rerun_clause(s) {
-            if let Some(t) = failing_target(&lines[from..i], &clause) {
-                f.targets.push(t);
-            }
-            from = i + 1;
-            continue;
-        }
         if targets_failed_head(s) {
             f.summary.push(s.to_string());
             // The names under it, indented — `` `-p letibot-harnessd --lib` ``.
@@ -1384,6 +1557,7 @@ fn failures(text: &str) -> Failures {
                 && lines[j].starts_with(char::is_whitespace)
             {
                 f.summary.push(lines[j].trim().to_string());
+                f.named.push(lines[j].trim().trim_matches('`').to_string());
                 j += 1;
             }
             continue;
@@ -1400,10 +1574,17 @@ fn failures(text: &str) -> Failures {
             f.targets_ran += 1;
         }
     }
-    // A runner that is not cargo (`bin/firecode test`, a script) has no `to rerun pass` boundary:
-    // the whole output is the one segment, and the first failure in it is the one to lead with.
-    if f.targets.is_empty() && (f.targets_failed > 0 || super::setup::shows_code_failing(text)) {
-        if let Some(t) = failing_target(&lines, "") {
+    // **Each target on its own.** The name is cargo's: the clause inside the target's own output
+    // first, then the same target's name in cargo's `error: N target(s) failed:` list. A target
+    // whose output was never reached by cargo (a binary that could not start) is still named by
+    // that list, and is still a failing target.
+    for seg in Segment::all(&lines) {
+        let clause = seg.clause().or_else(|| {
+            let want = descriptor_clause(&seg.descriptor)?;
+            f.named.iter().find(|c| names_clause(c, &want)).cloned()
+        });
+        if let Some(t) = failing_target(seg.lines, clause.as_deref().unwrap_or(""), &seg.descriptor)
+        {
             f.targets.push(t);
         }
     }
@@ -2527,6 +2708,352 @@ exit 101
             "the row is {} byte(s) against a {EVIDENCE_BYTES}-byte cap — the note was spent \
              outside it:\n{row}",
             row.len()
+        );
+    }
+
+    /// **A panic in a test that PASSED is not evidence about the one that failed** — the
+    /// reviewer's case, 2026-10-30: the row led with `crates/harnessd/src/httphead.rs:405:13: the
+    /// turn blew up`, which is `a_panicking_handler_returns_its_permit` — a lib unit test that
+    /// panics on purpose and passes. The cut was per `to rerun pass` line from `from = 0`, so the
+    /// first segment held every target that ran BEFORE the failing one and `failing_target` took
+    /// the first `panicked at` in it.
+    ///
+    /// The shape is what `cargo test -- --nocapture` writes, which is what the gate runs, MEASURED
+    /// against this box's cargo: the passing test's panic is printed in the RUN — there is no
+    /// `---- … stdout ----` block for it, because nothing was captured — the thread carries its id
+    /// after the name, and cargo glues the next `Running` line onto the `to rerun pass` clause.
+    #[test]
+    fn a_panic_in_a_test_that_passed_is_never_quoted_for_the_one_that_failed() {
+        let mut text = String::from(
+            "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             \n\
+             running 302 tests\n\
+             \n\
+             thread '<unnamed>' (472254176) panicked at \
+             crates/harnessd/src/httphead.rs:405:13:\n\
+             the turn blew up\n\
+             note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+             test httphead::tests::a_panicking_handler_returns_its_permit ... ok\n",
+        );
+        for i in 0..300 {
+            text.push_str(&format!("test scene::tests::case_{i:03} ... ok\n"));
+        }
+        text.push_str(
+            "\n\
+             test result: ok. 302 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
+             finished in 0.41s\n\
+             \n\
+             Running tests/httphead.rs (target/debug/deps/httphead-abcd)\n\
+             \n\
+             running 2 tests\n\
+             \n\
+             thread 'a_turn_that_blew_up_is_reported' (472254183) panicked at \
+             crates/harnessd/tests/httphead.rs:412:9:\n\
+             assertion `left == right` failed: the status\n\
+               left: 500\n\
+              right: 200\n\
+             test a_request_is_answered ... ok\n\
+             test a_turn_that_blew_up_is_reported ... FAILED\n\
+             \n\
+             failures:\n\
+             \n\
+             failures:\n    a_turn_that_blew_up_is_reported\n\
+             \n\
+             test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; \
+             finished in 0.31s\n\
+             \n\
+             error: test failed, to rerun pass `-p letibot-harnessd --test httphead`\n\
+             error: 1 target failed:\n    `-p letibot-harnessd --test httphead`\n",
+        );
+        assert!(
+            text.len() > EVIDENCE_BYTES,
+            "the excerpt only runs when the stream is over the cap — it is {} byte(s)",
+            text.len()
+        );
+
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        // The failing target's own test, by name, with its own panic.
+        assert!(
+            ex.contains("first failing test `a_turn_that_blew_up_is_reported`"),
+            "{ex}"
+        );
+        assert!(
+            ex.contains("panicked at crates/harnessd/tests/httphead.rs:412:9"),
+            "{ex}"
+        );
+        assert!(ex.contains("left: 500"), "{ex}");
+        // And nothing of the test that passed, whose panic is on the same stream.
+        assert!(
+            !ex.contains("the turn blew up") && !ex.contains("httphead.rs:405"),
+            "a panic from a test that passed is not evidence about this failure:\n{ex}"
+        );
+        assert!(
+            !ex.contains("a_panicking_handler_returns_its_permit"),
+            "the row must not name a test that passed:\n{ex}"
+        );
+        // The headline names the target's own test and cargo's name for the target.
+        assert!(
+            ex.trim_end().ends_with(
+                "[gate excerpt: what failed is at the TOP of this row: \
+                 `a_turn_that_blew_up_is_reported` in `-p letibot-harnessd --test httphead`]"
+            ),
+            "{ex}"
+        );
+        assert!(
+            ex.contains("2 target(s) ran — 1 passed, 1 failed; 303 test(s) passed, 1 failed"),
+            "{ex}"
+        );
+        assert!(
+            ex.len() <= EVIDENCE_BYTES,
+            "the excerpt is {} byte(s), over a {EVIDENCE_BYTES}-byte cap:\n{ex}",
+            ex.len()
+        );
+    }
+
+    /// **The arithmetic, on a real cargo stream** — MEASURED 2026-10-30 on this box: a two-crate
+    /// workspace whose `a` has a lib unit test that panics on purpose and passes, an integration
+    /// test target with one passing test, one `#[should_panic]` that does not panic and one real
+    /// failure, and two doc-test targets. Captured from
+    /// `cargo test --workspace --no-fail-fast -- --nocapture` and pasted here as it was printed,
+    /// apart from the build directory's absolute path.
+    ///
+    /// It pins four things the fixtures above cannot: cargo's `Running` lines are the only target
+    /// boundaries; the `to rerun pass` clause is GLUED to the next `Running` line with no blank
+    /// between them; `Doc-tests` is a target and a segment; and the failing target's own segment
+    /// holds the panic of a test that passed — which is the whole defect.
+    #[test]
+    fn a_real_workspace_stream_is_cut_into_targets_and_only_the_failing_one_is_quoted() {
+        let text = r#"   Compiling probe-a v0.1.0 (/w/a)
+   Compiling probe-b v0.1.0 (/w/b)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.17s
+     Running unittests src/lib.rs (target/debug/deps/probe_a-d72f9922acc0c4ac)
+
+running 1 test
+
+thread '<unnamed>' (472254176) panicked at a/src/lib.rs:7:39:
+the turn blew up
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test tests::a_panicking_handler_returns_its_permit ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/httphead.rs (target/debug/deps/httphead-e1c8c3a5aea31140)
+
+running 3 tests
+
+thread 'a_turn_that_blew_up_is_reported' (472254183) panicked at a/tests/httphead.rs:5:40:
+assertion `left == right` failed: the status
+  left: 500
+ right: 200
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test a_request_is_answered ... ok
+test a_refusal_is_retried - should panic ... FAILED
+test a_turn_that_blew_up_is_reported ... FAILED
+
+failures:
+
+---- a_refusal_is_retried stdout ----
+note: test did not panic as expected at a/tests/httphead.rs:9:4
+
+failures:
+    a_refusal_is_retried
+    a_turn_that_blew_up_is_reported
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p probe-a --test httphead`
+     Running unittests src/lib.rs (target/debug/deps/probe_b-5c38161ba40627db)
+
+running 1 test
+test fine ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests probe_a
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests probe_b
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p probe-a --test httphead`
+"#;
+        let f = failures(text);
+        // Five targets ran (two libs, an integration test and two doc-test targets), and cargo
+        // named the one that failed — no other segment produced a failing target.
+        assert_eq!(f.targets_ran, 5, "{f:#?}");
+        assert_eq!((f.targets_passed, f.targets_failed), (4, 1), "{f:#?}");
+        assert_eq!(
+            f.targets.len(),
+            1,
+            "one target failed, and it is one: {f:#?}"
+        );
+        let t = &f.targets[0];
+        assert_eq!(t.target, "-p probe-a --test httphead");
+        // The first test the target reported FAILED, and both of its failures counted once each.
+        assert_eq!(
+            t.test.as_deref(),
+            Some("a_refusal_is_retried - should panic")
+        );
+        assert_eq!(t.failed, 2, "two tests failed in it: {f:#?}");
+        // No panic pairs with that test, so the row quotes libtest's own line rather than the
+        // panic of `a_turn_that_blew_up_is_reported` — which is a test that also failed, but is
+        // not the one the row names.
+        assert_eq!(
+            t.panic,
+            vec!["test a_refusal_is_retried - should panic ... FAILED"]
+        );
+        assert!(
+            !t.panic.iter().any(|l| l.contains("the turn blew up")),
+            "{f:#?}"
+        );
+        assert_eq!(
+            f.pointer(),
+            "[gate excerpt: what failed is at the TOP of this row: `a_refusal_is_retried - should \
+             panic` in `-p probe-a --test httphead`]"
+        );
+    }
+
+    /// **And a panic in a passing test of the SAME target is not quoted either** — the pairing
+    /// rule's own case, and the reason a segment is not enough: one target can print a panic from
+    /// a test that passed (a `catch_unwind`, a `#[should_panic]`, a spawned thread) above the
+    /// `test … FAILED` line of the test that did fail. The NAME is what tells them apart.
+    #[test]
+    fn a_panic_in_a_passing_test_of_the_same_target_is_not_quoted() {
+        let mut text = String::from(
+            "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             \n\
+             running 2 tests\n\
+             \n\
+             thread 'httphead::tests::a_panicking_handler_returns_its_permit' (472254176) \
+             panicked at crates/harnessd/src/httphead.rs:405:13:\n\
+             the turn blew up\n\
+             test httphead::tests::a_panicking_handler_returns_its_permit ... ok\n\
+             \n\
+             thread 'a_turn_that_blew_up_is_reported' (472254183) panicked at \
+             crates/harnessd/tests/httphead.rs:412:9:\n\
+             assertion `left == right` failed: the status\n\
+             test a_turn_that_blew_up_is_reported ... FAILED\n\
+             \n\
+             failures:\n\
+             \n\
+             failures:\n    a_turn_that_blew_up_is_reported\n\
+             \n\
+             test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; \
+             finished in 0.31s\n\
+             \n\
+             error: test failed, to rerun pass `-p letibot-harnessd --lib`\n\
+             error: 1 target failed:\n    `-p letibot-harnessd --lib`\n",
+        );
+        text.push_str(&"warning: unused variable: `x`\n".repeat(300));
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        assert!(
+            ex.contains("first failing test `a_turn_that_blew_up_is_reported`"),
+            "{ex}"
+        );
+        assert!(
+            ex.contains("panicked at crates/harnessd/tests/httphead.rs:412:9"),
+            "{ex}"
+        );
+        assert!(
+            !ex.contains("the turn blew up") && !ex.contains("httphead.rs:405"),
+            "the other test's panic is not this failure's reason:\n{ex}"
+        );
+    }
+
+    /// **A target whose failure has no `panicked at` still names its test** — a `#[should_panic]`
+    /// that did not panic, and a binary killed by a signal before libtest could report anything.
+    /// The first quotes libtest's own `test … FAILED` line instead of borrowing a panic from
+    /// somewhere else; the second has no test to name and says the target, which is all cargo said.
+    #[test]
+    fn a_failure_with_no_panic_still_names_the_test_that_failed() {
+        let mut text = String::from(
+            "     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             \n\
+             running 2 tests\n\
+             test scene::tests::case_000 ... ok\n\
+             test retry::tests::a_refusal_is_retried - should panic ... FAILED\n\
+             \n\
+             failures:\n\
+             \n\
+             ---- retry::tests::a_refusal_is_retried stdout ----\n\
+             note: test did not panic as expected\n\
+             \n\
+             failures:\n    retry::tests::a_refusal_is_retried - should panic\n\
+             \n\
+             test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; \
+             finished in 0.05s\n\
+             \n\
+             error: test failed, to rerun pass `-p letibot-harnessd --lib`\n",
+        );
+        for i in 0..300 {
+            text.push_str(&format!(
+                "     Running unittests src/bin/tool_{i}.rs (target/debug/deps/tool_{i}-abcdef)\n\
+                 \n\
+                 running 0 tests\n\
+                 \n\
+                 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; \
+                 finished in 0.00s\n\
+                 \n"
+            ));
+        }
+        text.push_str("error: 1 target failed:\n    `-p letibot-harnessd --lib`\n");
+        assert!(text.len() > EVIDENCE_BYTES);
+
+        let ex = excerpt(&text, EVIDENCE_BYTES);
+        assert!(
+            ex.contains("first failing test `retry::tests::a_refusal_is_retried - should panic`"),
+            "the name is what a person needs, and libtest printed it:\n{ex}"
+        );
+        // The quoted evidence is libtest's own FAILED line, not a panic from somewhere else.
+        assert!(
+            ex.contains("test retry::tests::a_refusal_is_retried - should panic ... FAILED"),
+            "{ex}"
+        );
+        assert!(
+            !ex.contains("2 tests failed in it") && !ex.contains("1 tests failed in it"),
+            "one test failed, and the block header is the same test under its other name:\n{ex}"
+        );
+        assert!(
+            ex.trim_end().ends_with(
+                "[gate excerpt: what failed is at the TOP of this row: \
+                 `retry::tests::a_refusal_is_retried - should panic` in \
+                 `-p letibot-harnessd --lib`]"
+            ),
+            "{ex}"
+        );
+
+        // **And an abort** — the binary died and libtest never wrote a word, so cargo's own line
+        // is the whole of what is known. It still names the target, and claims no test.
+        let aborted = format!(
+            "{}     Running unittests src/lib.rs (target/debug/deps/letibot_harnessd-1234)\n\
+             \n\
+             running 12 tests\n\
+             test scene::tests::case_000 ... ok\n\
+             error: test failed, to rerun pass `-p letibot-harnessd --lib`\n\
+             \n\
+             Caused by:\n  process didn't exit successfully: \
+             `target/debug/deps/letibot_harnessd-1234` (signal: 11, SIGSEGV)\n\
+             error: 1 target failed:\n    `-p letibot-harnessd --lib`\n",
+            "warning: unused variable: `x`\n".repeat(300)
+        );
+        assert!(aborted.len() > EVIDENCE_BYTES);
+        let ex = excerpt(&aborted, EVIDENCE_BYTES);
+        assert!(
+            ex.contains("failing target `-p letibot-harnessd --lib` — it named no failing test"),
+            "{ex}"
+        );
+        assert!(
+            ex.trim_end().ends_with(
+                "[gate excerpt: what failed is at the TOP of this row: `-p letibot-harnessd --lib`]"
+            ),
+            "{ex}"
         );
     }
 
