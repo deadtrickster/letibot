@@ -1884,9 +1884,15 @@ fn the_starter_todos_switch_is_off_by_default() {
         sessions: Vec::new(),
     });
     assert!(!a.todo_seed_pending, "off is off");
+    // **The board read is the attach's own, not the seed's** — every attach asks for the board
+    // now (`App::refetch_session_facts`, so the resident line can never quote a row that stopped
+    // waiting). What the switch governs is whether the template's rows are FILED, so that is
+    // what this asserts: nothing was sent to the operator's half.
     assert!(
-        !a.queued.iter().any(|q| matches!(q, Action::ListTodos)),
-        "no board read queued for a seed that is not due"
+        !a.queued
+            .iter()
+            .any(|q| matches!(q, Action::SetOperatorTodos { .. })),
+        "off is off: no row is filed for a seed that is not due"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

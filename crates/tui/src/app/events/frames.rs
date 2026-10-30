@@ -191,6 +191,11 @@ impl App {
             ServerFrame::Todos { session_id, todos } => {
                 if session_id == self.session_id {
                     self.todos = todos;
+                    // **The board has been read HERE, and from now on it is the truth about who
+                    // waits on the operator** — see [`App::asks_board`]. The settings row's copy
+                    // is a sentence from attach time that nothing refreshes, so it may not speak
+                    // over a board this head has in its hands.
+                    self.asks_board = Some(self.session_id.clone());
                     // The board is the truth once it arrives: a row answered from here is either
                     // off it or — the answer refused — still asking, and asked again.
                     self.todo_answered.clear();
@@ -408,6 +413,13 @@ impl App {
                 // one writer that starts a clock.
                 self.say(&format!("resync: {reason}"));
                 self.load(*snapshot);
+                // **And the board is re-read, for the reason the attach reads it** — a resync is
+                // the daemon saying this head fell behind, and the board is not in a snapshot, so
+                // the copy in hand may name a row whose question was taken back while the events
+                // were being dropped. See [`App::asks_board`].
+                if !self.queued.contains(&Action::ListTodos) {
+                    self.queued.push(Action::ListTodos);
+                }
                 Disposition::Control
             }
             ServerFrame::Accepted { note, seq, .. } => {

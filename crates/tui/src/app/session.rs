@@ -1220,6 +1220,14 @@ impl App {
         self.queued.push(Action::Settings);
         self.queued.push(Action::ListJobs);
         self.queued.push(Action::ListSessions);
+        // **And the board** — a session-scoped read like the three above, and the one the head
+        // draws *who waits on the operator* from ([`App::asks_board`]). Without it the read
+        // happened only when the `asks` settings row said a question waited, so a head that
+        // reattached after the question was taken back kept the copy it had and went on naming
+        // the row — nothing that arrived afterwards could correct it.
+        if !self.queued.contains(&Action::ListTodos) {
+            self.queued.push(Action::ListTodos);
+        }
         // **The queues, for the edge** (R92 item 5). The composer's bottom edge draws this
         // session's repository's standing, and before this the only ask for the snapshot was
         // OPENING THE PANE: a head that never opened `/queue` drew no standing at all — the

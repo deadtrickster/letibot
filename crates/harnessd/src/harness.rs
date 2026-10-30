@@ -15761,11 +15761,10 @@ impl Harness {
             for (row, question) in self.asks_said.iter().filter(|w| !waiting.contains(w)) {
                 self.hub.publish(SessionEvent::Warning {
                     code: "operator_question_settled".into(),
-                    detail: format!(
-                        "no longer waiting on you for \"{}\" on `{}`",
-                        question.trim(),
-                        letibot_tokencore::store::todo_title(row)
-                    ),
+                    // **And WHY it stopped** — an answer, a take-back and a row that closed are
+                    // three different facts, and the person who was asked can only tell their own
+                    // answer landed if the notice says so. See `operator_ask::settled_words`.
+                    detail: crate::operator_ask::settled_words(&items, row, question),
                     compaction: None,
                 });
             }

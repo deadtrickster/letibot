@@ -1857,7 +1857,27 @@ pub struct App {
     /// (`2 — "which db?" on \`deploy\``), `None` when it says `none`. The durable half of the
     /// `waiting on you` line ([`App::waiting_line`]) for a head that has not read the board yet;
     /// once it has, the line is drawn from the board itself (`App::operator_asks`).
+    ///
+    /// **It is a sentence read once and never refreshed** — `Registry::set_settings` stores the
+    /// rows for the next `Settings` request and pushes nothing, so a head hears this value at
+    /// attach and then not again. That is why [`App::asks_board`] exists: the string is the truth
+    /// for exactly as long as this head has no board to check it against.
     pub(crate) asks_setting: Option<String>,
+    /// **Which session's board this head has read** — the mark that ends the settings row's
+    /// authority. A question lives on the ROW (`TodoNeed::Operator`), and the row is on the
+    /// board: once the board has been read here, it is the whole truth about who waits on the
+    /// operator, and an empty board means nobody does.
+    ///
+    /// **Without it the line outlived its row** (measured on the operator's screen through three
+    /// attempts to put it down): `detach` and a completion both took the question off the row and
+    /// the board came back without it, but the head had no way to tell *the board says nobody
+    /// waits* from *the board has not arrived* — so it fell back to `asks_setting`, which still
+    /// quoted the withdrawn question, for ever.
+    ///
+    /// The SESSION ID rather than a `bool`, so a switch invalidates it by itself: a board is one
+    /// session's, and a mark from another session is not a mark. Cleared on every `Hello`
+    /// (see `app::events::hello`), because an attachment has read nothing yet.
+    pub(crate) asks_board: Option<String>,
     /// **Question cards the operator put away with Esc**, oldest first — the model's
     /// `ask_user_question` cards and the todo rows' cards alike, each with the words and the row
     /// that were on it. See [`AwayCard`] and [`App::put_question_away`]. The operator: *"i want to
@@ -2222,6 +2242,7 @@ impl App {
             auto_compact_off: None,
             nags_paused: None,
             asks_setting: None,
+            asks_board: None,
             away: Vec::new(),
             asks_hidden: None,
             answering: Vec::new(),

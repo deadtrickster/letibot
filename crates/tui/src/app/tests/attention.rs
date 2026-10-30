@@ -272,3 +272,277 @@ fn progress_follows_the_turn_and_notifications_go_to_an_absent_reader() {
     b.apply(ServerFrame::Event(env(1, testing::requested("r1", "x"))));
     assert_eq!(b.take_notification(), None);
 }
+
+// ──────────────────── the resident line a question draws ────────────────────
+//
+// The operator, on a card that would not go: *"A detach clears the card … a row that is completed
+// takes its question with it"*. The question's life is the ROW's (`TodoNeed::Operator`), and the
+// head reads it from two places: the daemon's `asks` settings row — the durable half, for a head
+// that attached after the question was asked — and the board itself. The board is the truth from
+// the moment it is read; the settings row covers only the window before that.
+
+use letibot_sessionlog::event::{TodoBy, TodoEntry, TodoNeed, TodoStatus};
+
+/// A row that asks the operator a question, with the two choices `todo_write` insists on.
+fn asking(content: &str, question: &str) -> TodoEntry {
+    TodoEntry {
+        content: content.into(),
+        status: TodoStatus::Pending,
+        by: TodoBy::Model,
+        when: None,
+        needs: vec![TodoNeed::Operator {
+            question: question.into(),
+            options: vec!["one".into(), "two".into()],
+        }],
+    }
+}
+
+/// The same row with its wait taken off — what `todo_write`'s `detach` leaves on the board.
+fn taken_back(content: &str) -> TodoEntry {
+    TodoEntry {
+        content: content.into(),
+        status: TodoStatus::Pending,
+        by: TodoBy::Model,
+        when: None,
+        needs: Vec::new(),
+    }
+}
+
+/// The daemon's `asks` settings row — `2 — "…" on \`…\``, the durable half of the line.
+fn asks_setting(a: &mut App, value: &str) {
+    a.apply(ServerFrame::Settings {
+        rows: vec![letibot_sessionlog::protocol::SettingRow {
+            key: "asks".into(),
+            value: value.into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        }],
+    });
+}
+
+/// The board, as the daemon publishes it after a row's wait moved.
+fn board(a: &mut App, todos: Vec<TodoEntry>) {
+    a.apply(ServerFrame::Todos {
+        session_id: "s1".into(),
+        todos,
+    });
+}
+
+/// The line, as the operator reads it.
+fn line(a: &mut App) -> String {
+    a.waiting_line(200).join("")
+}
+
+/// **A question the head has READ the board for does not outlive its row** — the defect the
+/// operator watched sit on his screen through three attempts to put it down: `detach` took the
+/// wait off the row, the board came back without it, and the line went on saying
+/// `WAITING ON YOU: 1 — "…" on \`…\`` because the only copy it had left was the `asks` settings row
+/// read at attach. A row that is completed is the same fact by another route.
+#[test]
+fn a_question_the_head_has_read_the_board_for_dies_with_its_row() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    // The attach: the durable half says a question waits, so the head reads the board.
+    asks_setting(&mut a, "1 — \"which db?\" on `deploy`");
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(
+        line(&mut a).contains("\"which db?\" on `deploy`"),
+        "{}",
+        line(&mut a)
+    );
+
+    // The model takes the wait back: the same row, the question gone.
+    board(&mut a, vec![taken_back("deploy")]);
+    assert!(
+        line(&mut a).is_empty(),
+        "a detach clears the line on the very next frame: {:?}",
+        line(&mut a)
+    );
+
+    // A row that leaves the board takes its question with it, and so does a completed one.
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(!line(&mut a).is_empty());
+    // **And alt-a says `nothing`, not `still being read`** — the settings row still quotes the
+    // question, and telling the operator to try again would be the same stale sentence twice.
+    board(&mut a, vec![taken_back("deploy")]);
+    a.key(Key::AltA);
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(
+        said.contains("nothing is waiting on you"),
+        "the board was read, so there is nothing left to wait for: {said:?}"
+    );
+    board(&mut a, Vec::new());
+    assert!(line(&mut a).is_empty(), "the row left the board");
+    let mut done = asking("deploy", "which db?");
+    done.status = TodoStatus::Completed;
+    board(&mut a, vec![done]);
+    assert!(
+        line(&mut a).is_empty(),
+        "a completed row asks nobody anything"
+    );
+
+    // And nothing brings it back: a redraw, a whole re-render, `/status`.
+    assert!(
+        a.screen(200, 40)
+            .join("\n")
+            .find("WAITING ON YOU")
+            .is_none()
+    );
+    a.redraw = true;
+    assert!(
+        a.screen(200, 40)
+            .join("\n")
+            .find("WAITING ON YOU")
+            .is_none()
+    );
+    let report = a.status_lines(200).join("\n");
+    assert!(!report.contains("WAITING ON YOU"), "{report}");
+    assert!(line(&mut a).is_empty());
+}
+
+/// **A second row's question still draws while the first is gone — the COUNT, not just the
+/// presence.** The line's `(+1 more)` is read from the board too: a head that counted the
+/// settings row's number would keep saying two after one was taken back.
+#[test]
+fn the_line_counts_the_questions_the_board_still_holds() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    asks_setting(&mut a, "2 — \"which db?\" on `deploy`");
+    board(
+        &mut a,
+        vec![
+            asking("deploy", "which db?"),
+            asking("cut the release", "which version?"),
+        ],
+    );
+    let said = line(&mut a);
+    assert!(said.contains("\"which db?\" on `deploy`"), "{said}");
+    assert!(
+        said.contains("(+1 more)"),
+        "two questions, one named: {said}"
+    );
+
+    // The first row's wait is taken back; the second one is untouched.
+    board(
+        &mut a,
+        vec![
+            taken_back("deploy"),
+            asking("cut the release", "which version?"),
+        ],
+    );
+    let said = line(&mut a);
+    assert!(
+        said.contains("\"which version?\" on `cut the release`"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("more"),
+        "one question left, so nothing is counted after it: {said}"
+    );
+}
+
+/// **Answering still works, and the answer still reaches the model** — the path that must not
+/// move: alt-a opens the card for the row the board names, Enter sends `AnswerTodo` for that row
+/// and question, and the line is gone in the same breath (the board's own copy is one frame
+/// behind, and `todo_answered` holds the row out until it arrives).
+#[test]
+fn answering_retires_the_line_and_the_answer_still_leaves() {
+    use letibot_sessionlog::question::QuestionAnswer;
+    let mut a = app();
+    a.session_id = "s1".into();
+    asks_setting(&mut a, "1 — \"which db?\" on `deploy`");
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(!line(&mut a).is_empty());
+
+    a.key(Key::AltA);
+    let card = a
+        .open
+        .first()
+        .expect("alt-a opens the row's question")
+        .clone();
+    assert_eq!(card.summary, "which db?");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::AnswerTodo {
+            content: "deploy".into(),
+            question: "which db?".into(),
+            answer: QuestionAnswer::choosing(0),
+        })
+    );
+    assert!(
+        line(&mut a).is_empty(),
+        "answered — the line goes with the card"
+    );
+    assert!(
+        a.screen(200, 40)
+            .join("\n")
+            .find("WAITING ON YOU")
+            .is_none(),
+        "and nothing redraws it"
+    );
+}
+
+/// **A reattach re-reads the board, and what it draws comes from that read** — a head that was
+/// away while the question was taken back holds a board with the question on it and a settings row
+/// with the question in it; neither may survive the attach. The attach asks for the board itself
+/// (so the window in which the old copy is drawn is a round trip, not a session).
+#[test]
+fn a_reattach_asks_for_the_board_and_draws_nothing_the_board_no_longer_has() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    asks_setting(&mut a, "1 — \"which db?\" on `deploy`");
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(!line(&mut a).is_empty(), "the premise: the line is up");
+
+    // The daemon went away and came back; the row's wait was taken off meanwhile.
+    a.queued.clear();
+    a.apply(hello(
+        "s1",
+        vec![brief("s1", "the work", false)],
+        Hub::new("s1").snapshot(),
+    ));
+    assert!(
+        a.queued.contains(&Action::ListTodos),
+        "the board is read on every attach, not only when the settings row says so: {:?}",
+        a.queued
+    );
+    asks_setting(&mut a, "none");
+    board(&mut a, vec![taken_back("deploy")]);
+    assert!(
+        line(&mut a).is_empty(),
+        "nothing the head read before the reattach survives it: {:?}",
+        line(&mut a)
+    );
+    assert!(
+        a.screen(200, 40)
+            .join("\n")
+            .find("WAITING ON YOU")
+            .is_none()
+    );
+
+    // **And a resync is the same fact said another way** — the daemon saying this head fell
+    // behind. The board is not in a snapshot, so a head that dropped the events would keep the
+    // copy it had; the resync asks for the board too.
+    board(&mut a, vec![asking("deploy", "which db?")]);
+    assert!(!line(&mut a).is_empty());
+    a.queued.clear();
+    a.apply(ServerFrame::Resync {
+        reason: "the head fell behind".into(),
+        dropped: 4,
+        snapshot: Box::new(Hub::new("s1").snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert!(
+        a.queued.contains(&Action::ListTodos),
+        "a resync re-reads the board: {:?}",
+        a.queued
+    );
+    board(&mut a, vec![taken_back("deploy")]);
+    assert!(
+        line(&mut a).is_empty(),
+        "and what the resync draws comes from that read: {:?}",
+        line(&mut a)
+    );
+}

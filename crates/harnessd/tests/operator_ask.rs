@@ -290,7 +290,19 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
         "an abstention tells the model to state its assumption"
     );
     assert_eq!(asks_row(&registry, &id), "none", "the loud state clears");
-    assert_eq!(rows(&hub, "operator_question_settled").len(), 4);
+    // **And each one is said as an ANSWER** — the notice that a question stopped waiting names the
+    // route, so a take-back (`todo_write`'s `detach`, which leaves the same board with the question
+    // gone) reads differently from a person's answer. See `operator_ask::settled_words`.
+    let settled = rows(&hub, "operator_question_settled");
+    assert_eq!(settled.len(), 4, "{settled:#?}");
+    for (row, _, _) in replies {
+        assert!(
+            settled
+                .iter()
+                .any(|d| d.starts_with("answered — ") && d.contains(row)),
+            "{row}: the notice says it was answered — {settled:#?}"
+        );
+    }
     let brief = registry
         .list()
         .into_iter()

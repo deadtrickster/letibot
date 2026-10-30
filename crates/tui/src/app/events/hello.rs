@@ -35,6 +35,13 @@ impl App {
                 // the prompt current, and a reattach that will hear the sentence again a frame
                 // from now all start from the daemon's word rather than this head's memory.
                 self.reseat = None;
+                // **And a board this head read is not a board THIS attachment read** — see
+                // [`App::asks_board`]. An attach, a re-attach and the return from a switch are all
+                // this frame, and all three may land on a board that moved while the head was
+                // away: until the read asked for below comes back, the `asks` settings row is the
+                // only thing that knows a question was asked, and the board the head is holding
+                // may name a row that no longer waits.
+                self.asks_board = None;
                 // The daemon has answered, so whatever the head drew while it was
                 // asking is about to be replaced by the truth. See `attaching`.
                 //
