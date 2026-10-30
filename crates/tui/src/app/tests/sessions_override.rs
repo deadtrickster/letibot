@@ -72,8 +72,10 @@ fn a_projects_sessions_layer_renames_a_group_and_hides_its_rows() {
     // `crates/builtins` installed them, newest on top**, which is the stack's own rule for a scope
     // (`docs/plugins-plan.md` §2.1) applied to a table the binary carries: the table is sorted by
     // name and the stack reverses it, so `b-queue` stands below `b-sessions`, which stands below
-    // `b-todo`. **Nothing answers two hooks**, so nothing depends on that order — a test that pins
-    // it is how the next layer to share a hook finds out it has to think about it.
+    // `b-todo` — and `b-irc` (the nick list, whose hook is `pane_nicks`) is the newest of them and
+    // stands at the bottom of the reversed table. **Nothing answers two hooks**, so nothing depends
+    // on that order — a test that pins it is how the next layer to share a hook finds out it has to
+    // think about it.
     //
     // **Read off the table, not written down**: a second hand-kept list drifts the moment another
     // package adds a built-in, and REVERSED because `register_builtin_bytes` stacks the table

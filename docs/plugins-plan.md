@@ -671,6 +671,74 @@ attention. It is run by the HEAD, not by the daemon — `App::queue_feed` builds
 daemon-side layer would have to be handed the snapshot back. And it is the first pane to use
 `{"verb", "id"}`, because the queue's keys are the head's and a row has to name its own entry.
 
+#### The feeds a DAEMON-drawn pane is handed (built 2026-10-30)
+
+Feeds were built for the head's in-process session list, and **the daemon did not honour them**: its
+C3 input carried `v`, `state`, `look`, `event` and `size`, so a layer on disk that declared
+`feeds = ["sessions"]` was handed nothing and drew an empty pane. A declaration the host does not
+honour is worse than no declaration — on a screen it reads as a broken plugin.
+
+`crates/harnessd/src/plugins/feed.rs` is the daemon's half. `PluginHost::with_sessions` takes a
+`SessionFeed`, `Sessions::open_plugins` hands it the registry (the one holder of *every* session,
+live and on disk), and `render` builds the feeds the answering layer declared — and only those.
+`plugin test`'s synthetic first frame is handed them too, so testing a pane tests it with the data
+it will really see.
+
+| feed | built by the daemon | is |
+|---|---|---|
+| `sessions` | yes | the registry's briefs: id, title, slug, parent, origin, live/running/heads/items/stored, model, workspace, waits-on, paused nags, `moved_ms`, `repo` — plus `here`, `home`, `now` |
+| `monitors`, `jobs`, `todos`, `git` | **no** | still planned. A layer that declares one is handed **no key at all**: `[]` would tell it *there are none*, and *this host cannot answer that yet* is a different fact, which only the layer can draw |
+
+**The three fields only a host can fill, and why each is the host's:**
+
+* **`now`** — the host's clock, unix millis. A guest compiled for `wasm32-unknown-unknown` has no
+  `SystemTime`; asking for one is a **panic**, not a zero
+  (`.letibot/notes/the-pane-contracts-two-look-keys.md`). So an age is the host's arithmetic.
+* **`moved_ms`** (per session) — when it last appended a row, off the store's own row, which the
+  store computes from the transcript's last item. `created_ms` is when the daemon made the session
+  and never changes; `moved_ms` is the fact a list of agents is read for, because *a turn that has
+  been running for twenty minutes with nothing appended* is stuck and one that appended a row a
+  minute ago is not. It rides the wire too (`SessionBrief::moved_ms`, defaulted — an added field is
+  not a version).
+* **`repo`** (per session) — the folder of the workspace's git **common** directory, so a session in
+  `…/letibot/worktrees/agent-x` is grouped with the checkout it was cut from. `--git-common-dir`
+  rather than `--show-toplevel`, because inside a worktree the top level IS the worktree; cached per
+  workspace, because a workspace's repository does not change while a daemon runs. A plugin cannot
+  work this out from a path — a worktree may live anywhere — so the host that can ask git does.
+
+`PANE_V` is now `letibot_plugin::pane::V` rather than a copy: it said `1` while the contract had
+grown to 2, so a layer that read `v` to decide whether it would be handed a feed was told *no* by a
+host that was about to hand it one.
+
+#### A row's `enter` is performed, and the pane leaves with a `switch` (built 2026-10-30)
+
+C3 has always said a row's `enter` is *what Enter does on it, performed by the host*, and the
+session picker performed it — but the plugin-pane surface did not: every Enter opened the row's
+**detail**. A pane whose rows are a list to switch between (`plugins/builtin/irc`) therefore had a
+switch gesture that did nothing but read the row's prose.
+
+`App::plugin_enter` (`crates/tui/src/app/plugin.rs`) now reads the stop's act first: `switch` goes
+to that session **and the pane closes** (a plugin pane is a screen, not a column beside the
+conversation — leaving it open would show the list of the session you just left, over the one you
+just arrived in), `event` is sent back as a `PaneAction`, and a `fold` — which this surface has no
+fold state to move — falls through to the detail. A row with no act is unchanged: the detail.
+
+#### A pane's own column: hide and resize are the LAYER's (built 2026-10-30)
+
+The host hands a plugin pane one rectangle and draws what the view says in it. There is **no
+hide-a-pane key, no divider and no per-pane width** in the head — the diff/payload split is a
+different mechanism, and the panes that are narrow (the queue's standings) are drawn on a row the
+composer owns.
+
+So a pane that wants to be a column beside a conversation owns that itself, and the vocabulary is
+already enough: a row's `actions` are letters the host sends back as `PaneAction`, so a layer can
+keep a width and a hidden flag in its own `state` (which the host hands back on every call) and
+draw a narrow column, or a one-line strip, inside whatever rectangle it is given. That is what
+`plugins/builtin/irc` does: `w`/`n` for the width (clamped by the layer to a minimum and a third of
+the rect), `h` for a strip that says how to come back, `s` for the scope. **The conversation does
+not reflow**, because the host is not laying the column out — which is the honest limit of a pane
+that owns only its own drawing.
+
 #### The feeds a `command_` hook is handed (built 2026-10-28)
 
 The same idea, one hook kind over, and **not the same list**: a slash command's layer is handed what

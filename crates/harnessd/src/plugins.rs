@@ -61,6 +61,7 @@ use serde_json::{Value, json};
 pub mod conditions;
 pub mod contract;
 pub mod desk;
+pub mod feed;
 pub mod look;
 pub mod rano;
 pub mod scaffold;
@@ -82,7 +83,11 @@ pub const SIZE_W: u32 = 120;
 pub const SIZE_H: u32 = 40;
 
 /// The contract version every pane input carries (C3): the host says which one it speaks.
-const PANE_V: u32 = 1;
+///
+/// **It is the SDK's own number and not a copy.** It said `1` while the contract had grown to 2
+/// (`feeds`, `folded`, a row's `enter`), so a layer that read `v` to decide whether it would be
+/// handed a feed was told *no* by a host that was about to hand it one.
+const PANE_V: u32 = letibot_plugin::pane::V;
 
 /// One session's layers, its recorded inputs, and the panes a head has opened.
 pub struct PluginHost {
@@ -97,6 +102,11 @@ pub struct PluginHost {
     /// How the gate's step 1 is performed. `CargoBuilder` in the daemon; a table of answers in a
     /// test, because a test that ran cargo would need the wasm target and a real crate to build.
     builder: Arc<dyn Builder>,
+    /// **Where a pane's `sessions` feed comes from** — the daemon's own registry, set by
+    /// [`PluginHost::with_sessions`] at the one place the daemon builds a host
+    /// (`Sessions::open_plugins`). `None` in a host a test built, and then a layer that declares
+    /// the feed is handed no key at all rather than an empty list (see [`feed`]).
+    sessions: Option<Arc<dyn feed::SessionFeed>>,
 }
 
 struct Inner {
@@ -204,7 +214,16 @@ impl PluginHost {
                 poll_at: Instant::now() + POLL_EVERY,
             }),
             builder,
+            sessions: None,
         }
+    }
+
+    /// **Hand this host the daemon's session list**, so a pane that declares the `sessions` feed is
+    /// given one. A builder rather than a constructor argument because it is the daemon's fact and
+    /// not a layer's: a host built by a test has no list and says so by handing nothing.
+    pub fn with_sessions(mut self, source: Arc<dyn feed::SessionFeed>) -> PluginHost {
+        self.sessions = Some(source);
+        self
     }
 
     /// [`PluginHost::discover`] with the two dirs this box's conventions give it: the session's own
@@ -678,6 +697,43 @@ impl PluginHost {
         say_failures(hub, &mut inner, &failures);
     }
 
+    /// **The feeds a pane is handed, by the answering layer's own declaration** — and only those.
+    ///
+    /// The layer is found the way [`Stack::call`] finds it (the first in stack order that is not
+    /// disabled, speaks this contract and exports the hook), so the declaration read here is the
+    /// declaration of the layer whose answer will be drawn.
+    ///
+    /// `sessions` is built; the four other feeds the contract names are still planned, and a layer
+    /// that declares one is handed **no key** — not an empty list, which would say *there are none*
+    /// (see [`feed`]).
+    fn feeds_for(&self, hook: &str) -> BTreeMap<String, Value> {
+        let Some(source) = self.sessions.as_ref() else {
+            return BTreeMap::new();
+        };
+        let declared = self
+            .lock()
+            .stack
+            .layers()
+            .iter()
+            .find(|l| {
+                !l.disabled
+                    && l.manifest.contract == letibot_plugins::CONTRACT
+                    && l.manifest.hooks.iter().any(|h| h == hook)
+            })
+            .map(|l| l.manifest.feeds.clone())
+            .unwrap_or_default();
+        let mut out = BTreeMap::new();
+        for want in declared {
+            if want == letibot_plugin::pane::Feed::Sessions {
+                out.insert(
+                    want.name().to_string(),
+                    feed::sessions(&**source, &self.session),
+                );
+            }
+        }
+        out
+    }
+
     /// **One pane, asked once** — and, when the answer asks for a look and this pass may run one,
     /// asked again with the look's result.
     ///
@@ -691,6 +747,10 @@ impl PluginHost {
             return;
         };
         let hook = format!("pane_{name}");
+        // **The feeds, before the lock.** `feeds_for` reads the stack to learn what the answering
+        // layer declared, and the mutex is not reentrant: asking inside `render`'s own guard is a
+        // deadlock, which reads as a daemon that stopped answering panes.
+        let feeds = self.feeds_for(&hook);
         let mut interior = self.lock();
         let size = interior
             .sizes
@@ -700,7 +760,7 @@ impl PluginHost {
         let mut state = interior.panes.get(pane).and_then(|p| p.state.clone());
         let mut req = req;
         for step in 0..2 {
-            let input = input_value(&state, &req, size);
+            let input = input_value(&state, &req, size, &feeds);
             interior.rec.record(&hook, &input);
             let resolved = interior.stack.call(&hook, &input);
             say_failures(hub, &mut interior, &resolved.failures);
@@ -973,7 +1033,7 @@ impl PluginHost {
             // **A layer nobody has asked has no recorded inputs**, so one of its own kind's
             // first frames goes too — that is what makes `load` a proof that the layer runs at all
             // rather than a check on an empty replay.
-            inputs.push(synthetic_for(hook));
+            inputs.push(synthetic_for(hook, &self.feeds_for(hook)));
             for input in inputs {
                 let resolved = shadow.call(hook, &input);
                 let wrong: Vec<String> = resolved
@@ -1223,7 +1283,9 @@ impl PluginHost {
         };
         // **The synthetic input is of the HOOK's kind**, not a pane's: a `condition` handed a C3
         // first frame would answer nothing and read as a broken layer.
-        let input = input.cloned().unwrap_or_else(|| synthetic_for(&hook));
+        let input = input
+            .cloned()
+            .unwrap_or_else(|| synthetic_for(&hook, &self.feeds_for(&hook)));
         let (stack, rec) = {
             let inner = self.lock();
             (inner.stack.clone(), inner.rec.clone())
@@ -1400,18 +1462,18 @@ impl PluginHost {
 
 /// C3's input, once, for a caller that has none of its own: the first frame of any pane — nothing
 /// looked at, nothing pressed, no state.
-fn synthetic_pane_input() -> Value {
-    input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H))
+fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
+    input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H), feeds)
 }
 
 /// **The first frame of any hook**, for `plugin test` and for `load`'s replay of a layer nobody has
 /// asked yet: the SDK's own synthetic example of that kind, which is also what `plugin_hooks`
 /// prints. A layer that cannot answer this one traps on its own first frame, the cheapest defect to
 /// find — and each kind's example is the plan's own.
-fn synthetic_for(hook: &str) -> Value {
+fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
     use letibot_plugin::{condition, notice, tool_call, tool_result};
     let value = if hook.starts_with("pane_") {
-        return synthetic_pane_input();
+        return synthetic_pane_input(feeds);
     } else if hook == tool_call::HOOK {
         serde_json::to_value(tool_call::ToolCallIn::synthetic())
     } else if hook == tool_result::HOOK {
@@ -1693,10 +1755,16 @@ fn pane_names(stack: &Stack) -> Vec<String> {
     out
 }
 
-/// C3's input, once: the state the pane returned, the look's result, the key that was pressed, and
-/// the rectangle. Every field is present, because a plugin deserialises this into a struct and a
-/// missing key is a plugin that cannot tell *no look* from *an empty one*.
-fn input_value(state: &Option<Value>, req: &Req, (w, h): (u32, u32)) -> Value {
+/// C3's input, once: the state the pane returned, the look's result, the key that was pressed, the
+/// rectangle, and **the feeds the answering layer declared**. Every field is present, because a
+/// plugin deserialises this into a struct and a missing key is a plugin that cannot tell *no look*
+/// from *an empty one* — `feeds` is a map, and empty is a layer that declared none.
+fn input_value(
+    state: &Option<Value>,
+    req: &Req,
+    (w, h): (u32, u32),
+    feeds: &BTreeMap<String, Value>,
+) -> Value {
     let look = req.look.clone().unwrap_or(Value::Null);
     let event = match &req.event {
         Some((item, action)) => json!({"item": item, "action": action}),
@@ -1708,6 +1776,7 @@ fn input_value(state: &Option<Value>, req: &Req, (w, h): (u32, u32)) -> Value {
         "look": look,
         "event": event,
         "size": {"w": w, "h": h},
+        "feeds": feeds,
     })
 }
 
@@ -2974,7 +3043,10 @@ mod tests {
             "the first call knows nothing"
         );
         assert_eq!(inputs[1]["state"], json!({"n": 2}), "the second is told");
-        assert_eq!(inputs[1]["v"], json!(1));
+        // **The contract version is the SDK's own number**, not a copy: it said `1` while the
+        // contract had grown to 2, so a layer that read `v` to decide whether it would be handed a
+        // feed was told *no* by a host that was about to hand it one.
+        assert_eq!(inputs[1]["v"], json!(letibot_plugin::pane::V));
         assert_eq!(inputs[1]["size"], json!({"w": SIZE_W, "h": SIZE_H}));
         assert!(inner.panes.contains_key("plan-dashboard/dashboard"));
     }

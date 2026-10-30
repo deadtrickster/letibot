@@ -181,16 +181,41 @@ impl Rig {
     }
 
     fn with(loader: impl Loader + 'static, builder: impl Builder + 'static, tag: &str) -> Rig {
+        Rig::built(loader, builder, tag, None)
+    }
+
+    /// The same, with **the daemon's session list** — the feed a pane on disk is drawn from
+    /// (`docs/plugins-plan.md` §4.9). `Sessions::open_plugins` is what hands a real host one; here
+    /// the fixture's list stands in for it.
+    fn with_feed(
+        loader: impl Loader + 'static,
+        builder: impl Builder + 'static,
+        tag: &str,
+        feed: Arc<dyn letibot_harnessd::plugins::feed::SessionFeed>,
+    ) -> Rig {
+        Rig::built(loader, builder, tag, Some(feed))
+    }
+
+    fn built(
+        loader: impl Loader + 'static,
+        builder: impl Builder + 'static,
+        tag: &str,
+        feed: Option<Arc<dyn letibot_harnessd::plugins::feed::SessionFeed>>,
+    ) -> Rig {
         let tmp = Tmp::new(tag);
         let hub = Hub::new(SESSION);
-        let host = Arc::new(PluginHost::discover(
+        let host = PluginHost::discover(
             SESSION,
             tmp.project(),
             Some(tmp.plugins()),
             None,
             Arc::new(loader),
             Arc::new(builder),
-        ));
+        );
+        let host = Arc::new(match feed {
+            Some(feed) => host.with_sessions(feed),
+            None => host,
+        });
         // The slot the daemon fills in `Sessions::open_plugins`, filled here by hand — which is
         // the whole of what that function does for this tool.
         let slot: Arc<Mutex<Option<Arc<PluginHost>>>> = Arc::new(Mutex::new(Some(host.clone())));
@@ -933,4 +958,148 @@ fn opening_a_session_through_sessions_fills_the_plugin_slot() {
     for f in [store.clone(), store.with_extension("sock")] {
         let _ = std::fs::remove_file(f);
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The nick list: the built-in layer's own loop, for real
+// ---------------------------------------------------------------------------------------------
+
+/// The sessions the nick list is drawn from, as the daemon's registry would answer them: two
+/// conversations and a subagent — which a nick list must NOT show.
+struct Nicks;
+
+impl letibot_harnessd::plugins::feed::SessionFeed for Nicks {
+    fn rows(&self) -> Vec<Value> {
+        let now = letibot_sessionlog::registry::now_ms();
+        vec![
+            serde_json::json!({"id": SESSION, "title": "the habr article", "parent": null,
+                "live": true, "running": true, "heads": 1, "items": 6, "stored": 6,
+                "model": "qwen", "workspace": "/p/letibot", "waits_on": 0,
+                "nags_paused": false, "moved_ms": now - 60_000, "repo": "/p/letibot"}),
+            serde_json::json!({"id": "s-other", "title": "the rust rewrite", "parent": null,
+                "live": true, "running": false, "heads": 0, "items": 3, "stored": 3,
+                "model": "qwen", "workspace": "/p/letibot", "waits_on": 0,
+                "nags_paused": false, "moved_ms": now - 120_000, "repo": "/p/letibot"}),
+            serde_json::json!({"id": "s-sub-1", "title": "read the repo",
+                "parent": SESSION, "live": true, "running": false, "heads": 0, "items": 2,
+                "stored": 2, "model": "qwen", "workspace": "/p/letibot", "waits_on": 0,
+                "nags_paused": false, "moved_ms": now - 90_000, "repo": "/p/letibot"}),
+        ]
+    }
+}
+
+/// **`plugins/builtin/irc`, copied into a session's plugin directory as a layer of its own.**
+///
+/// The built-in is compiled by `crates/builtins` at build time, so its own `Cargo.toml` points at
+/// its neighbours by relative path (`../abi`, `../../../crates/plugin-sdk`) — which resolve inside
+/// this repository and nowhere else. A copy is rewritten to absolute paths, which is exactly what a
+/// person iterating on a built-in outside the binary does.
+fn copy_the_nick_list(dir: &Path) {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/harnessd sits two levels under the repository root")
+        .to_path_buf();
+    let from = repo.join("plugins/builtin/irc");
+    std::fs::create_dir_all(dir).expect("the layer's directory");
+    std::fs::copy(from.join("plugin.toml"), dir.join("plugin.toml")).expect("the manifest");
+    std::fs::copy(from.join("Cargo.lock"), dir.join("Cargo.lock")).expect("the lock");
+    std::fs::create_dir_all(dir.join("src")).expect("src");
+    std::fs::copy(from.join("src/lib.rs"), dir.join("src/lib.rs")).expect("the layer");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"letibot-builtin-irc\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\
+             publish = false\n\n[workspace]\n\n[lib]\ncrate-type = [\"cdylib\"]\n\n\
+             [dependencies]\n\
+             letibot-guest-abi = {{ path = \"{}\" }}\n\
+             letibot-plugin = {{ path = \"{}\" }}\n\
+             serde = {{ version = \"1\", features = [\"derive\"] }}\n\
+             serde_json = \"1\"\n\n\
+             [profile.release]\nopt-level = \"s\"\nstrip = true\nlto = true\npanic = \"abort\"\n",
+            repo.join("plugins/builtin/abi").display(),
+            repo.join("crates/plugin-sdk").display(),
+        ),
+    )
+    .expect("a manifest the session's directory can build");
+}
+
+/// **The live loop, for the nick list**: `plugin build` → `plugin load` → the pane redrawn, with
+/// nothing of the host rebuilt in between.
+///
+/// The pieces are the production ones at every step: `CargoBuilder` runs cargo for
+/// `wasm32-unknown-unknown` offline, `RanoLoader` is wasmtime compiling the guest, the stack is the
+/// session's own, and the pane is published to a real `Hub` — the frame a head draws. What it is
+/// asked with is the session feed (`docs/plugins-plan.md` §4.9), so the rows are the daemon's
+/// sessions and not a fixture inside the guest.
+#[test]
+fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
+    let here = wasm_target();
+    let Some(()) = letibot_tokencore::apparatus::present(
+        "the `wasm32-unknown-unknown` target, which compiles the nick list's guest",
+        here,
+    ) else {
+        return;
+    };
+    let rig = Rig::with_feed(
+        letibot_harnessd::plugins::rano::RanoLoader,
+        letibot_plugins::CargoBuilder,
+        "irc-loop",
+        Arc::new(Nicks),
+    );
+    copy_the_nick_list(&rig.tmp.plugins().join("irc"));
+
+    // 1. `plugin build` — cargo, the wasm target, offline.
+    let built = rig.ok(r#"{"action":"build","name":"irc"}"#);
+    assert!(built.contains("plugin.wasm"), "{built}");
+    assert!(
+        rig.tmp.plugins().join("irc").join(WASM).is_file(),
+        "cargo produced no module: {built}"
+    );
+
+    // 2. `plugin load` — through the shadow gate, then the stack the head is drawn from.
+    let loaded = rig.ok(r#"{"action":"load","name":"irc"}"#);
+    assert!(loaded.contains("loaded `irc` as layer `s1`"), "{loaded}");
+
+    // 3. The pane, redrawn: the nick list, from the feed, with the subagent absent.
+    let panes = rig.panes();
+    let (pane, view) = panes.last().expect("the pane reached the hub");
+    assert_eq!(pane, "irc/nicks");
+    let rows = view["panels"][0]["summary"][0]["tree"]["rows"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a tree block: {view}"));
+    let header = rows[0]["cells"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        header.contains("2 here") && header.contains("1 working"),
+        "the header counts the channel: {header}"
+    );
+    let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
+    assert!(
+        ids.contains(&SESSION) && ids.contains(&"s-other"),
+        "the two conversations: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"s-sub-1"),
+        "a subagent is not a nick: {ids:?}"
+    );
+    let mine = rows
+        .iter()
+        .find(|r| r["id"] == SESSION)
+        .expect("the session whose pane this is");
+    assert_eq!(
+        mine["enter"],
+        serde_json::json!({"switch": SESSION}),
+        "every row is the host's own switch"
+    );
+    assert_eq!(mine["cells"][0]["text"], "»", "and you are marked");
+    // The view is one the host will draw and its keys can drive.
+    let as_view: letibot_sessionlog::pane::View =
+        serde_json::from_value(view.clone()).expect("a C3 view");
+    as_view.validate().expect("a view the host accepts");
+
+    // 4. And `plugin test` asks the same hook through the same stack, so a person iterating sees
+    //    the same rows without a head at all.
+    let said = rig.ok(r#"{"action":"test"}"#);
+    assert!(said.contains("answered by `s1`"), "{said}");
+    assert!(said.contains("the habr article"), "{said}");
 }

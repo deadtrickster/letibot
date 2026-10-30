@@ -418,6 +418,21 @@ pub struct SessionBrief {
     /// eight rows correctly instead of eight rows wrongly.
     #[serde(default)]
     pub origin: SessionOrigin,
+    /// **When this session last MOVED** — the time of its last transcript row, in unix millis, or
+    /// its creation when it has none. `created_ms` above is when the daemon made the session and
+    /// never changes; this is the fact a list of agents is actually read for, because *a turn that
+    /// has been running for twenty minutes with nothing appended* is a stuck session and a row a
+    /// minute old is not.
+    ///
+    /// Read off the session's own row in the store, which the store computes from the transcript's
+    /// last item (`Store::list_sessions`), so it is the same number for a live session and for one
+    /// only on disk — and `0` for a session no store knows about, which a reader draws as *the host
+    /// did not say* rather than as *just now*.
+    ///
+    /// Defaulted for `slug`'s reason: `0` is also what a daemon too old to know the field has to
+    /// say, so it is added without a protocol bump.
+    #[serde(default)]
+    pub moved_ms: u64,
 }
 
 /// **How long the operator has paused a session's idle plan-check** (`/nag pause`).
@@ -2338,6 +2353,9 @@ impl Registry {
                         // daemon that wrote it, and this entry may have been built by a resume that
                         // knew only what the row said.
                         origin: on_disk.map(|d| d.origin).unwrap_or(origin),
+                        // **When it last moved, off the row** — and the creation time only for a
+                        // session no store knows about yet, which has moved nowhere.
+                        moved_ms: on_disk.map(|d| d.last_activity_ms).unwrap_or(created_ms),
                         session_id,
                     }
                 },
@@ -2368,6 +2386,7 @@ impl Registry {
                 waits_on_operator: d.waits_on_operator,
                 slug: d.slug,
                 origin: d.origin,
+                moved_ms: d.last_activity_ms,
             });
         }
         out
@@ -3468,6 +3487,7 @@ mod stored_end_wire {
             waits_on_operator: 0,
             slug: String::new(),
             origin: crate::SessionOrigin::Operator,
+            moved_ms: 0,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

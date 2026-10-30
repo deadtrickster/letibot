@@ -295,16 +295,56 @@ impl App {
         }
     }
 
-    /// **Enter: the stop under the cursor, whole** — its detail, and for a finding the numbers
-    /// behind it, the fix and the way to check it (C3). Opened as a surface of its own, so Esc
-    /// has somewhere to come back to.
+    /// **Enter: the stop under the cursor** — the act the row carries, or else the row read whole.
+    ///
+    /// # The act comes first, and that is the contract
+    ///
+    /// C3 gives a row an `enter`: *what Enter does on it, performed by the host* — `switch` to a
+    /// session, `fold` it, or call the pane again with an event. The manifest declares the verbs
+    /// (`actions = ["switch"]`) and `View::validate_for` refuses a row that reaches one nobody
+    /// declared, so by the time a view is on this screen the act is a verb the layer was allowed
+    /// to ask for. **This head did not perform it**: every Enter opened the detail, so a pane
+    /// whose rows are a list of sessions to switch to — the nick list, `plugins/builtin/irc` —
+    /// had a switch gesture that did nothing but read the row's prose.
+    ///
+    /// A row with no act is the old behaviour and still the common one: the detail, and for a
+    /// finding the numbers behind it, the fix and the way to check it. A `fold` is not performed
+    /// here because this surface has no fold state to move (the session list's own list keeps it,
+    /// and it is drawn by a different surface) — such a row falls through to its detail rather
+    /// than to a key that does nothing.
     pub(crate) fn plugin_enter(&mut self) -> Option<Action> {
         // Nothing under the cursor — an empty list, or a view that did not parse — is a pane
         // that has nothing to open, and Enter is still the pane's.
-        self.plugin_selected()?;
-        self.plugin_detail = Some((self.plugin_screen, self.plugin_sel));
-        self.push_surface(Surface::PluginDetail);
-        None
+        let act = self.plugin_selected()?.enter().cloned();
+        let item = self
+            .plugin_selected()
+            .map(|t| t.id().to_string())
+            .unwrap_or_default();
+        match act {
+            Some(pv::Act::Switch { session }) => {
+                // **The pane leaves with the switch.** A plugin pane is a screen, not a column the
+                // host lays out beside the conversation: leaving it open would show the session
+                // list of the session you just left, over the conversation you just arrived in.
+                if let Some(close) = self.close_plugin() {
+                    self.queued.push(close);
+                }
+                self.switch_to(session)
+            }
+            Some(pv::Act::Event { event }) => {
+                let pane = self.plugin_open.clone()?;
+                Some(Action::PaneAction {
+                    pane,
+                    item,
+                    action: event,
+                })
+            }
+            // A row with no act, or one this surface cannot perform: the detail.
+            Some(pv::Act::Fold { .. }) | None => {
+                self.plugin_detail = Some((self.plugin_screen, self.plugin_sel));
+                self.push_surface(Surface::PluginDetail);
+                None
+            }
+        }
     }
 
     /// **The detail's rows** — the stop the overlay was opened on, read out of the screen it

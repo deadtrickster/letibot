@@ -2732,9 +2732,15 @@ impl<'a> Sessions<'a> {
         else {
             return;
         };
-        let host = Arc::new(crate::plugins::PluginHost::production(
-            session_id, &workspace,
-        ));
+        // **The daemon's session list, handed to the host** — a pane on disk that declares the
+        // `sessions` feed is drawn from it (`docs/plugins-plan.md` §4.9). The registry is the one
+        // holder of *every* session, live and on disk, so it is the whole source; a host built by
+        // a test has none and a pane that declares the feed says so on its screen.
+        let host = Arc::new(
+            crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
+                crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
+            )),
+        );
         host.announce(&hub);
         let driver: Arc<dyn letibot_sessionlog::registry::PaneDriver> = host.clone();
         self.registry.set_pane_driver(session_id, driver);
