@@ -81,6 +81,15 @@ pub(crate) enum Target {
     /// over the block the picture was drawn in. A click opens the picture larger, in the popup the
     /// change and the notice open in.
     Picture,
+    /// **One line of the open payload window** (`App::payload_rows`) — the body of a result the
+    /// reader opened with `ctrl-v`, one rectangle a row, and its one stop is the payload line that
+    /// row drew.
+    ///
+    /// A click puts that line at the top of the window (`App::payload_click`) — the same offset the
+    /// arrows and the wheel move, so the two cannot disagree about where the reader is. The header
+    /// and the `… +N lines` seam are **not** this target: a click on them acts on nothing, because
+    /// they are not lines of the payload.
+    PayloadLine,
     /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
     GitField,
     /// **The merge queue's standings on the composer's bottom edge** — `3 in review · 1 being
@@ -269,6 +278,23 @@ impl App {
                     target: Target::Conversation,
                     stops,
                 });
+                // **The open window's lines, over the conversation they are drawn in** — one
+                // rectangle a row, whole width, and its stop is the payload line that row drew.
+                // Recorded before the notices and cards below, so anything drawn over one of
+                // these rows keeps it: a line of the window is the conversation's own, and the
+                // topmost record wins as everywhere here.
+                for (r, line) in self.payload_rows.clone() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y: top + r,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::PayloadLine,
+                        stops: vec![(top + r, line)],
+                    });
+                }
                 // **The notice rows, over the conversation they sit in** — one rectangle a row,
                 // the whole width, like the conversation's own: later records are on top.
                 for (y, k) in self.notice_rows.clone() {

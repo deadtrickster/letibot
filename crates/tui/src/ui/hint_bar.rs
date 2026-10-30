@@ -211,7 +211,7 @@ impl App {
             // An open run is the conversation's rows, scrolled as they are; Esc folds it.
             None if self.run_is_open() => "esc folds the run back".to_string(),
             None if self.payload_sel.is_some() => {
-                "↑↓ pgup/pgdn page the result · home/end its ends · enter still sends · esc closes it"
+                "↑↓ pgup/pgdn or the wheel page the result · a click reads from there · esc closes · enter still sends"
                     .to_string()
             }
             None => self.conversation_hint(),

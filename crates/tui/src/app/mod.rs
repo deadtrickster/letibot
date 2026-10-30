@@ -152,6 +152,15 @@ pub struct App {
     /// **Which screen rows of the last frame are one of those lines**: `(row, index into
     /// [`App::note_cards`])`, rebuilt with [`App::notice_rows`]. A click opens the detail whole.
     pub(crate) card_rows: Vec<(usize, usize)>,
+    /// **Which screen rows of the last frame are a line of the open payload window**: `(row of
+    /// the window, line of the payload)`, rebuilt with [`App::file_rows`] and read the same way —
+    /// off the drawn rows, because only the drawing knows where the window's seams fell.
+    ///
+    /// A click on one puts that line at the top of the window (`App::payload_click`), which is
+    /// the same field the arrows and the wheel move, so the two cannot disagree about where the
+    /// reader is. Only the window's BODY is in here: a click on the header or on the
+    /// `… +61 lines` seam is not a click on a line, and acts on nothing.
+    pub(crate) payload_rows: Vec<(usize, usize)>,
     /// **The clauses of the run markers on the last frame** — `[7 tool calls, 11 thinking
     /// lines]`'s two halves, each a click that opens its run's rows of that kind. See
     /// `app::runclick`.
@@ -2012,6 +2021,7 @@ impl App {
             notice_rows: Vec::new(),
             note_cards: Vec::new(),
             card_rows: Vec::new(),
+            payload_rows: Vec::new(),
             marker_rows: Vec::new(),
             lift: None,
             job_tails: Default::default(),

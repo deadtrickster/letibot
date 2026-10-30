@@ -749,6 +749,119 @@ impl App {
         self.payload_sel.is_some() && !self.run_is_open()
     }
 
+    /// **Open the payload window on `id`, at its top** — the one writer of the three fields a
+    /// window is made of, and the reason *"a new result starts at the top"* is a fact rather than
+    /// a habit of each door.
+    ///
+    /// There are two doors (`ctrl-v` on the newest result, and the lift a click on a run's marker
+    /// throws) and both used to spell the three writes themselves. The page is not a property of
+    /// the head: it is where the reader is in ONE payload, and a second payload opening at the
+    /// first one's offset is a window that skips the head of a result nobody has read — which is
+    /// why `payload_max` is thrown away with it, since the length it clamps against is the other
+    /// payload's.
+    pub(crate) fn open_payload_window(&mut self, id: String) {
+        self.payload_sel = Some(id);
+        self.payload_page = 0;
+        self.payload_max.set(usize::MAX);
+    }
+
+    /// **Put the clicked line at the top of the window** — the click's half of the one offset.
+    ///
+    /// A click on a line of the window means *read from here*, the way a jump in a pager does:
+    /// the line under the pointer becomes the window's first, and everything after it follows.
+    /// It writes [`App::payload_page`] — the field the arrows, the page keys and the wheel write —
+    /// so a click and a key agree about where the reader is by construction rather than by two
+    /// handlers agreeing. `line` is a payload line, already past the clamp the draw recorded, and
+    /// it is clamped again here: a click near the end of a payload cannot push the window past
+    /// the last full page (`… end of output` is the bottom, not a page of one line).
+    pub(crate) fn payload_click(&mut self, line: usize) {
+        if !self.payload_window_open() {
+            return;
+        }
+        let max = self.payload_max.get();
+        let to = line.min(max);
+        if to == self.payload_page.min(max) {
+            return;
+        }
+        self.payload_page = to;
+        // The history buffer is a cache of the rendered rows, and the offset changes what one of
+        // them renders to — see [`App::page_payload`].
+        self.invalidate_history();
+        self.redraw = true;
+    }
+
+    /// **Which rows of the conversation are lines of the open payload window**, as `(row of the
+    /// window, line of the payload)` — the sibling of [`App::file_rows_in`] and
+    /// [`App::picture_rows_in`], and read the same way: off the rows the walk drew, because only
+    /// the drawing knows where the window's seams fell.
+    ///
+    /// The window is `rano`'s to lay out (`ToolRow::layout`), and its rows are: the header, the
+    /// `↑ N more lines above` seam when the reader is past the head, the body, and then a seam
+    /// that says either `… +N lines · ↓ pages down` or `… end of output`. A row this head
+    /// appended after that (a detected diff, a picture) is not the window's. So the body is
+    /// **between the header and the first `…` row**, and a payload line is the body's index plus
+    /// the page the draw used — which is `payload_page` clamped by the length the draw measured,
+    /// exactly the clamp `ToolRow` itself applies.
+    ///
+    /// Nothing here recomputes the layout: the rows are the ones on the glass, and a line that
+    /// begins with `…` or `↑` is a seam only when it ends the way those sentences end, so a
+    /// payload that itself printed a `…` is still a line of the payload.
+    pub(crate) fn payload_rows_in(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
+        let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
+            return Vec::new();
+        };
+        if !self.payload_window_open() {
+            return Vec::new();
+        }
+        // The page the DRAW used: `payload_max` is this frame's measurement (see
+        // [`ItemCtx::payload_max`]), and a page past it was drawn clamped.
+        let page = self.payload_page.min(self.payload_max.get());
+        let end = end.min(self.hist_lines.len());
+        let mut out = Vec::new();
+        let mut last: Option<(usize, bool)> = None;
+        for line in start..end {
+            let i = self.spans.partition_point(|sp| sp.at <= line);
+            let Some(sp) = i.checked_sub(1).map(|i| self.spans[i]) else {
+                continue;
+            };
+            if line >= sp.at + sp.lines {
+                continue;
+            }
+            // One question per row rather than per line: the window is one row's.
+            let mine = match last {
+                Some((row, mine)) if row == sp.row => mine,
+                _ => {
+                    let mine = self.items.get(sp.row).is_some_and(|it| it.item_id == id);
+                    last = Some((sp.row, mine));
+                    mine
+                }
+            };
+            if !mine {
+                continue;
+            }
+            // **Where this row's body starts, in its own lines** — the header, then the `↑` seam
+            // when the reader is past the head, then the payload. Counted from the ROW's first
+            // line and not from the window's, because a conversation scrolled so that the header
+            // is off the top still names its lines correctly this way.
+            let body_at = sp.at + 1 + usize::from(page > 0);
+            if line < body_at {
+                // The header, or the `↑ N more lines above` seam: neither is payload text.
+                continue;
+            }
+            let text: String = crate::app::keyhints::cells(&self.hist_lines[line])
+                .into_iter()
+                .collect();
+            let t = text.trim_start();
+            if t.starts_with('…') && t.ends_with("esc closes") {
+                // The seam that ends the window — and with it the body, so a row this head
+                // appended under it is not a line of the payload either.
+                break;
+            }
+            out.push((line - start, page + (line - body_at)));
+        }
+        out
+    }
+
     /// The turn's in-flight work, as this head currently knows it — one function, so the
     /// walk, the chord and the pane cannot disagree about what is running.
     pub(crate) fn live_work_now(&self) -> LiveWork {

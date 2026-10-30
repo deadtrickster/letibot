@@ -98,9 +98,10 @@ impl App {
                     // inside a row that is only on screen because the run is open.
                     self.invalidate_history();
                 } else if let Some(id) = self.newest_openable() {
-                    self.payload_sel = Some(id);
-                    self.payload_page = 0;
-                    self.payload_max.set(usize::MAX);
+                    // **The window opens at its top, through the one door** — see
+                    // [`App::open_payload_window`]. A new result never inherits the offset of the
+                    // one the reader was in.
+                    self.open_payload_window(id);
                 }
                 // **Not `refold`.** That is the fold's own: it resets the scroll and
                 // announces the fold state, and neither happened here.

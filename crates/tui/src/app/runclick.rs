@@ -137,9 +137,9 @@ impl App {
     /// no panel to close it.
     pub(crate) fn set_lift(&mut self, show: Option<Show>, run: &str) {
         self.lift = show;
-        self.payload_sel = Some(run.to_string());
-        self.payload_page = 0;
-        self.payload_max.set(usize::MAX);
+        // The panel's address and its offset are one act — see [`App::open_payload_window`],
+        // which is also what `ctrl-v` opens with.
+        self.open_payload_window(run.to_string());
         self.invalidate_history();
         self.redraw = true;
     }

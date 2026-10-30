@@ -30,6 +30,10 @@ impl App {
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
+            // **A line of the window is a line only while the window is open** — a key earlier in
+            // the same read can have closed it (Esc, `ctrl-v`, a prompt sent), and the rows the
+            // last frame recorded are then text again.
+            Target::PayloadLine => self.payload_window_open(),
             Target::Decision => !self.open.is_empty(),
             Target::QuitCard => self.quit_card,
             Target::ReseatCard => self.reseat_card_up(),
@@ -165,6 +169,14 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
+            // **A line of the open window takes the reader there** — the act is the offset the
+            // arrows and the wheel move, not a second cursor. A row of the window that carries no
+            // line (the header, the `… +N lines` seam) is the window's and moves nothing.
+            (Target::PayloadLine, Some(line)) => {
+                self.payload_click(line);
+                return ControlFlow::Break(None);
+            }
+            (Target::PayloadLine, None) => return ControlFlow::Break(None),
             (Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture, None) => {
                 return ControlFlow::Continue(());
             }
@@ -232,6 +244,7 @@ impl App {
             // A window, not an open run — a run is the conversation's own rows and the
             // conversation scrolls under it (see [`App::run_is_open`]).
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
+            | Target::PayloadLine
                 if self.payload_window_open() =>
             {
                 self.page_payload(up, NOTCH)
@@ -247,7 +260,10 @@ impl App {
             | Target::CountLabel(_)
             | Target::GitField
             | Target::QueueStandings
-            | Target::FlashNotice => {}
+            | Target::FlashNotice
+            // A line of the window with no window up — `still_drawn` has already refused
+            // this one, so it is here for the enum and not for a pointer that can reach it.
+            | Target::PayloadLine => {}
         }
         ControlFlow::Break(None)
     }
