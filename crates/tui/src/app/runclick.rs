@@ -348,7 +348,8 @@ impl App {
     }
 
     /// **A round's rows landed: what the live pane had lifted stays lifted on them** — the run
-    /// they make opens with the same kind, and the pane keeps it for the next round.
+    /// they make opens with the same kind. **The pane does not keep it**: the next round's pane
+    /// starts as the rung draws it, and a new turn drops the lift entirely.
     pub(crate) fn carry_live_open(&mut self) {
         // **The VALUE is not this function's business.** A reader who opened the thinking keeps
         // the thinking open; what a round's end moves is the ADDRESS, from the pane (which is
