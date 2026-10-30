@@ -2691,7 +2691,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-
     /// **The batched read is the files, whatever is in them** — the real command, run
     /// by a real `/bin/sh` over real files, and the parser's answers read back.
     ///
