@@ -204,6 +204,49 @@ pub enum Response {
     },
 }
 
+/// **One frame's whole answer** — the reply, and the events the verb produced.
+///
+/// The reply is what the asking connection reads; the events are what the SERVER rings other
+/// connections with. They are one value because they come out of one act: a `claim` that replied
+/// `Claimed` and forgot to ring the sessions queued behind it would be a room that only answers
+/// whoever asked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    pub response: Response,
+    pub events: Vec<crate::room::Event>,
+}
+
+impl Answer {
+    /// A reply with nothing to ring about — a read, a `Hello`, a `Bye`.
+    fn quiet(response: Response) -> Answer {
+        Answer {
+            response,
+            events: Vec::new(),
+        }
+    }
+
+    /// A verb's outcome, as its reply and its events.
+    fn verb(
+        id: &str,
+        out: Result<crate::Outcome, Refused>,
+        ok: impl FnOnce(Item) -> Response,
+    ) -> Answer {
+        match out {
+            Ok(o) => Answer {
+                response: ok(o.item),
+                events: o.events,
+            },
+            Err(why) => Answer {
+                response: Response::Refused {
+                    id: Some(id.to_string()),
+                    why,
+                },
+                events: Vec::new(),
+            },
+        }
+    }
+}
+
 impl Room {
     /// **Answer one frame** — the coordinator's dispatch with the socket taken out.
     ///
@@ -212,102 +255,92 @@ impl Room {
     /// and every [`crate::Outcome`] carry the events, and the server decides which connections
     /// they go to. That split is deliberate — routing a bell is a property of the connections, and
     /// this crate has none.
+    ///
+    /// [`Room::answer_traced`] is the same dispatch with those events handed back, and it is what a
+    /// server calls: a reply without its events is a bell nobody rang.
     pub fn answer(&mut self, who: &Speaker, request: &Request, now: u64) -> Response {
+        self.answer_traced(who, request, now).response
+    }
+
+    /// **[`Room::answer`], with the events the frame produced.**
+    pub fn answer_traced(&mut self, who: &Speaker, request: &Request, now: u64) -> Answer {
         match request {
             Request::Hello { protocol, speaker } => {
                 if *protocol != ROOM_PROTOCOL_VERSION {
-                    return Response::Bye {
+                    return Answer::quiet(Response::Bye {
                         why: format!(
                             "this room speaks protocol {ROOM_PROTOCOL_VERSION} and the client \
                              speaks {protocol} — upgrade one of them"
                         ),
-                    };
+                    });
                 }
                 if let Err(why) = speaker.may_speak() {
-                    return Response::Refused { id: None, why };
+                    return Answer::quiet(Response::Refused { id: None, why });
                 }
                 // The room now knows this session, so a ruling may hand it an item even if it
                 // has not spoken yet.
                 let _ = self.vouch(speaker);
-                Response::Welcome {
+                Answer::quiet(Response::Welcome {
                     protocol: ROOM_PROTOCOL_VERSION,
                     lease_ms: self.lease_ms(),
                     beat_every_ms: DEFAULT_BEAT_EVERY_MS,
                     threshold: ABANDON_THRESHOLD,
-                }
+                })
             }
-            Request::Post { id, tag, body } => match self.post(who, id, tag, body, now) {
-                Ok(o) => Response::Posted {
-                    id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
-            Request::Claim { id, tag } => match self.claim(who, id, tag, now) {
-                Ok(o) => Response::Claimed {
-                    id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
-            Request::ClaimItem { id, item } => match self.claim_item(who, id, *item, now) {
-                Ok(o) => Response::Claimed {
-                    id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
-            Request::Beat { id, item } => match self.beat(who, id, *item, now) {
-                Ok(o) => Response::Beaten {
-                    id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
-            Request::Waiting { id, item, text } => {
-                match self.waiting_on(who, id, *item, text, now) {
-                    Ok(o) => Response::Waited {
+            Request::Post { id, tag, body } => {
+                Answer::verb(id, self.post(who, id, tag, body, now), |item| {
+                    Response::Posted {
                         id: id.clone(),
-                        item: o.item,
-                    },
-                    Err(why) => Response::Refused {
-                        id: Some(id.clone()),
-                        why,
-                    },
-                }
+                        item,
+                    }
+                })
             }
-            Request::Done { id, item } => match self.done(who, id, *item, now) {
-                Ok(o) => Response::Finished {
+            Request::Claim { id, tag } => Answer::verb(id, self.claim(who, id, tag, now), |item| {
+                Response::Claimed {
                     id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
-            Request::Abandon { id, item, why } => match self.abandon(who, id, *item, why, now) {
-                Ok(o) => Response::Abandoned {
-                    id: id.clone(),
-                    item: o.item,
-                },
-                Err(why) => Response::Refused {
-                    id: Some(id.clone()),
-                    why,
-                },
-            },
+                    item,
+                }
+            }),
+            Request::ClaimItem { id, item } => {
+                Answer::verb(id, self.claim_item(who, id, *item, now), |item| {
+                    Response::Claimed {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Beat { id, item } => {
+                Answer::verb(id, self.beat(who, id, *item, now), |item| {
+                    Response::Beaten {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Waiting { id, item, text } => {
+                Answer::verb(id, self.waiting_on(who, id, *item, text, now), |item| {
+                    Response::Waited {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Done { id, item } => {
+                Answer::verb(id, self.done(who, id, *item, now), |item| {
+                    Response::Finished {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Abandon { id, item, why } => {
+                Answer::verb(id, self.abandon(who, id, *item, why, now), |item| {
+                    Response::Abandoned {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
             Request::Dispute { id, item, says } => match self.dispute(who, id, *item, says, now) {
                 Ok(o) => {
                     let question = o
@@ -315,47 +348,53 @@ impl Room {
                         .question
                         .and_then(|q| self.question(q).cloned())
                         .expect("a dispute leaves an open question on the item");
-                    Response::Question {
-                        id: id.clone(),
-                        question,
+                    Answer {
+                        response: Response::Question {
+                            id: id.clone(),
+                            question,
+                        },
+                        events: o.events,
                     }
                 }
-                Err(why) => Response::Refused {
+                Err(why) => Answer::quiet(Response::Refused {
                     id: Some(id.clone()),
                     why,
-                },
+                }),
             },
             Request::Rule {
                 id,
                 question,
                 decision,
             } => match self.rule(*question, decision.clone(), &who.session, now) {
-                Ok(_) => Response::Ruled {
-                    id: id.clone(),
-                    question: self.question(*question).cloned().expect("just ruled on it"),
+                Ok(o) => Answer {
+                    response: Response::Ruled {
+                        id: id.clone(),
+                        question: self.question(*question).cloned().expect("just ruled on it"),
+                    },
+                    events: o.events,
                 },
-                Err(why) => Response::Refused {
+                Err(why) => Answer::quiet(Response::Refused {
                     id: Some(id.clone()),
                     why,
-                },
+                }),
             },
-            Request::Queue { tag } => Response::Queue {
+            Request::Queue { tag } => Answer::quiet(Response::Queue {
                 tag: tag.trim().to_lowercase(),
                 rows: self.queue(tag).into_iter().cloned().collect(),
-            },
+            }),
             Request::Holding { session } => {
                 let session = session.clone().unwrap_or_else(|| who.session.clone());
-                Response::Holding {
+                Answer::quiet(Response::Holding {
                     rows: self.holding(&session, now),
                     session,
-                }
+                })
             }
-            Request::Reminders => Response::Reminders {
+            Request::Reminders => Answer::quiet(Response::Reminders {
                 rows: self.reminders(now),
-            },
-            Request::Questions => Response::Questions {
+            }),
+            Request::Questions => Answer::quiet(Response::Questions {
                 rows: self.open_questions().into_iter().cloned().collect(),
-            },
+            }),
         }
     }
 }

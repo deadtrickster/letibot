@@ -1032,6 +1032,7 @@ dependencies = [
  "letibot-plugin",
  "letibot-plugins",
  "letibot-provider",
+ "letibot-room",
  "letibot-sessionlog",
  "letibot-tokencore",
  "letibot-tools",

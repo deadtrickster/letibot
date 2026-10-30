@@ -1154,6 +1154,14 @@ pub mod roles {
                 "task_resume",
                 "task_start",
                 "hosts",
+                // **`room`: the host's queues.** Named here because this is §8.4's table and a
+                // seat that can reach the room should say so — but **nothing seats this role in
+                // production**: the live orchestrator seat is [`m1_orchestrator`], which
+                // `base_role_for_seat(Seat::Orchestrator)` resolves, and a tool named only here
+                // is a tool no session has. That is not a hypothetical: it is exactly how the
+                // coordinator's arbiter came to be told to call a tool it did not have. A
+                // capability added to this table has to be added to the seat below it too.
+                "room",
                 "read",
                 "grep",
                 "glob",
@@ -1256,6 +1264,16 @@ pub mod roles {
                 // lines of `fleet.sh` in the session these two exist to replace.
                 "fanout",
                 "scenario",
+                // **`room`: the host's tagged queues** (the room's slice 2). Every top-level
+                // session on this box shares one room — a queue per tag, a claim that is a lease
+                // with a beat — and it is the only place two sessions that are not parent and
+                // child can talk. **The two seats that carry it are this one and
+                // [`m1_orchestrator`]**, the two a person's own session runs on; not `coder`,
+                // `runner` or `gatekeeper`: a subagent's words go through the session that
+                // spawned it, which is the operator's rule and flowy's, and the room refuses a
+                // subagent by name at its own door. See `m1_orchestrator` for why the default
+                // seat has to be one of the two.
+                "room",
                 // `harness`: what this session is running inside. Read-only, and
                 // it is how a model stops asking the operator to read their own
                 // terminal aloud.
@@ -1362,7 +1380,11 @@ pub mod roles {
         // by two, to 35, for `hosts`' reason one entry above: a session that can reach many
         // machines is exactly the session that needs a verb for it, and trading away two working
         // verbs to pay for the capability would be the wrong half of the choice.
-        r.max_tools = 35;
+        // **Thirty-six since `room`**, which took its own seat for the reason the two before it
+        // did: a top-level session that cannot say *I am holding this, and here is what I am
+        // waiting on* has no way to coordinate with a sibling at all, and trading away a working
+        // verb to pay for a queue would be the wrong half of the choice.
+        r.max_tools = 36;
         r
     }
 
@@ -1378,6 +1400,19 @@ pub mod roles {
     /// schemas say so. A role without a spare seat does not get this tool by
     /// taking one from something else; the pane simply stays empty there until a
     /// seat decision says otherwise.
+    ///
+    /// **`room` is seated HERE and not only in [`orchestrator`]**, and that is a correction: the
+    /// name was written into §8.4's table above, which nothing seats, while the seat a session
+    /// actually runs on is this one — `base_role_for_seat(Seat::Orchestrator)`. The coordinator
+    /// (`harnessd --room`) seats this role, so a `room` missing here is an arbiter told to call a
+    /// tool it does not have, and a raised item that freezes for ever. It is also the seat
+    /// `letibot` (read-only, no `--role`) gives every top-level session, which is what makes
+    /// *top-level sessions only* true for the default session and not only for `leticode`.
+    ///
+    /// Two seats carry it, and they are the two a person's own session runs on: this one and
+    /// [`leticode`]. A subagent never does — its words go through the session that spawned it,
+    /// which is the operator's rule, flowy's and the room's own door — and neither does
+    /// [`gatekeeper`], whose sessions are reviewers and review children.
     pub fn m1_orchestrator() -> Role {
         Role::new(
             "orchestrator",
@@ -1389,6 +1424,7 @@ pub mod roles {
                 "ask_corpus",
                 "read_spill",
                 "todo_write",
+                "room",
             ],
         )
     }
@@ -3232,6 +3268,55 @@ mod tests {
         assert!(!seated.contains(&"todo".to_string()), "{seated:?}");
     }
 
+    /// **The room is on the two seats a person's own session runs on, and on nothing else.**
+    ///
+    /// This is the assertion the coordinator's whole slice needed and did not have: `room` was
+    /// written into §8.4's `roles::orchestrator()` — a table **no seat resolves** — while the
+    /// coordinator's session, `base_role_for_seat(Seat::Orchestrator)`, resolved
+    /// [`roles::m1_orchestrator`] without it. The arbiter was therefore woken, told *"answer with
+    /// the `room` tool: verb `rule`"*, and had no such tool: a raised item froze for ever, which
+    /// is the one outcome `coordinator::configure`'s no-model refusal exists to prevent.
+    ///
+    /// So the pin is on both halves. The seats that carry it are the two a top-level session is
+    /// actually given — the default (and the coordinator's own) and `leticode` — and the seats
+    /// that must not are the ones a subagent or a hidden child runs on, because a subagent's
+    /// words go through the session that spawned it and the room refuses one at its own door.
+    #[test]
+    fn the_room_is_seated_on_the_seats_a_top_level_session_actually_runs_on() {
+        for seat in [roles::m1_orchestrator(), roles::leticode()] {
+            assert!(
+                seat.tools.iter().any(|t| t == "room"),
+                "`{}` is a seat a top-level session runs on, so it must carry `room`: {:?}",
+                seat.name,
+                seat.tools
+            );
+        }
+        for seat in [
+            roles::m2_coder(),
+            roles::m2_runner(),
+            roles::gatekeeper(),
+            roles::notes_keeper(),
+        ] {
+            assert!(
+                !seat.tools.iter().any(|t| t == "room"),
+                "`{}` is a subagent's or a hidden child's seat, and the room is top-level only: \
+                 {:?}",
+                seat.name,
+                seat.tools
+            );
+        }
+        // **And the seat the coordinator resolves is `m1_orchestrator`, not the table above it.**
+        // `base_role_for_seat` lives in `harnessd`; what this crate can pin is that the two are
+        // not the same list, which is the fact the defect turned on.
+        assert_ne!(
+            roles::m1_orchestrator().tools,
+            roles::orchestrator().tools,
+            "the live orchestrator seat and §8.4's table are different lists; if they ever \
+             collapse into one, `harnessd`'s `base_role_for_seat` has to be re-read before \
+             anybody believes a tool added here is seated"
+        );
+    }
+
     /// **`task_start` is seated wherever `task` is.**
     ///
     /// The operator's ask — *"we will need a new tool - task_start or what that will
@@ -3302,8 +3387,10 @@ mod tests {
         // machines is a seat that guesses. **Thirty-two since `plugin` and `plugin_hooks`**
         // (P2): a pane written and loaded in the session, which is the point of the plugin plan
         // and is nothing a seat without them can do. **Thirty-four since RH8's `fanout` and
-        // `scenario`**, which took their own seats for the same reason `hosts` did.
-        assert_eq!(seat.tools.len(), 34, "{:?}", seat.tools);
+        // `scenario`**, which took their own seats for the same reason `hosts` did. **Thirty-five
+        // since `room`**, the host's tagged queues, which a top-level session needs and a subagent
+        // must not have.
+        assert_eq!(seat.tools.len(), 35, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

@@ -218,34 +218,77 @@ What differs, and it is the reason this is a *daemon* and not a session:
 
 ## What the daemon still owes
 
-In the order the work should happen:
+### Slice 2, as built
 
-1. **The socket and the daemon.** A `--room` mode on `harnessd`: a unix socket under the data
-   directory, one connection per session, `Hello` first, and `Room::answer` behind it. The accept
-   loop and the per-connection read loop are the only new concurrency; the room itself is `&mut` in
-   one place (a mutex or a single owning thread), because it is single-writer by construction.
-2. **The coordinator's own lease.** One coordinator per box, held with the merge queue's discipline
-   (`acquire_queue_lease`'s shape, or a pidfile with the same rules) — otherwise two coordinators
-   are two rooms with one name, which no arbiter can settle.
-3. **The clock and the pass.** `sweep(now)` on a timer (a second or two), and the events routed to
-   the connections whose sessions they are about. `note_gone` on every connection close.
-4. **The tie-breaker session.** The coordinator's root session, prompted with the open questions in
-   order (`open_questions`), answering through the `rule` verb. It must be *able* to answer: a seat
-   with `task`-free tools and the room's own tool, and a prompt that says what a ruling costs.
-5. **The session-side tool.** `room post|claim|beat|waiting|done|abandon|queue|holding` for a
-   top-level session, and the reminder row on its board. **The beat is the daemon's, not the
-   model's**: a session that must remember to call `beat` will forget, and the lease will take its
-   item while it works. The daemon beats for any session holding a claim whose turn is running, and
-   stops when the turn ends — that is the fact the lease is measuring.
-6. **The wake.** An `Event` about a session must be able to inject a turn into it (the todo/`wait`
-   machinery already exists); a session that only reads on a prompt is a mailbox, not a bell.
-7. **The wasm pane.** The queues per tag, the tie-breaker's raw session, and the manual controls —
+The runtime is in, and it is one mode plus one crate's second half:
+
+| what the list asked for | where it is |
+|---|---|
+| the socket and the daemon | `harnessd --room` (`crates/harnessd/src/room/coordinator.rs`), serving `letibot_room::Server` — accept loop, one read loop per connection, `Hello` at the door, the room behind **one** `Mutex` |
+| the coordinator's own lease | `letibot_room::lease` — a **file**, `<data dir>/room-<host key>.lease`, with `host/pid/<ns>` for an owner, a ten-second beat, the merge queue's ninety-second TTL, a stale takeover that says whether the beat stopped or the pid is gone, and a refusal that names the live holder |
+| the clock and the pass | the server's own clock thread: `sweep(now)` every five seconds, the lease's beat on the same thread (one process, one clock), and `note_gone` on every connection close |
+| the tie-breaker session | the coordinator's own session, `s-room-<host key>`, opened with **no store**, seated `orchestrator` — which names `room` (see *Which seats carry `room`*) — prompted with `open_questions`, a sentence with the decision in it plus the typed facts, and answering through `rule` |
+| the session-side tool | `room` (`crates/tools/src/builtins/room.rs`): post, claim, claim_item, beat, waiting, done, abandon, dispute, rule, queue, holding, reminders, questions |
+| the beat on the session's behalf | `Harness::begin_turn_clock` starts it, `Harness::end_turn_clock` stops it, and `letibot_room::client::Client::start_beating` re-reads what the session holds on every tick |
+| the wake | a `Response::Event` on the connection's reader thread becomes a sentence in `crate::room::wake`, rings the worker's bell, and `Harness::wake` composes it as a `room` notice |
+
+The names are all derived from the host — the socket, the lease and the session id
+(`s-room-<host key>`) — so two boxes never collide and `letibot --session host` always resolves.
+The lease is a **file and not a row**: the room keeps no store, so a coordinator that opened
+`sessions.db` to hold its own lock would be the first half of putting the queue in it too.
+
+### Which seats carry `room`, and why the coordinator's own has to
+
+**Two seats, and they are the two a person's own session runs on:**
+
+| seat | role | carries `room` | why |
+|---|---|---|---|
+| `orchestrator` (the default; `letibot`, `letibot --read-only`) | `roles::m1_orchestrator()` | **yes** | the default top-level seat, and **the coordinator's own** (`s-room-<host key>`) — the arbiter rules through this tool |
+| `leticode` (`leticode`, `letibot --role leticode`) | `roles::leticode()` | **yes** | the working top-level seat |
+| `planner`, `researcher` | their roles | no | a plan mode and a seat with no retrieval backend; neither holds work a tag would be locked for |
+| `coder`, `runner` | `m2_coder`, `m2_runner` | no | a subagent's seat — its words go through the session that spawned it |
+| `gatekeeper` | `roles::gatekeeper()` | no | the review queue's session and its reviewers: the reviewers are children, and the room refuses a subagent at its door |
+| `notes_keeper` | `roles::notes_keeper()` | no | a hidden child, and read-only |
+
+**A session on any other seat does not see the tool at all.** `Registry::resolve_role` keeps only
+the tools a role NAMES, so a seat that does not name `room` has it dropped from the session's
+registry even though `Harness::open` registered it — and a model that calls it anyway is answered
+by the runtime's unknown-tool miss: *"no tool called `room` is available here"* plus the list of
+the tools it does have. That is deliberate: a tool in the prompt that always refuses is prefix
+bytes and a wrong verb taught to a model that cannot use either.
+
+**This is the defect the first cut shipped, and the reason it is written down here.** The name was
+put into §8.4's `roles::orchestrator()` — a table **no seat resolves** — while the live seat is
+`roles::m1_orchestrator()`. The coordinator's session therefore had a `room`-less registry, and the
+tie-breaker was woken, handed *"Answer with the `room` tool: verb `rule`"*, and had no such tool:
+every raised item froze for ever, silently, which is the one outcome the no-model refusal above
+exists to prevent. `crates/harnessd/tests/room_coordinator.rs` is the test that now says otherwise
+— it boots a coordinator on a socket of its own, opens the arbiter's session through
+`Harness::open`, asserts the seat resolves a registry holding `room`, and then rules on a raised
+item **through the tool**, which is the call the prompt tells the model to make.
+
+**The wake, exactly.** A session is woken by a `Response::Event` about it — posted, claimed, done,
+abandoned, raised, asked, ruled — and by nothing else. A beat is not an event. The connection is
+per session and stays open for the session's life, so the *close* is the daemon's liveness and the
+beat is the work's: a session whose turn ended keeps its socket and loses its claim to the beat.
+
+### Still owed
+
+1. **The wasm pane.** The queues per tag, the tie-breaker's raw session, and the manual controls —
    claim on a session's behalf, release, mark abandoned, rule on a dispute — plus **restart the
    server**, asked of the daemon that supervises the coordinator and not performed by the
-   coordinator on itself. "Restarted clean" and "restarted empty" must never look the same: what
-   survives a restart is stated, and if the queues live only in memory the pane says so in words.
-8. **The room's own identity in the protocol.** `Hello` should carry the room's name, so a session
-   that connected to the wrong coordinator is told rather than obeyed.
+   coordinator on itself. Until it exists, `Server::identity()` is the sentence a pane must print:
+   *started T ago, and a restart begins with no items at all* — because the room keeps no store, and
+   "restarted clean" and "restarted empty" are the same thing here unless it is said.
+2. **The room's own identity in the protocol.** `Hello` should carry the room's name, so a session
+   that connected to the wrong coordinator is told rather than obeyed. `Welcome` could carry
+   `Server::identity()` in one field; the protocol number did not move for slice 2 and this is the
+   change that would.
+3. **A reminder row on the board.** `reminders` answers the question; nothing turns it into a
+   `todo_write` row yet, so a holder is reminded only if the model asks.
+4. **The launcher's autostart.** `--room` exists; `scripts/letibot` does not yet start a coordinator
+   when a session's `room` tool finds no socket. Today the tool refuses by name, which is honest and
+   is not the same as the room being there.
 
 ## What the state machine assumes
 

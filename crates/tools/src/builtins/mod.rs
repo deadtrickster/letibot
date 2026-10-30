@@ -61,6 +61,7 @@ pub mod queue;
 pub mod read;
 pub mod read_spill;
 pub mod retrieval;
+pub mod room;
 pub mod scenario;
 pub mod skill;
 pub mod task;

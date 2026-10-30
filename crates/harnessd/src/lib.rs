@@ -131,6 +131,7 @@ pub mod pr_watch;
 pub mod progress;
 pub mod prompt;
 pub mod restart;
+pub mod room;
 pub mod sessions;
 pub mod slash;
 pub mod standing_notes;

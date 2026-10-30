@@ -158,6 +158,13 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     // door with nothing behind it in a session opened without a seat, which says
     // so and names `/flowy login`. Both were decided (2026-09-14); the next
     // addition is not a decision until it is written down here too.
+    //
+    // **`room` is the room itself, and it joined this list on 2026-10-29** — the
+    // coordinator's own session resolves THIS role, so a `room` named only in
+    // §8.4's `roles::orchestrator()` (a table nothing seats) left the arbiter
+    // without the tool its prompt tells it to call. It sits after `todo_write`
+    // because the role's order is the prompt's order, and `flowy` follows the
+    // role because `role_for_seat` pushes it.
     assert_eq!(
         w.seated,
         vec![
@@ -168,6 +175,7 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
             "ask_corpus",
             "read_spill",
             "todo_write",
+            "room",
             "flowy"
         ],
         "the default tool set changed; that is a re-prefill for every stored session \

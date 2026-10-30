@@ -53,13 +53,21 @@
 //! the operator's rule and flowy's. The daemon fills `parent` from `session.parent_session_id`;
 //! the room never sees the store.
 
+pub mod client;
 pub mod item;
+pub mod lease;
 pub mod room;
+pub mod server;
 pub mod wire;
 
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
+pub use lease::{
+    Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,
+    Takeover, coordinator_session, host_key, host_name, lease_path, socket_path,
+};
 pub use room::{
     ABANDON_THRESHOLD, About, DEFAULT_BEAT_EVERY_MS, DEFAULT_LEASE_MS, Decision, Event, Facts,
     Holding, Outcome, Question, REPLAY_WINDOW, Refused, Reminder, Room, Ruling, Waiting,
 };
-pub use wire::{ROOM_PROTOCOL_VERSION, Request, Response};
+pub use server::Server;
+pub use wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};

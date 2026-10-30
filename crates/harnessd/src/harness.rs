@@ -2369,6 +2369,15 @@ pub struct Harness {
     handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
+    /// **This session's connection to the box's room** (the room's slice 2), when there is a
+    /// coordinator and this session may speak in it — a top-level session, and no other.
+    ///
+    /// It is on the harness because two of its three duties are the harness's own moments: the beat
+    /// starts and stops with [`Harness::begin_turn_clock`]/[`Harness::end_turn_clock`], and the
+    /// tool behind it is registered in this session's registry. The third — the bell — is the
+    /// connection's own thread pushing a sentence into [`crate::room::wake`] and ringing the
+    /// worker's bell; this field is what keeps the connection alive for the session's life.
+    room: Option<Arc<crate::room::link::SessionRoom>>,
     /// Shared with [`HubSteering`] so a firing reaches the model exactly once,
     /// whether it is picked up mid-turn or between turns by [`Harness::wake`].
     monitor_cursor: Arc<AtomicUsize>,
@@ -4410,6 +4419,49 @@ impl Harness {
                 letibot_tools::builtins::task::TaskResumeTool::new(task_runner.clone()),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering task_resume: {e}")))?;
+        // **The host's room** (the room's slice 2), registered before `with_session_tools` so the
+        // real link is the one seated (that function seats a `NoRoom` only where none is).
+        //
+        // Two conditions, and both are the design: **there is a coordinator** on this box (a socket
+        // that exists — most boxes have none, and that is not an error), and **this session is
+        // top-level** (a subagent speaks through its parent, which is the operator's rule and the
+        // room's own door). A subagent gets no link at all rather than one that refuses, because
+        // the seat it runs on does not name the tool either.
+        //
+        // A connection that cannot be made is said once and is not fatal: a session whose room is
+        // unreachable is a session that works, and its `room` tool refuses by name.
+        let room = match (
+            cfg.room_link,
+            cfg.parent_session_id.as_ref(),
+            crate::room::socket_path(),
+        ) {
+            (true, None, Some(socket)) if socket.exists() => {
+                let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
+                    let bell = std::sync::Arc::clone(session_registry.bell());
+                    std::sync::Arc::new(move |session: &str| bell.ring_wake(session))
+                };
+                match crate::room::link::SessionRoom::connect(&cfg.session_id, &socket, bell) {
+                    Ok(room) => Some(room),
+                    Err(why) => {
+                        notes.push(format!(
+                            "the room at {} could not be reached ({why}), so `room` will refuse \
+                             until it is: the coordinator is a daemon of its own (`harnessd \
+                             --room`)",
+                            socket.display()
+                        ));
+                        None
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(room) = &room {
+            registry
+                .register(Box::new(letibot_tools::builtins::room::RoomTool::new(
+                    room.clone(),
+                )))
+                .map_err(|e| HarnessError::Setup(format!("registering the room tool: {e}")))?;
+        }
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
@@ -6200,6 +6252,7 @@ impl Harness {
             handed_back: Default::default(),
             monitors,
             monitor_cursor,
+            room,
             tool_sink,
             job_watch,
             // The same `Arc` the tool registry has, cloned before it was moved in — see the
@@ -9938,6 +9991,14 @@ impl Harness {
         // engine's rounds come and go inside this, which is exactly why a reader that times the
         // round events reads a working session as idle at every boundary.
         self.prompt_in_flight.store(true, Ordering::SeqCst);
+        // **And the room is told the session is WORKING** — the beat, run by the daemon and not by
+        // the model. A model that must remember to call `beat` is thinking about its work, and the
+        // ninety-second lease would take its item while it works; the turn clock is the daemon's,
+        // so this is where *working* starts and [`Harness::end_turn_clock`] is where it stops.
+        // Idempotent, and a session with no room pays one `Option` test.
+        if let Some(room) = &self.room {
+            room.turn_started();
+        }
         self.publish_activity();
     }
 
@@ -9963,6 +10024,13 @@ impl Harness {
         // **After the flag, deliberately**: the switch is applied through the same door a
         // between-turns switch takes, and a gate that saw the span still open would pend it again
         // for ever.
+        // **The turn is over, so the beats stop.** The lease now counts from the last one, which is
+        // exactly the fact it measures: a session whose turn ended is alive and not working on the
+        // item — the operator's *"so they don't occupy it for ever"*, without the model having to
+        // do anything.
+        if let Some(room) = &self.room {
+            room.turn_ended();
+        }
         self.apply_pending_switch();
         self.publish_activity();
     }
@@ -11136,6 +11204,14 @@ impl Harness {
             queue,
             serde_json::json!({}),
         );
+        // **The room's bells** (the room's slice 2). A room event about this session became a
+        // sentence on the connection's own thread — `crate::room::wake` — because the thread that
+        // hears a bell is not the thread that runs a turn. This is where it reaches the model, as
+        // one notice per event, through the same `notice` hook as every other sentence the harness
+        // composes: a layer may reword a room notice and may not delete it (it is a fact the model
+        // is owed — somebody else's claim on a resource it also wants).
+        let room = crate::room::wake::take(&self.cfg.session_id);
+        notices.extend(self.noticed_all(letibot_plugin::notice::ROOM, room, serde_json::json!({})));
         // **And the children a restart brought back** — the operator's *"we should bring
         // subagents back … and restart automatically"*: the model is told, in one line each,
         // which came back and which could not. Counted with the queue's notices: both are facts

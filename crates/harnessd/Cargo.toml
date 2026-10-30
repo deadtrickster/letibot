@@ -39,6 +39,9 @@ letibot-opencode.workspace = true
 # Package H: the same for a Claude Code transcript — reading it in, and writing one out.
 letibot-claude.workspace = true
 letibot-sessionlog = { workspace = true, features = ["turn", "tools"] }
+# **The room** (slice 2): the host's tagged queues — the socket, the state machine, the
+# coordinator's lease and the session's client. `crate::room` is the daemon's side of it.
+letibot-room.workspace = true
 # **The plugin layers and the panes they answer** (W4 of `docs/plugins-slice1.md`): the stack,
 # the recorder, the shadow gate and the pane `View`, all in crates with no wasm engine in them.
 letibot-plugins.workspace = true
