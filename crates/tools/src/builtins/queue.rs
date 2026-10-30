@@ -5,8 +5,10 @@
 //! `/queue` verbs were a head's; a model told its target was red could do nothing but tell the
 //! operator to type them. This is the door it holds:
 //!
-//! * `status` — both queues of the session's repository (or every one), the targets' health and
-//!   the failing gate step's evidence. A read.
+//! * `status` — **this session's repository, and a screenful of it**: the target's health, what
+//!   each queue holds by state, the rows somebody must act on first. `all` is one line per
+//!   repository on the box and `repository` is one repository in full. Every answer's first line
+//!   says which of the three it printed. A read.
 //! * `regate` — gate the target's tip again even when it was already judged (the cause was the
 //!   machine, a flake, a gate fixed outside the target). Changes the queue's own state: `Session`.
 //! * `restart` — a parked review back to waiting, a parked landing back in line. `Session`.
@@ -33,9 +35,10 @@ pub const TOOL: &str = "queue";
 /// **The daemon's half** — the store and the repository the session is in. Every method answers
 /// the sentence the model reads, or a refusal in words.
 pub trait QueueDesk: Send + Sync {
-    /// Both queues, the targets' health and the gate's evidence. `all` widens it past the
-    /// session's own repository.
-    fn status(&self, all: bool) -> Result<String, String>;
+    /// **The queues, scoped and said so**: this session's repository unless `all` widens it to
+    /// every one, or `repository` names one (a path, a path's tail or a directory name) — which is
+    /// also what asks for it in full. The first line of every answer says what it printed.
+    fn status(&self, all: bool, repository: Option<&str>) -> Result<String, String>;
     /// Gate a target's tip again. `None`s are the session's repository and its project's target.
     fn regate(&self, repository: Option<&str>, target: Option<&str>) -> Result<String, String>;
     /// A parked row back in line.
@@ -52,7 +55,7 @@ pub trait QueueDesk: Send + Sync {
 pub struct NoQueue;
 
 impl QueueDesk for NoQueue {
-    fn status(&self, _all: bool) -> Result<String, String> {
+    fn status(&self, _all: bool, _r: Option<&str>) -> Result<String, String> {
         Err(Self::WHY.into())
     }
     fn regate(&self, _r: Option<&str>, _t: Option<&str>) -> Result<String, String> {
@@ -97,12 +100,16 @@ impl Tool for QueueTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             TOOL,
-            "The merge queue of this project: read both queues, the target branch's health and the \
-             gate's evidence (`status`); gate the target's tip again once the cause of a red or \
-             timed-out gate is gone (`regate`); put a parked review or landing back in line \
-             (`restart`); take a stale row out (`withdraw`, history kept, the branch stays); and \
-             propose the branch the project lands on (`propose_target`) — which is the \
-             operator's decision: it is put to them and no config is written.",
+            "The merge queue of this project, SCOPED TO IT. `status` prints this session's \
+             repository — its target and the gate's evidence, what each queue holds by state, and \
+             the ten rows somebody must act on first; `all: true` prints one line per repository \
+             on the box; `repository: \"<path, path's tail or directory name>\"` prints one \
+             repository in full. Every answer's first line says which scope it printed. Then the \
+             verbs: gate the target's tip again once the cause of a red or timed-out gate is gone \
+             (`regate`); put a parked review or landing back in line (`restart`); take a stale row \
+             out (`withdraw`, history kept, the branch stays); and propose the branch the project \
+             lands on (`propose_target`) — which is the operator's decision: it is put to them \
+             and no config is written.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -113,9 +120,9 @@ impl Tool for QueueTool {
                     },
                     "id": {"type": "string", "description": "restart / withdraw: the row's id, as `status` shows it (a unique prefix will do)."},
                     "target": {"type": "string", "description": "regate: the target branch (default: the project's). propose_target: the branch the project should land on."},
-                    "repository": {"type": "string", "description": "regate: the repository's path, when it is not this session's."},
+                    "repository": {"type": "string", "description": "status: the repository to print in full — a path, a path's tail or its directory name (default: this session's, briefly). regate: the repository's path, when it is not this session's."},
                     "why": {"type": "string", "description": "withdraw / propose_target: your reason, in a sentence the operator reads."},
-                    "all": {"type": "boolean", "description": "status: every repository's queues, not only this session's."}
+                    "all": {"type": "boolean", "description": "status: one line per repository on the box, instead of this session's repository in detail."}
                 },
                 "required": ["action"]
             }),
@@ -157,9 +164,10 @@ impl Tool for QueueTool {
             })
         };
         let said = match action {
-            "status" => self
-                .desk
-                .status(args.get("all").and_then(|v| v.as_bool()).unwrap_or(false)),
+            "status" => self.desk.status(
+                args.get("all").and_then(|v| v.as_bool()).unwrap_or(false),
+                text(args, "repository"),
+            ),
             "regate" => self
                 .desk
                 .regate(text(args, "repository"), text(args, "target")),
@@ -203,8 +211,11 @@ mod tests {
     }
 
     impl QueueDesk for Desk {
-        fn status(&self, all: bool) -> Result<String, String> {
-            self.said.lock().unwrap().push(format!("status {all}"));
+        fn status(&self, all: bool, r: Option<&str>) -> Result<String, String> {
+            self.said
+                .lock()
+                .unwrap()
+                .push(format!("status {all} {r:?}"));
             Ok("both queues".into())
         }
         fn regate(&self, r: Option<&str>, t: Option<&str>) -> Result<String, String> {
@@ -302,10 +313,58 @@ mod tests {
         assert_eq!(
             *desk.said.lock().unwrap(),
             vec![
-                "status false".to_string(),
+                "status false None".to_string(),
                 "regate None Some(\"main\")".into(),
                 "restart r-1".into(),
                 "propose feat/x it lands there".into(),
+            ]
+        );
+    }
+
+    /// **`status` carries the scope the caller asked for, and asks for none when it asked for
+    /// none** — `None` is what the desk reads as *this session's own repository*.
+    #[test]
+    fn status_passes_the_scope_through_and_asks_for_none_by_default() {
+        use crate::backend::HostBackend;
+        use crate::backend::tempdir::TempDir;
+        use crate::events::RecordingToolSink;
+        use crate::runtime::{Registry, ToolRuntime};
+        use letibot_transcript::{ToolCall, ToolOutcome};
+        let desk = Arc::new(Desk::default());
+        let dir = TempDir::new();
+        let backend = HostBackend::new(dir.path()).expect("a backend");
+        let mut reg = Registry::new();
+        reg.register(Box::new(QueueTool::new(desk.clone())))
+            .expect("registers");
+        let rt = ToolRuntime::new(reg, Box::new(backend));
+        let call = |args: &str| {
+            let mut sink = RecordingToolSink::new();
+            rt.invoke(
+                "t1",
+                &ToolCall {
+                    id: "c0".into(),
+                    name: TOOL.into(),
+                    arguments: args.into(),
+                },
+                &mut sink,
+            )
+            .outcome
+        };
+        for args in [
+            r#"{"action": "status"}"#,
+            r#"{"action": "status", "all": true}"#,
+            r#"{"action": "status", "repository": "letibot"}"#,
+            r#"{"action": "status", "repository": "/a/letim"}"#,
+        ] {
+            assert!(matches!(call(args), ToolOutcome::Ok), "{args}");
+        }
+        assert_eq!(
+            *desk.said.lock().unwrap(),
+            vec![
+                "status false None".to_string(),
+                "status true None".into(),
+                "status false Some(\"letibot\")".into(),
+                "status false Some(\"/a/letim\")".into(),
             ]
         );
     }
