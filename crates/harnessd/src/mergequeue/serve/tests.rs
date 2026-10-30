@@ -4658,3 +4658,429 @@ fn a_target_that_cannot_be_named_keeps_the_branch_and_says_why() {
         notes[0]
     );
 }
+
+// ===== The train (`[queue] gate_train`) =====
+
+/// The settings a project that batches its gate writes.
+fn train_of(n: usize) -> QueueSettings {
+    QueueSettings {
+        gate_train: n,
+        ..Default::default()
+    }
+}
+
+/// **Claim a review by hand** — the move `review_upkeep` makes, so a test can approve every branch
+/// BEFORE a pass runs. A pass in between would land a train of whatever had been approved so far.
+fn claim(w: &World, id: &str) {
+    let s = w.store();
+    let r = s.review_row(id).unwrap().unwrap();
+    assert_eq!(r.state, ReviewState::Waiting, "{r:?}");
+    let head = git::branch_head(&w.repo, &r.branch).expect("the branch is there");
+    assert!(
+        s.move_review(
+            &r.id,
+            ReviewState::Waiting,
+            ReviewState::Reviewing,
+            &Move::new("test/a", "claimed for review")
+                .set("owner", "test/a")
+                .set("head_sha", head),
+            gate::now_ms(),
+        )
+        .unwrap()
+    );
+}
+
+/// Three branches, each one file, each cut from `main`, all approved — and no pass has run.
+fn three_approved(w: &World) -> Vec<String> {
+    let mut ids = Vec::new();
+    for name in ["one", "two", "three"] {
+        let (wt, base, head) = branch(&w.repo, name, &format!("{name}.txt"));
+        w.enqueue(name, &wt, &base, &head);
+        claim(w, name);
+        ids.push(w.accept(name, "test/a"));
+    }
+    ids
+}
+
+/// **A gate that remembers which tree each run judged** — the count is the point: a train is ONE
+/// run for several branches.
+struct Counting {
+    judged: Arc<Mutex<Vec<String>>>,
+    inner: Arc<dyn GateRunner>,
+}
+
+impl Counting {
+    fn new() -> Self {
+        Counting {
+            judged: Arc::new(Mutex::new(Vec::new())),
+            inner: Arc::new(LocalGate),
+        }
+    }
+    fn runs(&self) -> Vec<String> {
+        self.judged.lock().unwrap().clone()
+    }
+}
+
+impl GateRunner for Counting {
+    fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        let head = git::head_of(wt).unwrap_or_default();
+        self.judged.lock().unwrap().push(head);
+        self.inner.run(wt, steps, ctl)
+    }
+    fn name(&self) -> String {
+        "counting (test)".into()
+    }
+}
+
+/// **One gate for three branches, and the target moves once per landing.**
+///
+/// The operator's decision of 2026-10-30 — *"we can batch merges at this point"* — on the numbers
+/// that made it: the gate is 683 s of an 11.8-minute landing and it is paid per branch, while the
+/// REVIEW (which is what says a branch is sound) stays per branch and does not move.
+#[test]
+fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
+    let w = World::new("train-green");
+    let before = w.tip();
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", train_of(3));
+    let ms = three_approved(&w);
+    run(&q, 2);
+
+    // Every row landed, and each says which train it rode in and where.
+    let mut shas = Vec::new();
+    for (i, m) in ms.iter().enumerate() {
+        let row = w.store().merge_row(m).unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Landed, "car {i}: {row:?}");
+        assert!(row.evidence.contains("in a train of 3"), "{}", row.evidence);
+        assert!(
+            row.evidence.contains(&format!("(car {})", i + 1)),
+            "{}",
+            row.evidence
+        );
+        assert!(
+            !row.gate_steps.is_empty(),
+            "the one gate's steps are on every row"
+        );
+        shas.push(row.landed_sha.clone().expect("a landed row keeps its sha"));
+    }
+    // **The target moved once per car** — each row's `landed_sha` is the tip at its own landing,
+    // so a bisect over the train walks three commits and each names the branch that made it.
+    let tip = w.tip();
+    assert_eq!(shas[2], tip, "the last car is the tip");
+    assert_eq!(sh(&w.repo, &["rev-parse", "main~1"]), shas[1]);
+    assert_eq!(sh(&w.repo, &["rev-parse", "main~2"]), shas[0]);
+    assert_eq!(
+        sh(&w.repo, &["rev-parse", "main~3"]),
+        before,
+        "three commits, one per branch"
+    );
+    // **One gate ran on the train's tree** — and one more for the target's own health, which is
+    // what any landing waits for.
+    let runs = gate.runs();
+    assert_eq!(
+        runs.len(),
+        2,
+        "one gate of the tip and one of the train: {runs:?}"
+    );
+    assert_eq!(runs[1], tip, "the train's gate judged the final tree");
+    // The branches are retired, the tree is green at the last car, and the operator's checkout
+    // followed every landing (not only the last).
+    for name in ["one", "two", "three"] {
+        assert!(
+            git::branch_head(&w.repo, &format!("agent/{name}")).is_none(),
+            "`agent/{name}` is retired"
+        );
+    }
+    let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    assert_eq!(h.state, HealthState::Green);
+    assert_eq!(h.sha, tip);
+    assert_eq!(
+        sh(&w.repo, &["status", "--porcelain"]),
+        "",
+        "the operator's checkout followed every landing"
+    );
+    assert!(w.repo.join("one.txt").exists() && w.repo.join("three.txt").exists());
+}
+
+/// **A red train dissolves** — nothing lands, the target never moves, one review row names every
+/// branch in its order, and every row goes back in line to be gated ON ITS OWN, which is what
+/// finds the branch that is bad.
+#[test]
+fn a_red_train_lands_nothing_names_all_its_branches_and_leaves_the_target_where_it_was() {
+    let w = World::new("train-red");
+    let before = w.tip();
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", train_of(3));
+    let mut ms = Vec::new();
+    for (name, file) in [("one", "one.txt"), ("two", "two.txt"), ("bad", "broken")] {
+        let (wt, base, head) = branch(&w.repo, name, file);
+        w.enqueue(name, &wt, &base, &head);
+        claim(&w, name);
+        ms.push(w.accept(name, "test/a"));
+    }
+    // **One pass at a time, and stop at the pass that judged the train.** That pass goes on to
+    // take the first branch on its own (a row out of a red train is gated alone), so what each row
+    // was put in is read off its history rather than off the moment after the pass.
+    let stop = AtomicBool::new(false);
+    let mut judged = false;
+    for _ in 0..200 {
+        q.pass(&stop).unwrap();
+        if w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .any(|r| r.id.starts_with("train-"))
+        {
+            judged = true;
+            break;
+        }
+        // A pass does not wait for its gate; the next one is a no-op until it has finished.
+        if q.gate_in_flight() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert!(judged, "the train's gate was judged and its row filed");
+    assert_eq!(
+        w.tip(),
+        before,
+        "a red train is caught before the target moves"
+    );
+    assert!(
+        !w.repo.join("one.txt").exists(),
+        "and no car's work is in the target's tree"
+    );
+    // **Each merge row is back in line**, with the sentence that keeps it out of the next train
+    // and the gate's own steps as its evidence. Nothing of the train is terminal: no car landed,
+    // none failed — the train judged a tree, not a branch.
+    for m in &ms {
+        let history = w.store().transitions("merge", m).unwrap();
+        assert!(
+            history
+                .iter()
+                .any(|t| t.to_state == "queued" && t.why.starts_with(TRAIN_SPLIT)),
+            "{m} went back in line with the train's sentence: {history:?}"
+        );
+        let row = w.store().merge_row(m).unwrap().unwrap();
+        assert!(
+            row.state.is_open(),
+            "nothing of the train is terminal: {row:?}"
+        );
+        if row.state == MergeState::Queued {
+            assert_eq!(row.owner, "", "a row back in line is nobody's");
+            assert!(row.evidence.starts_with(TRAIN_SPLIT), "{}", row.evidence);
+        } else {
+            // The pass that judged the train went on to take the first branch on its own: the row
+            // is `gating` already, and its history above is what says it came back in line first.
+            assert_eq!(row.state, MergeState::Gating, "{row:?}");
+        }
+        assert!(
+            !row.gate_steps.is_empty(),
+            "the failing gate's steps ride with the row"
+        );
+    }
+    // **The review rows are untouched** — still `approved`, bound to the head each judged.
+    for id in ["one", "two", "bad"] {
+        let r = w.store().review_row(id).unwrap().unwrap();
+        assert_eq!(r.state, ReviewState::Approved, "{r:?}");
+    }
+    // **One review row for the train**, naming every branch in the order it was rebased.
+    let trains: Vec<ReviewRow> = w
+        .store()
+        .review_rows(Some(&w.key()))
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.id.starts_with("train-"))
+        .collect();
+    assert_eq!(trains.len(), 1, "{trains:?}");
+    let t = &trains[0];
+    let order: Vec<usize> = ["agent/one", "agent/two", "agent/bad"]
+        .iter()
+        .map(|b| {
+            t.brief
+                .find(b)
+                .unwrap_or_else(|| panic!("`{b}` is named in the brief: {}", t.brief))
+        })
+        .collect();
+    assert!(
+        order[0] < order[1] && order[1] < order[2],
+        "the order is named, in order: {}",
+        t.brief
+    );
+    assert!(
+        t.brief.contains("test ! -f broken"),
+        "the failing step is named: {}",
+        t.brief
+    );
+    // The row's own birth is where its naming lives — a claim overwrites `evidence`, as it does
+    // for every row the review queue picks up.
+    let born = w.store().transitions("review", &t.id).unwrap();
+    let first = born
+        .first()
+        .unwrap_or_else(|| panic!("the row was born: {born:?}"));
+    assert!(
+        first.why.contains("train of 3") && first.why.contains("agent/bad"),
+        "{}",
+        first.why
+    );
+    assert!(t.state.is_open(), "the gatekeeper has it to decide: {t:?}");
+    assert!(
+        t.branch.starts_with("agent/train-"),
+        "the row is about the train's own tree: {}",
+        t.branch
+    );
+    assert!(
+        git::branch_head(&w.repo, &t.branch).is_some(),
+        "the tree the gate judged is a branch a reviewer can be given: {}",
+        t.branch
+    );
+    let said = w.door.warnings("merge_failed");
+    assert_eq!(said.len(), 1, "{said:?}");
+    for b in ["agent/one", "agent/two", "agent/bad"] {
+        assert!(said[0].contains(b), "`{b}` in {}", said[0]);
+    }
+
+    // **The next passes gate each branch ALONE** — the train cannot re-form, and the branch that is
+    // bad is the one that ends `failed`, while the other two land.
+    run(&q, 4);
+    assert_eq!(
+        w.store().merge_row(&ms[2]).unwrap().unwrap().state,
+        MergeState::Failed,
+        "the branch the gate refused, on its own"
+    );
+    for m in [&ms[0], &ms[1]] {
+        assert_eq!(
+            w.store().merge_row(m).unwrap().unwrap().state,
+            MergeState::Landed,
+            "a branch that is fine on its own lands"
+        );
+    }
+    let runs = gate.runs();
+    assert_eq!(
+        runs.len(),
+        5,
+        "one gate of the tip, one of the red train, then one per branch: {runs:?}"
+    );
+}
+
+/// **A stacked pair is ordered parent-first**, whatever the clock says: the child's recorded base
+/// is the parent's head, so the child is rebased after it — rebasing the child first would replay
+/// it without the commit it was cut from.
+#[test]
+fn a_stacked_pair_is_ordered_parent_first() {
+    let w = World::new("train-stacked");
+    let before = w.tip();
+    let (wt_p, base_p, head_p) = branch(&w.repo, "parent", "parent.txt");
+    // The child is cut from the PARENT's branch, not from main.
+    let wt_c = w.dir.0.join("wt-child");
+    sh(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent/child",
+            &wt_c.to_string_lossy(),
+            "agent/parent",
+        ],
+    );
+    let head_c = commit(&wt_c, "child.txt", "child\n", "child work");
+    // **The child is approved FIRST**, so the clock alone would put it first.
+    w.enqueue("child", &wt_c, &head_p, &head_c);
+    claim(&w, "child");
+    let m_c = w.accept("child", "test/a");
+    w.enqueue("parent", &wt_p, &base_p, &head_p);
+    claim(&w, "parent");
+    let m_p = w.accept("parent", "test/a");
+    assert!(
+        w.store().merge_row(&m_c).unwrap().unwrap().created_ms
+            <= w.store().merge_row(&m_p).unwrap().unwrap().created_ms,
+        "the premise: the child is not later in the queue's clock"
+    );
+
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", train_of(2));
+    run(&q, 2);
+
+    let p = w.store().merge_row(&m_p).unwrap().unwrap();
+    let c = w.store().merge_row(&m_c).unwrap().unwrap();
+    assert_eq!(p.state, MergeState::Landed, "{p:?}");
+    assert_eq!(c.state, MergeState::Landed, "{c:?}");
+    // **The parent is the first commit and the child the second.**
+    assert_eq!(
+        sh(&w.repo, &["rev-parse", "main~1"]),
+        p.landed_sha.clone().unwrap(),
+        "the parent landed first"
+    );
+    assert_eq!(w.tip(), c.landed_sha.clone().unwrap());
+    assert_eq!(sh(&w.repo, &["rev-parse", "main~2"]), before);
+    assert!(
+        w.repo.join("parent.txt").exists() && w.repo.join("child.txt").exists(),
+        "both changes are on the target"
+    );
+    assert_eq!(
+        gate.runs().len(),
+        2,
+        "one gate of the tip and one of the pair: {:?}",
+        gate.runs()
+    );
+}
+
+/// **`gate_train = 1` is the queue that never had a train** — one gate per branch, one landing
+/// each, and no sentence about a train. The default path, bit for bit.
+#[test]
+fn a_gate_train_of_one_gates_every_branch_on_its_own() {
+    let w = World::new("train-one");
+    let before = w.tip();
+    assert_eq!(
+        QueueSettings::default().gate_train,
+        1,
+        "the default is today's behaviour"
+    );
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", QueueSettings::default());
+    let ms = three_approved(&w);
+    run(&q, 4);
+
+    for (i, m) in ms.iter().enumerate() {
+        let row = w.store().merge_row(m).unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Landed, "row {i}: {row:?}");
+        assert!(
+            !row.evidence.contains("in a train of"),
+            "a lone landing's sentence, as it always was: {}",
+            row.evidence
+        );
+    }
+    // One gate of the tip, then one per branch: three landings, three gates.
+    assert_eq!(gate.runs().len(), 4, "{:?}", gate.runs());
+    assert_eq!(
+        sh(&w.repo, &["rev-parse", "main~2"]),
+        w.store()
+            .merge_row(&ms[0])
+            .unwrap()
+            .unwrap()
+            .landed_sha
+            .unwrap_or_default(),
+        "and each landing is its own commit"
+    );
+    assert_eq!(sh(&w.repo, &["rev-parse", "main~3"]), before);
+}
+
+/// **A train of one is not a train** — one approved branch takes the single path, bit for bit,
+/// even when the project asked for a train of three.
+#[test]
+fn one_approved_branch_takes_the_single_path_even_with_a_train_of_three() {
+    let w = World::new("train-lone");
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", train_of(3));
+    let (wt, base, head) = branch(&w.repo, "lone", "lone.txt");
+    w.enqueue("lone", &wt, &base, &head);
+    claim(&w, "lone");
+    let m = w.accept("lone", "test/a");
+    run(&q, 2);
+
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:?}");
+    assert!(!row.evidence.contains("in a train of"), "{}", row.evidence);
+    assert_eq!(gate.runs().len(), 2, "{:?}", gate.runs());
+}
