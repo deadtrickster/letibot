@@ -717,6 +717,7 @@ fn a_branch_whose_base_nobody_remembers_is_refused_in_words() {
     assert_eq!(sh(&lwt, &["rev-parse", "HEAD"]), new_tip, "nothing ran");
     assert_eq!(sh(&lwt, &["status", "--porcelain"]), "", "and no debris");
     let _ = base;
+}
 /// **A github remote is pushed on gh's helper BY NAME, in both forms** — the inherited helper list
 /// cleared first, because an empty `credential.helper` is what makes the named one the one asked
 /// (MEASURED: without it osxkeychain answers and gh's helper is never called). A remote that is not
