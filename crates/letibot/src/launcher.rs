@@ -145,6 +145,29 @@ pub fn locate(workspace: &Path) -> Where {
     locate_in(&rundir(), workspace)
 }
 
+/// **What a record under the rundir is a record OF.**
+///
+/// The directory used to hold one kind — a folder's daemon — and three writers put three
+/// kinds in it now: a folder's daemon (`<key(workspace)>.json`, listening beside its
+/// record), the box's room (`room-<host key>.json`, `harnessd --room`, listening under the
+/// data directory), and a moved session's forward (`migrated-<session>.json`, from
+/// `crate::migrate`). **Only the first is a folder's daemon**, and only the first is named
+/// by a workspace's key — so anything that re-derives a record's socket from its workspace
+/// names a path nothing binds for the other two.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Kind {
+    /// A folder's daemon: the record is named by the workspace's key and its socket sits
+    /// beside it, so `locate_in` derives both from the workspace alone.
+    #[default]
+    Daemon,
+    /// The box's room — one `harnessd --room` per box, started by the launcher when no
+    /// coordinator is serving. Its `workspace` is a directory of its own under the data
+    /// directory: true, and not a folder anybody works in.
+    Room,
+    /// A moved session's forward: the local end of a tunnel to the host that holds it.
+    Forward,
+}
+
 /// What the record beside a socket says a daemon is.
 ///
 /// Every field is optional-shaped on purpose: the file is written by whichever launcher
@@ -153,6 +176,8 @@ pub fn locate(workspace: &Path) -> Where {
 /// that says less is not an error.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Record {
+    /// Which of the launcher's writers put this here — see [`Kind`].
+    pub kind: Kind,
     pub workspace: String,
     pub socket: String,
     /// The pid the launcher started. **Not trusted for liveness**: the pid LISTENING
@@ -182,6 +207,7 @@ pub fn read_record(path: &Path) -> Option<Record> {
             .to_string()
     };
     Some(Record {
+        kind: kind_of(&v),
         workspace: s("workspace"),
         socket: s("socket"),
         // A number, and `as_u64` rather than a string read: the shell's `json_num` had
@@ -194,6 +220,28 @@ pub fn read_record(path: &Path) -> Option<Record> {
         bash: v.get("bash").and_then(|x| x.as_bool()).unwrap_or(false),
         started: s("started"),
     })
+}
+
+/// **Which kind of record this is, from what the writers already put in it.**
+///
+/// There is no `kind` field to read, and deliberately not: the two marks below are the ones
+/// `scripts/letibot` writes and the ones it reads back (`--ls`, `--daemons`, and both stop
+/// paths branch on `role == room`), so deriving here keeps the port and the shell agreeing
+/// about the one word rather than adding a second spelling that can drift from it. A folder
+/// daemon's `role` is the SEAT it serves, and nothing serves `room`.
+fn kind_of(v: &serde_json::Value) -> Kind {
+    if v.get("role").and_then(|x| x.as_str()) == Some("room") {
+        return Kind::Room;
+    }
+    // A moved session's record names the session it is a forward for; a folder daemon's has
+    // no such field.
+    if v.get("session")
+        .and_then(|x| x.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        return Kind::Forward;
+    }
+    Kind::Daemon
 }
 
 #[cfg(test)]
@@ -954,7 +1002,16 @@ pub fn daemons_lines(entries: &[(Record, State)]) -> Vec<String> {
                 },
                 State::Stale => "STALE (nothing listens on its socket)".to_string(),
             };
-            format!("{}  {}  {}", rec.workspace, st, rec.socket)
+            // **The room is one of these daemons and none of these folders.** Its workspace is
+            // a directory of its own under the data directory — true, and not a folder anybody
+            // works in — so the line names it for what it is, as `scripts/letibot --daemons`
+            // does. A moved session's forward keeps its landed workspace: that IS a folder, and
+            // it is where the session now runs.
+            let who = match rec.kind {
+                Kind::Room => "the box's room",
+                Kind::Daemon | Kind::Forward => rec.workspace.as_str(),
+            };
+            format!("{who}  {st}  {}", rec.socket)
         })
         .collect()
 }
@@ -1027,6 +1084,7 @@ mod verb_tests {
 
     fn rec(answers: &str, model: &str) -> Record {
         Record {
+            kind: Kind::Daemon,
             workspace: "/w".into(),
             socket: "/w.sock".into(),
             pid: Some(42),
@@ -1100,6 +1158,24 @@ mod verb_tests {
         assert!(
             lines[1].starts_with("/gone  "),
             "the workspace leads the line"
+        );
+
+        // And the box's room is named for what it is: its record's `workspace` is a directory
+        // of its own under the data directory, which no person works in.
+        let room = daemons_lines(&[(
+            Record {
+                kind: Kind::Room,
+                workspace: "/home/dead/.local/share/letibot/room-workspace".into(),
+                socket: "/data/room-host-ab.sock".into(),
+                pid: Some(7),
+                role: "room".into(),
+                ..Default::default()
+            },
+            State::Up,
+        )]);
+        assert!(
+            room[0].starts_with("the box's room  up (pid 7)"),
+            "{room:?}"
         );
 
         assert_eq!(
@@ -1766,7 +1842,19 @@ pub fn retarget(rundir: &Path, here: &Path, want: &str) -> Result<Where, String>
                     records[n - 1].display()
                 ));
             }
-            Ok(locate_in(rundir, Path::new(&rec.workspace)))
+            let mut where_ = locate_in(rundir, Path::new(&rec.workspace));
+            // **The record's own socket, when it names one.** For a folder's daemon this is
+            // the one `locate_in` just derived — they agree, because that is how the record
+            // was written. The box's room and a moved session's forward listen where their
+            // own record says (`room-<host key>.sock` under the data directory,
+            // `migrated-<session>.sock` under this one), and re-deriving from the workspace
+            // names a socket nothing binds. `scripts/letibot` reads this same field for this
+            // same reason, so the number reaches the room there as it does here.
+            if !rec.socket.is_empty() {
+                where_.socket = PathBuf::from(&rec.socket);
+            }
+            where_.record = records[n - 1].clone();
+            Ok(where_)
         }
         dir => match std::fs::canonicalize(dir) {
             Ok(p) => Ok(locate_in(rundir, &p)),
@@ -2341,19 +2429,237 @@ mod target_tests {
         assert!(e.contains("says nothing usable"), "{e}");
     }
 
+    /// **A rundir holding every kind the launcher writes, and the number addresses each as
+    /// itself.**
+    ///
+    /// One run used to write one record kind; three writers put three in this directory now —
+    /// a folder's daemon, the box's room, and a moved session's forward. **Only a folder's
+    /// daemon is named by a workspace's key**, so a numbering that re-derived every socket
+    /// from the workspace would hand `--stop N` a path nothing listens on for the other two.
+    /// This is the fixture that says so without needing a box that happens to have a room.
+    #[test]
+    fn a_rundir_with_every_kind_numbers_each_as_itself() {
+        let dir = rundir_with(0);
+
+        let folder = "/workspace/one";
+        let fkey = key(Path::new(folder));
+        std::fs::write(
+            dir.join(format!("{fkey}.json")),
+            format!(
+                r#"{{"workspace": "{folder}", "socket": "{}", "pid": 41, "role": "coder"}}"#,
+                dir.join(format!("{fkey}.sock")).display()
+            ),
+        )
+        .unwrap();
+
+        let room_sock = "/data/letibot/room-host-abc.sock";
+        std::fs::write(
+            dir.join("room-host-abc.json"),
+            format!(
+                r#"{{"workspace": "/data/letibot/room-workspace", "socket": "{room_sock}", "pid": 42, "role": "room"}}"#
+            ),
+        )
+        .unwrap();
+
+        let fwd_sock = dir.join("migrated-s-1.sock");
+        std::fs::write(
+            dir.join("migrated-s-1.json"),
+            format!(
+                r#"{{"workspace": "/far/away", "socket": "{}", "host": "lab2x1", "session": "s-1", "role": ""}}"#,
+                fwd_sock.display()
+            ),
+        )
+        .unwrap();
+
+        let records = records_in(&dir);
+        assert_eq!(records.len(), 3, "three records, three kinds: {records:?}");
+        let mut names: Vec<String> = records
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(
+            names, sorted,
+            "records_in must yield the glob's sorted order"
+        );
+        names.dedup();
+        assert_eq!(names.len(), 3, "no duplicate record names");
+
+        // **The number addresses the record it printed**: the workspace inside it, the socket
+        // that record names, and the record file itself.
+        for (i, path) in records.iter().enumerate() {
+            let rec = read_record(path).expect("every fixture record parses");
+            let w = retarget(&dir, Path::new("/here"), &(i + 1).to_string())
+                .expect("an in-range number must resolve");
+            assert_eq!(
+                w.workspace,
+                Path::new(&rec.workspace),
+                "number {} must name the workspace in {}",
+                i + 1,
+                path.display()
+            );
+            assert_eq!(
+                w.socket,
+                Path::new(&rec.socket),
+                "number {} must address the socket {} names",
+                i + 1,
+                path.display()
+            );
+            assert_eq!(
+                w.record,
+                *path,
+                "number {} must read the record it printed",
+                i + 1
+            );
+        }
+
+        // Each kind is recognised as itself, and each number reaches where that daemon
+        // actually listens — the room's socket is not under the rundir at all.
+        let at = |name: &str| {
+            records
+                .iter()
+                .position(|p| p.file_name().unwrap() == name)
+                .expect("the fixture record")
+                + 1
+        };
+        assert_eq!(
+            read_record(&records[at("room-host-abc.json") - 1])
+                .unwrap()
+                .kind,
+            Kind::Room
+        );
+        assert_eq!(
+            read_record(&records[at("migrated-s-1.json") - 1])
+                .unwrap()
+                .kind,
+            Kind::Forward
+        );
+        assert_eq!(
+            read_record(&records[at(&format!("{fkey}.json")) - 1])
+                .unwrap()
+                .kind,
+            Kind::Daemon
+        );
+        assert_eq!(
+            retarget(
+                &dir,
+                Path::new("/here"),
+                &at("room-host-abc.json").to_string()
+            )
+            .unwrap()
+            .socket,
+            Path::new(room_sock),
+            "the number for the room must reach the room's own socket"
+        );
+        // And the room's line says what it is, not the directory its record calls a workspace.
+        let room = read_record(&records[at("room-host-abc.json") - 1]).unwrap();
+        let line = daemons_lines(&[(room, State::Up)]);
+        assert!(
+            line[0].starts_with("the box's room  up (pid 42)"),
+            "{line:?}"
+        );
+    }
+
+    /// **A folder's daemon is the one kind whose filename is its workspace's key** — the mark
+    /// the old version of the live test asserted of every file in the directory.
+    #[test]
+    fn only_a_folders_daemon_is_named_by_its_workspace_key() {
+        let dir = rundir_with(0);
+        for ws in ["/workspace/one", "/workspace/two"] {
+            let k = key(Path::new(ws));
+            std::fs::write(
+                dir.join(format!("{k}.json")),
+                format!(r#"{{"workspace": "{ws}", "socket": "/s.sock", "role": "coder"}}"#),
+            )
+            .unwrap();
+        }
+        assert_eq!(records_in(&dir).len(), 2);
+        for p in records_in(&dir) {
+            let rec = read_record(&p).unwrap();
+            assert_eq!(rec.kind, Kind::Daemon);
+            assert_eq!(
+                p.file_stem().unwrap().to_string_lossy(),
+                key(Path::new(&rec.workspace))
+            );
+        }
+        // And a record whose `role` is the room's is not a folder's daemon even when its
+        // filename is a key, because the field is the authority and a file can be renamed.
+        let fkey = key(Path::new("/workspace/roomish"));
+        std::fs::write(
+            dir.join(format!("{fkey}.json")),
+            r#"{"workspace": "/workspace/roomish", "socket": "/s.sock", "role": "room"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_record(&dir.join(format!("{fkey}.json"))).unwrap().kind,
+            Kind::Room
+        );
+    }
+
+    /// **A frozen copy of this box's records**, for a test that must not race the box.
+    ///
+    /// The runtime directory is shared: any launcher run on this machine writes a record into
+    /// it, and a test binary that reads it while another one starts a daemon sees a file appear
+    /// mid-scan — which shifts every number after it — or one half-written. Copying once keeps
+    /// the SHAPES this box really has and takes the clock out of it. A copy that does not parse
+    /// is re-read once (that is the half-written case); a record that is torn ON DISK stays torn
+    /// through both reads, so the assertion still fails on a real one.
+    fn frozen_copy(dir: &Path, records: &[PathBuf]) -> PathBuf {
+        let to = std::env::temp_dir().join(format!(
+            "letibot-records-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&to);
+        std::fs::create_dir_all(&to).unwrap();
+        for p in records {
+            let copy = to.join(p.file_name().unwrap());
+            let mut parsed = false;
+            for _ in 0..2 {
+                std::fs::copy(p, &copy).unwrap();
+                if read_record(&copy).is_some() {
+                    parsed = true;
+                    break;
+                }
+            }
+            assert!(
+                parsed,
+                "a record under {} does not parse, twice over: {}",
+                dir.display(),
+                p.display()
+            );
+        }
+        to
+    }
+
     /// **Against the box's real records: the number must pick what `--ls` prints there.**
     ///
-    /// Reads the live runtime directory and asserts the mapping is the sorted one, which
-    /// is the same order `scripts/letibot --ls` numbers. Skips on a box with none, and
-    /// says so rather than passing quietly.
+    /// Reads the live runtime directory and asserts the mapping is the sorted one, which is the
+    /// same order `scripts/letibot --ls` numbers — against a FROZEN copy of it, because the
+    /// directory is shared with every launcher run on this box and a record that lands mid-scan
+    /// shifts the numbers this test is checking. Skips on a box with none, and says so rather
+    /// than passing quietly.
+    ///
+    /// **The last assertion is the one the room broke, and it was the assertion that was wrong:**
+    /// *"every record's filename is the key of the workspace inside it"* is true of a folder's
+    /// daemon and false of the room (`room-<host key>.json`) and of a moved session's forward
+    /// (`migrated-<session>.json`) — two kinds that share this directory, the forward since
+    /// `migrate` landed and the room since the launcher started autostarting it. What the number
+    /// must guarantee is that it addresses the daemon THE RECORD NAMES, which is asserted of
+    /// every kind; the filename claim is asserted of the kind it is true of, and counted.
     #[test]
     fn the_numbering_matches_the_glob_order_on_a_box_with_records() {
         let dir = rundir();
-        let records = records_in(&dir);
-        if records.is_empty() {
+        let live = records_in(&dir);
+        if live.is_empty() {
             eprintln!("SKIPPED: no daemon records under {}", dir.display());
             return;
         }
+        let dir = frozen_copy(&dir, &live);
+        let records = records_in(&dir);
+        assert_eq!(records.len(), live.len(), "the copy holds what was read");
+
         let mut names: Vec<String> = records
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -2370,21 +2676,48 @@ mod target_tests {
         names.dedup();
         assert_eq!(names.len(), records.len(), "no duplicate record names");
 
-        // Every in-range number resolves to the workspace NAMED INSIDE that record — the
-        // check that the number and the file agree, not merely that something came back.
+        // Every in-range number resolves to the record it printed — the workspace inside it,
+        // the socket that record names, and the file itself — so the number and the file agree
+        // and the number reaches where that daemon listens.
+        let mut folders = 0;
+        let mut others = 0;
         for (i, path) in records.iter().enumerate() {
             let rec = read_record(path).expect("a record under the runtime dir must parse");
             let w = retarget(&dir, Path::new("/here"), &(i + 1).to_string())
                 .expect("an in-range number must resolve");
             assert_eq!(w.workspace, Path::new(&rec.workspace));
-            // And its own filename is the hash of that workspace — the module's contract.
             assert_eq!(
-                path.file_stem().unwrap().to_string_lossy(),
-                key(Path::new(&rec.workspace)),
-                "record {} names a workspace whose key is not its own filename",
+                w.socket,
+                Path::new(&rec.socket),
+                "number {} must address the socket {} names",
+                i + 1,
                 path.display()
             );
+            // And a FOLDER's daemon is named by the hash of that workspace — the module's
+            // contract with `scripts/letibot`, which writes `$RUNDIR/$KEY.json`. The room's
+            // record is named by the host key and a forward's by its session, so this holds of
+            // one kind and is asserted of that one.
+            if rec.kind == Kind::Daemon {
+                folders += 1;
+                assert_eq!(
+                    path.file_stem().unwrap().to_string_lossy(),
+                    key(Path::new(&rec.workspace)),
+                    "record {} names a workspace whose key is not its own filename",
+                    path.display()
+                );
+            } else {
+                others += 1;
+            }
         }
+        eprintln!(
+            "{} folder daemon(s) and {others} other record(s) under the box's runtime dir",
+            folders
+        );
+        assert!(
+            folders > 0,
+            "this box's records are all non-daemons ({others}), so the filename contract \
+             was not exercised at all"
+        );
     }
 }
 
