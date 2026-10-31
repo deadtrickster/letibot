@@ -304,7 +304,12 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
             }
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no tool result row for the operator's call: {:?}", h.items()));
+        .unwrap_or_else(|| {
+            panic!(
+                "no tool result row for the operator's call: {:?}",
+                h.items()
+            )
+        });
     assert!(
         said.contains(BRIEF) || said.to_lowercase().contains("running"),
         "the row says what the operator started: {said}"
@@ -317,7 +322,11 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
         assert!(
             began.elapsed() < PATIENCE,
             "the child never answered: {:#?}",
-            child.retained().iter().map(|e| &e.event).collect::<Vec<_>>()
+            child
+                .retained()
+                .iter()
+                .map(|e| &e.event)
+                .collect::<Vec<_>>()
         );
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -349,7 +358,9 @@ fn a_task_the_operator_runs_rings_the_session_that_ran_it() {
         "the model is told, unprompted, in the session's own voice: {notices:#?}"
     );
     assert!(
-        notices.iter().any(|t| t.contains(BRIEF) || t.contains("sub")),
+        notices
+            .iter()
+            .any(|t| t.contains(BRIEF) || t.contains("sub")),
         "and the sentence names the child: {notices:#?}"
     );
 }

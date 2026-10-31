@@ -172,9 +172,7 @@ pub fn spawn_run(
     let name = format!("bang-{call_id}");
     std::thread::Builder::new()
         .name(name.clone())
-        .spawn(move || {
-            run_and_hand_back(&session, call_id, call, line, who, runtime, hub, watch)
-        })
+        .spawn(move || run_and_hand_back(&session, call_id, call, line, who, runtime, hub, watch))
         .map(|_| ())
         .map_err(|e| format!("the thread for the operator's run could not be started: {e}"))
 }

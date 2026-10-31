@@ -8301,10 +8301,7 @@ impl Harness {
     /// could. The same fix at `crate::bangrun`'s thread, which is where a `!` line between turns
     /// actually runs.
     fn unprompted_sink(&self) -> JobWatchSink<letibot_tools::events::NullToolSink> {
-        JobWatchSink::new(
-            letibot_tools::events::NullToolSink,
-            self.job_watch.clone(),
-        )
+        JobWatchSink::new(letibot_tools::events::NullToolSink, self.job_watch.clone())
     }
 
     /// **The board's version — the one fact that says the board moved, and from whom.**
