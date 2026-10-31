@@ -154,6 +154,85 @@ fn socket_in(rundir: &Path, key: &str) -> PathBuf {
     rundir.join(format!("{key}.sock"))
 }
 
+/// **The record beside the socket: what this folder's daemon is** — R102.
+///
+/// `scripts/letibot` writes one of these when it starts a daemon (`record_write`), and it is
+/// what four of its verbs read: `--daemons` and `--ls` glob `$RUNDIR/*.json`, `--stop N` and
+/// `--stop --all` resolve a handle through the same glob, and the attach banner prints the
+/// model out of it. A daemon the BRIDGE started wrote none, so on 2026-10-27 the operator's box
+/// had about forty `harnessd` processes and `letibot --daemons` answered *no daemons recorded* —
+/// and the launcher's own liveness test had nothing to compare against.
+///
+/// **Written here rather than taught to the listing, and the reason is the name.** The socket is
+/// `<sha256(workspace)[..12]>.sock`: a socket with no record names a hash and nothing else — not
+/// the folder, not the role, not what answers its turns — so a `--daemons` that read sockets
+/// could only print forty lines of hex. The record is the one place those facts exist, and the
+/// bridge is a starter that knows all of them.
+///
+/// The shape is the shell's, field for field, because the shell reads it with `sed`: a flat
+/// object, `pid` as a NUMBER (its `json_str` cannot see a number and `json_num` cannot see a
+/// string — that pair is why `json_field` exists), and the file named `<key>.json` beside the
+/// socket. `started` is RFC3339 in UTC; the shell writes the local offset and nothing reads
+/// either but a person.
+fn write_record(d: &Daemon, pid: u32, model: Option<&str>) -> std::io::Result<PathBuf> {
+    let answers = match model {
+        Some(m) => match m.split_once('/') {
+            Some((provider, name)) => format!("{provider}/{name}"),
+            None if is_provider(m) => m.to_string(),
+            None => String::new(),
+        },
+        None => String::new(),
+    };
+    // **`role` is the seat `daemon_args` starts**, and `dialect` is empty because this bridge
+    // does not decide one — the daemon reads it from its model. An empty field is what the shell
+    // writes for a fact it does not have, and its readers treat it as absent.
+    let record = serde_json::json!({
+        "workspace": d.workspace.display().to_string(),
+        "socket": d.socket.display().to_string(),
+        "pid": pid,
+        "role": "leticode",
+        "model": model.unwrap_or_default(),
+        "answers": answers,
+        "dialect": "",
+        "bash": true,
+        "started": rfc3339_utc_now(),
+    });
+    let path = d
+        .socket
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{}.json", d.key));
+    // **Written whole, through a temp name and a rename**, so a launcher reading the glob at
+    // the same moment sees the old file or the new one and never half of either.
+    let tmp = path.with_extension(format!("json.{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_string(&record).unwrap_or_default())?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(path)
+}
+
+/// RFC3339 UTC to the second, with no `chrono`: this crate pulls nothing it does not need.
+fn rfc3339_utc_now() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Civil from days (Howard Hinnant's algorithm), the same one `flowy::seat` uses.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if mo <= 2 { y + 1 } else { y };
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
 /// The daemon for a workspace, without asking whether it is up.
 pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
     let workspace = workspace_of(workspace)?;
@@ -482,6 +561,18 @@ pub fn ensure_here(
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;
+            // **The record the launcher's own verbs read** (R102): `--daemons`, `--ls`,
+            // `--stop N`, `--stop --all` and the attach banner all read `<key>.json` beside the
+            // socket, and a daemon started here used to leave none — forty `harnessd` processes
+            // and *no daemons recorded*. A record that cannot be written is said and not fatal:
+            // the daemon is up and serving, and what is lost is a listing line.
+            if let Err(e) = write_record(&d, pid, model) {
+                eprintln!(
+                    "  harnessd pid {pid} came up and its record could not be written: {e}. \
+                     `letibot --daemons` will not list it until a launcher starts this folder's \
+                     daemon itself."
+                );
+            }
             // The daemon's own record, read back rather than echoed: what it wrote is what a
             // later head will read, so the answer this call gives is the answer `status` gives.
             // The flags this call passed are the fallback for a daemon whose build predates the

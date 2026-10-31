@@ -48,6 +48,32 @@ branch landed, and none of the queue's model-facing notices (`queue_emergency_no
 still runs, so a head attached here redraws when another daemon moves a row. A daemon that is
 already up is not the bridge's to change: `ensure` attaches to it as it is.
 
+### The record a started daemon writes, and the launcher's four readers (R102)
+
+`scripts/letibot` writes `<rundir>/<key>.json` beside the socket when it starts a daemon
+(`record_write`), and that one file is what `--daemons` and `--ls` glob, what `--stop N` and
+`--stop --all` resolve a handle through, and what the attach banner prints the model out of. A
+daemon the bridge started wrote none — MEASURED 2026-10-27 on the operator's Mac: about forty
+`harnessd` processes, every one started by a `letibot-mcp` bridge, and `letibot --daemons`
+answered **no daemons recorded**.
+
+`daemon::ensure` now writes the same record, field for field (`workspace`, `socket`, `pid`,
+`role`, `model`, `answers`, `dialect`, `bash`, `started`), through a temp name and a rename so a
+launcher reading the glob at the same moment sees one file or the other and never half of
+either. It is written **after** the socket answers and not before, so a start that fails leaves
+no record claiming a daemon that is not there; a record that cannot be written is said on
+stderr and is not fatal, because the daemon is up and what is lost is a listing line.
+
+**Why the record and not a listing that reads the sockets it can see**: the socket is
+`<sha256(workspace)[..12]>.sock`, so a socket with no record names a hash and nothing else — not
+the folder, not the role, not what answers its turns. A `--daemons` over sockets would print
+forty lines of hex, and `--stop N` needs the pid and the folder the record holds.
+
+`crates/bridge/tests/daemon_record.rs` drives the bridge's own start path against a fake
+`harnessd` that binds the socket it is handed, then runs the operator's real
+`scripts/letibot --daemons` over the result and asserts the folder is listed as `up (pid N)`.
+Pre-fix it fails on the missing file; the fix's absence is the whole of what it measures.
+
 ### A package whose tools run on another machine (RH2)
 
 Written 2026-10-26. `docs/remote-hosts.md` places a session's **tools** on an ssh host the
