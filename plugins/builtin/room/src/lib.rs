@@ -1,10 +1,14 @@
-//! **The room's pane** — one host's agents' queues, per tag, and the four keys that move them.
+//! **The room's pane** — one host's agents' queues, per tag, the four keys that move them, and the
+//! key that restarts the server they live in.
 //!
 //! The operator's design (`docs/room.md` § *Still owed* 1): *"the queues per tag, the tie-breaker's
 //! raw session, and the manual controls — claim on a session's behalf, release, mark abandoned, rule
 //! on a dispute"*. This layer draws the queues and the questions; the four controls are the HOST's
 //! verbs, performed by the daemon over the session's own connection to the coordinator. **Nothing
-//! here decides what a claim does** — it decides which row says which verb.
+//! here decides what a claim does** — it decides which row says which verb. The fifth key is the
+//! operator's later word — *"that panel must explicitly let me to restart the server"* — and it is a
+//! daemon lifetime rather than a room act: see § *The four keys* below and `docs/room.md` § *Slice
+//! 4*.
 //!
 //! # What it reads
 //!
@@ -26,8 +30,9 @@
 //!   state, its claimant, how long the claim has been held and how long since the holder's last
 //!   beat, and how many claimants it has lost.
 //! * **`questions`** (`a`) — every open question, with one row per decision the person can take.
+//! * **`server`** (`s`) — the restart, and the note the last one left: when, and why.
 //!
-//! # The four keys, and where each one is offered
+//! # The five keys, and where each one is offered
 //!
 //! | row | Enter | `x` |
 //! |---|---|---|

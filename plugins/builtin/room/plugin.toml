@@ -1,5 +1,5 @@
 name = "room"
-purpose = "one host's agents' queues, per tag: what is waiting, who holds it, how long since their last beat — and the four keys that move it"
+purpose = "one host's agents' queues, per tag: what is waiting, who holds it, how long since their last beat — the four keys that move it, and the one that restarts the server"
 hooks = ["pane_room"]
 # **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
 # fetches nothing. Every fact it draws arrives in the `room` feed, which the daemon read from the
