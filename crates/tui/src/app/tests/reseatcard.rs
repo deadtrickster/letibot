@@ -118,10 +118,7 @@ fn reseat_now_sends_the_bare_reseat_exactly_as_typing_it_would() {
     // Enter answers it — the rule R90.2 put on the decision card, applied to this one.
     let (mut a, _hub) = stale();
     assert_eq!(a.key(Key::Char('1')), None, "the digit marks");
-    assert_eq!(
-        a.key(Key::Enter),
-        Some(Action::Reseat { summarise: false })
-    );
+    assert_eq!(a.key(Key::Enter), Some(Action::Reseat { summarise: false }));
 }
 
 #[test]
@@ -415,7 +412,10 @@ fn a_digit_on_the_reseat_card_marks_the_row_and_reseats_nothing() {
     assert_eq!(a.input(), "", "and nothing was typed");
     // Enter is still the answer, and it answers the row the digit marked.
     assert_eq!(a.key(Key::Enter), None);
-    assert!(!a.reseat.as_ref().expect("the card").open, "not now pins it");
+    assert!(
+        !a.reseat.as_ref().expect("the card").open,
+        "not now pins it"
+    );
 
     // A line that starts with a digit is the operator's: the digit marks, the rest is theirs.
     let (mut b, _hub) = stale();

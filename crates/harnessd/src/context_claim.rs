@@ -36,9 +36,11 @@
 //!    is the `OPENERS` shape that misses a re-wording.
 //! 2. **Check the claim against the measurement** — [`Check::judge`], handed the
 //!    session's [`Fill`] by the harness. Below the wall the claim is false and the
-//!    model is told so, with the numbers ([`notice`]); at the wall it is true, the
-//!    harness compacts as it always has, and nothing is said. An unknown window is
-//!    not a measurement, so it is silence too.
+//!    model is told so, in the harness's own words with no numbers and no quote of
+//!    what it said ([`notice`]); at the wall it is true, the harness compacts as it
+//!    always has, and nothing is said. An unknown window is not a measurement, so it
+//!    is silence too. The measurement still decides whether the line is sent, and it
+//!    goes to the log and to the operator.
 //! 3. **Once per claim per user turn** — the intent check's own budget. A model that
 //!    repeats the excuse after being told is a finding for the operator
 //!    ([`REPEATED`], a hub warning), not a second slap.

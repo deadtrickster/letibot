@@ -185,10 +185,14 @@ pub struct NoDigest;
 
 impl DigestRunner for NoDigest {
     fn fold(&self, _: &str, _: &str, _: &str, _: usize, _: usize) -> Result<String, String> {
+        // **No price on the read** (R93.A7): it said *"it costs this context the rows"*, which
+        // asks the model to weigh a call against its own context — the arithmetic the base
+        // prompt forbids (*"Do not size, split or stop work by how much context you think is
+        // left"*) and the `[context check]` slaps. What the door does is the sentence.
         Err(
             "no subagent runner is installed in this session, so there is nobody to \
-             read the findings. `transcript` with a `limit` still works — it costs \
-             this context the rows."
+             read the findings. `transcript` with a `limit` still works: it returns the \
+             rows themselves."
                 .into(),
         )
     }
@@ -776,11 +780,25 @@ mod tests {
             Arc::new(NoDigest),
             serde_json::json!({"question": "q"}),
         );
+        let said = match &r.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => format!("{reason} {}", r.payload),
+            _ => r.payload.clone(),
+        };
         assert!(
-            r.payload.contains("nobody to read") || {
-                matches!(&r.outcome, letibot_transcript::ToolOutcome::Failed { reason }
-                if reason.contains("nobody to read"))
-            }
+            said.contains("nobody to read"),
+            "the refusal names what is missing: {said}"
+        );
+        // **And it does not price the door it offers** (R93.A7): *"it costs this context the
+        // rows"* was the model being told to size its work by its own context.
+        for priced in ["costs this context", "costs you"] {
+            assert!(
+                !said.contains(priced),
+                "no context arithmetic — `{priced}` is in: {said}"
+            );
+        }
+        assert!(
+            said.contains("`transcript` with a `limit`"),
+            "and it still names the door that works: {said}"
         );
     }
 

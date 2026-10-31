@@ -3044,9 +3044,6 @@ pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
     }
 }
 
-///
-/// **R93.E8**: no token count, no request to restate the re-seat in a line (a restatement is not
-/// work), and no *"stop asking for `/reseat`"*, which planted the word it forbade.
 /// **What a VM-placed child copies**, or why it cannot be placed — `Ok(None)` is "the session's
 /// own copy source" (`Config::vm_copy_source`), as before.
 ///
@@ -3099,6 +3096,11 @@ pub fn vm_copy_for(
     Ok(None)
 }
 
+/// **What the model is told when a reseat lands** — one line, and the three things it must not
+/// say.
+///
+/// **R93.E8**: no token count, no request to restate the re-seat in a line (a restatement is not
+/// work), and no *"stop asking for `/reseat`"*, which planted the word it forbade.
 pub fn reseated_for_the_model(summarise: bool, r: &ReseatReport) -> String {
     let mut said = String::from("[reseat] Your system prompt and tools were updated");
     if summarise {

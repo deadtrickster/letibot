@@ -471,10 +471,9 @@ impl TranscriptTool {
         let shown = q.offset + hits.rows.len();
         if hits.matched > shown {
             out.push_str(&format!(
-                "\n{} more match(es). `offset={}` reads the next page — but if what you \
+                "\n{} more match(es). `offset={}` reads the next page — or, if what you \
                  want is an ANSWER rather than the rows, `digest` streams all {} of them \
-                 to a subagent and returns what it found, which costs you the answer \
-                 instead of the conversation.\n",
+                 to a subagent and returns what it found.\n",
                 hits.matched - shown,
                 shown,
                 hits.matched,
@@ -812,6 +811,12 @@ mod tests {
 
     /// The operator's rule for big matches: the notice offers `digest`, not just
     /// another page.
+    ///
+    /// **And it does not price the read** (R93.A7): *"which costs you the answer instead of the
+    /// conversation"* asked the model to weigh a call against its own context, which the base
+    /// prompt forbids (*"Do not size, split or stop work by how much context you think is left"*)
+    /// and the `[context check]` slaps. The choice is the sentence; the arithmetic is the
+    /// harness's.
     #[test]
     fn a_match_bigger_than_the_limit_offers_digest() {
         let out = call(serde_json::json!({"limit": 1}));
@@ -821,6 +826,12 @@ mod tests {
             out.contains("`digest` streams"),
             "the answer-shaped way out is offered: {out}"
         );
+        for priced in ["costs you", "instead of the conversation"] {
+            assert!(
+                !out.contains(priced),
+                "no context arithmetic (R93.A7) — `{priced}` is in: {out}"
+            );
+        }
     }
 
     /// The chain is the fork history, and it says what a fork means.

@@ -289,7 +289,11 @@ fn a_digit_on_the_quit_card_marks_the_row_and_stops_nothing() {
     assert_eq!(a.key(Key::Char('2')), None, "a move, not an answer");
     assert_eq!(a.quit_sel, 1, "the stop row is marked");
     assert!(!a.quit && a.quit_card, "nothing left, the card is still up");
-    assert_eq!(a.key(Key::Enter), Some(Action::StopDaemon), "and Enter answers it");
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::StopDaemon),
+        "and Enter answers it"
+    );
 
     // The line being typed when the card opened is not an answer either: the first digit marks,
     // the rest is the operator's, and Enter refuses while the composer holds words (R90.30).
