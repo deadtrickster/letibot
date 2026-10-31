@@ -4499,14 +4499,29 @@ impl Harness {
         // room's own door). A subagent gets no link at all rather than one that refuses, because
         // the seat it runs on does not name the tool either.
         //
+        // **A tag's agent is the one exception, and it is not a subagent in the room's eyes.** Its
+        // id is derived from the box's owner and a tag (`room::tag_of`), it names the owner as its
+        // parent so the tree a picker draws shows a tag under the host — and it must speak as
+        // ITSELF at the door, or it could not claim under the tag it exists for. So the condition
+        // is *no parent, or the parent is the owner of a tag's agent*, and the speaker it opens
+        // with is top-level either way (`link::SessionRoom::connect`).
+        //
+        // **The derivation is only asked for a session that HAS a parent.** `host_key` shells out
+        // to `uname -n`, and every ordinary session's open must not pay for a question only a
+        // subsession can answer.
+        let top_level = match cfg.parent_session_id {
+            None => true,
+            Some(_) => crate::room::tag_of(&cfg.session_id).is_some(),
+        };
+        //
         // A connection that cannot be made is said once and is not fatal: a session whose room is
         // unreachable is a session that works, and its `room` tool refuses by name.
         let room = match (
             cfg.room_link,
-            cfg.parent_session_id.as_ref(),
+            top_level,
             crate::room::socket_path(),
         ) {
-            (true, None, Some(socket)) if socket.exists() => {
+            (true, true, Some(socket)) if socket.exists() => {
                 let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
                     let bell = std::sync::Arc::clone(session_registry.bell());
                     std::sync::Arc::new(move |session: &str| bell.ring_wake(session))

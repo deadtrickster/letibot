@@ -21,6 +21,8 @@
 //! * **[`supervise`]** — the restart the pane's fifth control asks for: the frame, and the launcher
 //!   that is asked with it. The coordinator never restarts itself — the pane is fed by the instance
 //!   it would kill, and a control that kills its own feed cannot report the outcome.
+//! * **[`agents`]** — one agent per tag, owned by the box's own session: seated by derivation,
+//!   re-seated when it dies, and counted so that a tag whose agent keeps dying says so.
 //!
 //! # The names are derived, and they must not move
 //!
@@ -38,6 +40,7 @@
 
 use std::path::PathBuf;
 
+pub mod agents;
 pub mod coordinator;
 pub mod link;
 pub mod remind;
@@ -73,6 +76,20 @@ pub fn lease_path() -> Option<PathBuf> {
 /// always reach the one agent that arbitrates this machine.
 pub fn session_id() -> String {
     letibot_room::coordinator_session(&letibot_room::host_key())
+}
+
+/// **The session a person named by one of the two derived spellings** — `host` for the box's owner,
+/// `host:<tag>` for one tag's agent — or `None` when what they typed is an ordinary session id.
+///
+/// One function, so `--session`, a launcher and a test cannot resolve a derived name three ways.
+pub fn session_named(name: &str) -> Option<String> {
+    letibot_room::named_session(&letibot_room::host_key(), name)
+}
+
+/// **The tag a session is the agent of**, when it is one — the derivation read backwards, against
+/// this box's own key.
+pub fn tag_of(session: &str) -> Option<String> {
+    letibot_room::tag_of_session(&letibot_room::host_key(), session)
 }
 
 /// **Is there a coordinator to talk to?** A socket file that exists is the whole test — connecting

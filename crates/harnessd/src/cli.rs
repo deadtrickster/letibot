@@ -925,16 +925,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
             "--session" => {
                 let named = next()?;
-                // **`host` is the box's own agent, by name** — the room's coordinator, whose id is
-                // derived from the machine (`s-room-<host key>`) so that `letibot --session host`
-                // always resolves without the operator remembering a hash. The operator's ask:
-                // *"a singleton with a special session name - 'host' so i can always connect to
-                // it"*.
-                cfg.session_id = if named.eq_ignore_ascii_case("host") {
-                    crate::room::session_id()
-                } else {
-                    named
-                };
+                // **`host` is the box's own agent, by name, and `host:<tag>` is one tag's** — the
+                // room's coordinator is `s-room-<host key>` and a tag's agent is that plus the tag,
+                // both derived from the machine so that `letibot --session host` (and
+                // `--session host:ram`) always resolve without the operator remembering a hash. The
+                // operator's ask: *"a singleton with a special session name - 'host' so i can
+                // always connect to it"*, and then *"one subsession per tag, owned by the host …
+                // so a tag can be talked to about itself"*. One resolution for both spellings
+                // (`room::session_named`), because a launcher that guessed a different name would
+                // attach to a session nobody seated.
+                cfg.session_id = crate::room::session_named(&named).unwrap_or(named);
             }
             "--title" => cfg.title = next()?,
             "--model" => {
@@ -2046,7 +2046,25 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             std::sync::Arc::new(move |session: &str| bell.ring_wake(session))
         };
         match crate::room::coordinator::Coordinator::start(&cfg.session_id, bell) {
-            Ok(c) => Some(c),
+            Ok(c) => {
+                // **And the tags' agents, on a thread of their own.** The coordinator's server is
+                // what knows which tags have work in them, and the registry is what knows whether a
+                // tag's agent is still there — so the upkeep is handed both and no bell: a claim,
+                // a beat and a finished item are comparisons the room has already made, and the
+                // only thing that may cost a model call is a dispute
+                // (`crate::room::wake`'s own rule).
+                let ledger = letibot_room::AgentLedger::new();
+                c.server().with_agents(std::sync::Arc::clone(&ledger));
+                crate::room::agents::spawn(
+                    c.server().clone(),
+                    std::sync::Arc::clone(&registry),
+                    letibot_room::host_key(),
+                    cfg.session_id.clone(),
+                    ledger,
+                    c.stop_flag(),
+                );
+                Some(c)
+            }
             Err(why) => {
                 let said = boot.failed(why);
                 daemon.shutdown();

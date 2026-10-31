@@ -230,6 +230,15 @@ impl Coordinator {
         &self.server
     }
 
+    /// **The flag that ends this coordinator's own threads** — the tie-breaker's, and the tag
+    /// agents' upkeep beside it.
+    ///
+    /// Handed out rather than duplicated, so a daemon that started a thread on the coordinator's
+    /// behalf stops it with the coordinator and not on the next process exit.
+    pub fn stop_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.stop)
+    }
+
     pub fn socket(&self) -> &std::path::Path {
         &self.socket
     }
