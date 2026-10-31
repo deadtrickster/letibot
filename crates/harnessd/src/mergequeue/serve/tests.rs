@@ -3245,14 +3245,32 @@ fn repo_with_agents(under: &Path, name: &str, agents: Option<&str>) -> PathBuf {
     std::fs::canonicalize(repo).unwrap()
 }
 
-/// **Run a supervisor until `until` says so of the store** — the ancestor test's own loop, for the
-/// tests that are about what a passing supervisor does rather than about a landing.
+/// **How long a supervisor fixture waits for the pass that writes the fact it is about** — a hang
+/// detector, and deliberately not a budget: these tests need well under a second on an idle box and
+/// minutes on the merge gate's, where 222 test binaries share one disk.
+///
+/// **It is ONE clock, and that is the point.** This loop used to give up after a hardcoded 20 s while
+/// [`leases_seen_over`] carried a 120 s ceiling of its own — so the inner one could never fire, and a
+/// slow box came back as a false statement about the SUBJECT (`the one that asked was gated`) instead
+/// of *no pass wrote it in 20 s*. MEASURED 2026-10-31, five of six copies of this binary at once with
+/// `TMPDIR` on the box's disk rather than its `/tmp` tmpfs: exactly the pair the merge gate reports,
+/// in 115 s against 15 s, and both with a supervisor that had done its work correctly.
+pub(crate) const SERVE_BUDGET: Duration = Duration::from_secs(120);
+
+/// **Run a supervisor until `until` says so of the store, and SAY SO when it never does** — the
+/// ancestor test's own loop, for the tests that are about what a passing supervisor does rather than
+/// about a landing.
+///
+/// `what` is the fact the caller is waiting for, in its own words, and it is asserted after the
+/// service has been stopped: a fixture that runs out of time must fail as *the pass never wrote X*,
+/// which a reader can act on, and never as a claim about the product it did not measure.
 fn serve_until(
     workspace: &Path,
     gate: Arc<dyn GateRunner>,
     door: Arc<Door>,
     db: &Path,
     who: &str,
+    what: &str,
     until: &dyn Fn(&Store) -> bool,
 ) -> Store {
     let service = QueueService {
@@ -3267,12 +3285,20 @@ fn serve_until(
         move || service.run(&stop)
     });
     let s = Store::open(db).unwrap();
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
-    while !until(&s) && std::time::Instant::now() < deadline {
+    let deadline = std::time::Instant::now() + SERVE_BUDGET;
+    let mut reached = until(&s);
+    while !reached && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
+        reached = until(&s);
     }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     h.join().unwrap();
+    assert!(
+        reached,
+        "no pass of the supervisor did `{what}` within {} s — the box this ran on could not \
+         manage one pass in that time, so nothing here is a measurement of the queue",
+        SERVE_BUDGET.as_secs()
+    );
     s
 }
 
@@ -3280,25 +3306,24 @@ fn serve_until(
 /// lease is given up when the service stops, so the question *was it ever claimed* is answered by
 /// what was seen while it ran.
 ///
-/// **`for_ms` is a floor, not a deadline, and that is measured rather than cautious.** The window
-/// was a fixed 3 500 ms and the two callers assert a lease WAS seen — so on a loaded box, where the
-/// supervisor's first pass has not run yet, the list came back empty and the tests failed with
-/// nothing wrong in the tree. MEASURED twice on this project's own merge gate: `cargo test
-/// --workspace` runs every test binary at once (222 of them), and
-/// `a_repository_with_no_merge_gate_is_not_a_queue_target` and
-/// `a_stale_lease_whose_holder_is_gone_is_released_by_a_passing_supervisor` went red there while
-/// passing alone. So the service stops when the floor has passed **and** something was seen, or at
-/// a ceiling that exists only so a genuinely broken pass fails with a name instead of hanging.
+/// **The stop condition is the caller's fact and nothing else.** It used to be `done(s) || (over &&
+/// seen_any)`: a 3 500 ms floor that stopped the service once ANY lease had been seen. A lease is
+/// claimed in `supervise` and the health row the callers assert is written by the WORKER's first
+/// pass — which makes a landing worktree before it writes anything — so on a box slow enough for
+/// that pass to outlast the floor, the service was stopped between the two and the caller asserted
+/// *the one that asked was gated* about a supervisor that had done exactly the right thing.
+/// MEASURED 2026-10-31 (see [`SERVE_BUDGET`]). Waiting for `done` alone loses nothing: every lease
+/// of a pass is claimed in `supervise` before any worker runs, so a health row cannot be older than
+/// the leases beside it.
 fn leases_seen_over(
     workspace: &Path,
     db: &Path,
     door: Arc<Door>,
     who: &str,
-    for_ms: u64,
+    what: &str,
     done: &dyn Fn(&Store) -> bool,
 ) -> (Store, Vec<String>) {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    let started = std::time::Instant::now();
     let watch = {
         let seen = seen.clone();
         move |s: &Store| {
@@ -3308,19 +3333,10 @@ fn leases_seen_over(
                     said.push(l.repository.clone());
                 }
             }
-            let over = started.elapsed() > Duration::from_millis(for_ms);
-            // The ceiling is not a second opinion about the floor: it is what turns *the pass
-            // never ran* from a flake into a failure a reader can see.
-            let ceiling = started.elapsed() > Duration::from_secs(120);
-            let seen_any = !seen.lock().unwrap().is_empty();
-            // **`done` is the fact the caller then asserts** — a lease being seen says the pass
-            // started, not that it finished, and the two callers read a health row the pass writes
-            // after the lease. Measuring only the lease is what made them red under the gate's full
-            // parallelism while green alone.
-            done(s) || (over && seen_any) || ceiling
+            done(s)
         }
     };
-    let store = serve_until(workspace, Arc::new(GreenGate), door, db, who, &watch);
+    let store = serve_until(workspace, Arc::new(GreenGate), door, db, who, what, &watch);
     let out = seen.lock().unwrap().clone();
     (store, out)
 }
@@ -3351,11 +3367,17 @@ fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     let never_key = never.display().to_string();
     let db = dir.0.join("sessions.db");
     let door = Arc::new(Door::default());
-    // **Two passes' worth of time, and the fact this test then asserts** — the health row is written
-    // after the lease, so measuring the lease alone left the assertion racing the pass.
-    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500, &|s| {
-        s.target_health(&queued_key, "main").unwrap().is_some()
-    });
+    // **The fact this test then asserts, and not the lease** — the health row is written by the
+    // worker's first pass, after the lease, so measuring the lease alone left the assertion racing
+    // the pass. See [`leases_seen_over`].
+    let (store, leases) = leases_seen_over(
+        &dir.0,
+        &db,
+        door.clone(),
+        "a",
+        "a health row for the repository that asked",
+        &|s| s.target_health(&queued_key, "main").unwrap().is_some(),
+    );
     assert_eq!(
         leases,
         vec![queued_key.clone()],
@@ -3387,9 +3409,14 @@ fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     // **The section is the whole of the opt-in**, so committing one is the whole of what it takes
     // to be served: the next pass asks again and claims the lease.
     commit(&never, "AGENTS.md", GATE_MD, "declare a merge gate");
-    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500, &|s| {
-        s.target_health(&never_key, "main").unwrap().is_some()
-    });
+    let (store, leases) = leases_seen_over(
+        &dir.0,
+        &db,
+        door.clone(),
+        "a",
+        "a health row for the repository that just declared a gate",
+        &|s| s.target_health(&never_key, "main").unwrap().is_some(),
+    );
     let mut leases = leases;
     leases.sort();
     assert_eq!(
@@ -3439,9 +3466,15 @@ fn a_stale_lease_whose_holder_is_gone_is_released_by_a_passing_supervisor() {
     // A workspace that is a session of no repository at all: the sweep is the SUPERVISOR's, which
     // is the half that matters — the rows the operator saw were for repositories nobody passes on.
     let door = Arc::new(Door::default());
-    let store = serve_until(&dir.0, Arc::new(GreenGate), door.clone(), &db, "me", &|s| {
-        s.queue_leases().unwrap().len() == 2
-    });
+    let store = serve_until(
+        &dir.0,
+        Arc::new(GreenGate),
+        door.clone(),
+        &db,
+        "me",
+        "the sweep of a lease whose holder is gone",
+        &|s| s.queue_leases().unwrap().len() == 2,
+    );
     let left: Vec<String> = store
         .queue_leases()
         .unwrap()
@@ -3521,12 +3554,19 @@ impl GateRunner for Held {
     }
 }
 
-/// Run passes until `done` holds (or fail after ten seconds).
-fn pass_until(q: &RepoQueue, done: impl Fn() -> bool) {
+/// **Run passes until `done` holds** — `what` is the fact, and the ceiling is a hang detector, not
+/// a budget: ten seconds was a guess about the box, and a box slow enough to need more turned *a
+/// pass never did X* into `never happened` at a line with no subject in it. MEASURED 2026-10-31
+/// (see [`SERVE_BUDGET`]).
+fn pass_until(q: &RepoQueue, what: &str, done: impl Fn() -> bool) {
     let stop = AtomicBool::new(false);
-    let until = std::time::Instant::now() + Duration::from_secs(10);
+    let until = std::time::Instant::now() + SERVE_BUDGET;
     while !done() {
-        assert!(std::time::Instant::now() < until, "never happened");
+        assert!(
+            std::time::Instant::now() < until,
+            "no pass did `{what}` within {} s",
+            SERVE_BUDGET.as_secs()
+        );
         assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -3591,8 +3631,10 @@ fn a_running_gate_does_not_stop_claims_or_deadlines() {
     assert_eq!(late.len(), 1, "the late reviewer was stopped mid-gate");
     assert_eq!(w.store().review_row("one").unwrap().unwrap().attempts, 1);
     assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "no pass waited for the gate"
+        started.elapsed() < SERVE_BUDGET,
+        "four passes took {:?} while the gate was held shut — a pass that WAITED for the gate \
+         would never return at all, so this is a hang detector and not a budget on the box",
+        started.elapsed()
     );
     assert!(q.gate_in_flight(), "and the gate is still running");
     assert_eq!(
@@ -3605,7 +3647,7 @@ fn a_running_gate_does_not_stop_claims_or_deadlines() {
     );
 
     held.open();
-    pass_until(&q, || !q.gate_in_flight());
+    pass_until(&q, "the gate's verdict applied", || !q.gate_in_flight());
     let h = w.store().target_health(&w.key(), "main").unwrap().unwrap();
     assert_eq!(h.state, HealthState::Green, "{h:?}");
     assert_eq!(held.runs(), 1, "one gate of the tip, not one per pass");
@@ -3634,7 +3676,7 @@ fn a_gate_verdict_is_applied_exactly_once() {
     // The gate runs on its own thread: under load the passes below can all return before it
     // starts, and the count then reads 0 (seen twice in full workspace runs). Wait for it to be
     // running, then pass again — the claim is that more passes do not start a second one.
-    pass_until(&q, || held.runs() >= 1);
+    pass_until(&q, "a gate to start", || held.runs() >= 1);
     for _ in 0..5 {
         q.pass(&stop).unwrap();
     }
@@ -3651,7 +3693,7 @@ fn a_gate_verdict_is_applied_exactly_once() {
     );
 
     held.open();
-    pass_until(&q, || {
+    pass_until(&q, "the merge row landed", || {
         w.store().merge_row(&m).unwrap().unwrap().state == MergeState::Landed
     });
     for _ in 0..3 {
