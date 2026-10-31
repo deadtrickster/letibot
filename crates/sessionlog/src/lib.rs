@@ -132,12 +132,15 @@ pub use lift_tools::{ToolLogSink, from_tool_event};
 pub const GATEKEEPER_TITLE_PREFIX: &str = "You are the gatekeeper.";
 
 /// **How the notes keeper's session title begins** — the first words of its brief
-/// (`letibot_tools::notes_keeper::TITLE_PREFIX`, asserted equal in `harnessd`), on
-/// [`GATEKEEPER_TITLE_PREFIX`]'s rule and for the same reason.
+/// (`letibot_tools::notes_keeper::TITLE_PREFIX`), on [`GATEKEEPER_TITLE_PREFIX`]'s rule and for the
+/// same reason.
 ///
 /// Here now rather than in `letibot-tools` alone because the session list reads it: a keeper is a
 /// system agent, and the tree draws it under `<project>/system/keepers`. The mark and the reader
-/// have to be one string or a keeper is a row drawn as somebody's conversation.
+/// have to be one string or a keeper is a row drawn as somebody's conversation — and the two
+/// constants cannot be one, because `letibot-tools` sits BELOW this crate, so the spelling is held
+/// together by a test in the one crate that can see both (`letibot-tui`,
+/// `the_keepers_brief_and_the_trees_mark_are_one_string`).
 pub const NOTES_KEEPER_TITLE_PREFIX: &str = "You are the notes keeper.";
 
 /// **The seat a review is recorded under** — `Seat::Gatekeeper`'s store spelling, written on the

@@ -143,17 +143,16 @@ fn a_top_level_session_is_drawn_under_its_project() {
     assert_eq!(row.depth, 1, "one step under its project");
     assert_eq!(row.open, Some(false), "its children are folded away");
     // And the project's line is the row above it.
-    assert!(a.session_rows()[habr - 1].idx.is_none(), "the project's line");
+    assert!(
+        a.session_rows()[habr - 1].idx.is_none(),
+        "the project's line"
+    );
     // A package's conversation is a top-level session like any other: the tree does not ask who
     // started it, only what it hangs from.
     let mut a = app();
     let mut package = in_tree("s-pkg", "make me a landing page", LETIBOT);
     package.origin = SessionOrigin::Package;
-    a.apply(hello(
-        "s-pkg",
-        vec![package],
-        Hub::new("s-pkg").snapshot(),
-    ));
+    a.apply(hello("s-pkg", vec![package], Hub::new("s-pkg").snapshot()));
     a.push_surface(Surface::Picker);
     assert_eq!(rows(&a), vec!["[letibot (1)]", "make me a landing page"]);
 }
@@ -164,10 +163,18 @@ fn a_top_level_session_is_drawn_under_its_project() {
 fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
     let mut a = a_daemon_with_two_projects();
     // Folded: the project's own rows, and the sub-sessions are not on the list at all.
-    assert!(!rows(&a).contains(&"read the repo".to_string()), "{:?}", rows(&a));
+    assert!(
+        !rows(&a).contains(&"read the repo".to_string()),
+        "{:?}",
+        rows(&a)
+    );
     a.set_row_fold("s-habr", true);
     let child = row_of(&a, "s-sub-1");
-    assert_eq!(a.session_rows()[child].depth, 2, "under its parent, one step in");
+    assert_eq!(
+        a.session_rows()[child].depth,
+        2,
+        "under its parent, one step in"
+    );
     assert!(
         !rows(&a).contains(&"and again".to_string()),
         "the grandchild is folded under its own parent: {:?}",
@@ -260,11 +267,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
         "the tree, with every session's children and every group folded"
     );
     // **The rows themselves**: opened, and each in its own group and nowhere else.
-    for (group, id) in [
-        ("gatekeepers", q.clone()),
-        ("reviewers", format!("{q}-sub-1791759365511364772")),
-        ("keepers", "s-keeper".to_string()),
-    ] {
+    for group in ["gatekeepers", "reviewers", "keepers"] {
         a.set_row_fold(&format!("{LETIBOT}/system/{group}"), true);
     }
     let drawn = rows(&a);
@@ -281,8 +284,11 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
             format!("[{group} (1)]"),
             "`{id}` sits under `{group}`"
         );
+        // `at` is a ROW of the list and `a.sessions` is indexed by SESSION — the two are not
+        // the same list, which is the whole defect this test exists to catch.
+        let title = a.sessions[row.idx.expect("a session row")].title.clone();
         assert_eq!(
-            drawn.iter().filter(|r| **r == a.sessions[at].title).count(),
+            drawn.iter().filter(|r| **r == title).count(),
             1,
             "and the row is drawn ONCE: {drawn:?}"
         );
@@ -317,8 +323,29 @@ fn one_project_one_session_and_no_system_line() {
     a.push_surface(Surface::Picker);
     assert_eq!(rows(&a), vec!["[letibot (1)]", "the only one"]);
     let screen = a.screen(100, 30).join("\n");
-    assert!(!screen.contains("system"), "no empty system node:\n{screen}");
+    assert!(
+        !screen.contains("system"),
+        "no empty system node:\n{screen}"
+    );
     assert!(!screen.contains("gatekeepers"), "{screen}");
+}
+
+/// **The keeper's mark is ONE string**, and this is the only crate that can see both halves.
+///
+/// `letibot-tools` writes the brief (`letibot_tools::notes_keeper::TITLE_PREFIX`) and
+/// `letibot-sessionlog` names the mark the tree reads
+/// (`letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX`). The constant cannot be an alias, because
+/// `tools` sits BELOW `sessionlog`; so the two spellings are held together here, in the one crate
+/// that depends on both. A brief that began differently would draw a keeper as somebody's
+/// conversation, under their project, with no `keepers` group to find it in.
+#[test]
+fn the_keepers_brief_and_the_trees_mark_are_one_string() {
+    assert_eq!(
+        letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX,
+        letibot_tools::notes_keeper::TITLE_PREFIX,
+        "the tree finds a keeper by its title — a brief cut from another sentence is a keeper \
+         drawn as a conversation"
+    );
 }
 
 /// **The fold glyph and the state work at every level** — a project, a session, `system` and a
@@ -346,7 +373,11 @@ fn the_fold_works_at_every_level() {
     );
     // Opened again by the same key, and the tree comes back.
     a.key(Key::Right);
-    assert!(rows(&a).contains(&"the habr article".to_string()), "{:?}", rows(&a));
+    assert!(
+        rows(&a).contains(&"the habr article".to_string()),
+        "{:?}",
+        rows(&a)
+    );
     // `system` folds too, and it is a level of its own.
     let sys = a
         .session_rows()
@@ -372,7 +403,12 @@ fn a_click_selects_the_row_it_points_at() {
         .iter()
         .position(|l| l.contains("system (3)"))
         .expect("the system line is drawn") as u16;
-    assert!(!a.picker_folds.get(&format!("{LETIBOT}/system")).copied().unwrap_or(false));
+    assert!(
+        !a.picker_folds
+            .get(&format!("{LETIBOT}/system"))
+            .copied()
+            .unwrap_or(false)
+    );
     a.key(Key::Click { x: 6, y });
     assert_eq!(
         a.picker_row().map(|r| r.id),
@@ -424,7 +460,13 @@ fn a_number_is_the_nth_session_and_a_nodes_line_has_none() {
         .find(|r| r.id == queue())
         .and_then(|r| r.number)
         .expect("the gatekeeper's row is numbered");
-    assert_eq!(a.session_at_number(gatekeeper), a.picker_rows().iter().find(|r| r.id == queue()).and_then(|r| r.session));
+    assert_eq!(
+        a.session_at_number(gatekeeper),
+        a.picker_rows()
+            .iter()
+            .find(|r| r.id == queue())
+            .and_then(|r| r.session)
+    );
 }
 
 /// **The bar says what Enter does on the row under the cursor** — `switches` on a session, and the
@@ -433,7 +475,11 @@ fn a_number_is_the_nth_session_and_a_nodes_line_has_none() {
 fn the_bar_follows_the_cursor_onto_a_nodes_line() {
     let mut a = a_daemon_with_two_projects();
     a.picker_sel = row_of(&a, "s-habr");
-    assert!(a.hint_bar(200).contains("enter switches"), "{}", a.hint_bar(200));
+    assert!(
+        a.hint_bar(200).contains("enter switches"),
+        "{}",
+        a.hint_bar(200)
+    );
     a.picker_sel = 0;
     assert!(
         a.hint_bar(200).contains("enter folds it away"),

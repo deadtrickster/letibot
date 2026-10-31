@@ -223,9 +223,10 @@ impl Ctx<'_> {
     /// Whether session `i` is drawn under `parent` **in this branch** — the fold glyph is about the
     /// tree inside a row, so a child in another branch is not a reason for a `+`.
     fn kids_in(&self, parent: &str, project: &str, system: Option<&str>) -> bool {
-        self.sessions.iter().enumerate().any(|(i, s)| {
-            s.parent.as_deref() == Some(parent) && self.in_branch(i, project, system)
-        })
+        self.sessions
+            .iter()
+            .enumerate()
+            .any(|(i, s)| s.parent.as_deref() == Some(parent) && self.in_branch(i, project, system))
     }
 
     /// A session's fold state, folding taken from the person before the family rule and the default.
@@ -257,7 +258,9 @@ impl Ctx<'_> {
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
     // **A head standing in a sub-session draws its FAMILY**: the parent and its children, and no
     // tree at all — a list of two or three rows around the one the person is in.
-    if let Some(parent) = ctx.at(ctx.here).and_then(|i| ctx.sessions[i].parent.clone())
+    if let Some(parent) = ctx
+        .at(ctx.here)
+        .and_then(|i| ctx.sessions[i].parent.clone())
         && let Some(p) = ctx.at(&parent)
     {
         let project = ctx.sessions[p].project.clone();
@@ -265,7 +268,16 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
         let fold = has_fold(ctx, p, 0, &project, system.as_deref());
         let mut out = vec![session_row(ctx, p, 0, 1, fold)];
         let mut number = 1;
-        children(ctx, &mut out, &parent, 1, &mut number, true, &project, system.as_deref());
+        children(
+            ctx,
+            &mut out,
+            &parent,
+            1,
+            &mut number,
+            true,
+            &project,
+            system.as_deref(),
+        );
         return out;
     }
     let mut out = Vec::new();
@@ -294,7 +306,16 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             number += 1;
             let fold = has_fold(ctx, i, 1, project, None);
             out.push(session_row(ctx, i, 1, number, fold));
-            children(ctx, &mut out, &ctx.sessions[i].id, 2, &mut number, false, project, None);
+            children(
+                ctx,
+                &mut out,
+                &ctx.sessions[i].id,
+                2,
+                &mut number,
+                false,
+                project,
+                None,
+            );
         }
         // **The `system` branch**, when this project has one — and no line at all when it has not.
         let system: Vec<usize> = members

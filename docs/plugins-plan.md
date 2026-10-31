@@ -1266,7 +1266,10 @@ why its work runs between the session's turns when the two share a server.
       useful.
     * **The way out is the head's OWN list**, unchanged — `App::session_picker` — rather than a new
       plainer renderer: the code that draws it today is the code that must keep working the day a
-      layer breaks, so it is the code that was already there.
+      layer breaks, so it is the code that was already there. *(2026-10-31: the function is
+      `App::session_list` now — the list is a tree of projects, and the way out draws that same
+      tree through the same primitive rather than a plainer one. It is still the head's own code
+      and still the thing that must work when a layer does not.)*
     * **The drawing was pinned before the port**: `crates/tui/src/app/tests/data/sessions-list-*.txt`
       (two pictures of one daemon, taken from the head's list before the port) plus
       `the_heads_list_and_the_plugins_list_draw_the_same_rows`, which renders both paths at one

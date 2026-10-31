@@ -400,16 +400,16 @@ impl App {
         if let Some(parent) = self.parent_session()
             && let Some(i) = self.index_of(&parent)
         {
-                let id = self.sessions[i].session_id.clone();
-                let kids = self.children_in(&id, None);
-                let force = self.family_open(&parent, 0);
-                out.push(SessionRow {
-                    idx: Some(i),
-                    depth: 0,
-                    node: Node::Session,
-                    open: kids.then(|| force || self.children_open(&id, &path)),
-                });
-                self.push_children(&mut out, &parent, 1, &path, force, None);
+            let id = self.sessions[i].session_id.clone();
+            let kids = self.children_in(&id, None);
+            let force = self.family_open(&parent, 0);
+            out.push(SessionRow {
+                idx: Some(i),
+                depth: 0,
+                node: Node::Session,
+                open: kids.then(|| force || self.children_open(&id, &path)),
+            });
+            self.push_children(&mut out, &parent, 1, &path, force, None);
             return out;
         }
         let place = self.placements();
@@ -504,10 +504,9 @@ impl App {
                     // **A row is drawn once**, under its parent when that parent is in this same
                     // group; a reviewer whose parent is the operator's own conversation is a root
                     // of `reviewers`, because its parent is not on this branch.
-                    if self
-                        .parent_on_list(i)
-                        .is_some_and(|p| place[p].system == Some(kind) && place[p].project == project.key)
-                    {
+                    if self.parent_on_list(i).is_some_and(|p| {
+                        place[p].system == Some(kind) && place[p].project == project.key
+                    }) {
                         continue;
                     }
                     self.push_session(&mut out, i, 3, &path, false, Some(branch));
@@ -555,8 +554,7 @@ impl App {
     /// Whether one of `id`'s children is on the chain to the current session.
     fn child_on_path(&self, id: &str, path: &[String]) -> bool {
         self.sessions.iter().any(|s| {
-            s.parent_session_id.as_deref() == Some(id)
-                && path.iter().any(|p| *p == s.session_id)
+            s.parent_session_id.as_deref() == Some(id) && path.iter().any(|p| *p == s.session_id)
         })
     }
 
@@ -564,8 +562,7 @@ impl App {
     /// `+` over a row whose children are in another branch opens nothing.
     fn children_in(&self, id: &str, branch: Option<Branch<'_>>) -> bool {
         self.sessions.iter().enumerate().any(|(k, s)| {
-            s.parent_session_id.as_deref() == Some(id)
-                && branch.is_none_or(|b| b.holds(k))
+            s.parent_session_id.as_deref() == Some(id) && branch.is_none_or(|b| b.holds(k))
         })
     }
 
@@ -679,10 +676,14 @@ impl App {
             }
             // **A brief carries no seat**, so a reviewer is known here by the brief its title was
             // cut from — the same gap `App::fold_subagents` fills the same way.
-            if s.title.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX) {
+            if s.title
+                .starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX)
+            {
                 return Some(SystemKind::Reviewer);
             }
-            if s.title.starts_with(letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX) {
+            if s.title
+                .starts_with(letibot_sessionlog::NOTES_KEEPER_TITLE_PREFIX)
+            {
                 return Some(SystemKind::Keeper);
             }
             match self.parent_on_list(at) {
@@ -1759,9 +1760,9 @@ impl Branch<'_> {
     /// Whether session `i` is drawn in this branch — a child of another branch is a root of its
     /// own, never a row here.
     fn holds(&self, i: usize) -> bool {
-        self.place.get(i).is_some_and(|p| {
-            p.project == self.project && p.system == self.system
-        })
+        self.place
+            .get(i)
+            .is_some_and(|p| p.project == self.project && p.system == self.system)
     }
 }
 

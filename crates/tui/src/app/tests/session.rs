@@ -309,7 +309,11 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
 
     // **`←` on the child row closes the TREE EDGE it sits on** — the parent stays open in the
     // project, and the child goes back under it.
-    assert_eq!(a.session_rows().len(), 3, "the project and its tree are open");
+    assert_eq!(
+        a.session_rows().len(),
+        3,
+        "the project and its tree are open"
+    );
     a.key(Key::Left);
     assert_eq!(
         a.session_rows().len(),

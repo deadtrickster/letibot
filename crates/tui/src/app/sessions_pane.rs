@@ -27,8 +27,9 @@
 //!
 //! [`App::sessions_list`] answers `None` for a stack with no `sessions` layer, one whose module will
 //! not load, one that traps or runs out of fuel, and one whose answer is not a list this head can
-//! draw. The picker then draws the head's own list (`App::session_picker`) — the same rano
-//! primitive, the same rows — which is the escape hatch that must never depend on this file.
+//! draw. The picker then draws the head's own tree ([`App::session_list`]) — the same rano
+//! primitive, the same rows, the same shape — which is the escape hatch that must never depend on
+//! this file.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,9 +49,9 @@ use crate::app::*;
 /// The hook this pane answers under.
 pub(crate) const HOOK: &str = "pane_sessions";
 
-/// **The list's frame, in the picker's own words** — rano's `SessionPicker` draws exactly this, and
-/// a plugin's list that looked different because a layer answered it would make *which layer drew
-/// this* a guess.
+/// **The list's frame, in the head's own words** — the tree the head draws without a layer
+/// ([`App::session_list`]) carries exactly this title, and a plugin's list that looked different
+/// because a layer answered it would make *which layer drew this* a guess.
 const TITLE: &str = "sessions in this daemon";
 
 /// The keys that are the HEAD's, whatever a layer says. The row-dependent half of the hint (`enter
@@ -778,9 +779,7 @@ impl App {
         let mut listed: Vec<Listed> = Vec::with_capacity(rows.len());
         let mut number = 0;
         for r in &rows {
-            let open = r
-                .open
-                .map(|o| if o { Fold::Open } else { Fold::Closed });
+            let open = r.open.map(|o| if o { Fold::Open } else { Fold::Closed });
             match r.idx {
                 Some(i) => {
                     // **A number is the n-th SESSION**, which is what the drawn list writes beside
@@ -828,10 +827,7 @@ impl App {
                         depth: r.depth,
                         number: None,
                         open,
-                        cells: vec![TreeCell::role(
-                            r.node.title(),
-                            rano::style::Role::Strong,
-                        )],
+                        cells: vec![TreeCell::role(r.node.title(), rano::style::Role::Strong)],
                         facts: Vec::new(),
                         detail: vec![r.node.legend().to_string()],
                         detail_column: None,
@@ -940,11 +936,7 @@ impl App {
         if s.wiring.workspace.is_empty() {
             s.session_id.clone()
         } else {
-            format!(
-                "{}  {}",
-                s.session_id,
-                self.tilde_path(&s.wiring.workspace)
-            )
+            format!("{}  {}", s.session_id, self.tilde_path(&s.wiring.workspace))
         }
     }
 

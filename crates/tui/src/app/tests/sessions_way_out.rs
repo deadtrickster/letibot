@@ -8,7 +8,7 @@
 //! | the stack says | what is drawn |
 //! |---|---|
 //! | a layer answers | the layer's list (`sessions_list`) |
-//! | nothing answers — no layer, a trap, fuel, a view the host refuses | the head's own list (`session_picker`) |
+//! | nothing answers — no layer, a trap, fuel, a view the host refuses | the head's own tree (`session_list`) |
 //!
 //! The tests here stand each failure in, and each of them also presses the keys: a list that draws
 //! and does not switch is not a way out.

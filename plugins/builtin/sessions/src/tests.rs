@@ -118,7 +118,10 @@ fn a_child_is_drawn_under_its_parent_once_it_is_opened() {
     let mut child = session("s-c", "read the repo");
     child.parent = Some("s-a".into());
     let f = feed(vec![session("s-a", "a"), child], "s-a");
-    assert_eq!(ids(&draw(&f, &[])), vec![format!("[{PROJECT}]"), "s-a".into()]);
+    assert_eq!(
+        ids(&draw(&f, &[])),
+        vec![format!("[{PROJECT}]"), "s-a".into()]
+    );
     let parent = &draw(&f, &[])[1];
     assert_eq!(parent.open, Some(Fold::Closed), "the glyph says `+`");
     let open = draw(&f, &[("s-a", true)]);
@@ -131,7 +134,10 @@ fn a_child_is_drawn_under_its_parent_once_it_is_opened() {
 fn the_system_branch_is_one_folded_line_per_group() {
     let mut gatekeeper = session("s-gatekeeper-0123456789ab", "the review queue");
     gatekeeper.system = Some("gatekeepers".into());
-    let mut reviewer = session("s-gatekeeper-0123456789ab-sub-1", "You are the gatekeeper. review");
+    let mut reviewer = session(
+        "s-gatekeeper-0123456789ab-sub-1",
+        "You are the gatekeeper. review",
+    );
     reviewer.system = Some("reviewers".into());
     reviewer.parent = Some("s-gatekeeper-0123456789ab".into());
     let f = feed(vec![session("s-a", "a"), gatekeeper, reviewer], "s-a");
@@ -165,7 +171,10 @@ fn the_system_branch_is_one_folded_line_per_group() {
 fn a_reviewer_nests_inside_its_group() {
     let mut gatekeeper = session("s-gatekeeper-0123456789ab", "the review queue");
     gatekeeper.system = Some("gatekeepers".into());
-    let mut reviewer = session("s-gatekeeper-0123456789ab-sub-1", "You are the gatekeeper. review");
+    let mut reviewer = session(
+        "s-gatekeeper-0123456789ab-sub-1",
+        "You are the gatekeeper. review",
+    );
     reviewer.system = Some("reviewers".into());
     reviewer.parent = Some("s-gatekeeper-0123456789ab".into());
     let f = feed(vec![session("s-a", "a"), gatekeeper, reviewer], "s-a");
@@ -176,7 +185,10 @@ fn a_reviewer_nests_inside_its_group() {
             (format!("{PROJECT}/system/gatekeepers").as_str(), true),
         ],
     );
-    let reviewer_at = open.iter().position(|r| r.id.ends_with("-sub-1")).expect("drawn");
+    let reviewer_at = open
+        .iter()
+        .position(|r| r.id.ends_with("-sub-1"))
+        .expect("drawn");
     assert_eq!(
         open[reviewer_at].depth, 3,
         "one step inside its group: project, system, group, row"

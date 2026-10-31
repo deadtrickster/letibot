@@ -176,10 +176,10 @@ fn the_workspace_is_shortened_against_the_heads_own_home() {
 /// at the same width.
 ///
 /// This is the assertion the port is judged by, and it was written before the port: the built-in
-/// `sessions` layer decides the groups and the words now, and the head's `SessionPicker` is what a
-/// head draws when that layer cannot answer. Two paths, one daemon, one width — the drawings must
-/// be identical, so a change to one side alone is a red test rather than a difference nobody
-/// notices until a layer breaks.
+/// `sessions` layer decides the tree's shape and the words now, and the head's own
+/// [`App::session_list`] is what a head draws when that layer cannot answer. Two paths, one
+/// daemon, one width — the drawings must be identical, so a change to one side alone is a red test
+/// rather than a difference nobody notices until a layer breaks.
 #[test]
 fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
     let a = the_daemon();

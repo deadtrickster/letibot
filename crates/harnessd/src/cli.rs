@@ -3119,9 +3119,14 @@ fn run_query(
             // could not see from this command even though `--session ID` would open it. A group
             // line with a count says the same thing and says it once.
             //
-            // **The groups come from `letibot_sessionlog::origin`, the same rule the head's
-            // picker draws** — one rule, two renderers, so the two cannot tell a person that a
-            // session is in different places.
+            // **The groups come from `letibot_sessionlog::origin`** — the marks that say what a
+            // session IS (the queue's id, the parent edge, the `origin` column, the brief a title
+            // was cut from) are one set, and the head's tree reads the same ones
+            // (`App::system_kind`, `letibot-tui`). **The two drawings are not the same shape since
+            // 2026-10-31**: this listing keeps five groups, and the picker nests `gatekeepers`,
+            // `reviewers` and `keepers` under `<project>/system`. So a session can be in a
+            // different place in the two pictures; what the two cannot disagree about is which
+            // sessions are the harness's own.
             let all = scoped(&store, scope)?;
             let groups = grouped(&all);
             if tsv {
@@ -3313,8 +3318,15 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
 ///
 /// Separate from the printing so the decision is assertable without a terminal, and because two
 /// things read it: the human listing and the `--tsv` header line the launcher prints. The rule
-/// itself is `letibot_sessionlog::group_of`'s — the same one the head's picker draws — so this
-/// function is a grouping and not a second opinion about what a session is.
+/// itself is `letibot_sessionlog::group_of`'s, so this function is a grouping and not a second
+/// opinion about what a session is.
+///
+/// **This is the five groups, and the head's picker is no longer one of its readers** (2026-10-31):
+/// `ctrl-s` draws a tree of projects, their sessions and `<project>/system/<group>`, which is a
+/// different shape over the same rows (`App::session_rows`). So `letibot --sessions` and the picker
+/// are two pictures of one daemon today; what keeps them honest is that both read
+/// `group_of`'s marks — the queue's id, the parent edge, the `origin` column — rather than each
+/// inventing what a session is.
 ///
 /// Every group is returned, empty ones included: `SessionGroup::ALL`'s order is the order a
 /// person reads, and a caller that wants to skip an empty group (`(0)` headers teach a reader to
@@ -4223,14 +4235,17 @@ mod tests {
         );
     }
 
-    /// **The listing groups the store the way the head's picker does** — mine first, then one
-    /// entry per automatic kind, each carrying its own members.
+    /// **The listing groups the store the way `group_of` says** — mine first, then one entry per
+    /// automatic kind, each carrying its own members.
     ///
-    /// The operator's ask is one sentence and it is about both places a session is listed:
+    /// The operator's ask is one sentence and it was about both places a session is listed:
     /// *"in session view the automatic sessions must be grouped somehow, so my vs auto. otherwise
     /// im lost in subagents."* The RULE is `letibot_sessionlog::group_of`'s and is tested there;
     /// what is asserted here is that `--list-sessions` feeds it the store's own facts — the parent
     /// edge, the queue's id, and the `origin` column a daemon writes — and not a second opinion.
+    ///
+    /// **The head's picker is not this listing** (2026-10-31): `ctrl-s` draws a tree of projects,
+    /// and the tree is `App::session_rows`' in `letibot-tui`, tested there.
     #[test]
     fn the_listing_puts_mine_first_and_the_harnesss_own_work_in_its_groups() {
         let (store, _d) = store_with(&[("s-mine", "/ws"), ("s-sub", "/ws")]);
