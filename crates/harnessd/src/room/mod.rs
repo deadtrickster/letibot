@@ -18,6 +18,9 @@
 //!   and no model call is needed. It is the one of the four that runs on the daemon's idle tick
 //!   rather than on a thread of its own, because a board may only be written by the thread that
 //!   drives the harness.
+//! * **[`supervise`]** — the restart the pane's fifth control asks for: the frame, and the launcher
+//!   that is asked with it. The coordinator never restarts itself — the pane is fed by the instance
+//!   it would kill, and a control that kills its own feed cannot report the outcome.
 //!
 //! # The names are derived, and they must not move
 //!
@@ -38,6 +41,7 @@ use std::path::PathBuf;
 pub mod coordinator;
 pub mod link;
 pub mod remind;
+pub mod supervise;
 pub mod wake;
 
 /// **The environment variable that puts the room's socket somewhere else** — a test's door, and

@@ -685,6 +685,16 @@ pub const TABLE: &[(&str, Class)] = &[
     // well formed, and the fix is their next key: the middle register, not the red one. A key that
     // said nothing at all would be indistinguishable from a key that was not pressed.
     ("room_act_refused", Class::Refused),
+    // **The room was restarted, and this is the outcome said out loud.** The control is a daemon
+    // lifetime rather than a queue act, so the key's own answer is a note rather than a row: the
+    // room is empty afterwards and the pane's identity is the only other evidence, which is the
+    // confusion (`restarted clean` / `restarted empty`) this whole feature exists to remove.
+    ("room_restarted", Class::Routine),
+    // **A restart asked for and not made** — no launcher on the box, a launcher that refused, a
+    // supervisor that overran its minute. Routine-shaped and yet the middle register, because it is
+    // the reader's own act answered with the reason; a key that said nothing would be
+    // indistinguishable from a key that was not pressed.
+    ("room_restart_refused", Class::Refused),
     // The first round on a newly chosen model was refused by its provider: the turn failed,
     // and the notice names the model before it and the command back.
     ("model_switch_refused", Class::Failure),
@@ -1093,6 +1103,10 @@ mod the_register_census {
         // The same shape as `job_output_refused`: well formed, the thing it names will not take it,
         // and the fix is the reader's next key.
         "room_act_refused",
+        // **A restart that was asked for and not made** — the same shape as the four room keys':
+        // the reader's own act, well formed, and the sentence says what stopped it (no launcher, a
+        // launcher that refused, a supervisor that overran).
+        "room_restart_refused",
         // **A `/models` whose deferred switch could not be made** at the turn's end — the same
         // shape as `mode_set_refused`: their line, well formed, and the session cannot carry it.
         "model_switch_not_applied",
@@ -1353,9 +1367,13 @@ mod the_register_census {
         //     this daemon is not holding (closed, its open failed, not opened yet), so the ring woke
         //     nobody. The settlement is still a row with `delivered = 0` and the next open says it,
         //     but a notice the model was owed did not reach it.
-        assert_eq!(TABLE.len(), 171, "the table's size");
-        assert_eq!(count(Class::Routine), 67);
-        assert_eq!(count(Class::Refused), 14, "the fourteen in READER_INPUT");
+        //   · **173, not 171**: the room's RESTART — `room_restarted` (Routine) is the outcome said
+        //     out loud, and `room_restart_refused` (Refused) is the same key answered with the
+        //     reason it did not happen. Two codes because the two verdicts are one channel's, the
+        //     shape `mode_set`/`mode_set_refused` already has.
+        assert_eq!(TABLE.len(), 173, "the table's size");
+        assert_eq!(count(Class::Routine), 68);
+        assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 90);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);

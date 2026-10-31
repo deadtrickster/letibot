@@ -35,6 +35,20 @@
 //! | an item anybody may claim | `claim` | — |
 //! | an item somebody else holds, or a finished one | (nothing) | — |
 //! | `q3:retry`, `q3:drop`, `q3:hand:<session>` | `rule` | — |
+//! | `restart` (the `s` panel) | `restart` | — |
+//!
+//! **The fifth is not a room verb, and that is the whole design of it.** `claim`, `release`,
+//! `abandon` and `rule` move the room's own state machine over the session's connection; `restart`
+//! is a daemon lifetime, asked of the supervisor that starts coordinators. The coordinator must not
+//! do it on itself: this pane is fed by the instance a restart would kill, so a control that killed
+//! its own feed could not say what happened, and the person would be left looking at a frozen pane
+//! with no way to tell a restart from a hang (`docs/room.md` § *Still owed* 1).
+//!
+//! **The panel says what survives.** The room keeps no store, so a restart begins with no items at
+//! all, and the row says so in as many words. What it does NOT do is guess: the `s` panel prints
+//! the note the last restart left — when, and why: a person pressed it, the daemon restarted it, or
+//! it crashed — because a room that comes back with no memory of the last minute is exactly the
+//! opaque thing the control exists to remove.
 //!
 //! **A key is only offered where it would do something.** A row held by somebody else carries no
 //! act, because `claim` would be refused `Busy` and `release` would be refused `NotHeld` — and a row
@@ -85,12 +99,44 @@ struct Feed {
     /// Why the room could not be read, when it could not.
     #[serde(default)]
     unreadable: Option<String>,
+    /// **The restart**: whether this host may ask for one, and the note the last one left.
+    #[serde(default)]
+    restart: Restart,
     #[serde(default)]
     tags: Vec<Tag>,
     #[serde(default)]
     questions: Vec<Question>,
     #[serde(default)]
     counts: Counts,
+}
+
+/// **What the pane is told about restarting the box's room** — the fifth control, and the note the
+/// last restart left.
+#[derive(Debug, Default, Deserialize)]
+struct Restart {
+    /// May this host ask a supervisor to restart the room? A host that may not offers no key.
+    #[serde(default)]
+    available: bool,
+    /// Why not, when not — the sentence printed instead of the key.
+    #[serde(default)]
+    why: Option<String>,
+    /// The note the last restart left, if one did.
+    #[serde(default)]
+    marker: Option<Marker>,
+}
+
+/// **The note a restart left** — when, and why. The host composed `sentence` because a guest has no
+/// clock; `cause` is here so the pane can put the note in the role it deserves — a crash is a
+/// failure and a pressed key is not.
+#[derive(Debug, Default, Deserialize)]
+struct Marker {
+    #[serde(default)]
+    age_ms: u64,
+    /// `asked`, `daemon` or `crashed` — the three ways a room becomes a new one.
+    #[serde(default)]
+    cause: String,
+    #[serde(default)]
+    sentence: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -247,6 +293,7 @@ fn view(feed: &Feed) -> Value {
     }
     let mut panels = vec![header(feed)];
     panels.push(queues(feed));
+    panels.push(server(feed));
     if !feed.questions.is_empty() {
         panels.push(questions(feed));
     }
@@ -345,6 +392,74 @@ fn header(feed: &Feed) -> Value {
             {"markdown": identity(feed)},
             {"lines": lines},
         ],
+    })
+}
+
+/// **The server itself** — the restart control, and the note the last restart left.
+///
+/// Two of the operator's three requirements live here and the third is the identity above them:
+/// *the control* (`docs/room.md` § *Still owed* 1 — *"that panel must explicitly let me to restart
+/// the server"*), and *the marker* — when, and why. **What survives is stated, not assumed**: every
+/// line below says the room keeps no store, so a restart begins with no items at all.
+///
+/// **A key is only offered where it would do something.** A host with no supervisor (the
+/// coordinator's own daemon, a box with no launcher, a fixture) draws the reason instead of the
+/// key, because a control that always refuses teaches a person not to press keys.
+fn server(feed: &Feed) -> Value {
+    let mut under: Vec<String> = Vec::new();
+    let mut facts: Vec<Cell> = Vec::new();
+    let mut enter = Value::Null;
+    if feed.restart.available {
+        enter = json!(Act::verb_on("restart", "restart"));
+    } else if let Some(why) = &feed.restart.why {
+        under.push(why.clone());
+    }
+    match &feed.restart.marker {
+        Some(m) => {
+            // **The note is the point of the panel.** *Restarted clean* and *restarted empty* are
+            // the same picture without it, and a room that comes back with no memory of the last
+            // minute is the thing this whole control exists to remove. The role is the cause's: a
+            // room that crashed is a failure, a key that was pressed is attention.
+            facts.push(Cell::role(age(m.age_ms), cause_role(&m.cause)));
+            under.push(m.sentence.clone());
+        }
+        None => under.push(
+            "nothing has restarted this room since it began — and an empty queue here is an empty \
+             queue, not a restart: read the line above for how long it has been up"
+                .to_string(),
+        ),
+    }
+    under.push(
+        "a restart begins with no items at all: the room keeps no store, so everything queued now \
+         goes with it — the supervisor is asked, and the coordinator is never asked to stop itself"
+            .to_string(),
+    );
+    let cells = vec![
+        Cell::role("restart", Role::Strong),
+        Cell::role(
+            if feed.restart.available {
+                "the box's room"
+            } else {
+                "not offered here"
+            },
+            if feed.restart.available {
+                Role::Plain
+            } else {
+                Role::Faint
+            },
+        ),
+    ];
+    json!({
+        "id": "server",
+        "key": "s",
+        "title": "the server",
+        "summary": [{"tree": {"rows": [json!({
+            "id": "restart",
+            "cells": cells,
+            "facts": facts,
+            "under": under,
+            "enter": enter,
+        })]}}],
     })
 }
 
@@ -495,6 +610,21 @@ fn actions_of(r: &Row) -> Value {
     json!([{"key": "x", "label": "mark abandoned", "verb": "abandon"}])
 }
 
+/// The palette's role for a restart's cause — the three are not equally good news.
+fn cause_role(cause: &str) -> Role {
+    match cause {
+        // A person pressed the key. Nothing is wrong, and what they need to know is that the
+        // queue they were looking at is gone.
+        "asked" => Role::Attention,
+        // The daemon restarted it and nothing was running to stop: the crash already happened, so
+        // the note is a fact about the past rather than a warning.
+        "daemon" => Role::Pending,
+        // Nobody asked: the room died. That is the one of the three that is a fault.
+        "crashed" => Role::Failure,
+        _ => Role::Faint,
+    }
+}
+
 /// The palette's role for a state — the room's own words, in the colours this head already uses.
 fn state_role(state: &str) -> Role {
     match state {
@@ -592,6 +722,13 @@ fn legend(feed: &Feed) -> Value {
               harder sentence on the item's history",
         "r": "the room itself: what it is, how long it has been up, and who arbitrates",
         "a": "the questions the room is asking, and the decisions a person can take",
+        "restart": "restart the box's room — asked of the supervisor that starts coordinators, \
+                    never performed by the room on itself. A restart begins with NO ITEMS AT ALL: \
+                    the room keeps no store, so everything queued goes with it",
+        "s": "the server: the restart control, and when and why it last restarted",
+        "asked": "a person pressed restart in this pane, and the note names the session",
+        "crashed": "the room died and came back without anybody here asking — the note says \
+                    when, and that whatever was queued went with it",
     })
 }
 

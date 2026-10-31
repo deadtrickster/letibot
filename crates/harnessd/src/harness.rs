@@ -4511,7 +4511,21 @@ impl Harness {
                     let bell = std::sync::Arc::clone(session_registry.bell());
                     std::sync::Arc::new(move |session: &str| bell.ring_wake(session))
                 };
-                match crate::room::link::SessionRoom::connect(&cfg.session_id, &socket, bell) {
+                // **Who may restart the room on this session's behalf** — the launcher, on the
+                // daemon's own path, and nobody on a fixture or on the coordinator itself
+                // (`cfg.restart_room` carries the whole reason). A box with no launcher gets
+                // `None`, and the pane then offers no restart key rather than a key that refuses.
+                let supervisor: Option<std::sync::Arc<dyn crate::room::supervise::RoomSupervisor>> =
+                    cfg.restart_room
+                        .then(crate::room::supervise::Launcher::found)
+                        .flatten()
+                        .map(|l| std::sync::Arc::new(l) as std::sync::Arc<dyn crate::room::supervise::RoomSupervisor>);
+                match crate::room::link::SessionRoom::connect(
+                    &cfg.session_id,
+                    &socket,
+                    bell,
+                    supervisor,
+                ) {
                     Ok(room) => Some(room),
                     Err(why) => {
                         notes.push(format!(

@@ -354,9 +354,8 @@ verb nobody reviewed.
 
 ### Still owed
 
-1. **Restart the server**, asked of the daemon that supervises the coordinator and not performed by
-   the coordinator on itself. The pane's four controls are the ones this slice owes and has; this
-   one is a fifth, and it is a daemon lifetime rather than a room act — so it is not a row here.
+1. ~~**Restart the server**~~ — **built, and it is slice 4 below.** The pane's fifth control asks the
+   launcher, not the coordinator. What is still owed from it is named there.
 2. ~~**A reminder row on the board.**~~ **Done — see *The reminder, as built* below.**
 3. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
    says so on every run that finds no coordinator, because a launcher may not remember a refusal on
@@ -431,6 +430,72 @@ What is still open here, so nobody reads this as finished:
 * **The pass asks the room once per session per tick**, which is one socket frame each. On a box
   with a coordinator and many sessions that is the cost; a box with none pays one `Option` test and
   is not woken for it at all (`Sessions::has_a_room`).
+
+### Slice 4, as built — the restart, and what it says about itself
+
+The operator, on the pane's four controls: *"and since we are going full blown agents orchestration
+again — that panel must explicitly let me to restart the server"*. Three consequences, and they are
+the requirement:
+
+| what | where it is |
+|---|---|
+| **the act asks the SUPERVISOR** — the launcher, with the two verbs a person would type (`--room --stop`, then `--room`), and never the coordinator on itself | `crates/harnessd/src/room/supervise.rs` (`RestartFrame`, `RoomSupervisor`, `Launcher`); `SessionRoom::restart` asks it and writes the note |
+| **what survives is stated, not assumed** — the `s` panel says a restart begins with no items at all, beside the identity sentence that says how long the room has been up | `plugins/builtin/room`'s `server()`; the feed's `restart` block |
+| **a marker says when and why** — a file beside the lease, `<data dir>/room-<host key>.restart`, holding `at_ms`, the room's `started_ms`, the cause (`asked`/`daemon`/`crashed`), the session, and the writer's own clause | `crates/room/src/restart.rs` (`Marker`, `Cause`), written by `SessionRoom::restart` and observed by the link's reader thread |
+
+**The supervisor is the launcher, and that is the whole of the first consequence.** A coordinator is a
+whole `harnessd --room`, started detached by `scripts/letibot`'s `room_ensure`; nothing resident
+watches it, so *asking the supervisor* is running it. That is also what keeps the room visible: the
+launcher writes the record `letibot --ls` and `letibot --stop` read, so a room restarted from a pane
+is still a room the operator can see and stop — a daemon that spawned `harnessd --room` itself would
+leave a coordinator with no record, which is a second way for a room to become invisible.
+
+**Why the coordinator cannot do it.** The pane is fed by the instance it would kill: a coordinator
+that stopped itself mid-act could not report the outcome, and the person would be left looking at a
+frozen pane unable to tell a restart from a hang. The **coordinator's own daemon is therefore never
+given a supervisor** (`coordinator::configure` clears `Config::restart_room`), and its pane draws the
+reason instead of a key that would refuse.
+
+**The frame.** `RestartFrame { at_ms, by, was_running, why }` is the act, handed to
+`RoomSupervisor::restart`. The production implementation writes it as one JSON line on the launcher's
+stdin — a launcher ignores its stdin, and a supervisor that wants to record *why* it was asked has it
+without a second channel — and a test asserts the frame it received, which is what makes *the control
+was pressed* a fact rather than a guess. `was_running` (read off the lease before the act) is what
+tells a restart from a start: a key pressed on a room that had already died did not empty the queue.
+
+**The three causes, and who writes each.**
+
+| cause | written by | the sentence |
+|---|---|---|
+| `asked` | the daemon, after the act, when there was a room to stop | *restarted 4s ago: `s-a` pressed restart in the room pane* |
+| `daemon` | the daemon, after the act, when nothing was running | *restarted 4s ago by the daemon, and nothing was running to stop — the key did not empty the queue, the room had already gone* |
+| `crashed` | the link's reader thread, on an instance change nobody recorded | *restarted 4s ago and nobody asked — the room before it went away* |
+
+The instance is the **lease's `started_ms`** — a number two readers can compare, where the identity
+sentence is prose whose age moves every second. An observation never overwrites an act: a marker that
+already claims the instance the reader is looking at is left alone (`Marker::claims`).
+
+**What a refusal is.** A launcher that is not there, a stop that did not stop, a start that did not
+come back: each is `room_restart_refused` with the launcher's own last line in the sentence, and
+nothing is written to the marker — a restart that did not happen is not a restart. The success is
+`room_restarted`. Both are notices, because the outcome of a key nobody printed is a key a person
+cannot trust.
+
+**What slice 4 leaves open.**
+
+1. **The launcher's `--room` verbs are on another branch.** `supervise::Launcher` runs `letibot
+   --room --stop` and `letibot --room`, which is what `agent/the-launcher-starts-the-room` adds;
+   until that lands, the production supervisor refuses with *unknown flag: --room* — said, not
+   swallowed, and the pane still works. Nothing in this crate assumes the script's flags beyond
+   those two.
+2. **A crash while nobody is looking is not a marker.** The observation needs a daemon holding a
+   connection across the change; a room that died and stayed dead is drawn as the pane's
+   `unreadable` sentence, and the last note it left is about the room before it.
+3. **Nothing autostarts.** A room that is gone stays gone until somebody presses the key or runs the
+   launcher; there is no upkeep that restarts one, so `daemon` can only mean *the key found nothing
+   running*.
+4. **The marker is not a log.** One file, overwritten, beside the lease — a restart's history is not
+   kept, and the alternative (a journal) is the same answer the queue's own durability waits on.
 
 ## What the state machine assumes
 

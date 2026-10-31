@@ -1968,7 +1968,32 @@ impl PaneDriver for PluginHost {
         if let Some(room) = self.room.as_ref()
             && pane_hook(pane) == ROOM_HOOK
         {
-            if let Err(why) = room.act(item, action) {
+            // **The fifth control is not a room verb.** A restart is a daemon lifetime: it goes to
+            // the supervisor that starts coordinators, and the coordinator never performs it on
+            // itself — the pane is fed by the instance it would kill. Its own note (`room_restarted`)
+            // and its refusal (`room_restart_refused`) are the two sentences, and both are said:
+            // a control whose outcome nobody printed is a control a person cannot trust.
+            if action == RESTART_VERB {
+                // **Two literal codes**, not one variable: `crates/sessionlog/tests/warning_codes.rs`
+                // scans this tree for `Warning { code: "…" }` literals, and a code that reaches the
+                // wire through a variable is a code the guard cannot see.
+                match room.restart() {
+                    Ok(said) => {
+                        let _ = hub.publish(SessionEvent::Warning {
+                            code: "room_restarted".into(),
+                            detail: said,
+                            compaction: None,
+                        });
+                    }
+                    Err(why) => {
+                        let _ = hub.publish(SessionEvent::Warning {
+                            code: "room_restart_refused".into(),
+                            detail: format!("the room was not restarted: {why}"),
+                            compaction: None,
+                        });
+                    }
+                }
+            } else if let Err(why) = room.act(item, action) {
                 // **A refusal is said, not swallowed.** A key that does nothing is
                 // indistinguishable from a key that was not pressed, and the room's own sentence
                 // names who holds the tag or what the state is.
@@ -1998,6 +2023,14 @@ impl PaneDriver for PluginHost {
 /// what the pane is drawing: a project that ships its own layer over `pane_room` is drawing the
 /// same room, and its rows are the same four controls.
 pub const ROOM_HOOK: &str = "room";
+
+/// **The pane's fifth control, and the one verb here that is not the room's.**
+///
+/// `claim`, `release`, `abandon` and `rule` are the room's own state machine; `restart` is a daemon
+/// lifetime, asked of the supervisor (`crate::room::supervise`). It is declared in the layer's
+/// manifest like the other four (`plugins/builtin/room/plugin.toml`), so `View::validate_for` still
+/// refuses a verb nobody reviewed.
+pub const RESTART_VERB: &str = "restart";
 
 /// The hook part of a pane id (`<manifest name>/<hook name>`, without the `pane_` prefix).
 fn pane_hook(pane: &str) -> &str {
@@ -5520,6 +5553,7 @@ mod tests {
             "s-room-pane",
             server.path(),
             Arc::new(|_: &str| {}),
+            None,
         )
         .expect("the session connects");
         until_the_room_is_read(&link, 1);
@@ -5605,6 +5639,132 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// **The pane's restart is a FRAME to the supervisor, and its outcome is said.**
+    ///
+    /// The control is not a room verb: the layer names `restart`, and the HOST asks the supervisor
+    /// that starts coordinators. This is the whole requirement in one test — the act reaches the
+    /// supervisor with the session's name on it, the outcome reaches the person as a notice, and the
+    /// note the act left is in the feed the next frame is drawn from.
+    #[test]
+    fn the_restart_control_asks_the_supervisor_and_its_outcome_is_said() {
+        use crate::room::supervise::{RestartFrame, RoomSupervisor};
+        use std::sync::Mutex as StdMutex;
+
+        struct Ask(StdMutex<Vec<RestartFrame>>);
+        impl RoomSupervisor for Ask {
+            fn restart(&self, frame: &RestartFrame) -> Result<String, String> {
+                self.0.lock().unwrap().push(frame.clone());
+                Ok("the room was stopped and started again by a fixture".to_string())
+            }
+        }
+
+        let (dir, server) = a_room("room-restart");
+        let asked = Arc::new(Ask(StdMutex::new(Vec::new())));
+        let link = crate::room::link::SessionRoom::connect(
+            "s-room-pane",
+            server.path(),
+            Arc::new(|_: &str| {}),
+            Some(asked.clone()),
+        )
+        .expect("the session connects");
+        until_the_room_is_read(&link, 0);
+
+        // The layer answers ONE row: the restart, which is the fifth verb and not a room act.
+        let answer = r#"{"title":"the room","panels":[{"id":"server","key":"s",
+            "title":"the server","summary":[{"tree":{"rows":[{"id":"restart","cells":["restart"],
+            "enter":{"verb":"restart","id":"restart"}}]}}]}]}"#;
+        let root = room_project(
+            "room-restart",
+            answer,
+            "\"claim\", \"release\", \"abandon\", \"rule\", \"restart\"",
+        );
+        let hub = Hub::new("s-room-pane");
+        let host = PluginHost::discover(
+            "s-room-pane",
+            &root,
+            None,
+            None,
+            Arc::new(SameLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_room(link);
+        host.open("s-room-pane", &hub, "room/room", (80, 24));
+
+        // **The key reaches the supervisor**, and the frame says who pressed it and what it found.
+        host.action("s-room-pane", &hub, "room/room", "restart", "restart");
+        let frames = asked.0.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1, "one press, one frame");
+        assert_eq!(frames[0].by, "s-room-pane");
+        assert!(
+            frames[0].why.contains("pressed restart in the room pane"),
+            "{}",
+            frames[0].why
+        );
+        assert!(
+            !frames[0].was_running,
+            "the fixture's socket has no lease, so nothing was running to stop"
+        );
+
+        // **The outcome is said**, not swallowed: a key whose result nobody printed is a key a
+        // person cannot trust.
+        assert!(
+            !warned(&hub, "room_restarted").is_empty(),
+            "the act's own outcome is a notice: {:?}",
+            warned(&hub, "room_restarted")
+        );
+        // **And the note is in the feed the next frame was drawn from** — when, and why.
+        let inputs = host.lock().rec.inputs("pane_room").to_vec();
+        let feed = &inputs.last().expect("a render after the key")["feeds"]["room"];
+        assert_eq!(feed["restart"]["available"], json!(true));
+        let note = &feed["restart"]["marker"];
+        assert_eq!(note["cause"], json!("daemon"), "nothing was running: {note}");
+        assert_eq!(note["by"], json!("s-room-pane"));
+        assert!(
+            note["sentence"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no items at all"),
+            "{note}"
+        );
+
+        // **A supervisor that refuses is a notice too** — the middle register, with the reason.
+        struct Refuse;
+        impl RoomSupervisor for Refuse {
+            fn restart(&self, _frame: &RestartFrame) -> Result<String, String> {
+                Err("`letibot --room --stop` answered exit status: 1: no room on this box".into())
+            }
+        }
+        let link = crate::room::link::SessionRoom::connect(
+            "s-room-pane",
+            server.path(),
+            Arc::new(|_: &str| {}),
+            Some(Arc::new(Refuse)),
+        )
+        .expect("the session connects");
+        until_the_room_is_read(&link, 0);
+        let host = PluginHost::discover(
+            "s-room-pane",
+            &root,
+            None,
+            None,
+            Arc::new(SameLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_room(link);
+        let hub = Hub::new("s-room-pane");
+        host.open("s-room-pane", &hub, "room/room", (80, 24));
+        host.action("s-room-pane", &hub, "room/room", "restart", "restart");
+        let refused = warned(&hub, "room_restart_refused");
+        assert!(!refused.is_empty(), "a refusal is never silence");
+        assert!(
+            refused.iter().any(|d| d.contains("no room on this box")),
+            "{refused:?}"
+        );
+
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// **A row carrying a verb the manifest did not declare is refused before it is drawn** — the
     /// gate `View::validate_for` keeps, on the daemon's side of the wire.
     #[test]
@@ -5642,6 +5802,39 @@ mod tests {
             !warned(&hub, "plugin_view_refused").is_empty(),
             "and the session's model is told once"
         );
+
+        // **The restart is a declared action like the four, and it is refused like them too.** A
+        // project layer that ships its own room pane and does NOT list `restart` gets its row
+        // refused: the gate is the manifest, not the verb's familiarity. This is the half that
+        // makes *declared* mean something — the built-in's manifest lists five, and a layer that
+        // lists four cannot reach the fifth.
+        let answer = r#"{"title":"the room","panels":[{"id":"server","key":"s",
+            "title":"the server","summary":[{"tree":{"rows":[{"id":"restart","cells":["restart"],
+            "enter":{"verb":"restart","id":"restart"}}]}}]}]}"#;
+        let root = room_project(
+            "room-no-restart",
+            answer,
+            "\"claim\", \"release\", \"abandon\", \"rule\"",
+        );
+        let hub = Hub::new("s-plugins");
+        let host = PluginHost::discover(
+            "s-plugins",
+            &root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        );
+        host.open("s-plugins", &hub, "room/room", (80, 24));
+        let published = views(&hub);
+        let (_, view) = published.last().expect("a frame");
+        assert!(
+            view["panels"][0]["unavailable"]["why"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("does not declare that action"),
+            "an undeclared `restart` is refused by the same gate: {view}"
+        );
     }
 
     /// **The committed `room` module RUNS**, against a real room, through the daemon's own host.
@@ -5673,6 +5866,7 @@ mod tests {
             "s-room-builtin",
             server.path(),
             Arc::new(|_: &str| {}),
+            None,
         )
         .expect("the session connects");
         until_the_room_is_read(&link, 1);

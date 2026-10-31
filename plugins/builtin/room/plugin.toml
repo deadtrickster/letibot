@@ -16,9 +16,13 @@ feeds = ["room"]
 # * `abandon` — mark it abandoned, which is the same room verb with the harder sentence on it
 #   (`docs/room.md`: a voluntary release is still an abandonment and still counted);
 # * `rule` — answer a question the room asked, which is `retry`, `drop` or `hand:<session>`.
+# * `restart` — restart the box's ROOM, which is not a room verb at all: it is a daemon lifetime,
+#   asked of the supervisor that starts coordinators (`docs/room.md` § *Still owed* 1). The
+#   coordinator must not do it on itself — this pane is fed by the instance it would kill, and a
+#   control that kills its own feed cannot say what happened.
 #
 # A row carrying a verb this list does not name is refused by the host (`View::validate_for`), so
 # the verbs a layer can reach are the verbs a reviewer read. The host is what PERFORMS them: the
 # layer decides only which row to draw.
-actions = ["claim", "release", "abandon", "rule"]
+actions = ["claim", "release", "abandon", "rule", "restart"]
 contract = 1

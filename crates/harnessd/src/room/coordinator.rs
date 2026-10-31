@@ -122,6 +122,12 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     // layer too late to be understood. Set HERE rather than inherited, so a fixture that calls
     // `configure` on a `for_this_box` config measures the coordinator and not the constructor.
     cfg.room_link = true;
+    // **And it is the one daemon that may NOT restart the room.** The pane's restart control asks a
+    // SUPERVISOR (the launcher), and the arbiter's pane is drawn by the process a restart would
+    // kill: a control that stops its own feed mid-act could not say what happened, which is exactly
+    // what `docs/room.md` rules out. Cleared here rather than left to a caller, because this
+    // function is what makes a daemon a coordinator.
+    cfg.restart_room = false;
     // **No bash, no queue, no project.**
     cfg.allow_bash = false;
     cfg.serve_queues = false;

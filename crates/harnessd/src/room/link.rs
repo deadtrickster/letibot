@@ -23,15 +23,29 @@
 //! with a `parent_session_id` is given **no link at all** rather than a link that refuses: the tool
 //! it would reach is not on its seat either, and two refusals for one rule is one too many to
 //! explain. The refusal that matters is the room's own, at the door.
+//!
+//! # The restart, and the two notes it leaves
+//!
+//! The pane's fifth control is not a room verb: it is a **daemon lifetime**, asked of the
+//! supervisor (`super::supervise`) and never performed by the coordinator on itself. Two things
+//! follow, and both are here because this is the object that holds the socket:
+//!
+//! * [`SessionRoom::restart`] asks the supervisor and then writes the [`letibot_room::Marker`]
+//!   beside the socket — *who pressed it, and when* — so the pane can say why the room is a new one.
+//! * The reader thread **watches the room's instance** (the lease's `started_ms`). An instance that
+//!   changes with no marker naming it is a room that died and came back, and that is written as
+//!   [`letibot_room::Cause::Crashed`]. An observation never overwrites an act: a marker that
+//!   already claims the instance is left alone.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 
 use letibot_room::client::{Beat, Client};
-use letibot_room::{Decision, Request, Response, Speaker};
+use letibot_room::{Cause, Decision, Marker, Request, Response, Speaker};
 
+use super::supervise::{RestartFrame, RoomSupervisor};
 use super::wake;
-use crate::plugins::room_feed::{RoomFeed, RoomSnapshot};
+use crate::plugins::room_feed::{RestartView, RoomFeed, RoomSnapshot};
 
 /// **How often the room is read for the pane**, and how old a drawn picture may be.
 ///
@@ -53,6 +67,13 @@ pub struct SessionRoom {
     /// **The room as the PANE last saw it** — read on [`SessionRoom::reader`]'s thread, so that
     /// drawing a pane is a clone and never a socket call. `None` until the first read lands.
     room: Mutex<Option<RoomSnapshot>>,
+    /// **Who may restart the box's room on this session's behalf** — `None` on the coordinator's
+    /// own daemon, on a box with no launcher, and on a fixture. A session with none is a pane that
+    /// offers no restart key rather than a key that would refuse.
+    supervisor: Option<Arc<dyn RoomSupervisor>>,
+    /// **The room instance this link last saw** — the lease's `started_ms`. A change here that no
+    /// marker claims is a crash, which is the one cause of a restart nobody asks for.
+    seen: Mutex<Option<u64>>,
 }
 
 impl std::fmt::Debug for SessionRoom {
@@ -73,6 +94,7 @@ impl SessionRoom {
         session: &str,
         socket: &Path,
         bell: Arc<dyn Fn(&str) + Send + Sync>,
+        supervisor: Option<Arc<dyn RoomSupervisor>>,
     ) -> Result<Arc<SessionRoom>, String> {
         let me = session.to_string();
         // **The arbiter is not woken by the queue's traffic.** The coordinator's own session is the
@@ -110,6 +132,11 @@ impl SessionRoom {
             socket: socket.to_path_buf(),
             beat: Mutex::new(None),
             room: Mutex::new(None),
+            supervisor,
+            // **The first sighting is not a crash.** A daemon that connects to a room which has
+            // been up for an hour did not witness anything, so the instance is recorded and no
+            // marker is written.
+            seen: Mutex::new(letibot_room::room_started_ms(socket)),
         });
         SessionRoom::reader(&room);
         Ok(room)
@@ -131,6 +158,7 @@ impl SessionRoom {
                     };
                     let snap = me.read_room();
                     *me.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
+                    me.note_instance();
                     drop(me);
                     std::thread::sleep(std::time::Duration::from_millis(PANE_READ_EVERY_MS));
                     if weak.strong_count() == 0 {
@@ -152,6 +180,10 @@ impl SessionRoom {
         let base = RoomSnapshot {
             lease_ms: welcome.lease_ms,
             threshold: welcome.threshold,
+            // **Every read carries the restart note**, because the note is about the room the
+            // read is of: a pane that showed the queues without saying the room had just begun
+            // again would be the opaque screen the feature exists to remove.
+            restart: self.restart_view(),
             ..RoomSnapshot::default()
         };
         match self.client.request(&Request::Room) {
@@ -189,6 +221,112 @@ impl SessionRoom {
 
     pub fn socket(&self) -> &Path {
         &self.socket
+    }
+
+    /// **Restart the box's room — asked of its supervisor, never performed here.**
+    ///
+    /// The act is a [`RestartFrame`] handed to [`RoomSupervisor::restart`], and the order is the
+    /// design:
+    ///
+    /// 1. **Was there a room to stop?** Asked of the lease before the act, because that is the
+    ///    difference between a restart and a start — and the difference between *this key emptied
+    ///    the queue* and *the queue was already gone*.
+    /// 2. **Ask.** A refusal comes back as a sentence and is published by the caller; nothing is
+    ///    written to the marker, because a restart that did not happen is not a restart.
+    /// 3. **Write the note** — after the act, carrying the NEW room's `started_ms`, so the pane can
+    ///    say when and why, and so the reader thread's own observation knows this instance is
+    ///    accounted for.
+    /// 4. **Re-read at once**, so the frame after the key is the new room rather than the old one's
+    ///    last picture. The client re-opens its socket by itself (`Client::request`), which is the
+    ///    same reconnect a coordinator that restarted under it would have forced anyway.
+    pub fn restart(&self) -> Result<String, String> {
+        let supervisor = self.supervisor.as_ref().ok_or_else(|| {
+            "this daemon holds no supervisor for the box's room, so it cannot restart it. The \
+             launcher is what starts a coordinator (`letibot --room`), and the room's own daemon \
+             is never given one — a restart from its own pane would kill the feed that reports it"
+                .to_string()
+        })?;
+        let frame = RestartFrame {
+            at_ms: letibot_room::server::now_ms(),
+            by: self.session.clone(),
+            was_running: letibot_room::room_running(&self.socket),
+            why: "pressed restart in the room pane".to_string(),
+        };
+        let said = supervisor.restart(&frame)?;
+        let instance = letibot_room::room_started_ms(&self.socket).unwrap_or(0);
+        // **The cause is what the act found, not what it hoped.** A restart with nothing running
+        // is a start, and saying so is the difference between a person believing their key threw
+        // the queue away and knowing the room had already gone.
+        let cause = if frame.was_running {
+            Cause::Asked
+        } else {
+            Cause::Daemon
+        };
+        let marker = Marker::new(frame.at_ms, instance, cause).by(self.session.clone());
+        if let Err(e) = marker.write(&letibot_room::marker_path(&self.socket)) {
+            return Ok(format!(
+                "{said}, but the note that says why could not be written ({}): {} — the pane \
+                 will read this as a room that came back on its own",
+                letibot_room::marker_path(&self.socket).display(),
+                e
+            ));
+        }
+        *self.seen.lock().unwrap_or_else(|e| e.into_inner()) = Some(instance);
+        let snap = self.read_room();
+        *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
+        Ok(format!("{said} — and it begins with no items at all"))
+    }
+
+    /// **Watch the room's instance, and write the note nobody asked for.**
+    ///
+    /// An instance that is not the one this link last saw, and that no marker already claims, is a
+    /// room that died and came back — the third of the three causes, and the only one that is an
+    /// observation rather than an act. The guard matters in both directions: a restart this daemon
+    /// asked for is not a crash, and the daemon's own marker must not be overwritten by the reader
+    /// thread noticing the same change a moment later.
+    fn note_instance(&self) {
+        let Some(instance) = letibot_room::room_started_ms(&self.socket) else {
+            // No lease is no room: there is no new instance to name, and the pane's own
+            // `unreadable` sentence is the honest report until one appears.
+            return;
+        };
+        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
+        match *seen {
+            Some(prev) if prev == instance => return,
+            None => {
+                *seen = Some(instance);
+                return;
+            }
+            Some(_) => {}
+        }
+        *seen = Some(instance);
+        let path = letibot_room::marker_path(&self.socket);
+        if Marker::read(&path).is_some_and(|m| m.claims(instance)) {
+            return;
+        }
+        let says = format!(
+            "the room this one replaced began {} ago",
+            letibot_room::duration(
+                letibot_room::server::now_ms().saturating_sub(instance)
+            )
+        );
+        let _ = Marker::new(letibot_room::server::now_ms(), instance, Cause::Crashed)
+            .saying(says)
+            .write(&path);
+    }
+
+    /// **What the pane is told about the restart** — whether this host may ask for one, why not
+    /// when it may not, and the note the last one left.
+    fn restart_view(&self) -> RestartView {
+        RestartView {
+            available: self.supervisor.is_some(),
+            why: self.supervisor.is_none().then(|| {
+                "this host was not given a supervisor for the box's room, so there is no restart \
+                 key here — a coordinator is started by the launcher (`letibot --room`)"
+                    .to_string()
+            }),
+            marker: letibot_room::read_marker(&self.socket),
+        }
     }
 
     /// **A turn is running: say so for as long as it does.** Idempotent — a second call while a beat
@@ -274,12 +412,18 @@ impl RoomFeed for SessionRoom {
             None => RoomSnapshot {
                 lease_ms: welcome.lease_ms,
                 threshold: welcome.threshold,
+                restart: self.restart_view(),
                 unreadable: Some(
                     "the room has not been read yet — the first read is a second away".to_string(),
                 ),
                 ..RoomSnapshot::default()
             },
         }
+    }
+
+    /// **The pane's fifth control** — the restart, asked of the supervisor rather than of the room.
+    fn restart(&self) -> Result<String, String> {
+        SessionRoom::restart(self)
     }
 
     fn act(&self, entry: &str, verb: &str) -> Result<String, String> {
@@ -733,7 +877,7 @@ mod tests {
                 rung.lock().unwrap().push(session.to_string());
             })
         };
-        let me = SessionRoom::connect("s-a", &path, bell.clone()).expect("s-a connects");
+        let me = SessionRoom::connect("s-a", &path, bell.clone(), None).expect("s-a connects");
         let other = Client::connect(
             &path,
             Speaker::top_level("s-b"),
@@ -786,7 +930,7 @@ mod tests {
             let n = Arc::clone(&rung_arbiter);
             Arc::new(move |_: &str| *n.lock().unwrap() += 1)
         };
-        let host = SessionRoom::connect(&arbiter, &path, bell_arbiter).expect("the arbiter");
+        let host = SessionRoom::connect(&arbiter, &path, bell_arbiter, None).expect("the arbiter");
         let _ = other.request(&Request::Post {
             id: "p3".into(),
             tag: "ram".into(),
@@ -885,7 +1029,8 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {})).expect("s-a connects");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
+            .expect("s-a connects");
 
         // Two items under one tag, posted by another session so `s-a` can claim the head.
         let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
@@ -971,7 +1116,7 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         server.with_arbiter("s-arbiter");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {})).expect("connects");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("connects");
         me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
 
@@ -995,6 +1140,174 @@ mod tests {
         assert_eq!(snap.items.len(), 1);
         assert_eq!(snap.items[0].tag, "ram");
         assert_eq!(snap.lease_ms, letibot_room::DEFAULT_LEASE_MS);
+
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The restart is a FRAME to the supervisor, and what it found decides the note's cause.**
+    ///
+    /// Two acts, one fixture supervisor: the first with no lease on the socket — nothing was
+    /// running, so the key is a start and the note says the queue was already gone — and the second
+    /// with a live lease, which is a restart and names the session whose pane it was.
+    #[test]
+    fn the_restart_is_a_frame_to_the_supervisor_and_the_note_says_what_it_found() {
+        use std::sync::Mutex as StdMutex;
+
+        struct Recorder(StdMutex<Vec<RestartFrame>>);
+        impl RoomSupervisor for Recorder {
+            fn restart(&self, frame: &RestartFrame) -> Result<String, String> {
+                self.0.lock().unwrap().push(frame.clone());
+                Ok("the room was stopped and started again by a fixture".to_string())
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("letibot-room-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let rec = Arc::new(Recorder(StdMutex::new(Vec::new())));
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), Some(rec.clone()))
+            .expect("s-a connects");
+
+        // **No lease: nothing was running.** The act is a start, and the note says so — the key did
+        // not empty the queue, the room had already gone.
+        let said = me.restart().expect("the supervisor answers");
+        assert!(said.contains("no items at all"), "{said}");
+        let frames = rec.0.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1, "one act, one frame");
+        assert_eq!(frames[0].by, "s-a");
+        assert!(!frames[0].was_running, "there was nothing to stop");
+        assert!(frames[0].why.contains("pressed restart"), "{}", frames[0].why);
+        let note = letibot_room::read_marker(&path).expect("the note is written");
+        assert_eq!(note.cause, Cause::Daemon);
+        assert_eq!(note.by, "s-a");
+        assert_eq!(note.room_started_ms, 0, "there is no lease to read");
+
+        // **A live lease: this IS a restart**, and the note names the session and the room it made.
+        let lease = letibot_room::CoordinatorLease::owned_by(path.with_extension("lease"), "box/1/1");
+        std::fs::write(
+            lease.path(),
+            format!("box/1/1\t{}\t5000\t7000\n", std::process::id()),
+        )
+        .unwrap();
+        me.restart().expect("the supervisor answers again");
+        let frames = rec.0.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        assert!(frames[1].was_running, "there was a room to stop");
+        let note = letibot_room::read_marker(&path).expect("the note is rewritten");
+        assert_eq!(note.cause, Cause::Asked);
+        assert_eq!(note.room_started_ms, 7000, "the room this note is about");
+        assert!(
+            note.sentence(0).contains("pressed restart"),
+            "{}",
+            note.sentence(0)
+        );
+
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A supervisor that refuses leaves the room alone and says why** — and writes no note,
+    /// because a restart that did not happen is not a restart.
+    #[test]
+    fn a_refused_restart_is_a_sentence_and_leaves_no_note() {
+        struct Refuse;
+        impl RoomSupervisor for Refuse {
+            fn restart(&self, _frame: &RestartFrame) -> Result<String, String> {
+                Err("`letibot --room --stop` answered exit status: 1: no room on this box".into())
+            }
+        }
+
+        let dir = std::env::temp_dir().join(format!("letibot-room-norestart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let me = SessionRoom::connect(
+            "s-a",
+            &path,
+            Arc::new(|_: &str| {}),
+            Some(Arc::new(Refuse)),
+        )
+        .expect("s-a connects");
+
+        let why = me.restart().expect_err("the supervisor refused");
+        assert!(why.contains("no room on this box"), "{why}");
+        assert_eq!(
+            letibot_room::read_marker(&path),
+            None,
+            "a restart that did not happen is not a restart"
+        );
+
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A host with no supervisor refuses in words**, and the sentence says which door is which:
+    /// the launcher starts coordinators, and the room's own daemon is never given one.
+    #[test]
+    fn a_host_with_no_supervisor_refuses_the_restart_in_words() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-nosup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
+            .expect("s-a connects");
+        let why = me.restart().expect_err("no supervisor, no restart");
+        assert!(why.contains("no supervisor"), "{why}");
+        assert!(why.contains("letibot --room"), "{why}");
+        assert!(why.contains("kill the feed that reports it"), "{why}");
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A room that came back with nobody asking is written as a crash — once, and never over an
+    /// act's own note.** The instance is the lease's `started_ms`, which is the only trace a room
+    /// leaves when it is not answering.
+    #[test]
+    fn an_instance_that_changes_with_nobody_asking_is_a_crash_and_an_act_is_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-crash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let lease = path.with_extension("lease");
+        std::fs::write(&lease, format!("box/1/1\t{}\t5000\t7000\n", std::process::id())).unwrap();
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
+            .expect("s-a connects");
+        assert_eq!(letibot_room::read_marker(&path), None, "nothing yet");
+
+        // The room is a new one: a different `started_ms`, and no note accounting for it.
+        std::fs::write(&lease, format!("box/1/1\t{}\t9000\t9001\n", std::process::id())).unwrap();
+        me.note_instance();
+        let note = letibot_room::read_marker(&path).expect("the crash is written");
+        assert_eq!(note.cause, Cause::Crashed);
+        assert_eq!(note.room_started_ms, 9001);
+        assert!(
+            note.sentence(9_500).contains("nobody asked"),
+            "{}",
+            note.sentence(9_500)
+        );
+
+        // **An act's note is not overwritten by the observation.** A marker that already claims the
+        // room the reader is looking at is left alone — the daemon asked for this restart, and
+        // saying *nobody asked* would be a lie about the last minute.
+        let asked = Marker::new(9_100, 9001, Cause::Asked).by("s-a");
+        asked.write(&letibot_room::marker_path(&path)).unwrap();
+        *me.seen.lock().unwrap() = Some(7000);
+        me.note_instance();
+        assert_eq!(
+            letibot_room::read_marker(&path),
+            Some(asked),
+            "the act's note stands"
+        );
 
         drop(me);
         server.stop();

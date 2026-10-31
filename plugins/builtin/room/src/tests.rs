@@ -32,6 +32,9 @@ fn feed(rows: Value, questions: Value) -> Feed {
         "lease_ms": 90_000,
         "threshold": 3,
         "unreadable": null,
+        // **A host that may restart the room, and has not restarted it yet** — the fixture every
+        // other test reads, so a row that grows a key nobody asked for shows up here.
+        "restart": {"available": true, "why": null, "marker": null},
         "tags": rows,
         "questions": questions,
         "counts": {"items": 3, "live": 3, "claimable": 1, "claimed": 1, "abandoned": 1,
@@ -377,6 +380,104 @@ fn an_empty_room_says_that_emptiness_is_what_a_start_looks_like() {
     assert_eq!(view["badge"]["text"], json!("0 live"));
 }
 
+/// **A long-lived empty room and a just-restarted one are two different screens** — the operator's
+/// requirement in as many words, and the reason the identity sentence and the note both exist.
+///
+/// Both are empty, both say the room keeps no store, and the difference is the two lines a person
+/// reads first: how long it has been up, and whether anything restarted it.
+#[test]
+fn an_empty_room_that_was_just_restarted_is_not_an_empty_room_that_has_been_quiet() {
+    // The room that has been up for hours with nothing in it: no note, and the identity's age.
+    let mut quiet = feed(json!([]), json!([]));
+    quiet.counts = Counts::default();
+    quiet.identity = "the room on /tmp/room.sock — started 3h 2m ago and holding 0 item(s) since \
+                     then; the room keeps no store, so a restart begins with no items at all (9 \
+                     connection(s) served since it started)"
+        .to_string();
+    let quiet = view(&quiet);
+    let quiet_drawn = serde_json::to_string(&quiet).unwrap();
+    assert!(quiet_drawn.contains("3h 2m ago"), "{quiet_drawn}");
+    assert!(
+        quiet_drawn.contains("nothing has restarted this room since it began"),
+        "the quiet room says so rather than leaving it to be guessed: {quiet_drawn}"
+    );
+
+    // The room that began four seconds ago because somebody pressed the key.
+    let mut fresh = feed(json!([]), json!([]));
+    fresh.counts = Counts::default();
+    fresh.identity = "the room on /tmp/room.sock — started 4s ago and holding 0 item(s) since \
+                     then; the room keeps no store, so a restart begins with no items at all (1 \
+                     connection(s) served since it started)"
+        .to_string();
+    fresh.restart.marker = Some(Marker {
+        age_ms: 6_000,
+        cause: "asked".to_string(),
+        sentence: "restarted 6s ago: `s-a` pressed restart in the room pane. A restart begins \
+                   with no items at all."
+            .to_string(),
+    });
+    let fresh = view(&fresh);
+    let fresh_drawn = serde_json::to_string(&fresh).unwrap();
+    assert!(fresh_drawn.contains("started 4s ago"), "{fresh_drawn}");
+    assert!(
+        fresh_drawn.contains("`s-a` pressed restart"),
+        "the note says why: {fresh_drawn}"
+    );
+    assert!(
+        !fresh_drawn.contains("nothing has restarted this room since it began"),
+        "a room that HAS been restarted does not say nothing has: {fresh_drawn}"
+    );
+    assert_ne!(quiet_drawn, fresh_drawn, "two empty rooms, two screens");
+}
+
+/// **The restart is a declared row, and it is offered only where it would do something.**
+///
+/// The `s` panel is the operator's control (*"that panel must explicitly let me to restart the
+/// server"*); a host with no supervisor draws the reason instead of a key that would refuse.
+#[test]
+fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor() {
+    let offered = view(&feed(json!([]), json!([])));
+    let row = row_with(&offered, "restart");
+    assert_eq!(
+        row["enter"],
+        json!({"verb": "restart", "id": "restart"}),
+        "the control names the verb the manifest declares"
+    );
+    let under = row["under"].as_array().unwrap();
+    assert!(
+        under.iter().any(|u| u
+            .as_str()
+            .unwrap_or_default()
+            .contains("a restart begins with no items at all")),
+        "what survives is stated, not assumed: {under:?}"
+    );
+    // The panel is reachable by its own key, and it says which verb it is.
+    assert_eq!(offered["panels"][2]["key"], json!("s"));
+    assert_eq!(offered["panels"][2]["id"], json!("server"));
+
+    // **A host that may not restart the room offers no key** — the coordinator's own daemon is
+    // the case: a restart from its pane would kill the feed that reports it.
+    let mut none = feed(json!([]), json!([]));
+    none.restart.available = false;
+    none.restart.why = Some(
+        "this host was not given a supervisor for the box's room, so there is no restart key here \
+         — a coordinator is started by the launcher (`letibot --room`)"
+            .to_string(),
+    );
+    let none = view(&none);
+    let row = row_with(&none, "restart");
+    assert_eq!(row["enter"], json!(null), "no key where none would work");
+    assert_eq!(cells_of(&row, "cells")[1], "not offered here");
+    let under = row["under"].as_array().unwrap();
+    assert!(
+        under.iter().any(|u| u
+            .as_str()
+            .unwrap_or_default()
+            .contains("was not given a supervisor")),
+        "and the reason is on the row: {under:?}"
+    );
+}
+
 /// **A room that could not be read draws one panel saying why**, not an empty queue.
 #[test]
 fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
@@ -405,12 +506,12 @@ fn no_feed_is_its_own_sentence() {
     assert!(drawn.contains("hands no `room` feed"), "{drawn}");
 }
 
-/// **Every act in the view is one of the four the manifest declares** — the half of
+/// **Every act in the view is one of the five the manifest declares** — the half of
 /// `View::validate_for` this layer can check on its own. The host runs the real one (`validate`
 /// plus the manifest) before the pane is drawn; what is asserted here is that the layer never
-/// reaches for a fifth word, which is the defect that check would find.
+/// reaches for a sixth word, which is the defect that check would find.
 #[test]
-fn every_act_names_one_of_the_four_controls() {
+fn every_act_names_one_of_the_five_controls() {
     let feed = feed(
         json!([{"tag": "ram", "counts": {"items": 2, "claimable": 1, "claimed": 1},
         "rows": [
@@ -425,7 +526,7 @@ fn every_act_names_one_of_the_four_controls() {
                 "behind": 0}]),
     );
     let view = view(&feed);
-    let declared = ["claim", "release", "abandon", "rule"];
+    let declared = ["claim", "release", "abandon", "rule", "restart"];
     let mut seen: Vec<String> = Vec::new();
     for row in rows(&view) {
         if let Some(verb) = row["enter"]["verb"].as_str() {
@@ -441,7 +542,7 @@ fn every_act_names_one_of_the_four_controls() {
     for verb in &seen {
         assert!(
             declared.contains(&verb.as_str()),
-            "`{verb}` is not one of the four"
+            "`{verb}` is not one of the five"
         );
     }
     // And all four are reached by this one fixture, so the set is not accidentally a subset.

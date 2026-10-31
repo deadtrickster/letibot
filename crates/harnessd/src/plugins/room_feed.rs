@@ -53,6 +53,35 @@ pub trait RoomFeed: Send + Sync {
     /// **One of the person's four controls, on the entry a row names.** The HOST performs it; the
     /// layer only decided which row to draw. `Err` is the refusal, in the room's own words.
     fn act(&self, entry: &str, verb: &str) -> Result<String, String>;
+
+    /// **The pane's fifth control — restart the box's room.** Not a room verb: it is a daemon
+    /// lifetime, asked of the supervisor that starts coordinators (`crate::room::supervise`), and
+    /// this host is the one that asks because the coordinator must not stop itself.
+    ///
+    /// The default is the refusal, so a fixture that has no supervisor has to say nothing to be
+    /// honest: a pane whose host cannot restart the room offers no key, and a key that arrives
+    /// anyway is answered in words rather than in silence.
+    fn restart(&self) -> Result<String, String> {
+        Err("this host was not given a supervisor for the box's room, so it cannot restart it \
+             — a coordinator is started by the launcher (`letibot --room`)"
+            .to_string())
+    }
+}
+
+/// **What the pane is told about the restart** — whether this host may ask for one, why not when it
+/// may not, and the note the last one left.
+///
+/// The marker is the operator's third requirement: *an orchestration server that returns with no
+/// memory of the last minute is the opaque thing this feature exists to remove*. When, and why —
+/// the control was pressed, the daemon restarted it, or it crashed.
+#[derive(Debug, Clone, Default)]
+pub struct RestartView {
+    /// May this host ask a supervisor to restart the room?
+    pub available: bool,
+    /// Why not, when not — the sentence the pane prints instead of offering the key.
+    pub why: Option<String>,
+    /// The note the last restart left, if one did.
+    pub marker: Option<letibot_room::Marker>,
 }
 
 /// **The room, as a pane reads it** — the state a `room` feed is built from, before the ages are
@@ -76,6 +105,8 @@ pub struct RoomSnapshot {
     /// of an empty room: *nothing is queued* and *nobody answered* are two facts, and a screen that
     /// shows one for the other is a screen a person cannot act on.
     pub unreadable: Option<String>,
+    /// **The restart**: whether this host may ask for one, and the note the last one left.
+    pub restart: RestartView,
 }
 
 /// **The `room` feed as a pane is handed it** — the queues per tag, each row's ages against the
@@ -149,6 +180,10 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
         "lease_ms": snap.lease_ms,
         "threshold": snap.threshold,
         "unreadable": snap.unreadable,
+        // **The restart, as the pane reads it**: the key when this host may ask for one, the
+        // sentence when it may not, and the note the last one left. `sentence` is composed here
+        // because a guest has no clock and the age is the half of the note a person reads first.
+        "restart": restart_of(&snap.restart, now),
         "tags": tags,
         "questions": questions,
         "counts": all.value(),
@@ -246,6 +281,32 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// **The restart block a pane reads** — may this host ask for one, why not when it may not, and the
+/// note the last one left, with its age measured against the host's clock.
+///
+/// The sentence is composed HERE rather than in the guest for the feed's own reason: a guest
+/// compiled for `wasm32-unknown-unknown` has no `SystemTime`, so every age arrives already
+/// subtracted and the layer only prints it.
+fn restart_of(view: &RestartView, now: u64) -> Value {
+    let marker = view.marker.as_ref().map(|m| {
+        json!({
+            "at_ms": m.at_ms,
+            "age_ms": now.saturating_sub(m.at_ms),
+            // The three causes, in the room's own words: `asked`, `daemon`, `crashed`.
+            "cause": m.cause.as_str(),
+            "by": m.by,
+            "says": m.says,
+            "sentence": m.sentence(now),
+            "room_started_ms": m.room_started_ms,
+        })
+    });
+    json!({
+        "available": view.available,
+        "why": view.why,
+        "marker": marker,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +378,11 @@ mod tests {
             items,
             questions: Vec::new(),
             unreadable: None,
+            restart: RestartView {
+                available: true,
+                why: None,
+                marker: None,
+            },
         }
     }
 
@@ -465,5 +531,61 @@ mod tests {
         assert_ne!(first, third, "the frame after the tick is the next second");
         assert_eq!(first["now_ms"], json!(NOW));
         assert_eq!(third["now_ms"], json!(NOW + 1_000));
+    }
+
+    /// **The restart note arrives with its age, its cause and its sentence** — the three things the
+    /// operator asked the pane to be able to say, and the reason the age is subtracted here rather
+    /// than in a guest that has no clock.
+    #[test]
+    fn a_restart_note_carries_when_and_why() {
+        let mut snap = snapshot(Vec::new());
+        snap.restart.marker = Some(
+            letibot_room::Marker::new(NOW - 30_000, NOW - 31_000, letibot_room::Cause::Asked)
+                .by("s-a"),
+        );
+        let value = room(&Fixed(snap.clone()), "s-a", NOW);
+        let marker = &value["restart"]["marker"];
+        assert_eq!(value["restart"]["available"], json!(true));
+        assert_eq!(marker["cause"], json!("asked"));
+        assert_eq!(marker["by"], json!("s-a"));
+        assert_eq!(marker["age_ms"], json!(30_000));
+        let sentence = marker["sentence"].as_str().unwrap();
+        assert!(sentence.contains("`s-a` pressed restart"), "{sentence}");
+        assert!(
+            sentence.contains("no items at all"),
+            "what survives a restart is said, not assumed: {sentence}"
+        );
+
+        // And each of the three causes is a different sentence in the same slot.
+        for (cause, wanted) in [
+            (letibot_room::Cause::Daemon, "by the daemon"),
+            (letibot_room::Cause::Crashed, "nobody asked"),
+        ] {
+            let mut snap = snapshot(Vec::new());
+            snap.restart.marker =
+                Some(letibot_room::Marker::new(NOW - 1_000, NOW - 2_000, cause));
+            let value = room(&Fixed(snap), "s-a", NOW);
+            let sentence = value["restart"]["marker"]["sentence"].as_str().unwrap();
+            assert!(sentence.contains(wanted), "{cause:?}: {sentence}");
+        }
+    }
+
+    /// **A host with no supervisor says so instead of offering the key** — and a room nobody has
+    /// restarted carries no note at all, which is not the same as a note that says nothing.
+    #[test]
+    fn a_host_with_no_supervisor_says_why_and_no_note_is_null() {
+        let mut snap = snapshot(Vec::new());
+        snap.restart = RestartView {
+            available: false,
+            why: Some("this host was not given a supervisor".to_string()),
+            marker: None,
+        };
+        let value = room(&Fixed(snap), "s-a", NOW);
+        assert_eq!(value["restart"]["available"], json!(false));
+        assert_eq!(
+            value["restart"]["why"],
+            json!("this host was not given a supervisor")
+        );
+        assert_eq!(value["restart"]["marker"], json!(null));
     }
 }

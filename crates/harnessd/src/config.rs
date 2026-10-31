@@ -772,6 +772,15 @@ pub struct Config {
     /// not enough to join: a fixture on a box where the operator runs a coordinator would otherwise
     /// post into their queue.
     pub room_link: bool,
+    /// **Whether this daemon may ask the room's supervisor to restart the coordinator.**
+    ///
+    /// `true` on the daemon's own path and **`false` on the coordinator's**
+    /// ([`crate::room::coordinator::configure`] clears it): the arbiter's pane is drawn by the
+    /// process a restart would kill, and a control that kills the feed that reports it is the one
+    /// thing the operator's brief rules out. `false` in every fixture too — the same rule
+    /// `room_link` and `landing_root` follow, and here it is sharper: a test that pressed restart
+    /// would stop the operator's room.
+    pub restart_room: bool,
     /// **Where the daemon's own logs live** — `<data dir>/logs`, one directory per session under
     /// it (`delivery-log.jsonl`, `context-claims.jsonl`, `notes-offers.jsonl`; see
     /// [`Config::daemon_logs`]). Set by [`Config::for_the_daemon`]; `None` in every fixture, which
@@ -2227,6 +2236,7 @@ impl Config {
             serve_queues: true,
             room: false,
             room_link: false,
+            restart_room: false,
             logs_root: None,
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
@@ -2325,6 +2335,11 @@ impl Config {
         // not in `for_this_box`, which every fixture builds on: a test's session must not post into
         // the operator's queue, and the socket existing is not consent.
         cfg.room_link = true;
+        // **And this daemon may ask the launcher to restart the coordinator** (the room's slice 4).
+        // Armed HERE for the reason above, one degree sharper: the supervisor runs `letibot --room
+        // --stop`, so a fixture that pressed the pane's restart key would stop the operator's room.
+        // The coordinator's own daemon clears it — see `room::coordinator::configure`.
+        cfg.restart_room = true;
         cfg
     }
 

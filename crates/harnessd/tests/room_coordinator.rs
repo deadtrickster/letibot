@@ -84,6 +84,14 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         cfg.room_link,
         "and that session must be able to join the room: it is the arbiter"
     );
+    // **And it may NOT restart the room it serves.** The pane's restart asks a supervisor, and this
+    // daemon IS the process a restart would kill: a control that stops its own feed mid-act could
+    // not say what happened. Set here rather than inherited, so a fixture that calls `configure` on
+    // a `for_this_box` config measures the coordinator and not the constructor.
+    assert!(
+        !cfg.restart_room,
+        "the room's own daemon is never given a restart supervisor"
+    );
     let arbiter = cfg.session_id.clone();
     assert_eq!(arbiter, daemon_room::session_id());
 
