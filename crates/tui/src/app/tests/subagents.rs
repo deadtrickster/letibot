@@ -1697,3 +1697,42 @@ fn entering_a_subagent_stops_drawing_the_conversation_it_is_leaving() {
     );
 }
 
+/// **The resume arm is the same rule** — a session the daemon does not hold is fetched from the
+/// store, which is the slower wait of the two, and the conversation being left must not be
+/// passed off as the one asked for while it happens.
+#[test]
+fn resuming_a_stored_session_also_stops_drawing_the_one_being_left() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    shell_row(
+        &mut a,
+        1,
+        "s.0",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "PARENT-ANSWER".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    let mut stored = brief("s-stored", "a conversation on disk", false);
+    stored.live = false;
+    a.sessions.push(stored);
+    assert_eq!(
+        a.switch_to("s-stored".into()),
+        Some(Action::ResumeSession("s-stored".into()))
+    );
+    let during = a.screen(100, 24).join("\n");
+    assert!(
+        !during.contains("PARENT-ANSWER"),
+        "the pane draws the session being left while the store is read:\n{during}"
+    );
+    assert!(
+        during.contains("leaving parent for a conversation on disk"),
+        "{during}"
+    );
+    assert!(
+        during.contains("switching to a conversation on disk"),
+        "{during}"
+    );
+}
