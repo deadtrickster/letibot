@@ -277,13 +277,12 @@ impl CoordinatorLease {
             .truncate(false)
             .open(&path)
             .ok()?;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DECISION_WAIT_MS);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(DECISION_WAIT_MS);
         loop {
             match file.try_lock() {
                 Ok(()) => return Some(file),
-                Err(std::fs::TryLockError::WouldBlock)
-                    if std::time::Instant::now() < deadline =>
-                {
+                Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 // Another `acquire` has been in there longer than the bound, or this filesystem

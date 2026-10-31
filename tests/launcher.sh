@@ -29,8 +29,35 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$T/bin" "$T/home/.config/letibot" "$T/run" "$T/ws"
+# **A coordinator stub, and it really binds.** `docs/room.md` § *Still owed* item 4: the launcher
+# now starts a coordinator for the box whenever one is not serving, so every case below meets that
+# path. This one binds `$LETIBOT_ROOM_SOCKET`, writes the lease the real coordinator writes, and
+# stays until the harness's cleanup — which is what makes `room_up` answer yes for every later case
+# and keeps the suite from starting a room per run.
+#
+# `exec -a harnessd` is load-bearing twice: `--stop --all` decides a record is live by the FIRST
+# WORD of the process's argv (a python script's is `python3`), and `room_up` reads the argv for
+# `--room`.
+cat > "$T/bin/harnessd-room.py" <<'STUB'
+import os, socket, sys, time
+p = os.environ["LETIBOT_ROOM_SOCKET"]
+with open(os.environ["ROOM_ARGV"], "a") as f:
+    f.write("room " + " ".join(sys.argv[1:]) + "\n")
+with open(os.path.join(os.path.dirname(p), "pid"), "w") as f:
+    f.write(str(os.getpid()))
+try: os.unlink(p)
+except FileNotFoundError: pass
+s = socket.socket(socket.AF_UNIX); s.bind(p); s.listen(4)
+now = int(time.time() * 1000)
+with open(p[:-5] + ".lease", "w") as f:
+    f.write("box/%d/1\t%d\t%d\t%d\n" % (os.getpid(), os.getpid(), now, now))
+while True: time.sleep(0.2)
+STUB
 cat > "$T/bin/harnessd" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "--room" ]; then
+  exec -a harnessd python3 "$(dirname "$0")/harnessd-room.py" --room
+fi
 printf 'harnessd'; printf ' %q' "$@"; printf '\n'
 # **What the launcher gave this child**, for the open-file cases below: a child's limits are
 # its parent's, so this is the only honest way to see what the launcher raised.
@@ -50,12 +77,18 @@ fails=0
 # launcher.
 RUN_PATH="/usr/bin:/bin"
 for d in /usr/sbin /sbin; do [ -d "$d" ] && RUN_PATH="$RUN_PATH:$d"; done
+# **The box's room goes somewhere this harness owns.** `harnessd`'s `room::socket_path` and the
+# launcher's `room_paths` both honour `LETIBOT_ROOM_SOCKET`, so every case here shares one room —
+# which is also what a real box has — and nothing touches the operator's data directory.
+ROOM_SOCK="$T/room/room.sock"
+mkdir -p "$T/room"
 # run NAME PROVIDERS_TOML [ARGS...] -- the launcher's combined output for one case.
 run() {
   local toml="$1"; shift
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
-  (cd "${RUN_WS:-$T/ws}" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
+    LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
     "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 </dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
@@ -834,5 +867,164 @@ refuse "  ...and no daemon is started for this folder" "$out" "^harnessd "
 rm -f "$T/run/letibot/migrated-s-4242.json"
 
 
+
+# ---------------------------------------------------------------------------
+# **THE LAUNCHER STARTS THE BOX'S ROOM** — `docs/room.md` § *Still owed* item 4: *"`--room` exists;
+# `scripts/letibot` does not yet start a coordinator when a session's `room` tool finds no socket"*.
+#
+# A session's `room` tool is seated at `Harness::open` from the socket that exists THEN, so the only
+# door is before a session opens — which is why every run path calls `room_ensure` and nothing else
+# does. Four things are pinned here, and each is a sentence from the brief:
+#
+#   1. a run starts one, and a second run finds it and starts nothing (one per box);
+#   2. `--daemons`/`--ls` see it, so it is not a daemon the launcher's own tools are blind to;
+#   3. a start that FAILS is said — the coordinator's own words, naming the holder — and the run
+#      goes on, because a session with no room is a session that works;
+#   4. `--room --stop` and `--stop --all` both stop it.
+#
+# The one-per-box guarantee itself is `letibot_room::lease`'s and is measured in
+# `crates/room/src/lease.rs` (`a_race_for_the_lease_gives_one_coordinator_and_names_the_holder`) —
+# the launcher does not carry a second lock, it carries the loser's sentence to the terminal.
+if command -v python3 >/dev/null 2>&1; then
+  room_argv() { grep '^room ' "$T/room-argv.log" 2>/dev/null || true; }
+  # **The room-capable daemon stub, restored** — the sections above replace `$T/bin/harnessd`
+  # (one of them with a daemon that LISTENS and never exits, which would hang a one-shot here).
+  room_stub() {
+    cat > "$T/bin/harnessd" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--room" ]; then
+  exec -a harnessd python3 "$(dirname "$0")/harnessd-room.py" --room
+fi
+printf 'harnessd'; printf ' %q' "$@"; printf '\n'
+STUB
+    chmod +x "$T/bin/harnessd"
+  }
+  # **A room of this case's own.** The suite's shared one has been up since its first case, and
+  # "the launcher starts one" cannot be seen against a socket that is already serving — the old
+  # binder holds it even after its file is removed, which is exactly the property `live` documents.
+  room_kill() {
+    local p i=0
+    p="$(cat "$T/room/pid" 2>/dev/null || true)"
+    if [ -n "$p" ]; then
+      kill "$p" 2>/dev/null || true
+      while [ "$i" -lt 40 ] && kill -0 "$p" 2>/dev/null; do sleep 0.05; i=$((i + 1)); done
+    fi
+    rm -f "$T/room/room.sock" "$T/room/room.lease" "$T/room/pid" "$T/run/letibot/room.json"
+  }
+  room_stub
+  room_kill
+  : > "$T/room-argv.log"
+  mkdir -p "$T/roomws"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room)"
+  expect "--room starts the box's coordinator" "$out" "^letibot: the room is up"
+  expect "  ...and says which socket it serves" "$out" "socket +$ROOM_SOCK"
+  expect "  ...and names the lease the coordinator holds" "$out" "lease  *$T/room/room.lease"
+  expect "  ...and is handed --room and nothing else" "$(room_argv)" "^room --room$"
+  # **The record, in the launcher's own shape** — `role: room` is what tells it from a folder's.
+  if grep -q '"role": "room"' "$T/run/letibot/room.json" 2>/dev/null; then
+    echo "ok   ...and writes the record \`--daemons\` reads, marked role room"
+  else
+    echo "FAIL ...and writes the record \`--daemons\` reads:"
+    sed 's/^/     /' "$T/run/letibot/room.json" 2>/dev/null || echo "     (no record at all)"
+    fails=$((fails + 1))
+  fi
+  # **And it outlives the run that asked.** The launcher has exited by the time this reads the
+  # pid — that is the whole of "a coordinator that dies with its asker is worse than none".
+  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2>/dev/null | head -1)"
+  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2>/dev/null; then
+    echo "ok   ...and the coordinator is still alive after the launcher exited (pid $room_pid)"
+  else
+    echo "FAIL ...and the coordinator is still alive after the launcher exited (pid '${room_pid:-none}')"
+    fails=$((fails + 1))
+  fi
+
+  # **A second run starts NOTHING** — one per box, and the check is the coordinator's own argv log.
+  : > "$T/room-argv.log"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room)"
+  refuse "a second run does not start a second coordinator" "$out" "no room on this box"
+  if [ -z "$(room_argv)" ]; then echo "ok   ...and nothing was started over it"; else
+    echo "FAIL ...and nothing was started over it:"; room_argv | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" "one question")"
+  refuse "  ...nor does a plain run" "$out" "no room on this box"
+  if [ -z "$(room_argv)" ]; then echo "ok   ...and a plain run starts nothing either"; else
+    echo "FAIL ...and a plain run starts nothing either:"; room_argv | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+
+  # **The launcher's own tools see it** — R102's complaint, one daemon over: a daemon the
+  # operator's tools cannot see is a daemon they cannot stop.
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --daemons)"
+  expect "--daemons names the box's room" "$out" "^the box's room  up"
+  expect "  ...with the socket it serves" "$out" "$ROOM_SOCK"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls)"
+  expect "--ls numbers it as the box's room" "$out" "the box's room +up"
+
+  # **A START THAT FAILS IS SAID, NOT SWALLOWED.** The coordinator that loses the lease exits in
+  # milliseconds with the holder's name; the launcher prints that sentence and the run goes on, so
+  # the session's `room` tool still refuses by name — which is true — instead of the failure being
+  # the launcher's silence.
+  room_kill
+  cat > "$T/bin/harnessd" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "--room" ]; then
+  echo "harnessd: another room coordinator is alive here: box/4242/1 (pid 4242) holds /x/room.lease and beat 3s ago. Two coordinators are two rooms with one name, so this one will not start." >&2
+  exit 1
+fi
+printf 'harnessd'; printf ' %q' "$@"; printf '\n'
+STUB
+  chmod +x "$T/bin/harnessd"
+  : > "$T/room-argv.log"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" "one question")"
+  expect "a coordinator that will not start is SAID" "$out" "the box's room did not start"
+  expect "  ...in the coordinator's own words, naming the holder" "$out" \
+    "another room coordinator is alive here: box/4242/1"
+  expect "  ...and the run goes on regardless" "$out" "^harnessd .*--prompt one"
+  refuse "  ...and the tool's refusal is not replaced by silence" "$out" "the room is up"
+
+  # **And `--room --stop` stops it** — the record goes with the process it names.
+  room_stub
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
+  room_pid="$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$T/run/letibot/room.json" 2>/dev/null | head -1)"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room --stop)"
+  expect "--room --stop stops the box's room" "$out" "^stopped the room"
+  if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
+    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+  fi
+  if [ -n "$room_pid" ] && kill -0 "$room_pid" 2>/dev/null; then
+    echo "FAIL ...and the process is gone (pid $room_pid is still there)"; fails=$((fails + 1))
+  else
+    echo "ok   ...and the process is gone"
+  fi
+
+  # **`--stop --all` sees it too** — a stop that leaves a daemon running is the R102 complaint.
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --stop --all)"
+  expect "--stop --all stops the box's room" "$out" "stopped .*room-workspace"
+  if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
+    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+  fi
+
+  # **The host key, against the table `letibot_room::lease` pins.** The launcher derives the
+  # socket's name in bash before it starts anything, so a key that disagrees with the Rust's would
+  # look for a socket no coordinator ever binds: a second coordinator on every run, refused by the
+  # lease for ever. Both sides carry the same four names.
+  mkdir -p "$T/unamebin"
+  cat > "$T/unamebin/uname" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-n" ]; then printf '%s\n' "MacBook-Pro"; exit 0; fi
+exec /usr/bin/uname "$@"
+STUB
+  chmod +x "$T/unamebin/uname"
+  out="$(ROOM_SOCK_OVERRIDE='' RUN_PATH_EXTRA="$T/unamebin:" RUN_WS="$T/roomws" \
+    run "$DEFAULT_ONLY" --room --stop 2>&1)"
+  # `--room --stop` with no `LETIBOT_ROOM_SOCKET` is the derivation and nothing else: it names the
+  # socket the launcher would look at on a box whose `uname -n` is MacBook-Pro.
+  expect "the launcher derives the room's socket from the host, as the Rust does" "$out" \
+    "no room on this box \(.*/room-macbook-pro-45a1c8db.sock\)"
+else
+  echo "skip the room cases: no python3 to bind a unix socket"
+fi
 
 [ "$fails" -eq 0 ] && echo "launcher: all cases pass" || { echo "launcher: $fails failed"; exit 1; }

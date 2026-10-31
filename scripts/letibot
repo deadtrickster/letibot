@@ -28,6 +28,9 @@
 #   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
 #   letibot --glm               GLM's dialect+vocab; providers.toml names the address
 #   letibot --stop              stop the daemon
+#   letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
+#                               what it is (`--room --stop` stops it). One per box, not one per
+#                               folder: a run makes sure one exists before it opens a session
 #   letibot --status            is it up, and on what
 #
 # HOW A SESSION IS REOPENED, IN BOTH DIRECTIONS. Every one of the session commands
@@ -461,6 +464,10 @@ already up, then attaches the TUI head to it.
   letibot --stop              stop the daemon
   letibot --stop [N|DIR] [--force]   interrupt its turns, stop it; --force SIGKILLs one still there after 5s
   letibot --stop --all [--force]     the same for every folder's daemon
+  letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
+                              what it is. One per box, not one per folder — every run makes
+                              sure one exists before it opens a session. `--room --stop` stops
+                              it (`--force` SIGKILLs one still there)
   letibot --status            is it up, and on what
 
   letibot                     the leticode seat: opencode's tools and bash, on this host
@@ -552,7 +559,7 @@ for a in "$@"; do
     --help|-h|help|--read-only|--writes|--bash|--no-bash|--ask|--supervise|--glm|--flash|--dense|--attach|--daemons|--all|\
     --sessions|--list|--stop|--status|--continue|-c|--new|-n|--session|-s|\
     --rename|--delete|--mode|--force|--vm|--vm-arg|--host|--provider|--model|\
-    --migrate|--reattach|--to|--copy-keys|\
+    --migrate|--reattach|--to|--copy-keys|--room|\
     --list-claude|--claude-sessions|--handover|--note|--note-continued|--revert|--tsv|\
     --web-search|--brave-key|--oracle|--oracle-budget-ms|--ls|--list-all) ;;
     --*) die "unknown flag: $a
@@ -818,7 +825,7 @@ MODEL_FROM="${LETIBOT_MODEL:+\$LETIBOT_MODEL}"
 # ignoring it: a flag that does nothing is a flag the operator cannot trust.
 FORCE=0
 for a in "$@"; do [ "$a" = "--force" ] && FORCE=1; done
-if [ "$FORCE" = 1 ] && [ "${1:-}" != "--stop" ]; then
+if [ "$FORCE" = 1 ] && [ "${1:-}" != "--stop" ] && [ "${1:-}" != "--room" ]; then
   die "--force only means something with --stop"
 fi
 
@@ -1349,7 +1356,7 @@ record_field_of() { json_field "$2" "$1"; }
 #
 # Sets WORKSPACE, KEY, SOCKET and RECORD, the four the rest of this script reads.
 retarget() {
-  local want="$1" n=0 r ws
+  local want="$1" n=0 r ws sock
   case "$want" in
     ''|.) return 0 ;;
     *[!0-9]*)
@@ -1362,13 +1369,18 @@ retarget() {
         [ "$n" = "$want" ] || continue
         ws="$(record_field_of "$r" workspace)"
         WORKSPACE="$ws"
+        # **A record's own socket wins over the one this folder's hash would name.** They are
+        # the same for every folder's daemon (that is how the record was written); they differ
+        # for the box's room, whose socket is named by the HOST and lives in the data directory.
+        # Reading it here is what lets `--stop N` reach the room as it reaches anything else.
+        sock="$(record_field_of "$r" socket)"
         break
       done
       [ "$n" -ge "$want" ] || die "there is no daemon $want — \`letibot --ls\` numbers them"
       ;;
   esac
   KEY="$(printf '%s' "$WORKSPACE" | sha12)"
-  SOCKET="$RUNDIR/$KEY.sock"
+  SOCKET="${sock:-$RUNDIR/$KEY.sock}"
   RECORD="$RUNDIR/$KEY.json"
   [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
@@ -1470,6 +1482,172 @@ daemon_pid() {
   return 1
 }
 
+# **THE BOX'S ROOM, AND WHY THE LAUNCHER IS WHAT STARTS IT.**
+#
+# `docs/room.md` § *Still owed* item 4 says it plainly: `--room` exists and nothing starts a
+# coordinator, so a session's `room` tool refuses by name — honest, and not the same as the room
+# being there. The tool cannot start one: it runs inside a daemon, and a daemon that forked another
+# daemon would be a second `harnessd` under a lease it does not hold. The door is here, so every
+# run that is about to open a session first makes sure the box has a coordinator.
+#
+# **One per box, and the lease is the only guard.** Two runs at the same instant start two
+# coordinators and exactly one wins: `letibot_room::lease` refuses the other by name, and this
+# script PRINTS that sentence rather than inventing a lock of its own. The winner's socket and
+# lease are both derived from the HOST (`room-<host key>.sock` and `.lease` under the data
+# directory), so the key is derived here too: a launcher that spelled it differently would look for
+# a socket no coordinator ever binds, and start a second one on every run for ever.
+ROOM_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/letibot"
+# Resolved once, on first use: `--help` and `--status` must not fork `uname`, `od` and `sed` to
+# answer a question about a daemon they are not going to touch.
+ROOM_SOCKET=""
+ROOM_LEASE=""
+ROOM_LOG=""
+ROOM_RECORD=""
+room_paths() {
+  [ -n "$ROOM_SOCKET" ] && return 0
+  if [ -n "${LETIBOT_ROOM_SOCKET:-}" ]; then
+    ROOM_SOCKET="$LETIBOT_ROOM_SOCKET"
+  else
+    ROOM_SOCKET="$ROOM_DATA/room-$(room_host_key "$(uname -n)").sock"
+  fi
+  # `harnessd`'s `room::lease_path` puts the lease beside the socket it belongs to, named by the
+  # same key, so a box that moves its socket with `LETIBOT_ROOM_SOCKET` moves both.
+  ROOM_LEASE="${ROOM_SOCKET%.sock}.lease"
+  ROOM_LOG="$HOME/logs/$(basename "$ROOM_SOCKET" .sock).log"
+  ROOM_RECORD="$RUNDIR/$(basename "$ROOM_SOCKET" .sock).json"
+}
+# `letibot_room::lease::host_key_of`, in bash: the host's name made safe for a filename, cut to 24
+# characters, with the low 32 bits of FNV-1a of the RAW name appended.
+#
+# **The arithmetic is done in 32 bits, and that is exact** — truncating a product to 32 bits
+# depends only on the operands' low 32 bits, so the low half of the 64-bit FNV-1a is
+# `h = (h ^ byte) * (0x100000001b3 & 0xffffffff)` starting from `0xcbf29ce484222325 & 0xffffffff`.
+# It matters that the multiplier is the 64-bit prime's LOW HALF (435) and not the 32-bit FNV's own
+# prime (16777619): MEASURED here, the 32-bit variant gives `MacBook-Pro -> 271c727b` where the
+# Rust answers `45a1c8db`. And the smaller constants are the only ones bash 3.2 can spell at all.
+# `crates/room/src/lease.rs`'s `the_host_key_matches_what_the_launcher_derives` pins the same table
+# this function is tested against, so a change on either side has to change both.
+room_host_key() { # room_host_key NAME
+  local raw="$1" safe hex h b
+  # Per CHARACTER, which is what the Rust maps: a UTF-8 locale makes `.` and the negated class
+  # match characters rather than bytes, so one non-ASCII character is one dash and not three.
+  # `[:upper:]`/`[:lower:]` and not `A-Z`/`a-z`, which shellcheck is right about: in a UTF-8
+  # locale the class forms fold an accented letter the same way `to_ascii_lowercase` would leave
+  # it — and either way it is not ASCII alphanumeric, so it becomes one dash below.
+  safe="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' |
+    sed 's/[^a-z0-9]/-/g; s/^\(.\{24\}\).*/\1/; s/-*$//')"
+  [ -n "$safe" ] || safe=host
+  # `od` and not `${raw:i:1}`: the BYTES are what the Rust hashes, and bash would hand back
+  # characters (or a locale's idea of one).
+  h=$((0x84222325))
+  for b in $(printf '%s' "$raw" | od -An -v -tu1); do
+    h=$(((h ^ b) * 435 & 0xFFFFFFFF))
+  done
+  hex="$(printf '%08x' "$h")"
+  printf '%s-%s' "$safe" "$hex"
+}
+# **Is a coordinator here?** Two facts, and either is enough: something is LISTENING on the room's
+# socket (the reader `live` uses for a folder's daemon), or the lease names a pid that is running
+# and whose argv says `--room`. The second covers the moment between the lease being taken and the
+# bind; the argv check is what stops a recycled pid from answering for a room that is gone, the
+# same discipline `daemon_has_bash` uses one daemon down.
+room_pid() {
+  local p
+  room_paths
+  p="$(socket_pids "$ROOM_SOCKET" | head -1 || true)"
+  if [ -z "$p" ]; then
+    # The lease's first line, second field: `owner<TAB>pid<TAB>beat_ms<TAB>started_ms`.
+    p="$(awk -F'\t' 'NR == 1 { print $2; exit }' "$ROOM_LEASE" 2>/dev/null || true)"
+  fi
+  [ -n "$p" ] || return 1
+  pid_alive "$p" || return 1
+  printf '%s' "$p"
+}
+room_up() {
+  local p
+  room_paths
+  socket_is_listening "$ROOM_SOCKET" && return 0
+  p="$(room_pid)" || return 1
+  pid_argv "$p" | grep -qx -- '--room'
+}
+# **What the coordinator last said about failing**, from its own log — the lease's refusal names
+# the holder, the model's refusal names the key, and neither sentence is one this script could
+# write itself. `starting:` lines are the boot's progress, not its reason.
+room_failure() {
+  tail -n 20 "$ROOM_LOG" 2>/dev/null | grep -v '^ *starting: ' | grep -v '^$' | tail -1 || true
+}
+# **Start one, detached, and say what happened.** `detach` is the door the folder's daemon goes
+# through too (setsid, and a systemd scope on Linux), so the coordinator outlives this run, this
+# terminal and the session that asked for it — which is the room's whole point, since it exists for
+# the moment a session cannot reach anything else.
+#
+# It is started with NO model flags on purpose: a coordinator's arbiter is `providers.toml`'s
+# default or deepseek (`docs/room.md`), not this folder's local model, and the byte vocabulary that
+# follows from a provider needs no GGUF. An operator who wants another model runs
+# `harnessd --room --model …` by hand, and every launcher after that finds it and leaves it alone.
+room_start() {
+  local p i
+  mkdir -p "$(dirname "$ROOM_LOG")" "$ROOM_DATA" 2>/dev/null || true
+  # A socket FILE with nothing listening is a leftover from a coordinator that was killed, and it is
+  # deliberately NOT removed here: a box whose reader cannot see the listener would have this
+  # script unlink a LIVE socket — the `live_detached` brick, one daemon down — and the bind replaces
+  # a dead file by itself.
+  detach "${NOGPU[@]}" "$BIN/harnessd" --room >>"$ROOM_LOG" 2>&1 </dev/null &
+  p=$!
+  # Ten seconds. The socket is what is watched, and a coordinator that LOSES the lease exits in
+  # milliseconds with the holder's name in its log, so the wait is only ever spent on a real start.
+  i=0
+  while [ "$i" -lt 20 ]; do
+    room_up && return 0
+    pid_alive "$p" || break
+    sleep 0.5
+    i=$((i + 1))
+  done
+  return 1
+}
+# The record `--daemons`, `--ls` and `--stop` read: the same flat JSON the folder daemons get, with
+# `role: room` as what tells the two apart (a folder's record names the seat its daemon serves, and
+# nothing serves `room`). R102's shape — the launcher writes the record of what it started, so the
+# launcher's own tools can see it.
+room_record_write() { # room_record_write PID
+  python3 - "$ROOM_RECORD" "$(dirname "$ROOM_SOCKET")/room-workspace" "$ROOM_SOCKET" "$1" <<'PY'
+import json, sys, time
+rec, ws, sock, pid = sys.argv[1:5]
+json.dump({"workspace": ws, "socket": sock, "pid": int(pid), "role": "room",
+           "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, open(rec, "w"))
+PY
+}
+# **Make sure the box has a coordinator — the one call the run paths make.** A start that fails is
+# SAID, from the coordinator's own words, and is never fatal: the session's `room` tool still
+# refuses by name, which is true, and everything else about the run is what it was.
+room_ensure() {
+  local p said
+  room_paths
+  if room_up; then
+    # **And the record is a note this launcher keeps true.** A room started by hand (`harnessd
+    # --room` in a terminal), or one whose record a tidy-up removed, is still the box's room — and
+    # `--daemons` and `--stop --all` are how a person sees it and stops it.
+    if [ ! -f "$ROOM_RECORD" ]; then
+      p="$(room_pid || true)"
+      [ -n "$p" ] && room_record_write "$p"
+    fi
+    return 0
+  fi
+  echo "letibot: no room on this box - starting one (log $ROOM_LOG)" >&2
+  if room_start; then
+    p="$(room_pid || true)"
+    [ -n "$p" ] && room_record_write "$p"
+    echo "letibot: the room is up (pid ${p:-unknown}, socket $ROOM_SOCKET)" >&2
+    return 0
+  fi
+  said="$(room_failure)"
+  echo "letibot: the box's room did not start." >&2
+  [ -n "$said" ] && echo "         it said: $said" >&2
+  echo "         Nothing else changed: a session's room tool refuses by name until a" >&2
+  echo "         coordinator is serving, and 'letibot --room' is where to look." >&2
+  return 0
+}
+
 warn_swallowed_flags() {
   # **The SEAT is the flag that is silently swallowed most, and it does not travel
   # in EXTRA_ARGS.** Role reaches harnessd as `--role` and the shell as `--bash`,
@@ -1547,6 +1725,11 @@ daemon_line() {
   local p started role model answers who
   p="$(daemon_pid || true)"; started="$(record_field started)"; role="$(record_field role)"
   model="$(record_field model)"; answers="$(record_field answers)"
+  # The box's room is one of the records `--ls` numbers, and it is not a folder's daemon.
+  if [ "$role" = room ]; then
+    echo "the box's room${p:+ (pid $p)}${started:+, up since $started}"
+    return 0
+  fi
   # **`answers` is what answers the turns; `model` is the local vocab.**
   #
   # A record written before this field existed has no `answers`, and the honest label for
@@ -1702,6 +1885,13 @@ case "${1:-}" in
       if socket_is_listening "$sock"; then state=up; else state=STALE; fi
       found=1
       i=$((i+1))
+      # **The box's room is one of these daemons and none of these folders.** Its record says
+      # `role: room`; its "workspace" is a directory of its own under the data directory, which
+      # is true and is not a folder anybody works in.
+      if [ "$(json_str role "$r")" = room ]; then
+        printf '%2d  %-34s %-6s %s\n' "$i" "the box's room" "$state" "pid $pid"
+        continue
+      fi
       printf '%2d  %-34s %-6s %s\n' "$i" "${ws/#$HOME/~}" "$state" "pid $pid"
       [ "$state" = up ] || continue
       all="$("$BIN/letibot-tui" --socket "$sock" --list-sessions 2>/dev/null)"
@@ -1738,9 +1928,85 @@ SESSIONS_EOF
       sock="$(json_str socket "$r")"
       pid="$(json_num pid "$r")"
       if socket_is_listening "$sock"; then state="up (pid $pid)"; else state="STALE (nothing listens on its socket)"; fi
-      echo "$ws  $state  $sock"
+      # The room's record is `role: room` — the box's daemon, not a folder's (see `--ls`).
+      if [ "$(json_str role "$r")" = room ]; then
+        echo "the box's room  $state  $sock"
+      else
+        echo "$ws  $state  $sock"
+      fi
     done
     [ "$found" = 1 ] || echo "no daemons recorded under $RUNDIR"
+    exit 0 ;;
+  --room)
+    # **The box's room, and nothing else's.** A coordinator is a daemon of its own (`harnessd
+    # --room`): it serves every session on this machine, it has no project and no store, and it
+    # outlives the run that started it — which is why this is a verb of its own rather than a
+    # side effect of the folder's daemon. Bare, it makes sure one is serving (starting one when
+    # none is) and says what it is; `--stop` is how it goes.
+    ROOM_STOP=0
+    shift
+    for a in "$@"; do
+      case "$a" in
+        --stop) ROOM_STOP=1 ;;
+        --force) ;;
+        *) die "--room takes --stop and --force, not $a" ;;
+      esac
+    done
+    if [ "$FORCE" = 1 ] && [ "$ROOM_STOP" = 0 ]; then
+      die "--force only means something with --stop"
+    fi
+    room_paths
+    if [ "$ROOM_STOP" = 1 ]; then
+      if ! p="$(room_pid)"; then
+        echo "no room on this box ($ROOM_SOCKET)"
+        rm -f "$ROOM_RECORD"
+        exit 0
+      fi
+      # The coordinator's own orderly stop, waited for the way a folder daemon's is: it joins its
+      # server, gives the lease back and exits, and "stopped" is said after the process is gone.
+      from="$(log_at "$ROOM_LOG")"
+      kill "$p" 2>/dev/null || true
+      if [ "$FORCE" = 1 ]; then
+        wait_gone "$p" "$FORCE_TENTHS" || true
+        if pid_alive "$p"; then
+          kill -9 "$p" 2>/dev/null || true
+          wait_gone "$p" 4 || true
+        fi
+      else
+        stop_wait "the room (pid $p)" "$p" "$ROOM_LOG" "$from" "$STOP_TENTHS" || true
+      fi
+      if pid_alive "$p"; then
+        echo "NOT stopped: the room (pid $p) is still running after SIGTERM." >&2
+        echo "  letibot --room --stop --force    sends SIGKILL" >&2
+        exit 1
+      fi
+      # The record is this launcher's note, and it is removed with the process it names — the
+      # lease went with the coordinator's own drop, so nothing here has to guess.
+      rm -f "$ROOM_RECORD"
+      echo "stopped the room (pid $p)"
+      exit 0
+    fi
+    # **A stop needs no binary** — it is a signal to a pid. A START does: the coordinator IS this
+    # box's `harnessd`, and the launcher's own check for it comes later on the run paths.
+    [ -x "$BIN/harnessd" ] || die "no harnessd at $BIN (the room's coordinator is that daemon, with --room)"
+    room_ensure
+    if ! p="$(room_pid)"; then
+      echo "the room on this box is not serving: $ROOM_SOCKET"
+      echo "  its log is $ROOM_LOG"
+      exit 1
+    fi
+    echo "the room on this box: pid $p"
+    echo "  socket  $ROOM_SOCKET"
+    echo "  lease   $ROOM_LEASE"
+    echo "  log     $ROOM_LOG"
+    # **`started` comes from the LEASE, not from the record**: the lease is the coordinator's own
+    # claim and survives being started by hand, where the record is only what this launcher wrote.
+    started_ms="$(awk -F'\t' 'NR == 1 { print $4; exit }' "$ROOM_LEASE" 2>/dev/null || true)"
+    case "$started_ms" in
+      '' | *[!0-9]*) : ;;
+      *) echo "  up since $(epoch_fmt $((started_ms / 1000)) '+%Y-%m-%d %H:%M')" ;;
+    esac
+    echo "  it keeps no store: a restart begins with no items at all"
     exit 0 ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
@@ -1836,13 +2102,27 @@ SESSIONS_EOF
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
         if pid_alive "$pid" && pid_argv "$pid" | head -1 | grep -q harnessd; then
-          # The turns first, as for one daemon (R92.23: `--all` never interrupted).
+          # The turns first, as for one daemon (R92.23: `--all` never interrupted). **Except the
+          # room's**, which is a different protocol on its socket: an interrupt there is a frame
+          # it refuses, and a refusal would be reported as turns that could not be interrupted.
           sock="$(json_str socket "$r")"
-          if [ -n "$sock" ] && socket_is_listening "$sock"; then interrupt "$sock"; else INTR_FAILED=""; fi
+          is_room="$(json_str role "$r")"
+          if [ "$is_room" = room ]; then
+            INTR_FAILED=""
+          elif [ -n "$sock" ] && socket_is_listening "$sock"; then
+            interrupt "$sock"
+          else
+            INTR_FAILED=""
+          fi
+          # The room's log is named after its socket (see `room_paths`), not after its workspace.
+          rlog="$(log_of "$ws")"
+          if [ "$is_room" = room ] && [ -n "$sock" ]; then
+            rlog="$HOME/logs/$(basename "$sock" .sock).log"
+          fi
           # **Signal, then WAIT, then say it.** The exit status of `kill` says the
           # signal was delivered and nothing about whether the process took it —
           # which is the whole of the 2026-09-16 incident, one verb over.
-          if stop_one "$ws (pid $pid)" "$pid" "$(log_of "$ws")" "letibot --stop --all --force"; then
+          if stop_one "$ws (pid $pid)" "$pid" "$rlog" "letibot --stop --all --force"; then
             echo "stopped $ws (pid $pid)"
             rm -f "$r"
           else
@@ -1870,7 +2150,12 @@ SESSIONS_EOF
       # The daemon's own half (`Registry::close`) interrupts what it holds when the signal
       # reaches it, which is what covers `--stop --all` and every stop this script did not
       # make — a ctrl-c, a systemd unit, another terminal. This is the first of two doors.
-      interrupt "$SOCKET"
+      #
+      # **The box's room is not interrupted**: `letibot-tui --interrupt-all` speaks the session
+      # protocol, and the room's socket answers another one, so the frame would come back a
+      # refusal that reads as turns which could not be interrupted. Its own shutdown drops its
+      # server and gives the lease back.
+      [ "$(record_field role)" = room ] || interrupt "$SOCKET"
       # "stopped" is said AFTER the process is gone, not after the signal is
       # sent, and the record is removed only then. Measured 2026-09-16: a daemon
       # wedged on a llama-server that had gone away swallowed SIGTERM, this
@@ -2182,6 +2467,17 @@ if live && [ -n "$ENDPOINT" ]; then
 fi
 
 mkdir -p "$(dirname "$STORE")" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
+
+# **THE BOX'S ROOM, BEFORE ANY SESSION CAN LOOK FOR IT** (`docs/room.md` § *Still owed* item 4).
+#
+# A session's `room` tool is seated at `Harness::open` from the socket that exists THEN — a
+# coordinator started afterwards is one the session cannot see — so this has to run before the
+# daemon opens its first session, which is exactly here: after the verbs that touch no daemon
+# (`--stop`, `--ls`, `--status`) and before the one-shot and the attach/start.
+#
+# It is not fatal and it is not quiet: a start that fails prints the coordinator's own sentence
+# and the run goes on, because a session with no room is a session that works.
+room_ensure
 
 # One-shot: no daemon, no TUI. Useful in scripts and for a quick question. The
 # socket is its own, so two one-shots side by side do not fight over the

@@ -272,6 +272,43 @@ abandoned, raised, asked, ruled — and by nothing else. A beat is not an event.
 per session and stays open for the session's life, so the *close* is the daemon's liveness and the
 beat is the work's: a session whose turn ended keeps its socket and loses its claim to the beat.
 
+### The launcher starts it, and the lease decides which one
+
+The list below used to end with *"the launcher's autostart"*: `--room` existed and nothing started a
+coordinator, so a session's `room` tool refused by name — honest, and not the same as the room being
+there. `scripts/letibot` now starts one, and five decisions make that safe.
+
+* **Before any session opens, and nowhere else.** A session's `room` tool is seated at
+  `Harness::open` from the socket that exists *then*, so a coordinator started afterwards is one the
+  session cannot see. The launcher's one call (`room_ensure`) is on the path every run takes before
+  its daemon opens anything — after `--stop`/`--ls`/`--status`, which touch no daemon, and before
+  the one-shot and the attach/start. The tool cannot do it: it runs inside a daemon, and a daemon
+  that forked another daemon would be a second `harnessd` under a lease it does not hold.
+* **One per box, and the lease is the only guard.** Two runs at the same instant start two
+  coordinators and exactly one wins: `letibot_room::lease` refuses the other by name, and the
+  launcher prints *that* sentence — it invents no lock of its own. What the launcher does own is the
+  **key**: it derives `room-<host key>.sock` in bash from `uname -n`, so a key that drifted from
+  `lease::host_key_of` would look for a socket no coordinator binds and start a second one on every
+  run. Both sides are pinned to one table (`lease.rs`'s
+  `the_host_key_matches_what_the_launcher_derives`).
+* **It outlives the run that asked.** It is started through the launcher's `detach` (setsid, and a
+  systemd scope on Linux), the same door a folder's daemon goes through, and `configure` already
+  sets `idle_exit_after = None` — a room that emptied itself overnight would be worse than none,
+  since it exists for the moment a session cannot reach anything else.
+* **A start that fails is said, not swallowed.** The coordinator's own last words are read out of
+  its log — the lease's refusal naming the holder, or the no-model refusal naming the key — and the
+  run goes on. The session's `room` tool still refuses by name, which is true; what the launcher may
+  not do is replace a true sentence with silence.
+* **`--stop` sees it.** The launcher writes the same flat record it writes for a folder's daemon,
+  with `role: room`, so `--daemons` and `--ls` name it and `--stop --all` stops it (without the
+  interrupt: the room's socket answers another protocol). `letibot --room` is the verb for it alone —
+  bare, it makes sure one is serving and says what it is; `--room --stop` stops it.
+
+**No model flags are passed.** A coordinator's arbiter is `providers.toml`'s default or deepseek,
+not the folder's local model, and a provider session's byte vocabulary needs no GGUF — so the start
+is `harnessd --room` and nothing else. An operator who wants another model runs
+`harnessd --room --model …` by hand, and every launcher after that finds it and leaves it alone.
+
 ### Still owed
 
 1. **The wasm pane.** The queues per tag, the tie-breaker's raw session, and the manual controls —
@@ -286,9 +323,15 @@ beat is the work's: a session whose turn ended keeps its socket and loses its cl
    change that would.
 3. **A reminder row on the board.** `reminders` answers the question; nothing turns it into a
    `todo_write` row yet, so a holder is reminded only if the model asks.
-4. **The launcher's autostart.** `--room` exists; `scripts/letibot` does not yet start a coordinator
-   when a session's `room` tool finds no socket. Today the tool refuses by name, which is honest and
-   is not the same as the room being there.
+4. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
+   says so on every run that finds no coordinator, because a launcher may not remember a refusal on
+   the operator's behalf. A once-per-box note (a stamp file beside the lease) would be the fix, and
+   it needs its own decision about what clears it.
+5. **A daemon the bridge started has no room.** `leticode_start` spawns `harnessd` itself rather
+   than going through `scripts/letibot`, so a box whose daemons all came from the bridge has no
+   coordinator until a launcher run — the same shape as R102's missing record, and the same fix:
+   whichever program starts a daemon writes what the launcher would (the record here, the room
+   there).
 
 ## What the state machine assumes
 
