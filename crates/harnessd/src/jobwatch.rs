@@ -786,12 +786,24 @@ impl JobWatchers {
         self.take_completions()
     }
 
+    /// **Queue a settlement as a watcher would, without the ring** — the door a settlement that
+    /// outlived its session comes back through, and the one the delivery tests use to stand in a
+    /// watcher's place.
+    ///
+    /// **The ring is deliberately not rung here**, because this is not a settlement arriving: it
+    /// is one being put back into a set that is about to be rung for its own reasons (the open
+    /// that found it, or a test about to call `wake`). A ring from here would be a wake with
+    /// nothing behind it for every caller that queues before it is ready.
+    pub fn queue(&self, c: JobCompletion) {
+        self.completions.push(c);
+    }
+
     /// **Queue a settlement as a watcher would, without the ring** — for a test of the delivery
     /// rules (R79), which needs a completion in the queue without a process ending. Nothing in
     /// the daemon calls it: a settlement is queued by its watcher thread.
     #[doc(hidden)]
     pub fn queue_for_test(&self, c: JobCompletion) {
-        self.completions.push(c);
+        self.queue(c);
     }
 
     /// **Hold this session's settlement queue while `during` runs** — the position a publisher must
@@ -1953,7 +1965,12 @@ fn settled_here(
 
 /// The first line of what a subagent said, for a one-line notice. The whole of it is
 /// in `task_result`, which the notice names.
-fn first_line(text: &str) -> String {
+///
+/// `pub(crate)` because the one other writer of a child's notice is
+/// [`crate::harness::Harness::deliver_settlements_left_undelivered`], which puts a settlement
+/// that outlived its session back into the queue: two spellings of "the first line" would be
+/// two notices for one fact.
+pub(crate) fn first_line(text: &str) -> String {
     let l = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
     if l.chars().count() <= 160 {
         return l.trim().to_string();

@@ -11779,6 +11779,115 @@ impl Harness {
         })
     }
 
+    /// **A settlement this daemon queued for a session that was not open is not lost.**
+    ///
+    /// # The hole this closes
+    ///
+    /// [`crate::jobwatch::JobWatchers`] is built **per open**, so a settlement that lands while
+    /// its session is not open has nowhere to go: the queue it is pushed into belongs to a
+    /// harness nobody will drain again, and the ring that would have started the turn names a
+    /// session `Sessions::wake` answers `Gone` for (`sessions::wake_route`). Both die with the
+    /// harness. What survives is the **row**, because it is written where the settlement is first
+    /// known rather than where it is read: `subagent_run` by the child's own thread
+    /// ([`crate::subagent_record::SubagentRecord::settled`]) and `job` by
+    /// [`crate::jobwatch::JobRecorder::record`] — each with `delivered = 0`, which is that
+    /// column's whole meaning (*the model has not been told*).
+    ///
+    /// This is the door that reads it, at the one moment it is true: the session has just been
+    /// opened, so its watcher set is new and empty and nothing in this process is holding the
+    /// settlement. Queued as an ordinary [`JobCompletion`], it is worded by the same
+    /// `completion_notices` a live settlement is — *a subagent you started has finished: …* — so
+    /// a settlement that outlived its session is not a second kind of notice. The open's own
+    /// ring (`Sessions::put_a_restored_session_to_work`) is what makes the turn.
+    ///
+    /// # Only this daemon's own, and that is the other half rather than a narrowing
+    ///
+    /// `instance` is the daemon that last owned the row. A row a **gone** daemon wrote is
+    /// [`Harness::restore_after_restart`]'s (`runs`/`settled` below, which filter on
+    /// `instance != me`), and it is worded as a restart because that is what it was. A row
+    /// **this** daemon wrote and never delivered is what the open of a session it had closed
+    /// finds, and it is worded as a completion because nothing restarted. The two filters are
+    /// disjoint, so no settlement is delivered twice.
+    ///
+    /// # What it cannot do, said rather than implied
+    ///
+    /// A job's output is gone by now — `job_output` reads the process host's own capture, and
+    /// the process is long reaped — so the notice names the job and says how it ended, which is
+    /// what `job_output`'s absence leaves true. A child's answer IS in the row (`outcome`), and
+    /// the notice carries its first line exactly as a live settlement does.
+    fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) {
+        let Some(watch) = self.job_watch.clone() else {
+            return;
+        };
+        let mut queued = 0usize;
+        // **The children first** — this row's own subject, and the one the operator went
+        // looking for: a `task` child that answered into a session nobody was holding.
+        for run in store.subagent_runs_of(sid).unwrap_or_default() {
+            if run.instance != me
+                || run.delivered
+                || run.parent_id != sid
+                || crate::subagent_record::is_helper(&run)
+                || !matches!(run.state.as_str(), "done" | "failed")
+            {
+                continue;
+            }
+            watch.queue(JobCompletion {
+                memory: None,
+                kind: BackgroundKind::Subagent,
+                // The session that started it, which is this one — the sentence is *a subagent
+                // YOU started*, and it is true: the row's `parent_id` is this session.
+                owner: sid.to_string(),
+                job: run.child_id.clone(),
+                command: String::new(),
+                slug: Some(crate::subagent_record::recorded_slug(&run)),
+                state: run.state.clone(),
+                produced: 0,
+                elapsed_ms: 0,
+                detail: crate::jobwatch::first_line(run.outcome.as_deref().unwrap_or_default()),
+                arrived: std::time::SystemTime::now(),
+            });
+            queued += 1;
+        }
+        // **And the jobs**, whose rows the recorder writes for the same reason and with the same
+        // `delivered = 0`. A child's handle has a `running` job row too (the sink writes one for
+        // every `Backgrounded`, before it knows which kind it is), so it is skipped here the way
+        // `restore_after_restart` skips it.
+        for job in store.undelivered_jobs(sid).unwrap_or_default() {
+            if store.subagent_run(&job.handle).ok().flatten().is_some() {
+                continue;
+            }
+            let Some(ctx) = store.job_context(sid, &job.handle).ok().flatten() else {
+                // No context means no daemon is named, so there is nothing that says this row is
+                // this daemon's — and a row nobody can attribute is `restore_after_restart`'s
+                // (a relic) rather than a settlement this door dropped.
+                continue;
+            };
+            if ctx.instance != me {
+                continue;
+            }
+            watch.queue(JobCompletion {
+                memory: None,
+                kind: BackgroundKind::Job,
+                owner: sid.to_string(),
+                job: job.handle.clone(),
+                command: job.command.clone(),
+                slug: ctx.slug.clone(),
+                state: job.state.clone(),
+                produced: job.produced,
+                elapsed_ms: job.elapsed_ms,
+                detail: String::new(),
+                arrived: std::time::SystemTime::now(),
+            });
+            queued += 1;
+        }
+        if queued > 0 {
+            eprintln!(
+                "  {sid} · {queued} settlement(s) this daemon queued while the session was not \
+                 open are said at this open"
+            );
+        }
+    }
+
     /// **What this session was running when its daemon stopped — restored, or reminded** — called
     /// once, when the session is opened (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
     /// and a resumed child's own `run_to_completion`). See `crate::restart` for the whole of it.
@@ -11809,6 +11918,12 @@ impl Harness {
         // opened hours after the daemon came back is exactly the case the threshold exists for.
         let opened_ms = letibot_sessionlog::event::now_ms();
         let sid = self.cfg.session_id.clone();
+        // **Before anything about a restart, the settlements THIS daemon dropped** — see
+        // [`Harness::deliver_settlements_left_undelivered`]. It lives here because this is the
+        // door every open passes through (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
+        // a resumed child's `run_to_completion`) and it is the door whose own ring, a few lines
+        // later in `Sessions`, is what turns a queued settlement into a turn.
+        self.deliver_settlements_left_undelivered(&store, &me, &sid);
 
         // **What a gone daemon left**, and which daemon that was. Read before anything is
         // touched, so the down time is decided once for the whole session.
