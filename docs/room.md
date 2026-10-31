@@ -321,8 +321,7 @@ is `harnessd --room` and nothing else. An operator who wants another model runs
    that connected to the wrong coordinator is told rather than obeyed. `Welcome` could carry
    `Server::identity()` in one field; the protocol number did not move for slice 2 and this is the
    change that would.
-3. **A reminder row on the board.** `reminders` answers the question; nothing turns it into a
-   `todo_write` row yet, so a holder is reminded only if the model asks.
+3. ~~**A reminder row on the board.**~~ **Done — see *The reminder, as built* below.**
 4. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
    says so on every run that finds no coordinator, because a launcher may not remember a refusal on
    the operator's behalf. A once-per-box note (a stamp file beside the lease) would be the fix, and
@@ -332,6 +331,70 @@ is `harnessd --room` and nothing else. An operator who wants another model runs
    coordinator until a launcher run — the same shape as R102's missing record, and the same fix:
    whichever program starts a daemon writes what the launcher would (the record here, the room
    there).
+
+### The reminder, as built
+
+The join between `reminders` and the board, and the five rules that decided its shape.
+
+**The pass is `crates/harnessd/src/room/remind.rs`, and it runs on the daemon's idle tick.** Not on
+its own thread: a board may only be written by the thread that drives the harness, and the room's
+connection already has two threads of its own (the reader and the beat) that may not touch it. So
+`Sessions`' per-session idle arm — `OwnWork::TimedOut`, the same place `deliver_due_nags` runs —
+calls `Harness::fill_room_board` every `ROOM_PASS_EVERY` (5 s, the room's own sweep interval), and
+that is the only caller in production. A court (a session on its own thread) keeps its own copy of
+the clock, because its harness is on its thread; the daemon walks only what it holds.
+
+**The row.** One per item the session holds, in the session's own half:
+
+```text
+content  you hold `ram` #3 — 8 GB, ~10 min     ← tag, number, body, and NOTHING that moves
+by       model                                  ← the nag draws it as `yours`
+status   in_progress
+needs    [Room { item: 3, working: bool }]      ← the room's edge, always present
+```
+
+**The words carry no clock**, and that is the whole of *one row per item, updated not appended*: a
+row's identity on this board is its exact `content`, so `… for 4m` would be a new row every pass —
+the nag machine. Everything that moves lives in the edge's `working` and in nothing else.
+
+**`working` is the whole of quiet-or-loud, and it is ON THE ROW.** `true` — the holder told the room
+what it waits for (`room waiting`) and its claim's beat is fresh — makes the row BLOCKED, and
+`waits_on_the_room` filters it out of the idle check entirely (`the_check_may_ask_about`). `false` —
+no declared wait, or a beat that has stopped and a room about to take the item back — makes the row
+READY, and the check names it: *"you hold `ram` #3 — 8 GB, ~10 min — yours (in progress) … mark it
+done with `todo_write`'s `update`"*. Two loud facts, and they are different ones: nothing outside is
+going to move the item, or the room is about to take it.
+
+**The edge is on every room row, loud or quiet**, and that is what makes retirement survive a
+restart: `Harness::open` rebuilds the board from the store, so the first pass of a new process has
+written nothing and remembers nothing — `TodoBoard::set_room_rows` retires *a row whose room edge
+names an item this session no longer holds*, which needs no memory. It is the only door on the
+model's half that can remove a row, and the argument is the queue's: a room row is the ROOM seen
+from a session, not a plan.
+
+**Top-level only, twice.** `Harness::open` gives a session with a `parent_session_id` no link at
+all, and `fill_room_board` refuses one a second time by name; and `reminders` is one read for the
+whole room, so the pass keeps only the rows whose `session` is this one — a subagent never gets a
+row it did not hold.
+
+**And a row that already says the same thing is reused**: the board has one key and it is the
+trimmed `content`, so a row with these words IS this row, whoever typed it. The pass moves it into
+place and adds no second copy of the same sentence.
+
+What is still open here, so nobody reads this as finished:
+
+* **A row the model re-worded is the model's.** The words are the key, so a restatement is a NEW
+  row, and the pass's own row stays beside it until the item goes. That is this board's rule
+  everywhere, and the alternative is a second identity for a row.
+* **`todo_write` cannot write a room edge.** The only way to make a row quiet on the room is
+  `room waiting`, which is deliberate — the room's own verb is the one that knows whether the
+  coordinator agreed — and it means a model cannot silence a reminder by hand.
+* **The loud window after a stopped beat is short.** `sweep` runs every five seconds in the
+  coordinator, so a stale claim is abandoned before most passes see it; the pass says `stale`
+  loudly when it does, and the item's abandonment is the ordinary outcome.
+* **The pass asks the room once per session per tick**, which is one socket frame each. On a box
+  with a coordinator and many sessions that is the cost; a box with none pays one `Option` test and
+  is not woken for it at all (`Sessions::has_a_room`).
 
 ## What the state machine assumes
 
