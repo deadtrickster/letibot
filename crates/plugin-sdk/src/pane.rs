@@ -24,9 +24,10 @@
 //! the declarations are what a reviewer reads, and what a host can honestly promise.
 //!
 //! `sessions` and `queue` are fed today (`plugins/builtin/sessions` and `plugins/builtin/queue`
-//! are their readers). `monitors`, `jobs`, `todos` and `git` are named here — one more feed each,
-//! no format change — because the next panes want them and a vocabulary that grows one word at a
-//! time grows faster than one that has to be designed twice.
+//! are their readers), and so is `room` (`plugins/builtin/room`). `monitors`, `jobs`, `todos` and
+//! `git` are named here — one more feed each, no format change — because the next panes want them
+//! and a vocabulary that grows one word at a time grows faster than one that has to be designed
+//! twice.
 //!
 //! # Acts
 //!
@@ -70,17 +71,23 @@ pub enum Feed {
     /// with their heartbeats, the last moves, and the repositories that are no queue's. Fed
     /// today, by `plugins/builtin/queue`.
     Queue,
+    /// **The room** — one host's agents' queues, per tag: every item with its state, its claimant
+    /// and the age of that claim's beat, its abandonment count, the open questions the arbiter is
+    /// being asked, and the room's own identity (which room, started when, and how much it holds).
+    /// Fed today, by `plugins/builtin/room`.
+    Room,
 }
 
 impl Feed {
     /// Every feed this contract names, in the order a document lists them.
-    pub const ALL: [Feed; 6] = [
+    pub const ALL: [Feed; 7] = [
         Feed::Sessions,
         Feed::Monitors,
         Feed::Jobs,
         Feed::Todos,
         Feed::Git,
         Feed::Queue,
+        Feed::Room,
     ];
 
     /// The wire's spelling — the same word in `plugin.toml` and in `Input::feeds`.
@@ -92,6 +99,7 @@ impl Feed {
             Feed::Todos => "todos",
             Feed::Git => "git",
             Feed::Queue => "queue",
+            Feed::Room => "room",
         }
     }
 
@@ -421,11 +429,13 @@ mod tests {
         assert!(why.contains("watchers"), "{why}");
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
         // Every feed the plan names is here, so a later pane adds no mechanism.
-        for name in ["sessions", "monitors", "jobs", "todos", "git", "queue"] {
+        for name in ["sessions", "monitors", "jobs", "todos", "git", "queue", "room"] {
             assert!(Feed::parse(name).is_ok(), "{name}");
         }
         assert_eq!(Feed::parse("queue"), Ok(Feed::Queue));
         assert_eq!(Feed::Queue.name(), "queue");
+        assert_eq!(Feed::parse("room"), Ok(Feed::Room));
+        assert_eq!(Feed::Room.name(), "room");
     }
 
     #[test]

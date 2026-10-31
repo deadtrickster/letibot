@@ -1,0 +1,34 @@
+[package]
+name = "letibot-builtin-room"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "the room: one host's agents' queues per tag, who holds what, and the four keys that move it"
+
+# **Not a member of letibot's workspace, deliberately.** This crate is a GUEST: it is built by
+# `crates/builtins`' build script for `wasm32-unknown-unknown`, and the module it produces is
+# `include_bytes!`d into the binary. The root manifest excludes `plugins` so the workspace never
+# tries to build it for the host, where a `cdylib` for a wasm ABI has nothing to say.
+[workspace]
+
+[lib]
+# `cdylib` is the module the host loads; `rlib` is what this crate's own tests link, so the rows,
+# the marks and the four verbs are asserted natively with no engine in the way.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# The guest ABI v1 — the input region, the answer arena and the result block.
+letibot-guest-abi = { path = "../abi" }
+# **The pane contract, from the crate that compiles into the host too.** The input it is handed and
+# the cells, folds and acts it answers with are `letibot_plugin::pane`'s, so a field renamed on one
+# side breaks the other's build instead of a sentence nobody reads.
+letibot-plugin = { path = "../../../crates/plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# A guest module is embedded in the daemon's binary, so its size is the binary's size.
+opt-level = "s"
+strip = true
+lto = true
+panic = "abort"

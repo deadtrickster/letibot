@@ -134,13 +134,22 @@ or one the operator names in the pane — and that is the only way a stranger be
 
 ## The wire
 
-`ROOM_PROTOCOL_VERSION = 1` — the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`. The
+`ROOM_PROTOCOL_VERSION = 2` — the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`. The
 coordinator is a different socket with a different lifetime, and pairing a head with a daemon must
 not be entangled with pairing a session with a room.
 
-**One connection per top-level session.** `Hello { protocol, speaker }` carries the session and the
-parent it speaks through (read by the daemon from `session.parent_session_id`); a subagent is
-refused at the door. Per session rather than per daemon, for two reasons worth the sockets:
+**Version 2 is the room saying which room it is**, and it moved the number once, with both fields
+(see *Still owed* below): `Hello` carries the name of the room the client believes it reached, and
+`Welcome` carries `Server::identity()`. A session that dialled the wrong coordinator is now TOLD
+rather than obeyed — a room is per box and two boxes can both call themselves `localhost`, so
+before this a `post` could land in another machine's queue and a claim could lock a tag nobody
+there was waiting for. A skew is `Bye` with both numbers and **which side is older** in the
+sentence, so a reader knows which binary to restart.
+
+**One connection per top-level session.** `Hello { protocol, speaker, room }` carries the session,
+the parent it speaks through (read by the daemon from `session.parent_session_id`), and the room's
+name; a subagent is refused at the door. Per session rather than per daemon, for two reasons worth
+the sockets:
 
 * **a push has an address** — an `Event` goes to the connections that own the sessions it is about;
 * **the close is a fact** — a session whose daemon died drops its socket, and the coordinator calls
@@ -162,13 +171,20 @@ refused at the door. Per session rather than per daemon, for two reasons worth t
 | `holding {session?}` | `Holding {session, rows}` | a read |
 | `reminders` | `Reminders {rows}` | a read |
 | `questions` | `Questions {rows}` | a read |
+| `room` | `Room {identity, arbiter, connected, items, questions}` | a read: the PANE's, and the only one the server completes |
 
 The replay window is 256 replies per room. **A client away for longer than that must re-read**, not
 replay: every reply carries the item as it stands, so a re-read is cheap and cannot be wrong, and a
 replay window is not a durable log. **A reply to a repeat carries no events** — the bell rang the
 first time.
 
-A protocol mismatch is `Bye { why }` with both numbers in the sentence: the clean refusal the
+**And a request id is not a clock.** The window keys on `(session, id)`, so two acts in one
+millisecond are one act: the second is answered *the same* rather than performed. Round trips on a
+unix socket are tens of microseconds, so `claim` and `release` on one row really can share one;
+`room::link::request_id` is the counter that makes an id unique.
+
+A protocol mismatch is `Bye { why }` with both numbers in the sentence **and which side is older**
+(`wire::protocol_refusal`, one sentence for the two doors that refuse it): the clean refusal the
 daemon's own `Hello` makes.
 
 ## The bell, and the client that cannot hear it
@@ -311,22 +327,15 @@ is `harnessd --room` and nothing else. An operator who wants another model runs
 
 ### Still owed
 
-1. **The wasm pane.** The queues per tag, the tie-breaker's raw session, and the manual controls —
-   claim on a session's behalf, release, mark abandoned, rule on a dispute — plus **restart the
-   server**, asked of the daemon that supervises the coordinator and not performed by the
-   coordinator on itself. Until it exists, `Server::identity()` is the sentence a pane must print:
-   *started T ago, and a restart begins with no items at all* — because the room keeps no store, and
-   "restarted clean" and "restarted empty" are the same thing here unless it is said.
-2. **The room's own identity in the protocol.** `Hello` should carry the room's name, so a session
-   that connected to the wrong coordinator is told rather than obeyed. `Welcome` could carry
-   `Server::identity()` in one field; the protocol number did not move for slice 2 and this is the
-   change that would.
-3. ~~**A reminder row on the board.**~~ **Done — see *The reminder, as built* below.**
-4. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
+1. **Restart the server**, asked of the daemon that supervises the coordinator and not performed by
+   the coordinator on itself. The pane's four controls are the ones this slice owes and has; this
+   one is a fifth, and it is a daemon lifetime rather than a room act — so it is not a row here.
+2. ~~**A reminder row on the board.**~~ **Done — see *The reminder, as built* below.**
+3. **The room's first start costs a terminal line.** A box with no key for the arbiter's provider
    says so on every run that finds no coordinator, because a launcher may not remember a refusal on
    the operator's behalf. A once-per-box note (a stamp file beside the lease) would be the fix, and
    it needs its own decision about what clears it.
-5. **A daemon the bridge started has no room.** `leticode_start` spawns `harnessd` itself rather
+4. **A daemon the bridge started has no room.** `leticode_start` spawns `harnessd` itself rather
    than going through `scripts/letibot`, so a box whose daemons all came from the bridge has no
    coordinator until a launcher run — the same shape as R102's missing record, and the same fix:
    whichever program starts a daemon writes what the launcher would (the record here, the room
@@ -395,6 +404,33 @@ What is still open here, so nobody reads this as finished:
 * **The pass asks the room once per session per tick**, which is one socket frame each. On a box
   with a coordinator and many sessions that is the cost; a box with none pays one `Option` test and
   is not woken for it at all (`Sessions::has_a_room`).
+
+### Slice 3, as built — the pane, and the room's name on the wire
+
+| what the list asked for | where it is |
+|---|---|
+| the queues per tag, with each item's claimant, the age of its beat and its abandonment count | `crates/harnessd/src/plugins/room_feed.rs` — the `room` feed, built from the session's own connection (`room::link::SessionRoom` reads `Request::Room` once a second on a thread of its own) |
+| the room's own identity, printed | the feed's `identity` field, which is `Server::identity()` verbatim — *started T ago and holding N item(s)*, and the sentence saying the room keeps no store. `Server::identity_at(now)` exists so a test can pin the age |
+| the four manual controls | `plugins/builtin/room` draws them; `room::link::pane_frame` turns a row's entry and verb into a frame; `PluginHost::action` performs it and says a refusal (`room_act_refused`) |
+| the room's name in the protocol | `ROOM_PROTOCOL_VERSION` 2: `Hello.room`, `Welcome.identity`, and a `Bye` that names which side is older |
+
+**The four controls, and what each is in the room's own vocabulary.** `claim` is `claim_item` — on
+behalf of the session whose pane it is, and the item must still be the head. `release` and
+`abandon` are the SAME verb (`abandon`) with two different sentences left on the item's history: a
+voluntary release is still an abandonment and still counted, so the difference the person gets is
+the reason, and the reason is the host's to write. `rule` answers a question, and the decision
+rides in the row's entry (`q3:retry`, `q3:drop`, `q3:hand:<session>`) because the decision is what
+the person picked.
+
+**A key is only offered where it would do something.** A row held by somebody else carries no act:
+`claim` would be refused `Busy` and `release` would be refused `NotHeld`. A row this session holds
+leads with `release` and offers `x` for `abandon`. A frozen item offers nothing — its question is
+the `a` panel, where the decisions are rows.
+
+**The manifest gates both doors to a verb.** `actions = ["claim", "release", "abandon", "rule"]`,
+and `View::validate_for` refuses a row whose `enter` OR whose letter names a verb that is not in it.
+The daemon runs that check before a pane is drawn (`plugins::validated`), so a layer cannot reach a
+verb nobody reviewed.
 
 ## What the state machine assumes
 

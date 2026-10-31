@@ -25,12 +25,22 @@
 //! explain. The refusal that matters is the room's own, at the door.
 
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use letibot_room::client::{Beat, Client};
 use letibot_room::{Decision, Request, Response, Speaker};
 
 use super::wake;
+use crate::plugins::room_feed::{RoomFeed, RoomSnapshot};
+
+/// **How often the room is read for the pane**, and how old a drawn picture may be.
+///
+/// One second, because that is the finest thing a row says (an age in `{}s`) and because the feed's
+/// clock is quantised to the same second (`room_feed::CLOCK_QUANTUM_MS`) — a faster read would be
+/// answered from a cache and drawn identically. It runs on a thread of its own and never on a
+/// caller's: a pane is drawn on the daemon's idle pass, and a coordinator that is up but wedged
+/// must not hold that pass.
+pub const PANE_READ_EVERY_MS: u64 = 1_000;
 
 /// **A session's room.** One per top-level session, held by its `Harness` and by its tool.
 pub struct SessionRoom {
@@ -40,6 +50,9 @@ pub struct SessionRoom {
     /// The beat, while a turn is running. `None` between turns, which is exactly when the lease is
     /// counting — see [`SessionRoom::turn_ended`].
     beat: Mutex<Option<Beat>>,
+    /// **The room as the PANE last saw it** — read on [`SessionRoom::reader`]'s thread, so that
+    /// drawing a pane is a clone and never a socket call. `None` until the first read lands.
+    room: Mutex<Option<RoomSnapshot>>,
 }
 
 impl std::fmt::Debug for SessionRoom {
@@ -91,12 +104,83 @@ impl SessionRoom {
         };
         let client = Client::connect(socket, Speaker::top_level(session), wake)
             .map_err(|e| e.to_string())?;
-        Ok(Arc::new(SessionRoom {
+        let room = Arc::new(SessionRoom {
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
             beat: Mutex::new(None),
-        }))
+            room: Mutex::new(None),
+        });
+        SessionRoom::reader(&room);
+        Ok(room)
+    }
+
+    /// **Start the thread that keeps the pane's picture of the room.** It holds a `Weak`, so the
+    /// connection is not kept open by a reader — the same rule the client's own reader thread
+    /// keeps, and the reason a dropped session's close is seen by the coordinator at once.
+    fn reader(me: &Arc<SessionRoom>) {
+        let weak: Weak<SessionRoom> = Arc::downgrade(me);
+        let _ = std::thread::Builder::new()
+            .name(format!("room-pane-{}", me.session))
+            .spawn(move || {
+                loop {
+                    // **The first read happens now**, not a second from now: a session's panes are
+                    // announced as it opens, and the frame after this one should have a room in it.
+                    let Some(me) = weak.upgrade() else {
+                        return;
+                    };
+                    let snap = me.read_room();
+                    *me.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
+                    drop(me);
+                    std::thread::sleep(std::time::Duration::from_millis(PANE_READ_EVERY_MS));
+                    if weak.strong_count() == 0 {
+                        // The session is gone. Its `Client` went with it, which closed the socket,
+                        // which is the coordinator's `note_gone` — so there is nothing to do here
+                        // and nothing to say.
+                        return;
+                    }
+                }
+            });
+    }
+
+    /// **The room, in one read** — every item, every open question, the arbiter, and the identity.
+    ///
+    /// A room that cannot be read is not an error here: it is a snapshot whose `unreadable` carries
+    /// the sentence, because the pane must draw *nobody answered* rather than an empty queue.
+    fn read_room(&self) -> RoomSnapshot {
+        let welcome = self.client.welcome();
+        let base = RoomSnapshot {
+            lease_ms: welcome.lease_ms,
+            threshold: welcome.threshold,
+            ..RoomSnapshot::default()
+        };
+        match self.client.request(&Request::Room) {
+            Ok(Response::Room {
+                identity,
+                arbiter,
+                connected,
+                items,
+                questions,
+            }) => RoomSnapshot {
+                identity,
+                arbiter,
+                connected,
+                items,
+                questions,
+                unreadable: None,
+                ..base
+            },
+            Ok(other) => RoomSnapshot {
+                unreadable: Some(format!(
+                    "the room answered the pane's read with something else: {other:?}"
+                )),
+                ..base
+            },
+            Err(e) => RoomSnapshot {
+                unreadable: Some(e.to_string()),
+                ..base
+            },
+        }
     }
 
     pub fn session(&self) -> &str {
@@ -172,6 +256,160 @@ impl letibot_tools::builtins::room::RoomLink for SessionRoom {
     }
 }
 
+/// **The pane's half** — the room as a feed is built from, and the four controls performed.
+///
+/// The split is the point of the slice: the LAYER decides which row to draw and which verb it
+/// offers; what a `claim` or a `release` DOES is the room's state machine, and this is the host
+/// doing it over the session's own connection — the same connection its `room` tool uses, because a
+/// second connection speaking one session would be a second close, and a close gives the claims
+/// back.
+impl RoomFeed for SessionRoom {
+    fn snapshot(&self) -> RoomSnapshot {
+        let welcome = self.client.welcome();
+        match self
+            .room
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            Some(snap) => snap,
+            // **The first frame is a promise, and the second is the answer.** The reader thread
+            // starts at connect and reads once a second; a pane opened before the first read lands
+            // says so rather than drawing an empty room, which would read as *nothing is queued*.
+            None => RoomSnapshot {
+                lease_ms: welcome.lease_ms,
+                threshold: welcome.threshold,
+                unreadable: Some(
+                    "the room has not been read yet — the first read is a second away".to_string(),
+                ),
+                ..RoomSnapshot::default()
+            },
+        }
+    }
+
+    fn act(&self, entry: &str, verb: &str) -> Result<String, String> {
+        let frame = pane_frame(verb, entry)?;
+        let response = self
+            .client
+            .request(&frame)
+            .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
+        // **And re-read at once**, so the frame the person sees next is the state their key made
+        // — the reader thread would catch up within a second, and a second of *nothing happened* is
+        // the one thing a key must never look like.
+        let snap = self.read_room();
+        *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
+        answer_sentence(&response, &self.session)
+    }
+}
+
+/// **A request id that cannot repeat** — the verb, the entry, the clock, and a counter.
+///
+/// **The clock alone is not enough, and the failure is silent.** The room answers a repeated
+/// `(session, id)` from its replay window instead of acting twice — which is exactly what a
+/// reconnecting client needs, and exactly what swallows a second act in the same millisecond. Two
+/// round trips on a unix socket are tens of microseconds, so `claim` and `release` on one row, or
+/// the same key pressed twice, really can share a millisecond; the second would be answered *the
+/// same* rather than performed. MEASURED: the pane's own round-trip test lost an abandonment that
+/// way, and the item sat at two instead of three.
+fn request_id(what: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    format!(
+        "{what}-{}-{}",
+        letibot_room::server::now_ms(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// **A row's key, as a frame** — the PANE's grammar, which is not the tool's.
+///
+/// A model's call names its arguments (`{"verb":"claim_item","item":12}`); a row names an ENTRY,
+/// which is one string that has to say both what it is about and, for a ruling, what the decision
+/// is. Two grammars, two doors, and this is the one the four controls come through:
+///
+/// | entry | verb | frame |
+/// |---|---|---|
+/// | `i12` | `claim` | `claim_item` 12 |
+/// | `i12` | `release` | `abandon` 12, *released from the room pane* |
+/// | `i12` | `abandon` | `abandon` 12, *marked abandoned from the room pane* |
+/// | `q3:retry` | `rule` | `rule` 3, `Retry` |
+/// | `q3:drop` | `rule` | `rule` 3, `Drop` |
+/// | `q3:hand:s-a` | `rule` | `rule` 3, `Hand { to: "s-a" }` |
+///
+/// **`release` and `abandon` are one verb in the room and two intentions here.** A voluntary
+/// release is still an abandonment and still counted (`docs/room.md` § *A claim is a lease with a
+/// beat*), so the difference the person gets is the sentence that lands on the item's history — and
+/// the sentence is the host's to write, not the layer's.
+fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
+    let id = request_id(&format!("{verb}-{entry}"));
+    let item_of = |entry: &str| -> Result<u64, String> {
+        entry
+            .strip_prefix('i')
+            .and_then(|n| n.parse::<u64>().ok())
+            .ok_or_else(|| {
+                format!("`{entry}` names no item — a row's entry is `i<number>`, and a question's is `q<number>:<decision>`")
+            })
+    };
+    match verb {
+        "claim" => Ok(Request::ClaimItem {
+            id,
+            item: item_of(entry)?,
+        }),
+        "release" => Ok(Request::Abandon {
+            id,
+            item: item_of(entry)?,
+            why: "released from the room pane".to_string(),
+        }),
+        "abandon" => Ok(Request::Abandon {
+            id,
+            item: item_of(entry)?,
+            why: "marked abandoned from the room pane".to_string(),
+        }),
+        "rule" => {
+            let (question, rest) = entry.split_once(':').ok_or_else(|| {
+                format!("`{entry}` names no decision — a question's entry is `q<number>:retry|drop|hand:<session>`")
+            })?;
+            let question: u64 = question
+                .strip_prefix('q')
+                .and_then(|n| n.parse().ok())
+                .ok_or_else(|| format!("`{entry}` names no question — a question's entry is `q<number>:…`"))?;
+            let (decision, to) = match rest.split_once(':') {
+                Some((d, t)) => (d, Some(t)),
+                None => (rest, None),
+            };
+            let decision = match (decision, to) {
+                ("retry", None) => Decision::Retry,
+                ("drop", None) => Decision::Drop {
+                    why: "dropped from the room pane".to_string(),
+                },
+                ("hand", Some(to)) if !to.is_empty() => Decision::Hand {
+                    to: to.to_string(),
+                },
+                ("hand", _) => {
+                    return Err(format!(
+                        "`{entry}` names no session — `hand` needs one, and the pane draws a row \
+                         per session the room has met (`q3:hand:s-a`)"
+                    ));
+                }
+                (other, _) => {
+                    return Err(format!(
+                        "`{other}` is not a decision — say `retry`, `drop` or `hand:<session>`"
+                    ));
+                }
+            };
+            Ok(Request::Rule {
+                id,
+                question,
+                decision,
+            })
+        }
+        other => Err(format!(
+            "`{other}` is not one of the room pane's four controls — they are claim, release, \
+             abandon and rule"
+        )),
+    }
+}
+
 /// **The verb and its arguments, as a frame.** `Err` is the tool's own refusal, in its words.
 fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
     let s = |k: &str| {
@@ -184,8 +422,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
     let n = |k: &str| args.get(k).and_then(|v| v.as_u64());
     // **The id is minted here, per call**, and it is what makes a reconnect safe: a repeat of the
     // same frame after a dropped socket is answered from the room's replay window instead of acting
-    // twice. A timestamp plus the verb is enough because one session's calls are serialised.
-    let id = format!("{verb}-{}", letibot_room::server::now_ms());
+    // twice. See [`request_id`] for why the clock alone will not do.
+    let id = request_id(verb);
     Ok(match verb {
         "post" => Request::Post {
             id,
@@ -567,6 +805,196 @@ mod tests {
         );
         assert_eq!(wake::waiting(&arbiter), 0);
         drop(host);
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A row's entry and verb become the frame the room acts on**, and a word the pane does not
+    /// have is refused here rather than sent.
+    #[test]
+    fn a_panes_entry_and_verb_become_a_frame() {
+        let id = |frame: &Request| frame.request_id().map(str::to_string);
+        // `claim` on an item is `claim_item` — the operator's own control, and it must still be the
+        // head (the room refuses `NotTheHead`, which is the whole ordering rule).
+        let claim = pane_frame("claim", "i12").expect("claim");
+        assert!(matches!(claim, Request::ClaimItem { item: 12, .. }));
+        assert!(id(&claim).is_some(), "a mutating frame carries an id");
+
+        // **`release` and `abandon` are the room's one verb and two sentences.**
+        let release = pane_frame("release", "i12").expect("release");
+        let abandon = pane_frame("abandon", "i12").expect("abandon");
+        match (&release, &abandon) {
+            (
+                Request::Abandon { item: 12, why: one, .. },
+                Request::Abandon {
+                    item: 12, why: two, ..
+                },
+            ) => {
+                assert!(one.contains("released"), "{one}");
+                assert!(two.contains("abandoned"), "{two}");
+                assert_ne!(one, two, "the difference the person gets is the sentence");
+            }
+            other => panic!("both are abandonments of the same item: {other:?}"),
+        }
+
+        // **`rule` names the decision in the entry**, because the decision is what was picked.
+        assert!(matches!(
+            pane_frame("rule", "q3:retry"),
+            Ok(Request::Rule {
+                question: 3,
+                decision: Decision::Retry,
+                ..
+            })
+        ));
+        assert!(matches!(
+            pane_frame("rule", "q3:drop"),
+            Ok(Request::Rule {
+                question: 3,
+                decision: Decision::Drop { .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            pane_frame("rule", "q3:hand:s-a"),
+            Ok(Request::Rule {
+                question: 3,
+                decision: Decision::Hand { to },
+                ..
+            }) if to == "s-a"
+        ));
+
+        // **And the refusals are this door's own**, in words a person can act on.
+        let hand = pane_frame("rule", "q3:hand").unwrap_err();
+        assert!(hand.contains("names no session"), "{hand}");
+        let decision = pane_frame("rule", "q3:maybe").unwrap_err();
+        assert!(decision.contains("not a decision"), "{decision}");
+        let no_question = pane_frame("rule", "q3").unwrap_err();
+        assert!(no_question.contains("names no decision"), "{no_question}");
+        let no_item = pane_frame("claim", "q3:retry").unwrap_err();
+        assert!(no_item.contains("names no item"), "{no_item}");
+        let other = pane_frame("post", "i1").unwrap_err();
+        assert!(other.contains("four controls"), "{other}");
+    }
+
+    /// **The four controls, round trip: a row's key, the room's state machine, the state it made.**
+    ///
+    /// This is the whole slice's contract in one test — the layer names a verb and an entry, the
+    /// HOST performs it over the session's own connection, and the room is what decides.
+    #[test]
+    fn the_four_controls_reach_the_room_and_change_it() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-acts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}))
+            .expect("s-a connects");
+
+        // Two items under one tag, posted by another session so `s-a` can claim the head.
+        let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
+            .expect("s-b connects");
+        for (id, body) in [("p1", "8 GB"), ("p2", "2 GB")] {
+            other
+                .request(&Request::Post {
+                    id: id.into(),
+                    tag: "ram".into(),
+                    body: body.into(),
+                })
+                .expect("a post");
+        }
+
+        // **`claim`** — on this session's behalf, and the room says so.
+        let said = me.act("i1", "claim").expect("a claim");
+        assert!(said.contains("you hold #1"), "{said}");
+        assert_eq!(
+            server.items()[0].holder(),
+            Some("s-a"),
+            "the item is held by the session whose pane it is"
+        );
+
+        // **`release`** — the same session gives it up, and it goes back to the head of `ram`.
+        let said = me.act("i1", "release").expect("a release");
+        assert!(said.contains("went back to `ram`"), "{said}");
+        let item = &server.items()[0];
+        assert_eq!(item.holder(), None);
+        assert_eq!(item.abandonments(), 1, "a voluntary release is counted");
+        assert!(
+            matches!(&item.abandonments[0].why, letibot_room::Why::Released { says } if says.contains("released from the room pane")),
+            "the sentence the host wrote is on the item: {:?}",
+            item.abandonments[0].why
+        );
+
+        // **`abandon`** — the same verb, the harder sentence, and it is still one abandonment.
+        me.act("i1", "claim").expect("a claim");
+        me.act("i1", "abandon").expect("an abandonment");
+        let item = &server.items()[0];
+        assert_eq!(item.abandonments(), 2);
+        assert!(
+            matches!(&item.abandonments[1].why, letibot_room::Why::Released { says } if says.contains("marked abandoned")),
+            "{:?}",
+            item.abandonments[1].why
+        );
+
+        // **And the third raises a question**, which the last control answers.
+        me.act("i1", "claim").expect("a claim");
+        me.act("i1", "abandon").expect("the third abandonment");
+        let questions = server.open_questions();
+        assert_eq!(questions.len(), 1, "three lost claimants freeze the item");
+        let entry = format!("q{}:retry", questions[0].id);
+        let said = me.act(&entry, "rule").expect("a ruling");
+        assert!(said.contains("is answered"), "{said}");
+        assert!(server.open_questions().is_empty(), "and the question is closed");
+        assert!(
+            server.items()[0].claimable(),
+            "`retry` puts it back at the head with its count kept"
+        );
+
+        // **A key the room will not take is refused in the room's own words** — the person is told
+        // what happened to it rather than left with a key that did nothing.
+        let refused = me.act("i2", "release").expect_err("`s-a` holds nothing on #2");
+        assert!(refused.contains("does not hold"), "{refused}");
+
+        drop(other);
+        drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The pane's picture of the room is read off the socket, and the identity comes with it.**
+    #[test]
+    fn the_feed_snapshot_carries_the_rooms_identity_and_its_items() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-snap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        server.with_arbiter("s-arbiter");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {})).expect("connects");
+        me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
+            .expect("a post");
+
+        // **The picture arrives from a thread of its own**, so the test waits for it rather than
+        // sleeping a fixed second and hoping: a pane opened before the first read lands says *not
+        // read yet*, which is the honest first frame and a poor assertion.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut snap = me.snapshot();
+        while snap.unreadable.is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            snap = me.snapshot();
+        }
+        assert_eq!(snap.unreadable, None, "{:?}", snap.unreadable);
+        assert!(snap.identity.contains("no store"), "{}", snap.identity);
+        assert_eq!(snap.arbiter.as_deref(), Some("s-arbiter"));
+        assert!(
+            snap.connected.iter().any(|c| c == "s-a"),
+            "who is up: {:?}",
+            snap.connected
+        );
+        assert_eq!(snap.items.len(), 1);
+        assert_eq!(snap.items[0].tag, "ram");
+        assert_eq!(snap.lease_ms, letibot_room::DEFAULT_LEASE_MS);
+
         drop(me);
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);

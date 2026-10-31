@@ -648,7 +648,7 @@ list, this session's monitors, its jobs, its todos, the repository's state — s
 which of those it reads and is handed exactly those, under their names:
 
 ```toml
-feeds = ["sessions"]        # session list · queue (fed) · monitors · jobs · todos · git (planned)
+feeds = ["sessions"]        # sessions · queue · room (fed) · monitors · jobs · todos · git (planned)
 ```
 
 ```jsonc
@@ -668,6 +668,7 @@ change:
 | `todos` | the session's todo rows, with their waits and their questions | a todo board |
 | `git` | the head's own reading of the repository — `GitState` in `crates/tui/src/gitfield.rs`: branch, detached, ahead/behind, stash, the action in progress, conflict/staged/unstaged/untracked counts — plus the changed-file list a pane would show | a repo/status pane |
 | `queue` | the merge queue as the head holds it: `reviews` and `merges` with their state, their reason and their age, `targets` with the target branches' health, `leases` with the heartbeat and a `stale` flag, `recent` moves, `not_queued`, `archived` — plus `scope` (whose queues these are, in words), `view` (`review`/`merge`), `cursor` (the entry the person's cursor is on), `counts`, and the host's own `now_ms` | the queue pane (built) |
+| `room` | one host's agents' queues per tag: every item with its tag, state, claimant, the age of that claim's beat, its abandonment count and whether it is frozen; the open questions; the arbiter and who is connected; and the room's own `identity` sentence | the room pane (built, 2026-10-31) |
 
 **Two things a feed says so a plugin does not have to infer them**, and both are in `queue` because
 both were measured as the ways a pane gets the queue wrong:
@@ -744,6 +745,7 @@ it will really see.
 | feed | built by the daemon | is |
 |---|---|---|
 | `sessions` | yes | the registry's briefs: id, title, slug, parent, origin, live/running/heads/items/stored, model, workspace, waits-on, paused nags, `moved_ms`, `repo` — plus `here`, `home`, `now` |
+| `room` | yes (2026-10-31) | the box's room, read over this session's own connection to the coordinator (`crates/harnessd/src/plugins/room_feed.rs`): the queues per tag with each item's claimant, the age of that claim's beat and its abandonment count; the open questions; the arbiter and who is connected; and `identity` — the sentence that keeps *restarted clean* and *restarted empty* apart |
 | `monitors`, `jobs`, `todos`, `git` | **no** | still planned. A layer that declares one is handed **no key at all**: `[]` would tell it *there are none*, and *this host cannot answer that yet* is a different fact, which only the layer can draw |
 
 **The three fields only a host can fill, and why each is the host's:**

@@ -7533,6 +7533,15 @@ impl Harness {
         &self.cfg.workspace
     }
 
+    /// **This session's connection to the box's room**, when it has one — the `room` tool's half,
+    /// and what a room pane is drawn from (`crate::plugins::room_feed`).
+    ///
+    /// It is `None` on a box with no coordinator and on a subagent (which speaks through its
+    /// parent), and both of those are ordinary states rather than failures.
+    pub fn room_link(&self) -> Option<Arc<crate::room::link::SessionRoom>> {
+        self.room.clone()
+    }
+
     /// **Turn the guard model on or off, now, on the running session.**
     ///
     /// > *"I want to start leticode, do /supervise, and move on."*

@@ -2943,11 +2943,20 @@ impl<'a> Sessions<'a> {
         // `sessions` feed is drawn from it (`docs/plugins-plan.md` §4.9). The registry is the one
         // holder of *every* session, live and on disk, so it is the whole source; a host built by
         // a test has none and a pane that declares the feed says so on its screen.
-        let host = Arc::new(
-            crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
-                crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
+        let host = crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(
+            Arc::new(crate::plugins::feed::RegistryFeed::new(
+                self.registry.clone(),
             )),
         );
+        // **And the session's own connection to the box's room**, so a room pane is drawn from it
+        // and its four controls have somewhere to go. `None` on a box with no coordinator, and on a
+        // subagent — and a host with no room hands a layer that declares the feed **no key**, which
+        // is a pane that says why rather than an empty room that reads as *nothing is queued*.
+        let host = match self.open.get(session_id).and_then(|h| h.room_link()) {
+            Some(link) => host.with_room(link),
+            None => host,
+        };
+        let host = Arc::new(host);
         host.announce(&hub);
         let driver: Arc<dyn letibot_sessionlog::registry::PaneDriver> = host.clone();
         self.registry.set_pane_driver(session_id, driver);

@@ -289,6 +289,15 @@ impl App {
                 item,
                 action: word,
             })),
+            // **The host's own verb, on the entry this row names** — the same door an `event`
+            // word takes, because the host that performs it is the one that drew the row. A pane
+            // the daemon answers (the room's, the queue's) acts on its own state there; this head
+            // has no such state to act on and no business guessing at one.
+            Some(pv::ActionKind::Verb(word)) => ControlFlow::Break(Some(Action::PaneAction {
+                pane,
+                item,
+                action: word,
+            })),
             // A view `validate` refused cannot be drawn, so this arm is the belt beside its
             // braces: a key with no meaning is the composer's.
             None => ControlFlow::Continue(()),
@@ -338,10 +347,23 @@ impl App {
                     action: event,
                 })
             }
-            // A row with no act, or one this surface cannot perform: the detail. `Verb` is the
-            // queue's — performed on the queue's own surface against the snapshot the head holds
-            // (`queue_pane.rs`), not by a generic pane that has no queue to act on.
-            Some(pv::Act::Fold { .. }) | Some(pv::Act::Verb { .. }) | None => {
+            // **A verb the layer declared, sent to the host that drew the row.** A row carrying
+            // `{"verb":"claim","id":"i12"}` names an entry and a verb the manifest already
+            // gates (`View::validate_for`, which the daemon runs before this head sees the view),
+            // so Enter on it is a `PaneAction` — the pane's host performs it, exactly as it
+            // performs the row's letter actions. The queue's own verbs are performed by the
+            // QUEUE's surface against the snapshot this head holds (`queue_pane.rs`); they never
+            // arrive here.
+            Some(pv::Act::Verb { verb, id }) => {
+                let pane = self.plugin_open.clone()?;
+                Some(Action::PaneAction {
+                    pane,
+                    item: id,
+                    action: verb,
+                })
+            }
+            // A row with no act, or one this surface cannot perform: the detail.
+            Some(pv::Act::Fold { .. }) | None => {
                 self.plugin_detail = Some((self.plugin_screen, self.plugin_sel));
                 self.push_surface(Surface::PluginDetail);
                 None

@@ -679,6 +679,12 @@ pub const TABLE: &[(&str, Class)] = &[
     // skim red.
     ("job_output_refused", Class::Refused),
     ("slash_refused", Class::Refused),
+    // **A key on the room's pane that the room would not take.** The person pressed `claim` or
+    // `release` on a row and the room answered with its own sentence — the tag is held by somebody
+    // else, this session does not hold the item, it is frozen until a ruling. The reader's own act,
+    // well formed, and the fix is their next key: the middle register, not the red one. A key that
+    // said nothing at all would be indistinguishable from a key that was not pressed.
+    ("room_act_refused", Class::Refused),
     // The first round on a newly chosen model was refused by its provider: the turn failed,
     // and the notice names the model before it and the command back.
     ("model_switch_refused", Class::Failure),
@@ -1082,6 +1088,11 @@ mod the_register_census {
         // `!term` with no pane, which is `job_output_refused`'s shape too: the act is well
         // formed, the thing it names is not there, and the fix is the reader's next line.
         "nothing_to_send_to",
+        // **A key on the room's pane that the room refused** — the person's own act, answered with
+        // the room's sentence (the tag is held, this session does not hold the item, it is frozen).
+        // The same shape as `job_output_refused`: well formed, the thing it names will not take it,
+        // and the fix is the reader's next key.
+        "room_act_refused",
         // **A `/models` whose deferred switch could not be made** at the turn's end — the same
         // shape as `mode_set_refused`: their line, well formed, and the session cannot carry it.
         "model_switch_not_applied",
@@ -1333,17 +1344,18 @@ mod the_register_census {
         //     restore, said anyway and for the clock (`restart::nothing_running`). Its own word
         //     because it is its own sentence: `restart_reminded` over an empty list would tell a
         //     head to draw *"reminded: nothing"*.
-        //   · **169, not 168**: `plugin_untrusted` (Routine) — D17's ladder noticing that a pinned
-        //     layer's bytes moved, said once by name with both hashes. See
-        //     `crates/harnessd/src/plugins.rs`'s `say_broken_pin`.
-        //   · **170, not 169**: `wake_undelivered` (Failure) — a settlement arrived for a session
-        //     this daemon is not holding (closed, its open failed, not opened yet), so the ring
-        //     woke nobody. A Failure by `wake_failed`'s ruling one register up: the settlement is
-        //     still a row with `delivered = 0` and the session's next open says it, but a notice
-        //     the model was owed did not reach it, and *a wake went nowhere* had no other witness.
-        assert_eq!(TABLE.len(), 170, "the table's size");
+        //   · **169, not 168**: two codes landed independently and both are here — `plugin_untrusted`
+        //     (Routine) — D17's ladder noticing that a pinned layer's bytes moved, said once by name
+        //     with both hashes. See `crates/harnessd/src/plugins.rs`'s `say_broken_pin`.
+        //   · **170, not 169**: `room_act_refused` (Refused) — a key on the room's pane that the
+        //     room would not take; the reader's own act, answered by the room's own sentence.
+        //   · **171, not 170**: `wake_undelivered` (Failure) — a settlement arrived for a session
+        //     this daemon is not holding (closed, its open failed, not opened yet), so the ring woke
+        //     nobody. The settlement is still a row with `delivered = 0` and the next open says it,
+        //     but a notice the model was owed did not reach it.
+        assert_eq!(TABLE.len(), 171, "the table's size");
         assert_eq!(count(Class::Routine), 67);
-        assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
+        assert_eq!(count(Class::Refused), 14, "the fourteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 90);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);

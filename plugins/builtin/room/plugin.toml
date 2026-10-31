@@ -1,0 +1,24 @@
+name = "room"
+purpose = "one host's agents' queues, per tag: what is waiting, who holds it, how long since their last beat — and the four keys that move it"
+hooks = ["pane_room"]
+# **`capabilities = []` is the half the layer cannot cross**: it reads no file, runs no program and
+# fetches nothing. Every fact it draws arrives in the `room` feed, which the daemon read from the
+# coordinator over the session's own connection.
+capabilities = []
+# **What it reads**, and the only thing it is handed: the room as the daemon last read it — every
+# item with its tag, state, claimant, the age of that claim's beat and its abandonment count; the
+# open questions; the arbiter and who is connected; and the room's own identity sentence.
+feeds = ["room"]
+# **What its rows may ask the host to do — the four manual controls, and nothing else.**
+#
+# * `claim` — take the item on this session's behalf (`claim_item`; it must still be the head);
+# * `release` — give up a claim this session holds (`abandon`, *released from the room pane*);
+# * `abandon` — mark it abandoned, which is the same room verb with the harder sentence on it
+#   (`docs/room.md`: a voluntary release is still an abandonment and still counted);
+# * `rule` — answer a question the room asked, which is `retry`, `drop` or `hand:<session>`.
+#
+# A row carrying a verb this list does not name is refused by the host (`View::validate_for`), so
+# the verbs a layer can reach are the verbs a reviewer read. The host is what PERFORMS them: the
+# layer decides only which row to draw.
+actions = ["claim", "release", "abandon", "rule"]
+contract = 1

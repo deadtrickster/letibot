@@ -62,6 +62,7 @@ pub mod conditions;
 pub mod contract;
 pub mod desk;
 pub mod feed;
+pub mod room_feed;
 pub mod look;
 pub mod rano;
 pub mod scaffold;
@@ -107,6 +108,12 @@ pub struct PluginHost {
     /// (`Sessions::open_plugins`). `None` in a host a test built, and then a layer that declares
     /// the feed is handed no key at all rather than an empty list (see [`feed`]).
     sessions: Option<Arc<dyn feed::SessionFeed>>,
+    /// **Where a pane's view of the room comes from** — this session's own connection to the box's
+    /// coordinator (`crate::room::link::SessionRoom`), set by [`PluginHost::with_room`] at the one
+    /// place the daemon builds a host. `None` in a host a test built, and on a box with no
+    /// coordinator; a layer that declares the `room` feed is then handed **no key at all** rather
+    /// than an empty room (see [`room_feed`]).
+    room: Option<Arc<dyn room_feed::RoomFeed>>,
 }
 
 struct Inner {
@@ -219,6 +226,7 @@ impl PluginHost {
             }),
             builder,
             sessions: None,
+            room: None,
         }
     }
 
@@ -227,6 +235,16 @@ impl PluginHost {
     /// not a layer's: a host built by a test has no list and says so by handing nothing.
     pub fn with_sessions(mut self, source: Arc<dyn feed::SessionFeed>) -> PluginHost {
         self.sessions = Some(source);
+        self
+    }
+
+    /// **Hand this host the session's own connection to the box's room**, so a pane that declares
+    /// the `room` feed is given one and its four controls have somewhere to go.
+    ///
+    /// A builder for the same reason [`PluginHost::with_sessions`] is: which room a session is in is
+    /// the daemon's fact, and a host a test built has none and says so by handing nothing.
+    pub fn with_room(mut self, source: Arc<dyn room_feed::RoomFeed>) -> PluginHost {
+        self.room = Some(source);
         self
     }
 
@@ -346,26 +364,37 @@ impl PluginHost {
         host
     }
 
-    /// **Put the built-in layers a session declared a tool from at the bottom of this stack.**
+    /// **Put the built-in layers a session declared a tool from at the bottom of this stack — and
+    /// the ones whose PANES this daemon answers.**
     ///
     /// The match is on the tool's NAME: a built-in that declares `claude_transcript` is installed
     /// for a session whose declarations include `claude_transcript`, and not otherwise. The layer
     /// above it is what the model was offered — the built-in is the module that answers, which is
     /// why a project's ask can be a manifest with no `plugin.wasm`.
+    ///
+    /// # And the room, which declares no tool and is still the daemon's to draw
+    ///
+    /// The built-in panes are otherwise the HEAD's (`letibot_builtins::install` in the TUI's own
+    /// stack) because a pane is a screen and the head owns the screen. The room's is the exception,
+    /// and the reason is the whole slice: its four controls are the HOST's verbs — a claim, a
+    /// release, a ruling — and the host that can perform them is this daemon, over the session's own
+    /// connection to the coordinator. A head that drew it would have a pane whose keys send nothing.
+    /// So the layer whose hook is [`ROOM_HOOK`] is installed here, whatever the session declared.
     fn install_builtin_tools(&self, declared: &[DeclaredTool]) {
-        if declared.is_empty() {
-            return;
-        }
         let mut inner = self.lock();
         for builtin in letibot_builtins::table() {
-            let declares = Manifest::parse(builtin.manifest)
-                .map(|m| {
-                    m.tools
-                        .iter()
-                        .any(|t| declared.iter().any(|d| d.tool.name == t.name))
-                })
-                .unwrap_or(false);
-            if !declares {
+            let manifest = Manifest::parse(builtin.manifest).ok();
+            let declares_tool = manifest.as_ref().is_some_and(|m| {
+                m.tools
+                    .iter()
+                    .any(|t| declared.iter().any(|d| d.tool.name == t.name))
+            });
+            let answers_the_room = manifest.as_ref().is_some_and(|m| {
+                m.hooks
+                    .iter()
+                    .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
+            });
+            if !declares_tool && !answers_the_room {
                 continue;
             }
             if let Err(why) =
@@ -815,15 +844,40 @@ impl PluginHost {
     /// disabled, speaks this contract and exports the hook), so the declaration read here is the
     /// declaration of the layer whose answer will be drawn.
     ///
-    /// `sessions` is built; the four other feeds the contract names are still planned, and a layer
-    /// that declares one is handed **no key** — not an empty list, which would say *there are none*
-    /// (see [`feed`]).
+    /// `sessions` and `room` are built; the four other feeds the contract names are still planned,
+    /// and a layer that declares one is handed **no key** — not an empty list, which would say
+    /// *there are none* (see [`feed`], [`room_feed`]).
     fn feeds_for(&self, hook: &str) -> BTreeMap<String, Value> {
-        let Some(source) = self.sessions.as_ref() else {
-            return BTreeMap::new();
-        };
-        let declared = self
-            .lock()
+        let mut out = BTreeMap::new();
+        for want in self.declared_feeds(hook) {
+            match want {
+                letibot_plugin::pane::Feed::Sessions => {
+                    if let Some(source) = self.sessions.as_ref() {
+                        out.insert(
+                            want.name().to_string(),
+                            feed::sessions(&**source, &self.session),
+                        );
+                    }
+                }
+                letibot_plugin::pane::Feed::Room => {
+                    if let Some(source) = self.room.as_ref() {
+                        out.insert(
+                            want.name().to_string(),
+                            room_feed::room(&**source, &self.session, feed::now_ms()),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// **The feeds the layer that will answer `hook` declared**, by name — read off the stack, and
+    /// only off the layer [`Stack::call`] will reach (the first in stack order that is not disabled,
+    /// speaks this contract and exports the hook).
+    fn declared_feeds(&self, hook: &str) -> Vec<letibot_plugin::pane::Feed> {
+        self.lock()
             .stack
             .layers()
             .iter()
@@ -833,17 +887,23 @@ impl PluginHost {
                     && l.manifest.hooks.iter().any(|h| h == hook)
             })
             .map(|l| l.manifest.feeds.clone())
-            .unwrap_or_default();
-        let mut out = BTreeMap::new();
-        for want in declared {
-            if want == letibot_plugin::pane::Feed::Sessions {
-                out.insert(
-                    want.name().to_string(),
-                    feed::sessions(&**source, &self.session),
-                );
-            }
-        }
-        out
+            .unwrap_or_default()
+    }
+
+    /// **The acts the layer that will answer `hook` declared** — the allowlist [`View::validate_for`]
+    /// checks a row's `enter` and its letters against, and the words this host will perform.
+    fn declared_actions(&self, hook: &str) -> Vec<String> {
+        self.lock()
+            .stack
+            .layers()
+            .iter()
+            .find(|l| {
+                !l.disabled
+                    && l.manifest.contract == letibot_plugins::CONTRACT
+                    && l.manifest.hooks.iter().any(|h| h == hook)
+            })
+            .map(|l| l.manifest.actions.clone())
+            .unwrap_or_default()
     }
 
     /// **One pane, asked once** — and, when the answer asks for a look and this pass may run one,
@@ -863,6 +923,9 @@ impl PluginHost {
         // layer declared, and the mutex is not reentrant: asking inside `render`'s own guard is a
         // deadlock, which reads as a daemon that stopped answering panes.
         let feeds = self.feeds_for(&hook);
+        // **The acts the answering layer declared**, read before the lock for the same reason the
+        // feeds are: `declared_actions` takes the stack's mutex and this one is not reentrant.
+        let declared_actions = self.declared_actions(&hook);
         let mut interior = self.lock();
         let size = interior
             .sizes
@@ -903,7 +966,7 @@ impl PluginHost {
                 return;
             };
             let by = resolved.by.clone().unwrap_or_else(|| manifest.to_string());
-            let (published, view) = match validated(&answer, pane, &by) {
+            let (published, view) = match validated(&answer, pane, &by, &declared_actions) {
                 Ok(view) => (answer, view),
                 Err(why) => {
                     let said = format!("`{pane}`: {why}");
@@ -1175,7 +1238,11 @@ impl PluginHost {
                 };
                 let by = resolved.by.clone().unwrap_or_else(|| name.to_string());
                 let fuel = shadow.fuel(&by).unwrap_or(0);
-                match accepted(hook, &answer) {
+                let declared = shadow
+                    .layer(&by)
+                    .map(|l| l.manifest.actions.clone())
+                    .unwrap_or_default();
+                match accepted(hook, &answer, &declared) {
                     Ok(what) => said.push(format!(
                         "`{hook}` for {}{} — {what}",
                         describe_any_input(&input),
@@ -1436,6 +1503,13 @@ impl PluginHost {
                     .layer(&by)
                     .map(|l| l.scope.to_string())
                     .unwrap_or_else(|| "?".to_string());
+                // **The acts the answering layer declared**, so a diagnostic asks the same
+                // question the running host asks: a row reaching a verb the manifest never named
+                // is refused here too, rather than reported as a pane that is fine.
+                let declared = asked
+                    .layer(&by)
+                    .map(|l| l.manifest.actions.clone())
+                    .unwrap_or_default();
                 out.push_str(&format!(
                     "\nanswered by `{by}` ({scope}){}\n",
                     match fuel {
@@ -1443,7 +1517,7 @@ impl PluginHost {
                         None => String::new(),
                     }
                 ));
-                match accepted(&hook, answer) {
+                match accepted(&hook, answer, &declared) {
                     Ok(what) => {
                         out.push_str(&format!("\nit answers — {what}:\n"));
                         out.push_str(
@@ -1454,7 +1528,7 @@ impl PluginHost {
                         // A pane that asks for a look is the frame that asks; say so, because an
                         // answer with no numbers in it otherwise reads as a broken dashboard.
                         if hook.starts_with("pane_") {
-                            if let Ok(view) = validated(answer, &hook, &by) {
+                            if let Ok(view) = validated(answer, &hook, &by, &declared) {
                                 if let Some(spec) = &view.look {
                                     out.push_str(&format!(
                                         "\nit asks the host for a look: {} — a head runs it and \
@@ -1602,10 +1676,10 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
 /// place, so `plugin test` and `load` cannot disagree with what a session would live with.
 ///
 /// `Ok` is the one line a person reads (what the answer WOULD do); `Err` is the refusal.
-fn accepted(hook: &str, answer: &Value) -> Result<String, String> {
+fn accepted(hook: &str, answer: &Value, declared: &[String]) -> Result<String, String> {
     use letibot_plugin::{condition, notice, tool_call, tool_result};
     if hook.starts_with("pane_") {
-        let view = validated(answer, hook, hook)?;
+        let view = validated(answer, hook, hook, declared)?;
         return Ok(format!("a view the host can drive — \"{}\"", view.title));
     }
     if hook == tool_call::HOOK {
@@ -1832,6 +1906,29 @@ impl PaneDriver for PluginHost {
             );
             return;
         }
+        // **A room pane's keys are the ROOM's four verbs, and this host performs them.** The layer
+        // drew the row and said which entry and which verb; what a claim or a release DOES is the
+        // room's state machine, one process away, over this session's own connection — so the act
+        // is taken here rather than handed back to the layer as an `event` word, which would be a
+        // layer deciding what the queue does.
+        //
+        // The row's words were already gated: `View::validate_for` refuses a view whose `enter` or
+        // whose letter names a verb the layer did not declare, so what arrives here is one of the
+        // four the manifest listed.
+        if let Some(room) = self.room.as_ref()
+            && pane_hook(pane) == ROOM_HOOK
+        {
+            if let Err(why) = room.act(item, action) {
+                // **A refusal is said, not swallowed.** A key that does nothing is
+                // indistinguishable from a key that was not pressed, and the room's own sentence
+                // names who holds the tag or what the state is.
+                hub.publish(SessionEvent::Warning {
+                    code: "room_act_refused".into(),
+                    detail: format!("`{action}` on `{item}`: {why}"),
+                    compaction: None,
+                });
+            }
+        }
         self.render(
             hub,
             pane,
@@ -1842,6 +1939,19 @@ impl PaneDriver for PluginHost {
             },
         );
     }
+}
+
+/// **The hook whose rows are the room's four controls.**
+///
+/// `plugins/builtin/room` declares `hooks = ["pane_room"]`, so a head opens it as `room/room`. The
+/// match is on the HOOK and not on the layer's name, because what makes a key the room's verb is
+/// what the pane is drawing: a project that ships its own layer over `pane_room` is drawing the
+/// same room, and its rows are the same four controls.
+pub const ROOM_HOOK: &str = "room";
+
+/// The hook part of a pane id (`<manifest name>/<hook name>`, without the `pane_` prefix).
+fn pane_hook(pane: &str) -> &str {
+    pane.split_once('/').map(|(_, hook)| hook).unwrap_or("")
 }
 
 /// The pane ids a stack's layers export, in stack order, each once.
@@ -1893,11 +2003,17 @@ fn input_value(
 }
 
 /// **The plugin's answer, as a view this host can drive** — or the sentence saying why not.
-fn validated(answer: &Value, pane: &str, by: &str) -> Result<View, String> {
+///
+/// `validate` is the contract's own keys and shapes; `validate_for` is the layer's MANIFEST, and it
+/// is the one that matters here: a row that asks the host to perform a verb the layer did not
+/// declare is refused before it is drawn, rather than drawn and then refused per keypress. The
+/// daemon is the host that performs those verbs, so it is the host that must hold the line — a
+/// head's own check would be a second one, on a view that already crossed the wire.
+fn validated(answer: &Value, pane: &str, by: &str, declared: &[String]) -> Result<View, String> {
     let view: View = serde_json::from_value(answer.clone()).map_err(|e| {
         format!("the answer is not a C3 view ({e}), while `{pane}` was resolved from `{by}`")
     })?;
-    view.validate()?;
+    view.validate_for(declared)?;
     Ok(view)
 }
 
@@ -3184,8 +3300,15 @@ mod tests {
                 inner.stack.failures()
             );
         }
-        // It is a tool and not a pane: nothing of its is announced to a head.
-        assert!(host.panes().is_empty(), "{:?}", host.panes());
+        // It is a tool and not a pane: nothing of the transcript layer's is announced to a head.
+        // **The room's pane is the one this host answers**, and for a different reason — its rows
+        // are the person's four controls, so the HOST is what performs them (`ROOM_HOOK`). A
+        // session that declared no tool would still have that pane and nothing else.
+        assert_eq!(
+            host.panes(),
+            vec!["room/room".to_string()],
+            "the transcript layer draws no pane; the room's is the daemon's own"
+        );
         let hub = Hub::new("s-tool");
         host.announce(&hub);
         assert!(
@@ -5231,5 +5354,297 @@ mod tests {
             marker.exists(),
             "the look did not run once the gate was free"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The room's pane: the feed the daemon builds, and the four keys it performs
+    // -----------------------------------------------------------------------------------------
+
+    /// A project layer that answers `pane_room`, declares the four controls, and reads the `room`
+    /// feed — the manifest a project would write over the built-in.
+    fn room_project(tag: &str, answer: &str, actions: &str) -> PathBuf {
+        let root = tempdir(tag);
+        let layer = root.join(".letibot/plugins/room");
+        std::fs::create_dir_all(&layer).expect("the layer dir");
+        std::fs::write(
+            layer.join("plugin.toml"),
+            format!(
+                "name = \"room\"\npurpose = \"the room\"\nhooks = [\"pane_room\"]\n\
+                 capabilities = []\nfeeds = [\"room\"]\nactions = [{actions}]\ncontract = 1\n"
+            ),
+        )
+        .expect("a manifest");
+        std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+        std::fs::write(layer.join("answer.json"), answer).expect("an answer");
+        std::fs::write(layer.join("second.json"), answer).expect("a second answer");
+        root
+    }
+
+    /// A real room on a socket — the thing a room pane is drawn from.
+    fn a_room(tag: &str) -> (PathBuf, letibot_room::Server) {
+        let dir = tempdir(tag);
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+        (dir, server)
+    }
+
+    /// **Wait for the pane's picture of the room to catch up.** The feed is read on a thread of its
+    /// own, once a second, so a test waits for it rather than sleeping a fixed second — and the
+    /// pane's own *not read yet* frame is a fact, not a failure.
+    fn until_the_room_is_read(link: &crate::room::link::SessionRoom, items: usize) {
+        use crate::plugins::room_feed::RoomFeed as _;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snap = link.snapshot();
+            if snap.unreadable.is_none() && snap.items.len() == items {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the room was never read: {:?}",
+                snap.unreadable
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// **A module that answers the same JSON every time** — for a test that presses more keys than
+    /// it scripted frames. [`Rounds`] is the right tool when the ANSWER is the subject; here the
+    /// subject is what the host does with a row, and the row is the same row every time.
+    struct Same {
+        hooks: Vec<String>,
+        answer: String,
+    }
+
+    impl Module for Same {
+        fn hooks(&self) -> Vec<String> {
+            self.hooks.clone()
+        }
+
+        fn call(&self, _hook: &str, _input: &str) -> Result<Option<String>, String> {
+            Ok(Some(self.answer.clone()))
+        }
+
+        fn fuel(&self) -> u64 {
+            7
+        }
+    }
+
+    struct SameLoader;
+
+    impl Loader for SameLoader {
+        fn load(&self, wasm: &Path, _caps: &[Capability]) -> Result<Box<dyn Module>, String> {
+            let dir = wasm.parent().unwrap_or(Path::new("."));
+            let manifest = Manifest::read(dir)?;
+            let answer = std::fs::read_to_string(dir.join("answer.json"))
+                .map_err(|e| format!("answer.json: {e}"))?;
+            Ok(Box::new(Same {
+                hooks: manifest.hooks.clone(),
+                answer,
+            }))
+        }
+    }
+
+    /// **A row's key is performed by the HOST, and the feed it was drawn from is the room's.**
+    ///
+    /// This is the slice in one test: the daemon builds the `room` feed (so the layer is told what
+    /// is queued and who holds it), the layer answers a row carrying `{"verb":"claim","id":"i1"}`,
+    /// and the daemon performs it — the room's own state machine is what moves, over the session's
+    /// own connection.
+    #[test]
+    fn a_room_panes_key_is_performed_by_the_host() {
+        let (dir, server) = a_room("room-key");
+        // An item somebody else posted, so `s-room-pane` may claim the head of `ram`.
+        let other = letibot_room::client::Client::connect(
+            server.path(),
+            letibot_room::Speaker::top_level("s-b"),
+            Arc::new(|_| {}),
+        )
+        .expect("s-b connects");
+        other
+            .request(&letibot_room::Request::Post {
+                id: "p1".into(),
+                tag: "ram".into(),
+                body: "8 GB".into(),
+            })
+            .expect("a post");
+        let link = crate::room::link::SessionRoom::connect(
+            "s-room-pane",
+            server.path(),
+            Arc::new(|_: &str| {}),
+        )
+        .expect("the session connects");
+        until_the_room_is_read(&link, 1);
+
+        let answer = r#"{"title":"the room","panels":[{"id":"queues","title":"queues",
+            "summary":[{"tree":{"rows":[{"id":"i1","cells":["8 GB"],
+            "enter":{"verb":"claim","id":"i1"}}]}}]}]}"#;
+        let root = room_project("room-key", answer, "\"claim\", \"release\", \"abandon\", \"rule\"");
+        let hub = Hub::new("s-room-pane");
+        let host = PluginHost::discover(
+            "s-room-pane",
+            &root,
+            None,
+            None,
+            Arc::new(SameLoader),
+            Arc::new(FileBuilder),
+        )
+        .with_room(link);
+
+        host.open("s-room-pane", &hub, "room/room", (80, 24));
+        // **The feed the layer was handed is the room's** — the item, its tag, and the room's own
+        // identity sentence.
+        let inputs = host.lock().rec.inputs("pane_room").to_vec();
+        assert_eq!(inputs.len(), 1, "one render, one call");
+        let feed = &inputs[0]["feeds"]["room"];
+        assert_eq!(feed["here"], json!("s-room-pane"));
+        assert!(feed["identity"].as_str().unwrap_or_default().contains("no store"), "{feed}");
+        assert_eq!(feed["tags"][0]["tag"], json!("ram"));
+        assert_eq!(feed["tags"][0]["rows"][0]["entry"], json!("i1"));
+        assert_eq!(feed["tags"][0]["rows"][0]["claimable"], json!(true));
+
+        // **And the key moves the room.** The layer said *claim entry i1*; the daemon performed it.
+        host.action("s-room-pane", &hub, "room/room", "i1", "claim");
+        assert_eq!(
+            server.items()[0].holder(),
+            Some("s-room-pane"),
+            "the claim is on the session whose pane it is"
+        );
+        // The second render is the pane again, with the state the key made.
+        let inputs = host.lock().rec.inputs("pane_room").to_vec();
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(
+            inputs[1]["feeds"]["room"]["tags"][0]["rows"][0]["claimant"],
+            json!("s-room-pane"),
+            "the frame after the key is the state the key made"
+        );
+
+        // **A key the room refuses is SAID** — a key that did nothing is indistinguishable from
+        // one that was not pressed. `#2` is somebody else's, so a release of it is `NotHeld`.
+        other
+            .request(&letibot_room::Request::Post {
+                id: "p2".into(),
+                tag: "disk".into(),
+                body: "40 GB".into(),
+            })
+            .expect("a second post");
+        host.action("s-room-pane", &hub, "room/room", "i2", "release");
+        let said = hub.retained();
+        assert!(
+            said.iter().any(|e| matches!(
+                &e.event,
+                SessionEvent::Warning { code, detail, .. }
+                    if code == "room_act_refused" && detail.contains("does not hold")
+            )),
+            "the room's refusal reaches the person: {:?}",
+            said.iter().map(|e| format!("{:?}", e.event)).collect::<Vec<_>>()
+        );
+
+        drop(other);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A row carrying a verb the manifest did not declare is refused before it is drawn** — the
+    /// gate `View::validate_for` keeps, on the daemon's side of the wire.
+    #[test]
+    fn a_room_row_reaching_an_undeclared_verb_is_refused() {
+        let answer = r#"{"title":"the room","panels":[{"id":"queues","title":"queues",
+            "summary":[{"tree":{"rows":[{"id":"i1","cells":["8 GB"],
+            "enter":{"verb":"veto","id":"i1"}}]}}]}]}"#;
+        // The manifest declares the four, and `veto` is not one of them.
+        let root = room_project("room-veto", answer, "\"claim\", \"release\", \"abandon\", \"rule\"");
+        let hub = Hub::new("s-plugins");
+        let host = PluginHost::discover(
+            "s-plugins",
+            &root,
+            None,
+            None,
+            Arc::new(RoundLoader),
+            Arc::new(FileBuilder),
+        );
+        host.open("s-plugins", &hub, "room/room", (80, 24));
+        let published = views(&hub);
+        let (_, view) = published.last().expect("a frame");
+        assert_eq!(
+            view["panels"][0]["unavailable"]["why"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("does not declare that action"),
+            true,
+            "the pane says why instead of drawing the row: {view}"
+        );
+        assert!(
+            !warned(&hub, "plugin_view_refused").is_empty(),
+            "and the session's model is told once"
+        );
+    }
+
+    /// **The committed `room` module RUNS**, against a real room, through the daemon's own host.
+    ///
+    /// The rake this exists for is measured: `plugins/examples/plan-dashboard`'s committed `.wasm`
+    /// had never been executed and trapped on its first call
+    /// (`.letibot/notes/the-pane-contracts-two-look-keys.md`). A guest that compiles for
+    /// `wasm32-unknown-unknown` is not a guest that has run, so this test loads the module the
+    /// binary carries, asks it for a pane with a real room behind it, and asserts the answer is the
+    /// LAYER's — the tag, the item's body, and the room's identity — rather than the host's
+    /// `unavailable` panel.
+    #[test]
+    fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
+        let (dir, server) = a_room("room-builtin");
+        let other = letibot_room::client::Client::connect(
+            server.path(),
+            letibot_room::Speaker::top_level("s-b"),
+            Arc::new(|_| {}),
+        )
+        .expect("s-b connects");
+        other
+            .request(&letibot_room::Request::Post {
+                id: "p1".into(),
+                tag: "ram".into(),
+                body: "8 GB, ~10 min".into(),
+            })
+            .expect("a post");
+        let link = crate::room::link::SessionRoom::connect(
+            "s-room-builtin",
+            server.path(),
+            Arc::new(|_: &str| {}),
+        )
+        .expect("the session connects");
+        until_the_room_is_read(&link, 1);
+
+        let workspace = tempdir("room-builtin-ws");
+        let host = PluginHost::production("s-room-builtin", &workspace).with_room(link);
+        let hub = Hub::new("s-room-builtin");
+        host.open("s-room-builtin", &hub, "room/room", (100, 30));
+
+        let (pane, view) = views(&hub)
+            .into_iter()
+            .filter(|(p, _)| p == "room/room")
+            .next_back()
+            .expect("the pane answered");
+        assert_eq!(pane, "room/room");
+        let drawn = serde_json::to_string(&view).unwrap();
+        assert!(
+            view["panels"][0].get("unavailable").is_none(),
+            "the layer answered, rather than the host's refusal panel: {drawn}"
+        );
+        assert!(drawn.contains("`ram`"), "the tag is drawn: {drawn}");
+        assert!(
+            drawn.contains("8 GB, ~10 min"),
+            "the item is drawn: {drawn}"
+        );
+        assert!(
+            drawn.contains("no store"),
+            "and the room's own identity, which is what keeps an empty queue from reading as a \
+             quiet one: {drawn}"
+        );
+        // **The row's key is the manifest's verb**, so a press would reach the host's act.
+        assert!(drawn.contains("\"verb\":\"claim\""), "{drawn}");
+
+        drop(other);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

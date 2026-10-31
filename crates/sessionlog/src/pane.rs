@@ -416,10 +416,10 @@ impl Severity {
     }
 }
 
-/// **What a key of a stop does.** Three, and no more: `look` and `event` are calls back into
-/// the plugin, and `say` hands the operator's line to the session's model — nothing else a
-/// pane may do to a session, which is what keeps a pane's actions inside the plugin's
-/// capabilities.
+/// **What a key of a stop does.** Four, and no more: `look` and `event` are calls back into
+/// the plugin, `say` hands the operator's line to the session's model, and `verb` asks the HOST to
+/// perform one of its own verbs on the entry the row names — nothing else a pane may do to a
+/// session, which is what keeps a pane's actions inside the plugin's capabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActionKind {
     /// A line to the session's model, as if the operator had typed it.
@@ -428,6 +428,14 @@ pub enum ActionKind {
     Look,
     /// Call the pane again with `{"item": <the stop's id>, "action": <this word>}`.
     Event(String),
+    /// **One of the host's own verbs, on the entry this row names** — `{"verb":"claim",
+    /// "id":"i12"}`. The same word [`crate::pane::Act::Verb`] carries on Enter, on a letter
+    /// instead, so a row can offer more than one of the person's verbs.
+    ///
+    /// **The manifest gates it exactly as it gates `enter`** (`View::validate_for`), so a layer
+    /// cannot reach a verb a reviewer did not read. It travels as a `PaneAction` like an `event`
+    /// word does, because the host that performs it is the host that drew the row.
+    Verb(String),
 }
 
 /// One key shown in the hint bar for the selected stop.
@@ -444,10 +452,20 @@ pub struct Action {
     pub look: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
+    /// **The host's verb, on the entry the row names** — `{"key":"x","label":"mark abandoned",
+    /// "verb":"abandon"}`. The letter a row binds for a verb that is not the row's `enter`, which
+    /// is what lets one row offer two of the person's verbs (`release` and `abandon` are two
+    /// intentions on one held item).
+    ///
+    /// **Gated by the manifest like `enter` is**: `View::validate_for` refuses a view whose action
+    /// reaches a verb the layer did not declare, so the words a layer can reach are the words a
+    /// reviewer read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verb: Option<String>,
 }
 
 impl Action {
-    /// **What this key does, or nothing.** Exactly one of `say`, `look` and `event` is a
+    /// **What this key does, or nothing.** Exactly one of `say`, `look`, `event` and `verb` is a
     /// question with one answer; two of them is a key whose meaning nobody can say, and
     /// [`View::validate`] refuses it rather than letting the host pick.
     pub fn kind(&self) -> Option<ActionKind> {
@@ -461,19 +479,23 @@ impl Action {
         if let Some(e) = &self.event {
             found.push(ActionKind::Event(e.clone()));
         }
+        if let Some(v) = &self.verb {
+            found.push(ActionKind::Verb(v.clone()));
+        }
         match found.len() {
             1 => found.pop(),
             _ => None,
         }
     }
 
-    /// **The act as the WIRE spells it** — C4's `PaneAction.action`: the key's `event` word, or
-    /// `look`. `Say` is not a pane action (the line goes to the session's model), so it has
-    /// none.
+    /// **The act as the WIRE spells it** — C4's `PaneAction.action`: the key's `event` word, the
+    /// host's `verb` word, or `look`. `Say` is not a pane action (the line goes to the session's
+    /// model), so it has none.
     pub fn word(&self) -> Option<&str> {
-        match (&self.event, self.look, &self.say) {
-            (Some(e), false, None) => Some(e.as_str()),
-            (None, true, None) => Some("look"),
+        match (&self.event, &self.verb, self.look, &self.say) {
+            (Some(e), None, false, None) => Some(e.as_str()),
+            (None, Some(v), false, None) => Some(v.as_str()),
+            (None, None, true, None) => Some("look"),
             _ => None,
         }
     }
@@ -534,17 +556,29 @@ impl View {
             for block in p.summary.iter().chain(p.view.iter()) {
                 let Block::Tree(t) = block else { continue };
                 for (_, row) in rows_deep(&t.rows) {
-                    let Some(act) = &row.enter else { continue };
-                    if declared.iter().any(|d| d == act.verb()) {
-                        continue;
+                    // **The row's `enter`, and then its letters.** Both reach the host's own verbs
+                    // and both are gated here, because a letter is not a lesser door: a row whose
+                    // `enter` is `claim` and whose `x` is `abandon` sends two verbs, and a view
+                    // that declared one of them and reached the other is exactly the view this
+                    // check exists to refuse.
+                    let mut asked: Vec<&str> = row
+                        .enter
+                        .as_ref()
+                        .map(|act| act.verb())
+                        .into_iter()
+                        .collect();
+                    asked.extend(row.actions.iter().filter_map(|a| a.verb.as_deref()));
+                    for verb in asked {
+                        if declared.iter().any(|d| d == verb) {
+                            continue;
+                        }
+                        return Err(format!(
+                            "row `{}` asks the host to `{verb}`, and the layer's `plugin.toml` does \
+                             not declare that action — its `actions` are [{}]",
+                            row.id(),
+                            declared.join(", ")
+                        ));
                     }
-                    return Err(format!(
-                        "row `{}` asks the host to `{}`, and the layer's `plugin.toml` does not \
-                         declare that action — its `actions` are [{}]",
-                        row.id(),
-                        act.verb(),
-                        declared.join(", ")
-                    ));
                 }
             }
         }
@@ -915,6 +949,65 @@ mod tests {
                 "actions":[{"key":"s","say":"go"}]}]}"#,
         );
         assert!(v.validate().is_ok(), "{:?}", v.validate());
+    }
+
+    /// **The manifest gates both doors to the host's verbs** — the row's `enter` and its letters.
+    ///
+    /// `Act::Verb` made a row able to name the entry a verb is about; a row with two verbs on it
+    /// (`release` on Enter, `abandon` on `x`) needs the same gate on the letter, or a layer could
+    /// reach a verb no reviewer read by writing it one key further along.
+    #[test]
+    fn validate_for_gates_the_rows_enter_and_its_letters_alike() {
+        let row = |enter: Value, actions: Value| -> View {
+            let mut r = serde_json::json!({"id":"i12","cells":["#12"],"actions":actions});
+            if !enter.is_null() {
+                r["enter"] = enter;
+            }
+            let view = serde_json::json!({"panels":[{
+                "id":"p","key":"p",
+                "summary":[{"tree":{"rows":[r]}}]
+            }]});
+            serde_json::from_value(view).expect("the fixture is a view")
+        };
+        let declared = vec!["claim".to_string(), "abandon".to_string()];
+
+        // Both declared: the view stands.
+        let both = row(
+            serde_json::json!({"verb":"claim","id":"i12"}),
+            serde_json::json!([{"key":"x","label":"mark abandoned","verb":"abandon"}]),
+        );
+        assert!(both.validate().is_ok(), "{:?}", both.validate());
+        assert!(both.validate_for(&declared).is_ok());
+        assert_eq!(
+            both.panels[0].summary.len(),
+            1,
+            "one block, so the row is the fixture's subject"
+        );
+
+        // The letter reaches a verb nobody declared — refused, and the sentence names it.
+        let undeclared_action = row(
+            serde_json::json!({"verb":"claim","id":"i12"}),
+            serde_json::json!([{"key":"x","label":"rule","verb":"rule"}]),
+        );
+        let why = undeclared_action.validate_for(&declared).unwrap_err();
+        assert!(why.contains("`rule`"), "{why}");
+        assert!(why.contains("i12"), "the row it is on: {why}");
+        assert!(why.contains("claim, abandon"), "and what was declared: {why}");
+
+        // And the row's own `enter`, as before.
+        let undeclared_enter = row(
+            serde_json::json!({"verb":"veto","id":"i12"}),
+            serde_json::json!([{"key":"x","label":"mark abandoned","verb":"abandon"}]),
+        );
+        assert!(undeclared_enter.validate_for(&declared).is_err());
+
+        // An `event` letter is a call back into the LAYER, not the host's verb, so it needs no
+        // declaration — the rule `plugins/builtin/irc` writes down.
+        let event = row(
+            Value::Null,
+            serde_json::json!([{"key":"w","label":"wider","event":"wider"}]),
+        );
+        assert!(event.validate_for(&[]).is_ok());
     }
 
     /// **A look faster than [`MIN_EVERY_S`] is refused**, and 0 is the ordinary "never".
