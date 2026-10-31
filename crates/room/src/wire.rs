@@ -348,7 +348,9 @@ pub enum Response {
         members: Vec<crate::tree::Member>,
     },
     /// **The room now holds this tree** — the answer to [`Request::Members`].
-    Members { count: u64 },
+    Members {
+        count: u64,
+    },
     /// **The bell** — an unsolicited event. A client that only ever answers a prompt cannot be
     /// woken by this; see `docs/room.md` § *The bell, and the client that cannot hear it*.
     Event {

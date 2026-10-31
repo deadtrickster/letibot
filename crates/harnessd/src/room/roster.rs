@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use letibot_room::{Group, Member};
-use letibot_sessionlog::registry::{Registry, SessionBrief};
+use letibot_sessionlog::registry::Registry;
 
 /// **Where a room's membership comes from.** One implementation in the daemon (the registry); a
 /// test stands in its own, which is what makes a link testable without a store.
@@ -200,13 +200,13 @@ fn root_of(rows: &[Row<'_>], id: &str) -> Option<String> {
 /// child, 2 for its child's child.
 fn depth_of(rows: &[&Row<'_>], row: &Row<'_>) -> u32 {
     let mut depth = 0u32;
-    let mut at = row.parent.clone();
+    let mut at = row.parent;
     while let Some(parent) = at {
         depth = depth.saturating_add(1);
         at = rows
             .iter()
             .find(|r| r.session == parent)
-            .and_then(|r| r.parent.clone());
+            .and_then(|r| r.parent);
         if depth > 64 {
             break;
         }

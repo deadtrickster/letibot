@@ -25,11 +25,7 @@ fn the_project_s_own_sessions_their_subagents_and_its_system_agent() {
         row("s-a", "the habr article", None),
         row("s-a-sub-1", "the rust rewrite", Some("s-a")),
         row("s-a-sub-2", "the second look", Some("s-a-sub-1")),
-        row(
-            "s-gatekeeper-aaaaaaaaaaaa",
-            "review queue",
-            None,
-        ),
+        row("s-gatekeeper-aaaaaaaaaaaa", "review queue", None),
     ];
     let members = members_of(&rows, PROJECT, |_| PROJECT.to_string());
     let found: Vec<(&str, Group, u32)> = members
@@ -103,7 +99,10 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
     let project_of = |w: &str| w.to_string();
     let members = members_of(&rows, PROJECT, project_of);
     assert_eq!(
-        members.iter().map(|m| m.session.as_str()).collect::<Vec<_>>(),
+        members
+            .iter()
+            .map(|m| m.session.as_str())
+            .collect::<Vec<_>>(),
         vec!["s-a", "s-a-sub-1"],
         "a child's own workspace is not its project"
     );
@@ -117,8 +116,16 @@ fn a_child_of_another_workspace_is_placed_by_its_root() {
 fn the_gatekeeper_is_the_queue_and_its_children_are_reviewers() {
     let rows = vec![
         row("s-gatekeeper-aaaaaaaaaaaa", "", None),
-        row("s-gatekeeper-aaaaaaaaaaaa-sub-1", "", Some("s-gatekeeper-aaaaaaaaaaaa")),
-        row("s-gatekeeper-aaaaaaaaaaaa-sub-2", "", Some("s-gatekeeper-aaaaaaaaaaaa-sub-1")),
+        row(
+            "s-gatekeeper-aaaaaaaaaaaa-sub-1",
+            "",
+            Some("s-gatekeeper-aaaaaaaaaaaa"),
+        ),
+        row(
+            "s-gatekeeper-aaaaaaaaaaaa-sub-2",
+            "",
+            Some("s-gatekeeper-aaaaaaaaaaaa-sub-1"),
+        ),
     ];
     let members = members_of(&rows, PROJECT, |_| PROJECT.to_string());
     let groups: Vec<Group> = members.iter().map(|m| m.group).collect();

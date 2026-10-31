@@ -614,7 +614,8 @@ impl Server {
                 };
                 let Some(project) = project else {
                     // The `Hello` below answers the refusal, with both names in it.
-                    let answer = me.answer_frame(crate::DEFAULT_PROJECT, &speaker, &hello, now_ms());
+                    let answer =
+                        me.answer_frame(crate::DEFAULT_PROJECT, &speaker, &hello, now_ms());
                     let mut w = writer;
                     let _ = write_frame(&mut w, &answer.response);
                     let _ = w.shutdown(std::net::Shutdown::Both);
@@ -1058,7 +1059,7 @@ mod tests {
         let me = Speaker::top_level("s-a");
         let now = now_ms();
         let mut at = now;
-        let mut frame = |f: Request, at: &mut u64| {
+        let frame = |f: Request, at: &mut u64| {
             *at += 1;
             server.answer_frame(project, &me, &f, *at).response
         };
@@ -1088,7 +1089,11 @@ mod tests {
                 &mut at,
             );
         }
-        assert_eq!(server.open_questions().len(), 1, "one question, in project a");
+        assert_eq!(
+            server.open_questions().len(),
+            1,
+            "one question, in project a"
+        );
         assert_eq!(server.open_questions()[0].project, project);
 
         // **The arbiter rules from ANOTHER room**, naming no project.

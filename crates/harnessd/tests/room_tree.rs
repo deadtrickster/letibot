@@ -96,24 +96,10 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     let two = letibot_room::project_key(&dir.join("two").display().to_string());
     let quiet: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_: &str| {});
 
-    let a = SessionRoom::connect(
-        "s-a",
-        &socket,
-        &one,
-        None,
-        Arc::clone(&quiet),
-        None,
-    )
-    .expect("a session of project one");
-    let b = SessionRoom::connect(
-        "s-b",
-        &socket,
-        &two,
-        None,
-        Arc::clone(&quiet),
-        None,
-    )
-    .expect("a session of project two");
+    let a = SessionRoom::connect("s-a", &socket, &one, None, Arc::clone(&quiet), None)
+        .expect("a session of project one");
+    let b = SessionRoom::connect("s-b", &socket, &two, None, Arc::clone(&quiet), None)
+        .expect("a session of project two");
     // **Neither session named a room, a socket or an id** — the derivation did it, from the project
     // the daemon placed it in.
     assert_eq!(a.project(), one);
@@ -166,7 +152,13 @@ fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
     let tree = Tree(vec![
         member("s-a", "the habr article", Group::Top, None, 0),
         member("s-a-sub-1", "the rust rewrite", Group::Sub, Some("s-a"), 1),
-        member("s-a-sub-2", "the second look", Group::Sub, Some("s-a-sub-1"), 2),
+        member(
+            "s-a-sub-2",
+            "the second look",
+            Group::Sub,
+            Some("s-a-sub-1"),
+            2,
+        ),
         member(
             "s-gatekeeper-aaaaaaaaaaaa",
             "review queue",
@@ -210,17 +202,11 @@ fn a_subagent_at_depth_two_and_the_gatekeeper_are_members_of_the_same_room() {
         "the tree, in the tree's order"
     );
     // **The name the tree draws the gatekeeper under** — the operator's `<project>/<system>/…`.
-    assert_eq!(
-        members[3].where_in("letibot"),
-        "letibot/system/gatekeepers"
-    );
+    assert_eq!(members[3].where_in("letibot"), "letibot/system/gatekeepers");
     assert_eq!(members[2].where_in("letibot"), "letibot/the second look");
     // The pane's read carries the same list, so a pane could draw the tree.
-    let snap = letibot_tools::builtins::room::RoomLink::call(
-        &*a,
-        "holding",
-        &json!({"session": "s-a"}),
-    );
+    let snap =
+        letibot_tools::builtins::room::RoomLink::call(&*a, "holding", &json!({"session": "s-a"}));
     assert!(snap.is_ok(), "the link is still answering: {snap:?}");
     // And the other project's room holds nobody: the roster was sent to the room this session is
     // in, and there is one room per project.

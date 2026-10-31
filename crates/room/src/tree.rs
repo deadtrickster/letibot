@@ -104,7 +104,8 @@ pub fn room_of_name(host_key: &str, name: &str) -> Option<String> {
     // starts with the box's key (`…/../etc`) must not become a room — the round trip and the shape
     // are two halves of the same check.
     let shaped = project.len() == PROJECT_KEY_LEN && project.bytes().all(|b| b.is_ascii_hexdigit());
-    (shaped || project.is_empty()).then_some(project)
+    (shaped || project.is_empty())
+        .then_some(project)
         .filter(|p| room_name(host, p) == name)
 }
 
@@ -391,7 +392,12 @@ mod tests {
             live: true,
         };
         let mut rows = vec![
-            mk("s-gatekeeper-aaaaaaaaaaaa", "review queue", Group::Gatekeeper, 0),
+            mk(
+                "s-gatekeeper-aaaaaaaaaaaa",
+                "review queue",
+                Group::Gatekeeper,
+                0,
+            ),
             mk("s-a-sub-2", "grandchild", Group::Sub, 2),
             mk("s-a-sub-1", "child", Group::Sub, 1),
             mk("s-a", "top", Group::Top, 0),

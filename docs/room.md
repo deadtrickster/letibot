@@ -134,7 +134,7 @@ or one the operator names in the pane — and that is the only way a stranger be
 
 ## The wire
 
-`ROOM_PROTOCOL_VERSION = 2` — the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`. The
+`ROOM_PROTOCOL_VERSION = 4` — the room's own number, not `letibot_sessionlog::PROTOCOL_VERSION`. The
 coordinator is a different socket with a different lifetime, and pairing a head with a daemon must
 not be entangled with pairing a session with a room.
 
@@ -171,6 +171,7 @@ the sockets:
 | `holding {session?}` | `Holding {session, rows}` | a read |
 | `reminders` | `Reminders {rows}` | a read |
 | `questions` | `Questions {rows}` | a read |
+| `members {rows}` | `Members {count}` | a set: a repeat is the same tree |
 | `room` | `Room {identity, arbiter, connected, items, questions}` | a read: the PANE's, and the only one the server completes |
 
 The replay window is 256 replies per room. **A client away for longer than that must re-read**, not
@@ -567,6 +568,70 @@ different decision about who runs the work.
 4. **A tag's notes are unbounded.** A tag whose agent is never woken accumulates one note per event
    until something rings it. The fix is a bounded digest (the shape
    `.letibot/notes/a-wall-of-notices-becomes-a-count.md` describes), and it is not in this slice.
+
+### Slice 6, as built — a room is a project's, and its membership is the tree
+
+The operator, 2026-10-31: *"yeah i want a room (it is actually in the markdowns). the herarchy was
+`<project>/<top-sessions>/<subagents>*|system/`"*. The tree that sentence draws already existed —
+`crates/tui/src/app/session.rs`'s `App::placements()` and the doc comment above it — and the gap it
+closed was measured: **two unrelated sessions had no way to find each other**, because a message
+door takes a session id and nothing in the tree will name one.
+
+| what | where it is |
+|---|---|
+| **a project's key is the tree's own** — the twelve hex characters `scripts/letibot` cuts, `letibot_sessionlog::workspace_key` computes and `s-gatekeeper-<key>` is spelled from | `crates/room/src/tree.rs` (`project_key`); pinned to `sessionlog`'s by `crates/harnessd/tests/room_tree.rs` |
+| **a room's name derives, both ways** — `<host key>/<project key>`, and `room_of_name` checks the round trip AND the key's shape | `tree.rs` (`room_name`, `room_of_name`) |
+| **one room per project, on the one socket** | `crates/room/src/server.rs` (`Inner::rooms`, `project_of_hello`, `route`) |
+| **a session names no room** — its daemon derives the project from the root of its chain and dials that room | `crates/harnessd/src/harness.rs` (the `room_link` arm), `room::link::SessionRoom::connect` |
+| **the membership is the tree** — the project's sessions, their subagents at any depth, and `system`'s three groups | `crates/harnessd/src/room/roster.rs`; `Request::Members` → `Room::set_members` |
+| **a member is a session the room has met**, so a ruling may hand it an item without a vouch | `Room::rule`'s `Decision::Hand` arm |
+| **two projects never leak** — routing is filtered by room, and a question says which room asked it | `Server::route`, `Question::project`, `Request::Rule`'s `project` |
+
+**The key is not a new hash, and that is the point.** `project_key` is
+`letibot_sessionlog::workspace_key`'s rule written a second time — the room crate holds no store and
+no `tokencore`, so it cannot import it — and the two spellings are pinned to one table by a test,
+exactly as `lease::host_key_of` is pinned to the launcher's bash `room_host_key`. A project's
+`system/gatekeepers` row is therefore *recognisably* this project's: its session id ends with the
+same twelve characters the room is keyed by.
+
+**The default project is a project.** `DEFAULT_PROJECT` is the empty key, its room is the bare host
+key, and it is where a one-shot, a fixture, the arbiter and any session the daemon could not place
+live — so a box with no projects is not a box with no room, and `Client::connect`'s old spelling of
+the box's name still reaches one.
+
+**What a membership is, and what it is not.** It is a list of sessions, each with the group the tree
+draws it in, its depth under the project, its parent, and whether the daemon holds it live or only
+on disk. It is **not** the connections: a subagent never opens one (the door refuses it), and the
+operator's sentence names subagents twice. The daemon describes the tree and the room replaces what
+it held — a tree is the answer to *who is here now*, and a merge would keep a session that has been
+closed since. The link sends it on the same one-second poll that reads the pane's snapshot, so a
+restarted coordinator (which knows nobody) is told again within a second.
+
+**The arbiter is still one session, and it hears every room.** `Server::route` sends it each room's
+events — that is how a question reaches it — and two rooms number their questions from 1, so
+`Question::project` is stamped by the server as the answer leaves the room and `Request::Rule`'s
+`project` is what a ruling says back. A ruling that names no project is resolved by the question
+itself, and only when exactly one room has it open: an ambiguity is refused rather than applied to
+the wrong item.
+
+**What slice 6 leaves open, and why.**
+
+1. **The pane does not draw the tree.** `RoomSnapshot.members` carries it (`Response::Room`), and
+   `plugins/builtin/room` draws the queues per tag and nothing about who is in the room — a pane
+   that grows a second tree beside the head's session list is a drawing decision, and the head's own
+   list is the one the operator asked for last.
+2. **A head's view is unchanged.** `letibot --sessions` still prints the five groups
+   (`harnessd::cli::grouped`), and the head's `/sessions` tree is the TUI's; this slice makes the
+   ROOM agree with the tree, not the CLI agree with the room.
+3. **A tag's agent is still the box's.** `tag_session` is `s-room-<host key>-<tag>`, a name with no
+   project in it, and a session of that name can only be in one room — so `Server::live_tags` answers
+   the box's own room's tags and a project's tags have no agent yet. Making it per project means
+   `--session host:ram` has to name a project, which is the launcher's `--session` spelling and its
+   own slice. It is left *stated* rather than half-built: an agent seated in a room it cannot see
+   would be worse than none.
+4. **No agent per project.** A project does not get a session of its own; its room's membership is
+   the sessions the daemon already holds, and the arbiter is still the box's. An agent per project
+   is a different decision about who speaks for a project.
 
 ## What the state machine assumes
 

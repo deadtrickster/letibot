@@ -972,7 +972,15 @@ mod tests {
                 rung.lock().unwrap().push(session.to_string());
             })
         };
-        let me = SessionRoom::connect(me_id, &path, letibot_room::DEFAULT_PROJECT, None, bell.clone(), None).expect("s-a connects");
+        let me = SessionRoom::connect(
+            me_id,
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            bell.clone(),
+            None,
+        )
+        .expect("s-a connects");
         let other = Client::connect(
             &path,
             Speaker::top_level(other_id),
@@ -1037,7 +1045,15 @@ mod tests {
             let n = Arc::clone(&rung_arbiter);
             Arc::new(move |_: &str| *n.lock().unwrap() += 1)
         };
-        let host = SessionRoom::connect(&arbiter, &path, letibot_room::DEFAULT_PROJECT, None, bell_arbiter, None).expect("the arbiter");
+        let host = SessionRoom::connect(
+            &arbiter,
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            bell_arbiter,
+            None,
+        )
+        .expect("the arbiter");
         let _ = other.request(&Request::Post {
             id: "p3".into(),
             tag: "ram".into(),
@@ -1082,7 +1098,15 @@ mod tests {
         // addresses it by the same function and a test that spelled its own would prove nothing.
         let key = letibot_room::host_key();
         let agent = letibot_room::tag_session(&key, "ram").expect("an agent for ram");
-        let mine = SessionRoom::connect(&agent, &path, letibot_room::DEFAULT_PROJECT, None, bell, None).expect("the tag's agent");
+        let mine = SessionRoom::connect(
+            &agent,
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            bell,
+            None,
+        )
+        .expect("the tag's agent");
         let other = Client::connect(
             &path,
             Speaker::top_level("s-b"),
@@ -1260,15 +1284,15 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me =
-            SessionRoom::connect(
+        let me = SessionRoom::connect(
             "s-a",
             &path,
             letibot_room::DEFAULT_PROJECT,
             None,
             Arc::new(|_: &str| {}),
             None,
-        ).expect("s-a connects");
+        )
+        .expect("s-a connects");
 
         // Two items under one tag, posted by another session so `s-a` can claim the head.
         let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
@@ -1354,15 +1378,15 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         server.with_arbiter("s-arbiter");
-        let me =
-            SessionRoom::connect(
+        let me = SessionRoom::connect(
             "s-a",
             &path,
             letibot_room::DEFAULT_PROJECT,
             None,
             Arc::new(|_: &str| {}),
             None,
-        ).expect("connects");
+        )
+        .expect("connects");
         me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
 
@@ -1429,7 +1453,7 @@ mod tests {
             Arc::new(|_: &str| {}),
             Some(rec.clone()),
         )
-            .expect("s-a connects");
+        .expect("s-a connects");
 
         // **No lease: nothing was running.** The act is a start, and the note says so — the key did
         // not empty the queue, the room had already gone.
@@ -1500,7 +1524,7 @@ mod tests {
             Arc::new(|_: &str| {}),
             Some(Arc::new(Refuse)),
         )
-            .expect("s-a connects");
+        .expect("s-a connects");
 
         let why = me.restart().expect_err("the supervisor refused");
         assert!(why.contains("no room on this box"), "{why}");
@@ -1524,15 +1548,15 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me =
-            SessionRoom::connect(
+        let me = SessionRoom::connect(
             "s-a",
             &path,
             letibot_room::DEFAULT_PROJECT,
             None,
             Arc::new(|_: &str| {}),
             None,
-        ).expect("s-a connects");
+        )
+        .expect("s-a connects");
         let why = me.restart().expect_err("no supervisor, no restart");
         assert!(why.contains("no supervisor"), "{why}");
         assert!(why.contains("letibot --room"), "{why}");
@@ -1558,15 +1582,15 @@ mod tests {
             format!("box/1/1\t{}\t5000\t7000\n", std::process::id()),
         )
         .unwrap();
-        let me =
-            SessionRoom::connect(
+        let me = SessionRoom::connect(
             "s-a",
             &path,
             letibot_room::DEFAULT_PROJECT,
             None,
             Arc::new(|_: &str| {}),
             None,
-        ).expect("s-a connects");
+        )
+        .expect("s-a connects");
         assert_eq!(letibot_room::read_marker(&path), None, "nothing yet");
 
         // The room is a new one: a different `started_ms`, and no note accounting for it.

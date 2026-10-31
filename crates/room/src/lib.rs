@@ -1,8 +1,17 @@
-//! **The room: one host's agents, one queue per tag, a claim that is a lease with a beat — and no
-//! transport at all.**
+//! **The room: one PROJECT's agents, one queue per tag, a claim that is a lease with a beat — and
+//! no transport at all.**
 //!
 //! `docs/room.md` is the long form (the wire, what is idempotent, what the coordinator daemon still
 //! owes); this is the map.
+//!
+//! # A room is a project's
+//!
+//! The operator, 2026-10-31: *"i want a room … the herarchy was
+//! `<project>/<top-sessions>/<subagents>*|system/`"*. So a room's name is
+//! `<host key>/<project key>` ([`room_name`]), one coordinator serves one room per project, and its
+//! membership is that project's tree ([`tree`], [`Member`]) — the project's sessions, their subagents
+//! at any depth, and the `system` agents that serve them. Two projects on one box share no tag, and
+//! a session reaches its room without naming an id: the daemon that opened it derives the project.
 //!
 //! # What this crate is, and what it deliberately is not
 //!
@@ -77,5 +86,8 @@ pub use room::{
     normalise_tag,
 };
 pub use server::Server;
-pub use tree::{DEFAULT_PROJECT, Group, Member, PROJECT_KEY_LEN, project_key, room_name, room_of_name, tree_order};
+pub use tree::{
+    DEFAULT_PROJECT, Group, Member, PROJECT_KEY_LEN, project_key, room_name, room_of_name,
+    tree_order,
+};
 pub use wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};

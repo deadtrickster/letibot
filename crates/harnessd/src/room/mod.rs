@@ -23,13 +23,20 @@
 //!   it would kill, and a control that kills its own feed cannot report the outcome.
 //! * **[`agents`]** — one agent per tag, owned by the box's own session: seated by derivation,
 //!   re-seated when it dies, and counted so that a tag whose agent keeps dying says so.
+//! * **[`roster`]** — who is in a project's room: the project's sessions, their subagents at any
+//!   depth, and the `system` agents that serve them, grouped the way the tree draws them. The room
+//!   cannot see a subagent (the door refuses it), so the daemon that can sends the list.
 //!
 //! # The names are derived, and they must not move
 //!
-//! A room is per **box**, so every name in it comes from the host and from nothing else: the
-//! socket, the lease, and the coordinator's own session id (`s-room-<host key>`). That is the
-//! review queue's `s-gatekeeper-<key>` rule one level out — a session id that a restart, a second
-//! folder and the operator's own `--session host` all have to agree about.
+//! A room is per **box and per project** — one coordinator, one socket, one lease, and one room per
+//! project (`letibot_room::tree`). The SOCKET, the lease and the coordinator's own session id
+//! (`s-room-<host key>`) come from the host and from nothing else, because a box has one coordinator;
+//! a room's NAME is `<host key>/<project key>`, and the project key is the twelve hex characters
+//! `letibot_sessionlog::workspace_key` computes — the same key `s-gatekeeper-<key>` is spelled from.
+//! A session does not name a room: [`roster`] and `Harness::open` derive the project from the root of
+//! the session's chain and dial that room, which is what makes *a project has a room* a fact rather
+//! than a convention.
 //!
 //! # A box with no coordinator is not an error
 //!
