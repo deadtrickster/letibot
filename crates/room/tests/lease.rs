@@ -257,6 +257,85 @@ fn a_ruling_retries_hands_or_drops() {
     );
 }
 
+/// **A ruling may hand an item to a session the TREE holds**, and needs no separate vouch for it —
+/// which is what *the room holds what the tree holds* buys: the membership is the daemon's answer
+/// to *who is in this project*, and a hand to one of them is a hand to somebody real.
+#[test]
+fn a_hand_to_a_member_of_the_tree_needs_no_vouch() {
+    /// An item at the raise threshold, and a question about it.
+    fn raised() -> Room {
+        let mut room = Room::new();
+        let a = Speaker::top_level("s-a");
+        room.post(&a, "p", "ram", "8 GB", 1_000).unwrap();
+        for k in 1..=3u64 {
+            room.claim(&a, &format!("c{k}"), "ram", 1_000 + k * 10)
+                .unwrap();
+            room.abandon(&a, &format!("a{k}"), 1, "no", 1_000 + k * 10 + 1)
+                .unwrap();
+        }
+        room
+    }
+    let mut room = raised();
+    let project = letibot_room::project_key("/tmp/letibot-a-project");
+    room.set_members(vec![
+        letibot_room::Member {
+            session: "s-member".into(),
+            label: "a top-level session".into(),
+            group: letibot_room::Group::Top,
+            parent: None,
+            depth: 0,
+            live: true,
+        },
+        letibot_room::Member {
+            session: "s-member-sub".into(),
+            label: "its child".into(),
+            group: letibot_room::Group::Sub,
+            parent: Some("s-member".into()),
+            depth: 1,
+            live: true,
+        },
+    ]);
+    // The member has never spoken here and was never vouched for; the tree is the answer.
+    room.rule(
+        1,
+        Decision::Hand {
+            to: "s-member".to_string(),
+        },
+        "s-tie",
+        2_000,
+    )
+    .unwrap();
+    assert_eq!(room.item(1).unwrap().holder(), Some("s-member"));
+
+    // **A member that is a subagent is still refused**, and so is a session the tree does not hold:
+    // the tree widens *has the room met this one*, not *may a subagent speak*.
+    let mut room = raised();
+    room.set_members(vec![letibot_room::Member {
+        session: "s-kid".into(),
+        label: "a child".into(),
+        group: letibot_room::Group::Sub,
+        parent: Some("s-a".into()),
+        depth: 1,
+        live: true,
+    }]);
+    match room.rule(
+        1,
+        Decision::Hand {
+            to: "s-kid".to_string(),
+        },
+        "s-tie",
+        2_000,
+    ) {
+        Err(Refused::Subagent { session, .. }) => assert_eq!(session, "s-kid"),
+        other => panic!("a subagent is a member and still cannot be handed an item: {other:?}"),
+    }
+    // And a membership is per PROJECT: the key is what a member belongs to, so a room whose tree
+    // was described for one project names nobody of another's.
+    assert_eq!(room.members().len(), 1);
+    assert!(room.member("s-stranger").is_none());
+    let _ = project;
+}
+
 #[test]
 fn a_late_beat_is_refused_by_name_and_a_dispute_asks_the_arbiter() {
     let mut room = Room::new();

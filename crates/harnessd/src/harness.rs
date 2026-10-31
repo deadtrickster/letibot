@@ -4535,9 +4535,28 @@ impl Harness {
                     crate::room::supervise::Launcher::found()
                         .filter(|_| cfg.restart_room)
                         .map(|l| std::sync::Arc::new(l) as _);
+                // **Which room this session is in** — the project its chain hangs from, keyed the
+                // way the rest of the tree keys a folder (`letibot_room::project_key`, which is
+                // `sessionlog::workspace_key`'s twelve hex characters). A session the daemon cannot
+                // place — a one-shot, a fixture, a folder outside any repository — is in the box's
+                // own room, which is [`letibot_room::DEFAULT_PROJECT`].
+                let project_root = crate::room::roster::Roster::new(session_registry.clone())
+                    .project_of(&cfg.workspace.display().to_string());
+                let project = if project_root.is_empty() {
+                    letibot_room::DEFAULT_PROJECT.to_string()
+                } else {
+                    letibot_room::project_key(&project_root)
+                };
+                // **The tree, which the room cannot see for itself.** One roster per daemon would
+                // be one cache per daemon; this is one per open, which is what the link needs and
+                // nothing more — `Registry::list` is the same call the plugin feed makes per frame.
+                let roster: std::sync::Arc<dyn crate::room::roster::RosterSource> =
+                    crate::room::roster::Roster::new(session_registry.clone());
                 match crate::room::link::SessionRoom::connect(
                     &cfg.session_id,
                     &socket,
+                    &project,
+                    Some(roster),
                     bell,
                     supervisor,
                 ) {

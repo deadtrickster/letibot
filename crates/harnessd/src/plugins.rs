@@ -5576,6 +5576,8 @@ mod tests {
         let link = crate::room::link::SessionRoom::connect(
             "s-room-pane",
             server.path(),
+            letibot_room::DEFAULT_PROJECT,
+            None,
             Arc::new(|_: &str| {}),
             None,
         )
@@ -5687,6 +5689,8 @@ mod tests {
         let link = crate::room::link::SessionRoom::connect(
             "s-room-pane",
             server.path(),
+            letibot_room::DEFAULT_PROJECT,
+            None,
             Arc::new(|_: &str| {}),
             Some(asked.clone()),
         )
@@ -5783,6 +5787,8 @@ mod tests {
         let link = crate::room::link::SessionRoom::connect(
             "s-room-pane",
             server.path(),
+            letibot_room::DEFAULT_PROJECT,
+            None,
             Arc::new(|_: &str| {}),
             Some(Arc::new(Refuse)),
         )
@@ -5912,6 +5918,8 @@ mod tests {
         let link = crate::room::link::SessionRoom::connect(
             "s-room-builtin",
             server.path(),
+            letibot_room::DEFAULT_PROJECT,
+            None,
             Arc::new(|_: &str| {}),
             None,
         )

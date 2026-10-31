@@ -107,6 +107,10 @@ pub struct RoomSnapshot {
     /// the one now seated began. A tag absent from this list has no agent, and the pane says that
     /// rather than leaving the column blank: *nobody is watching this queue* is a fact.
     pub agents: Vec<letibot_room::TagAgent>,
+    /// **The project's tree** — every session in this room, in the order the tree draws them. The
+    /// room holds it because its daemon described it (`Request::Members`); a snapshot from a room
+    /// nobody has described holds nobody.
+    pub members: Vec<letibot_room::Member>,
     /// **Why the room could not be read**, when it could not. The pane draws this sentence instead
     /// of an empty room: *nothing is queued* and *nobody answered* are two facts, and a screen that
     /// shows one for the other is a screen a person cannot act on.
@@ -407,6 +411,7 @@ mod tests {
             threshold: 3,
             items,
             questions: Vec::new(),
+            members: Vec::new(),
             // **No tag has an agent unless a test says so** — the room's own answer for a daemon
             // whose upkeep has seated none.
             agents: Vec::new(),

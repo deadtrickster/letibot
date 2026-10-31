@@ -395,6 +395,7 @@ mod tests {
             text: "Item #3 under `ram` has abandoned 3 claimants: … Decide: Retry, Hand{to} or \
                    Drop{why}."
                 .to_string(),
+            project: String::new(),
             facts: letibot_room::Facts {
                 item: 3,
                 tag: "ram".to_string(),
@@ -477,6 +478,7 @@ mod tests {
         assert!(prompt.contains("question #1"), "{prompt}");
         let ruling = a
             .request(&Request::Rule {
+                project: None,
                 id: "r1".into(),
                 question: questions[0].id,
                 decision: letibot_room::Decision::Drop {

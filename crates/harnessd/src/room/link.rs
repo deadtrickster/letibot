@@ -61,6 +61,14 @@ pub struct SessionRoom {
     client: Client,
     session: String,
     socket: std::path::PathBuf,
+    /// **Which project's room this connection is in** — `letibot_room::project_key`'s answer for
+    /// the session's project root, and the half of the room's name that is not the box's. Resolved
+    /// once, at the open, because a session does not move between projects.
+    project: String,
+    /// **The tree, from the daemon that can see it** — `None` on a link whose caller has no
+    /// registry (a fixture, the coordinator's own daemon). A link with none sends no `Members`
+    /// frame, and its room holds whoever its daemon described last.
+    roster: Option<Arc<dyn crate::room::roster::RosterSource>>,
     /// The beat, while a turn is running. `None` between turns, which is exactly when the lease is
     /// counting — see [`SessionRoom::turn_ended`].
     beat: Mutex<Option<Beat>>,
@@ -90,9 +98,16 @@ impl SessionRoom {
     ///
     /// `bell` is a closure rather than the registry so this type needs no daemon: the caller —
     /// `Harness::open` — has the bell, and what it does with it is one `ring_wake`.
+    ///
+    /// **`project` is which room this is**, and it is the whole of *a room is a project's*: the
+    /// name on the wire is `letibot_room::room_name(&host_key, project)`, so a session in another
+    /// project dials another room on the same socket and the coordinator refuses a name that is not
+    /// this box's. `roster` is the tree, which the room cannot see for itself.
     pub fn connect(
         session: &str,
         socket: &Path,
+        project: &str,
+        roster: Option<Arc<dyn crate::room::roster::RosterSource>>,
         bell: Arc<dyn Fn(&str) + Send + Sync>,
         supervisor: Option<Arc<dyn RoomSupervisor>>,
     ) -> Result<Arc<SessionRoom>, String> {
@@ -157,12 +172,17 @@ impl SessionRoom {
                 }
             })
         };
-        let client = Client::connect(socket, Speaker::top_level(session), wake)
+        // **The room's name, derived from the box and the project** — never invented, and the
+        // coordinator holds the same two halves to what a `Hello` says (`Server::project_of_hello`).
+        let named = letibot_room::room_name(&key, project);
+        let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
         let room = Arc::new(SessionRoom {
             client,
             session: session.to_string(),
             socket: socket.to_path_buf(),
+            project: project.to_string(),
+            roster,
             beat: Mutex::new(None),
             room: Mutex::new(None),
             supervisor,
@@ -192,6 +212,12 @@ impl SessionRoom {
                     let snap = me.read_room();
                     *me.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
                     me.note_instance();
+                    // **The tree, on the same tick as the pane's read.** A room keeps no store, so
+                    // a restarted coordinator knows nobody until a daemon says — and a session
+                    // list is the daemon's to give (`crate::room::roster`). Sending it every poll
+                    // rather than on a change is what makes that self-healing, and it is one small
+                    // frame a second on a connection that is already reading one.
+                    me.say_who_is_here();
                     drop(me);
                     std::thread::sleep(std::time::Duration::from_millis(PANE_READ_EVERY_MS));
                     if weak.strong_count() == 0 {
@@ -202,6 +228,23 @@ impl SessionRoom {
                     }
                 }
             });
+    }
+
+    /// **Tell the room who is in it** — the project's tree, from the daemon that can see it.
+    ///
+    /// A failure is not said: a room that cannot be reached is already drawn as `unreadable` by the
+    /// read above, and a second sentence about the same fact is a wall of notices.
+    fn say_who_is_here(&self) {
+        let Some(roster) = self.roster.as_ref() else {
+            return;
+        };
+        let rows = roster.members(&self.project);
+        let _ = self.client.request(&Request::Members { rows });
+    }
+
+    /// **Which project's room this is** — the key half of its name.
+    pub fn project(&self) -> &str {
+        &self.project
     }
 
     /// **The room, in one read** — every item, every open question, the arbiter, and the identity.
@@ -227,6 +270,7 @@ impl SessionRoom {
                 items,
                 questions,
                 agents,
+                members,
             }) => RoomSnapshot {
                 identity,
                 arbiter,
@@ -234,6 +278,7 @@ impl SessionRoom {
                 items,
                 questions,
                 agents,
+                members,
                 unreadable: None,
                 ..base
             },
@@ -573,6 +618,7 @@ fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
                 id,
                 question,
                 decision,
+                project: None,
             })
         }
         other => Err(format!(
@@ -655,6 +701,10 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 id,
                 question: n("question").ok_or("`rule` needs `question`")?,
                 decision,
+                // **The session's own room**, which is the room its connection is in — a model
+                // ruling a question it was handed names no project, and the server resolves it
+                // against the connection.
+                project: None,
             }
         }
         "queue" => Request::Queue { tag: s("tag") },
@@ -779,6 +829,11 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             None => format!("question #{} is still open", question.id),
         },
         Response::Refused { why, .. } => return Err(why.to_string()),
+        // **The tree, acknowledged** — a membership is a set, so the sentence says how big the one
+        // the room now holds is, which is the only thing that can differ between two sends.
+        Response::Members { count } => {
+            format!("the room now holds {count} session(s) of this project")
+        }
         Response::Bye { why } => return Err(format!("the room closed the connection: {why}")),
         Response::Welcome { .. } => format!(
             "the room is open to `{me}` (protocol {})",
@@ -917,7 +972,7 @@ mod tests {
                 rung.lock().unwrap().push(session.to_string());
             })
         };
-        let me = SessionRoom::connect(me_id, &path, bell.clone(), None).expect("s-a connects");
+        let me = SessionRoom::connect(me_id, &path, letibot_room::DEFAULT_PROJECT, None, bell.clone(), None).expect("s-a connects");
         let other = Client::connect(
             &path,
             Speaker::top_level(other_id),
@@ -982,7 +1037,7 @@ mod tests {
             let n = Arc::clone(&rung_arbiter);
             Arc::new(move |_: &str| *n.lock().unwrap() += 1)
         };
-        let host = SessionRoom::connect(&arbiter, &path, bell_arbiter, None).expect("the arbiter");
+        let host = SessionRoom::connect(&arbiter, &path, letibot_room::DEFAULT_PROJECT, None, bell_arbiter, None).expect("the arbiter");
         let _ = other.request(&Request::Post {
             id: "p3".into(),
             tag: "ram".into(),
@@ -1027,7 +1082,7 @@ mod tests {
         // addresses it by the same function and a test that spelled its own would prove nothing.
         let key = letibot_room::host_key();
         let agent = letibot_room::tag_session(&key, "ram").expect("an agent for ram");
-        let mine = SessionRoom::connect(&agent, &path, bell, None).expect("the tag's agent");
+        let mine = SessionRoom::connect(&agent, &path, letibot_room::DEFAULT_PROJECT, None, bell, None).expect("the tag's agent");
         let other = Client::connect(
             &path,
             Speaker::top_level("s-b"),
@@ -1206,7 +1261,14 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let me =
-            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
+            SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            None,
+        ).expect("s-a connects");
 
         // Two items under one tag, posted by another session so `s-a` can claim the head.
         let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
@@ -1293,7 +1355,14 @@ mod tests {
             .expect("a room to talk to");
         server.with_arbiter("s-arbiter");
         let me =
-            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("connects");
+            SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            None,
+        ).expect("connects");
         me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
 
@@ -1352,7 +1421,14 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let rec = Arc::new(Recorder(StdMutex::new(Vec::new())));
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), Some(rec.clone()))
+        let me = SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            Some(rec.clone()),
+        )
             .expect("s-a connects");
 
         // **No lease: nothing was running.** The act is a start, and the note says so — the key did
@@ -1416,7 +1492,14 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), Some(Arc::new(Refuse)))
+        let me = SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            Some(Arc::new(Refuse)),
+        )
             .expect("s-a connects");
 
         let why = me.restart().expect_err("the supervisor refused");
@@ -1442,7 +1525,14 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let me =
-            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
+            SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            None,
+        ).expect("s-a connects");
         let why = me.restart().expect_err("no supervisor, no restart");
         assert!(why.contains("no supervisor"), "{why}");
         assert!(why.contains("letibot --room"), "{why}");
@@ -1469,7 +1559,14 @@ mod tests {
         )
         .unwrap();
         let me =
-            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
+            SessionRoom::connect(
+            "s-a",
+            &path,
+            letibot_room::DEFAULT_PROJECT,
+            None,
+            Arc::new(|_: &str| {}),
+            None,
+        ).expect("s-a connects");
         assert_eq!(letibot_room::read_marker(&path), None, "nothing yet");
 
         // The room is a new one: a different `started_ms`, and no note accounting for it.

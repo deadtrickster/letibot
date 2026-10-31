@@ -380,19 +380,15 @@ impl Server {
         // **A `rule` is the one frame that may name another room.** The arbiter hears every
         // project's events (routing sends it everything), and two rooms number their questions from
         // 1 — so a ruling that names its project is answered there, and one that does not is
-        // answered in this connection's own room.
+        // answered in the room that holds the question, which is the one the ruling is about.
         let ruling_in = match frame {
             Request::Rule {
                 project: Some(named),
                 ..
-            } => {
-                let named = named.trim();
-                if named.is_empty() {
-                    project.to_string()
-                } else {
-                    named.to_string()
-                }
-            }
+            } if !named.trim().is_empty() => named.trim().to_string(),
+            Request::Rule { question, .. } => self
+                .room_holding(*question)
+                .unwrap_or_else(|| project.to_string()),
             _ => project.to_string(),
         };
         // **The room lock is released before anything else is read.** `identity_at` reads the items
@@ -444,6 +440,27 @@ impl Server {
             _ => {}
         }
         answer
+    }
+
+    /// **The room whose OPEN question is `question`, when exactly one room has one.**
+    ///
+    /// This is what lets a ruling name no project and still land: the arbiter is one session of the
+    /// box's own room and hears every project's questions, so `project: None` has to mean *the
+    /// question I was told about*. Two rooms numbering their questions from 1 make that ambiguous,
+    /// and an ambiguity is answered by `None` — the ruling then goes to the connection's own room
+    /// and is refused by name there, which is honest, rather than being applied to the wrong item.
+    fn room_holding(&self, question: u64) -> Option<String> {
+        let mut holding = None;
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        for (project, room) in rooms.iter() {
+            if room.question(question).is_some_and(|q| q.answer.is_none()) {
+                if holding.is_some() {
+                    return None;
+                }
+                holding = Some(project.clone());
+            }
+        }
+        holding
     }
 
     /// **How many sessions are connected now** — the pane's *is anybody here*, and the number a
@@ -1021,6 +1038,86 @@ mod tests {
             }
             other => panic!("a hello is answered with a welcome: {other:?}"),
         }
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A ruling that names no project lands in the room that holds the question.**
+    ///
+    /// The arbiter is one session of the box's own room and hears every project's events, so it is
+    /// asked every project's questions — and two rooms number theirs from 1. `project: None` is
+    /// therefore resolved by the question, not by the connection, and only when exactly one room
+    /// has it open: an ambiguity is refused rather than applied to the wrong item.
+    #[test]
+    fn a_ruling_with_no_project_lands_where_the_question_is() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-cross-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let project = "aaaaaaaaaaaa";
+        let me = Speaker::top_level("s-a");
+        let now = now_ms();
+        let mut at = now;
+        let mut frame = |f: Request, at: &mut u64| {
+            *at += 1;
+            server.answer_frame(project, &me, &f, *at).response
+        };
+        // A tag claimed and abandoned three times raises question #1 in project `a`.
+        frame(
+            Request::Post {
+                id: "p".into(),
+                tag: "ram".into(),
+                body: "8 GB".into(),
+            },
+            &mut at,
+        );
+        for k in 1..=3 {
+            frame(
+                Request::Claim {
+                    id: format!("c{k}"),
+                    tag: "ram".into(),
+                },
+                &mut at,
+            );
+            frame(
+                Request::Abandon {
+                    id: format!("a{k}"),
+                    item: 1,
+                    why: "no".into(),
+                },
+                &mut at,
+            );
+        }
+        assert_eq!(server.open_questions().len(), 1, "one question, in project a");
+        assert_eq!(server.open_questions()[0].project, project);
+
+        // **The arbiter rules from ANOTHER room**, naming no project.
+        let arbiter = Speaker::top_level("s-arbiter");
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            &arbiter,
+            &Request::Rule {
+                id: "r1".into(),
+                question: 1,
+                decision: crate::Decision::Drop {
+                    why: "three claimants died on it".into(),
+                },
+                project: None,
+            },
+            at + 1,
+        );
+        match answer.response {
+            Response::Ruled { question, .. } => {
+                assert_eq!(question.project, project, "the room that asked it");
+                assert!(question.answer.is_some());
+            }
+            other => panic!("the ruling lands where the question is: {other:?}"),
+        }
+        assert_eq!(server.items_in(project)[0].state_name(), "dropped");
+        assert!(
+            server.items_in(crate::DEFAULT_PROJECT).is_empty(),
+            "nothing landed in the room the arbiter is in"
+        );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }

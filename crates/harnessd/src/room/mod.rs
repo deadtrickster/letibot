@@ -44,6 +44,7 @@ pub mod agents;
 pub mod coordinator;
 pub mod link;
 pub mod remind;
+pub mod roster;
 pub mod supervise;
 pub mod wake;
 

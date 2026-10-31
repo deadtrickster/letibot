@@ -150,7 +150,11 @@ pub(crate) fn now_ms() -> u64 {
 /// the worktree (`…/letibot/worktrees/agent-x`), and grouping by it would put every worktree in a
 /// project of its own. `--path-format=absolute` because a plain repository answers `.git`, which
 /// would otherwise be resolved against whatever directory the daemon happens to be in.
-fn repository_of(workspace: &Path) -> String {
+///
+/// **`pub(crate)` because the room's roster asks the same question** (`crate::room::roster`): a
+/// member hangs under its project, and a second spelling of *which folder is this project* is how a
+/// pane's tree and a room's roster come to disagree about where a worktree belongs.
+pub(crate) fn repository_of(workspace: &Path) -> String {
     if !workspace.is_dir() {
         return String::new();
     }
