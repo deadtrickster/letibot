@@ -502,7 +502,7 @@ fn a_governor_this_kernel_does_not_offer_is_refused_with_the_list() {
         NOW,
     ));
     assert!(said.contains("`turbo` is not a value"), "{said}");
-    assert!(said.contains("performance powersave"), "{said}");
+    assert!(said.contains("performance, powersave"), "{said}");
     assert!(
         !script.ran().iter().any(|c| c.contains("cpupower")),
         "nothing was applied: {:?}",
@@ -718,8 +718,11 @@ fn a_set_with_no_changelog_refuses_and_applies_nothing() {
 #[test]
 fn a_changelog_that_cannot_be_written_stops_the_change() {
     let (script, platform) = macos("2", "15", "0");
-    // A path whose parent is a FILE, so `create_dir_all` cannot make it.
-    let file = TempDir::new().path().join("not-a-dir");
+    // A path whose parent is a FILE, so `create_dir_all` cannot make it. The temp directory is
+    // held in a binding: a `TempDir` dropped at the end of the statement removes itself, and the
+    // file would then be written into a directory that is gone.
+    let dir = TempDir::new();
+    let file = dir.path().join("not-a-dir");
     std::fs::write(&file, b"").expect("a file where a directory would go");
     struct Unwritable(PathBuf);
     impl ChangelogScope for Unwritable {
@@ -752,14 +755,14 @@ fn a_changelog_that_cannot_be_written_stops_the_change() {
     );
 }
 
-/// **A `before` that cannot be read stops the change** — a governor that could not be read is not
-/// a governor that was not set, and a revert would have nothing to put back.
+/// **A `before` that cannot be read stops the change** — a keyboard repeat that could not be read
+/// is not a keyboard repeat that was not set, and a revert would have nothing to put back.
 #[test]
 fn a_before_that_cannot_be_read_stops_the_change() {
     let script = Scripted::new(|asked| {
         let joined = asked.argv.join(" ");
-        if joined.starts_with("cat ") {
-            Ok(Ran::failed(1, "cat: No such file or directory"))
+        if joined == "xset q" {
+            Ok(Ran::failed(1, "xset: unable to open display"))
         } else {
             Err(format!("nothing for `{joined}`"))
         }
@@ -771,10 +774,10 @@ fn a_before_that_cannot_be_read_stops_the_change() {
         &platform,
         &Privilege::Root,
         &set_args(
-            "cpu-governor",
-            "performance",
-            "the box is slow",
-            "make it fast",
+            "key-repeat-rate",
+            "40",
+            "the keys are slow",
+            "make them faster",
         ),
         NOW,
     ));
@@ -782,6 +785,29 @@ fn a_before_that_cannot_be_read_stops_the_change() {
         said.contains("could not be read, so nothing was changed"),
         "{said}"
     );
+    assert!(log.lines().is_empty());
+}
+
+/// **A value the platform would not take costs no command at all** — not even the read that would
+/// have become the `before`. The `why`/`words` refusals are the same shape one step earlier.
+#[test]
+fn a_refused_value_runs_nothing_at_all() {
+    let (script, platform) = linux("powersave", "performance powersave", 660, 25);
+    let log = Log::new();
+    let said = refusal(set(
+        Some(&log),
+        &platform,
+        &Privilege::Root,
+        &set_args(
+            "key-repeat-rate",
+            "fast",
+            "the keys are slow",
+            "make them faster",
+        ),
+        NOW,
+    ));
+    assert!(said.contains("is not a value `key-repeat-rate`"), "{said}");
+    assert!(script.ran().is_empty(), "{:?}", script.ran());
     assert!(log.lines().is_empty());
 }
 

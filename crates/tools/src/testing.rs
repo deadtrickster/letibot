@@ -625,6 +625,7 @@ fn build_ext(
         _notes: notes_dirs,
         _changelog: changelog_file,
         _changelog_dir: changelog_dir,
+        _host_config: host_config,
     }
 }
 
@@ -745,12 +746,33 @@ impl crate::builtins::host_config::Platform for FixturePlatform {
         }
     }
 
+    fn check(
+        &self,
+        setting: &str,
+        value: &str,
+    ) -> Result<(), crate::builtins::host_config::Refusal> {
+        match Self::setting(setting) {
+            // The fixture takes one word, which is all its settings are.
+            Some(_) if !value.trim().is_empty() => Ok(()),
+            Some(_) => Err(crate::builtins::host_config::Refusal::new(
+                format!("`{setting}` takes a word, and this is empty"),
+                "Nothing was changed.",
+            )),
+            None => Err(crate::builtins::host_config::Refusal::new(
+                format!("the fixture has no `{setting}`"),
+                "The fixture's settings are `fixture-knob` and `fixture-root-knob`. Nothing was \
+                 changed.",
+            )),
+        }
+    }
+
     fn apply(
         &self,
         setting: &str,
         value: &str,
         privilege: &crate::builtins::host_config::Privilege,
     ) -> Result<crate::builtins::host_config::Applied, crate::builtins::host_config::Refusal> {
+        self.check(setting, value)?;
         let Some(s) = Self::setting(setting) else {
             return Err(crate::builtins::host_config::Refusal::new(
                 format!("the fixture has no `{setting}`"),

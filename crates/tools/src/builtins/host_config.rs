@@ -300,8 +300,14 @@ pub trait Platform: Send + Sync {
     /// What the setting is now.
     fn read(&self, setting: &str) -> Result<Reading, Refusal>;
 
-    /// **Set it**, after checking the value can be taken. Runs nothing for a value the platform
-    /// would not accept.
+    /// **Whether this setting would take this value** — asked by [`set`] *before* it reads the
+    /// current value, so a value the platform would never accept costs no command at all.
+    ///
+    /// [`Platform::apply`] asks it again: two doors to one decision, and neither may skip it,
+    /// because `apply` is public and a caller that came around `set` is still a caller.
+    fn check(&self, setting: &str, value: &str) -> Result<(), Refusal>;
+
+    /// **Set it.** Refuses a value [`Platform::check`] would, and runs nothing before it has.
     fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal>;
 }
 
@@ -492,28 +498,40 @@ impl Platform for MacOs {
         }
     }
 
+    fn check(&self, setting: &str, value: &str) -> Result<(), Refusal> {
+        match setting {
+            "key-repeat" => whole(setting, value, 1, 120, "1/60 s").map(|_| ()),
+            "key-repeat-delay" => whole(setting, value, 1, 10_000, "1/60 s").map(|_| ()),
+            "perf-policy" => match value.trim() {
+                "0" | "1" => Ok(()),
+                other => Err(no_such_value(
+                    setting,
+                    other,
+                    "`pmset`'s `lowpowermode` takes `0` (no low-power restriction) or `1` (low \
+                     power).",
+                )),
+            },
+            asked => Err(no_such_setting(
+                "macos",
+                asked,
+                MACOS_SETTINGS,
+                elsewhere(asked),
+            )),
+        }
+    }
+
     fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal> {
+        self.check(setting, value)?;
         match setting {
             "key-repeat" => {
-                let n = whole(setting, value, 1, 120, "1/60 s")?;
-                self.write_default("KeyRepeat", n)
+                self.write_default("KeyRepeat", whole(setting, value, 1, 120, "1/60 s")?)
             }
-            "key-repeat-delay" => {
-                let n = whole(setting, value, 1, 10_000, "1/60 s")?;
-                self.write_default("InitialKeyRepeat", n)
-            }
+            "key-repeat-delay" => self.write_default(
+                "InitialKeyRepeat",
+                whole(setting, value, 1, 10_000, "1/60 s")?,
+            ),
             "perf-policy" => {
-                let n = match value.trim() {
-                    "0" | "1" => value.trim().to_string(),
-                    other => {
-                        return Err(no_such_value(
-                            setting,
-                            other,
-                            "`pmset`'s `lowpowermode` takes `0` (no low-power restriction) or `1` \
-                             (low power).",
-                        ));
-                    }
-                };
+                let n = value.trim().to_string();
                 let argv = vec![
                     "pmset".to_string(),
                     "-a".to_string(),
@@ -533,7 +551,13 @@ impl Platform for MacOs {
                     ran: vec![argv.join(" ")],
                 })
             }
-            other => Err(no_such_setting("macos", other, MACOS_SETTINGS, None)),
+            // `check` above is what refuses a name this platform has not got.
+            asked => Err(no_such_setting(
+                "macos",
+                asked,
+                MACOS_SETTINGS,
+                elsewhere(asked),
+            )),
         }
     }
 }
@@ -731,7 +755,7 @@ impl Platform for Linux {
         }
     }
 
-    fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal> {
+    fn check(&self, setting: &str, value: &str) -> Result<(), Refusal> {
         match setting {
             "cpu-governor" => {
                 let v = word(setting, value)?;
@@ -757,6 +781,24 @@ impl Platform for Linux {
                         &format!("This box offers {}.", offered.join(", ")),
                     ));
                 }
+                Ok(())
+            }
+            "key-repeat-delay" => whole(setting, value, 1, 10_000, "ms").map(|_| ()),
+            "key-repeat-rate" => whole(setting, value, 1, 1000, "repeats per second").map(|_| ()),
+            asked => Err(no_such_setting(
+                "linux",
+                asked,
+                LINUX_SETTINGS,
+                elsewhere(asked),
+            )),
+        }
+    }
+
+    fn apply(&self, setting: &str, value: &str, privilege: &Privilege) -> Result<Applied, Refusal> {
+        self.check(setting, value)?;
+        match setting {
+            "cpu-governor" => {
+                let v = word(setting, value)?;
                 let argv = vec![
                     "cpupower".to_string(),
                     "frequency-set".to_string(),
@@ -836,6 +878,10 @@ impl Platform for Other {
     }
 
     fn read(&self, _setting: &str) -> Result<Reading, Refusal> {
+        Err(self.refusal())
+    }
+
+    fn check(&self, _setting: &str, _value: &str) -> Result<(), Refusal> {
         Err(self.refusal())
     }
 
@@ -1141,7 +1187,11 @@ fn set(
     let words = text(args, "words").unwrap_or_default();
     let s = find(platform, &asked)?;
 
-    // 2. The record's door, proved open before the change: a change that lands with no line in
+    // 2. **The value, before the read and before the record's door.** A value this setting would
+    //    never take costs no command at all — not even the read that would become the `before`.
+    platform.check(s.name, &value).map_err(Invocation::from)?;
+
+    // 3. The record's door, proved open before the change: a change that lands with no line in
     //    the file is exactly the state the changelog exists to end.
     let Some(scope) = scope else {
         return Err(Invocation::failed(
@@ -1163,7 +1213,7 @@ fn set(
         )
     })?;
 
-    // 3. **The `before` is a read.** A setting that cannot be read now cannot be reverted later,
+    // 4. **The `before` is a read.** A setting that cannot be read now cannot be reverted later,
     //    and an empty `before` would claim there was no such setting.
     let before = platform.read(s.name).map_err(|r| {
         Invocation::failed(
@@ -1172,12 +1222,12 @@ fn set(
         )
     })?;
 
-    // 4. The apply. Every refusal below here leaves the box as it was, and says so.
+    // 5. The apply. Every refusal below here leaves the box as it was, and says so.
     let applied = platform
         .apply(s.name, &value, privilege)
         .map_err(Invocation::from)?;
 
-    // 5. **What the box says now**, not what was asked for: the record's `after` has to be the
+    // 6. **What the box says now**, not what was asked for: the record's `after` has to be the
     //    truth, or a month later the file argues with the machine.
     let after = match platform.read(s.name) {
         Ok(r) => r,
@@ -1187,7 +1237,7 @@ fn set(
         ),
     };
 
-    // 6. The record — the changelog's own `record` verb, so one function writes a line.
+    // 7. The record — the changelog's own `record` verb, so one function writes a line.
     let record = json!({
         "verb": "record",
         "what": s.name,
@@ -1197,16 +1247,21 @@ fn set(
         "words": words,
     });
     let recorded = changelog::dispatch(scope, &record, now_ms).map_err(|f| {
+        let its_own = match &f.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => reason.clone(),
+            other => format!("{other:?}"),
+        };
         Invocation::failed(
             "the change was applied and the record did not land",
             format!(
-                "{} has been changed to `{}`, and {} could not be written. Record it by hand with \
-                 `host_changelog record {{verb: \"record\", what: \"{}\", before: \"{}\", after: \
-                 \"{}\", why: \"…\", words: \"…\"}}` — a change with no line in that file is the \
-                 state this tool exists to end.",
+                "{} has been changed to `{}`, and {} could not be written ({}). Record it by hand \
+                 with `host_changelog record {{verb: \"record\", what: \"{}\", before: \"{}\", \
+                 after: \"{}\", why: \"…\", words: \"…\"}}` — a change with no line in that file \
+                 is the state this tool exists to end.",
                 s.name,
                 after.value,
                 path.display(),
+                its_own,
                 s.name,
                 before.value,
                 after.value,
