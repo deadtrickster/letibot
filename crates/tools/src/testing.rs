@@ -529,9 +529,9 @@ fn build_ext(
         });
     let mut registry = registry;
     registry
-        .register(Box::new(crate::builtins::changelog::HostChangelogTool::new(
-            changelog_scope,
-        )))
+        .register(Box::new(
+            crate::builtins::changelog::HostChangelogTool::new(changelog_scope),
+        ))
         .expect("the host changelog registers");
     // The session tool rides every registry, exactly as the real harness seats it:
     // the read-only roles name `todo_write`, so a registry they resolve against has

@@ -353,7 +353,11 @@ impl Tool for HostChangelogTool {
 /// Split out of [`Tool::invoke`] for the same reason `room`'s is: the checks this tool has (*a
 /// record without `why` never reaches the file*, *a second revert is refused*) are its contract,
 /// and a clock a test can choose is what makes an age assertable.
-pub fn dispatch(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
+pub fn dispatch(
+    scope: &dyn ChangelogScope,
+    args: &Value,
+    now_ms: u64,
+) -> Result<String, Invocation> {
     match verb_of(args).as_str() {
         "record" => record(scope, args, now_ms),
         "list" => list(scope, args, now_ms),
@@ -510,7 +514,11 @@ fn list(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String,
 }
 
 fn revert(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
-    let Some(n) = args.get("change").and_then(|v| v.as_u64()).map(|v| v as usize) else {
+    let Some(n) = args
+        .get("change")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize)
+    else {
         return Err(needs(
             "revert",
             &["change"],
@@ -562,17 +570,16 @@ fn revert(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<Strin
         who: scope.who(),
         words: text(args, "words").unwrap_or_default(),
     };
-    append(&path, &Line::Revert(revert.clone()))
-        .map_err(|e| {
-            Invocation::failed(
-                format!("the changelog could not be written: {e}"),
-                format!(
-                    "{} could not be appended to, so #{n} is NOT marked reverted. Nothing \
+    append(&path, &Line::Revert(revert.clone())).map_err(|e| {
+        Invocation::failed(
+            format!("the changelog could not be written: {e}"),
+            format!(
+                "{} could not be appended to, so #{n} is NOT marked reverted. Nothing \
                      changed; try again once the file is writable.",
-                    path.display()
-                ),
-            )
-        })?;
+                path.display()
+            ),
+        )
+    })?;
     Ok(format!(
         "#{n} `{}` is marked reverted — {} after the change{}.\n\
          \n  before: {}\n  after:  {}\n  why:    {}\n  words:  {}\n\

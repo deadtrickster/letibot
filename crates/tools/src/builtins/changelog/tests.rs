@@ -145,7 +145,10 @@ fn a_record_round_trips_with_all_five_fields_and_an_age() {
         "\"make it fast, i don't care about the fans\"",
         "s-1",
     ] {
-        assert!(listed.contains(fact), "the list must show {fact:?}: {listed}");
+        assert!(
+            listed.contains(fact),
+            "the list must show {fact:?}: {listed}"
+        );
     }
 }
 
@@ -159,7 +162,11 @@ fn a_record_without_why_is_refused_by_name() {
     let said = refusal(f.call(args, NOW));
     assert!(said.contains("`record` needs `why`"), "{said}");
     assert!(said.contains("not an answer a person can act on"), "{said}");
-    assert!(!f.path().exists(), "nothing was written: {}", f.path().display());
+    assert!(
+        !f.path().exists(),
+        "nothing was written: {}",
+        f.path().display()
+    );
 }
 
 /// **And so is one without `words`** — whose words a change rests on is the half that makes it
@@ -221,7 +228,10 @@ fn a_revert_returns_the_before_and_marks_the_line() {
             NOW + 60_000,
         )
         .expect("the revert lands");
-    assert!(said.contains("`powersave`"), "it hands back the before: {said}");
+    assert!(
+        said.contains("`powersave`"),
+        "it hands back the before: {said}"
+    );
     assert!(said.contains("marked reverted"), "{said}");
     assert!(
         said.contains("NOTHING has been applied"),
@@ -291,7 +301,10 @@ fn a_reverted_change_still_lists() {
         .call(json!({"verb": "list"}), NOW + 3 * 3_600_000)
         .expect("the list answers");
     assert!(listed.contains("#1"), "{listed}");
-    assert!(listed.contains("vm.swappiness"), "it is still listed: {listed}");
+    assert!(
+        listed.contains("vm.swappiness"),
+        "it is still listed: {listed}"
+    );
     assert!(listed.contains("REVERTED"), "and marked reverted: {listed}");
     assert!(
         listed.contains("3 h ago") && listed.contains("REVERTED 2 h ago"),
@@ -301,7 +314,10 @@ fn a_reverted_change_still_lists() {
         listed.contains("\"it made the box sluggish\""),
         "the words the revert was asked on: {listed}"
     );
-    assert!(listed.contains("1 change(s)"), "the count is the file's: {listed}");
+    assert!(
+        listed.contains("1 change(s)"),
+        "the count is the file's: {listed}"
+    );
 }
 
 /// A revert of a number the file does not have is refused with the numbers it does have — the
@@ -316,7 +332,10 @@ fn a_revert_of_a_change_the_file_does_not_have_lists_the_ones_it_does() {
     .expect("the record lands");
     let said = refusal(f.call(json!({"verb": "revert", "change": 7}), NOW));
     assert!(said.contains("there is no change #7"), "{said}");
-    assert!(said.contains("#1 `cpu governor`"), "it names what there is: {said}");
+    assert!(
+        said.contains("#1 `cpu governor`"),
+        "it names what there is: {said}"
+    );
     assert_eq!(f.lines().len(), 1, "nothing was appended");
 }
 
@@ -348,7 +367,9 @@ fn a_revert_naming_another_setting_is_reported_and_not_applied() {
         "{:?}",
         log.unreadable
     );
-    let listed = f.call(json!({"verb": "list"}), NOW).expect("the list answers");
+    let listed = f
+        .call(json!({"verb": "list"}), NOW)
+        .expect("the list answers");
     assert!(listed.contains("could not be read"), "{listed}");
 }
 
@@ -414,7 +435,10 @@ fn two_writers_appending_at_once_keep_both_lines() {
             i + 1,
             "the number is the line's position in the file"
         );
-        assert_eq!(log.entries[i].change, change, "the fold reads the file's order");
+        assert_eq!(
+            log.entries[i].change, change,
+            "the fold reads the file's order"
+        );
         seen.push(change.what);
     }
     seen.sort();
@@ -427,8 +451,13 @@ fn two_writers_appending_at_once_keep_both_lines() {
 #[test]
 fn an_empty_changelog_says_so_and_names_the_path() {
     let f = Fixture::new("s-1");
-    let said = f.call(json!({"verb": "list"}), NOW).expect("the list answers");
-    assert!(said.contains("no host config change has been recorded"), "{said}");
+    let said = f
+        .call(json!({"verb": "list"}), NOW)
+        .expect("the list answers");
+    assert!(
+        said.contains("no host config change has been recorded"),
+        "{said}"
+    );
     assert!(said.contains(&f.path().display().to_string()), "{said}");
     assert!(said.contains("`record`"), "{said}");
 }
@@ -443,7 +472,10 @@ fn the_schema_is_clean_and_list_narrows_to_a_read() {
     assert_eq!(crate::schema::lint_description(&s.description), vec![]);
     assert!(s.description.len() < 900, "{} bytes", s.description.len());
     assert_eq!(s.access, Access::Write);
-    assert_eq!(tool.access_for(&json!({"verb": "list"})), Some(Access::Read));
+    assert_eq!(
+        tool.access_for(&json!({"verb": "list"})),
+        Some(Access::Read)
+    );
     assert_eq!(tool.access_for(&json!({"verb": "record"})), None);
     assert_eq!(tool.access_for(&json!({"verb": "revert"})), None);
 }
@@ -453,7 +485,10 @@ fn the_schema_is_clean_and_list_narrows_to_a_read() {
 fn an_unknown_verb_names_the_verbs_there_are() {
     let f = Fixture::new("s-1");
     let said = refusal(f.call(json!({"verb": "delete"}), NOW));
-    assert!(said.contains("unknown `host_changelog` verb `delete`"), "{said}");
+    assert!(
+        said.contains("unknown `host_changelog` verb `delete`"),
+        "{said}"
+    );
     assert!(said.contains("`record`, `list` and `revert`"), "{said}");
 }
 
@@ -476,7 +511,10 @@ fn a_record_reaches_the_file_through_the_runtime() {
     let on_disk = std::fs::read_to_string(h.changelog_file()).expect("the file the tool wrote");
     assert_eq!(on_disk.lines().count(), 1, "{on_disk}");
     assert!(on_disk.contains("cpu governor"), "{on_disk}");
-    assert!(on_disk.contains("the box slept through the test window"), "{on_disk}");
+    assert!(
+        on_disk.contains("the box slept through the test window"),
+        "{on_disk}"
+    );
 }
 
 /// **A read-only session cannot record, and can still read.** The write verbs are refused by the
@@ -499,6 +537,14 @@ fn a_read_only_backend_refuses_to_record_and_still_lists() {
     assert!(!h.changelog_file().exists(), "nothing was written");
 
     let r = h.call("host_changelog", r#"{"verb":"list"}"#);
-    assert!(r.is_grounded(), "the read verb is not refused: {}", r.render());
-    assert!(r.render().contains("no host config change"), "{}", r.render());
+    assert!(
+        r.is_grounded(),
+        "the read verb is not refused: {}",
+        r.render()
+    );
+    assert!(
+        r.render().contains("no host config change"),
+        "{}",
+        r.render()
+    );
 }
