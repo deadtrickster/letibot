@@ -247,6 +247,34 @@ impl PluginHost {
             loader,
             builder,
         )
+        // **D17's book, read once at discovery** and re-read on the poll: a placed layer is free
+        // only when a person recorded a hash of these exact bytes. A host built with
+        // `discover` and no book (a test standing a stack up) has every placed layer unpinned,
+        // which is the fail-closed direction.
+        .with_trust(letibot_plugins::Trust::open_default())
+    }
+
+    /// **Hand this host D17's trust book** — which placed layers a person has pinned, and which
+    /// ones have changed since. See [`letibot_plugins::Trust`].
+    pub fn with_trust(self, trust: Arc<letibot_plugins::Trust>) -> PluginHost {
+        self.lock().stack.set_trust(trust);
+        self
+    }
+
+    /// **What D17's book says about a layer this host holds** — by id, by manifest name, or by
+    /// the directory it sits in. `None` when this stack has no such layer.
+    ///
+    /// A clone rather than a reference because the stack lives behind the host's mutex, and the
+    /// caller that needs this (`PluginTool`, for the sentence a refusal carries) is holding it
+    /// across a call.
+    pub fn layer(&self, what: &str) -> Option<letibot_plugins::Layer> {
+        self.lock().stack.layer_named(what).cloned()
+    }
+
+    /// **Whether the layer answering `hook` runs freely** — a built-in, or a layer whose bytes a
+    /// person pinned. Asked by an `exec` look before the gate: D17's first two arms.
+    pub fn free_layer(&self, hook: &str) -> bool {
+        self.answering(hook).is_some_and(|a| a.trusted)
     }
 
     /// This host as the daemon uses it: rano loads the modules and cargo builds them.
@@ -487,6 +515,17 @@ impl PluginHost {
     /// and the gate, which runs `cargo`, never runs on the worker: a turn must not wait for a
     /// compiler.
     pub fn tick(self: Arc<Self>, hub: Arc<Hub>) {
+        // **D17's book moves under us, and a pin that broke is news.** Before the hot-reload
+        // poll, because a pin a person took in the HEAD has to be in force here at the next tick
+        // — and a layer rebuilt after its pin has to stop being free in the same place, whether
+        // or not the gate has caught up with the module.
+        let broken = {
+            let mut inner = self.lock();
+            inner.stack.refresh_trust()
+        };
+        for pin in broken {
+            self.say_broken_pin(&hub, &pin);
+        }
         let changed = {
             let mut inner = self.lock();
             if inner.poll_at > Instant::now() {
@@ -557,6 +596,40 @@ impl PluginHost {
             }
         }
         applied
+    }
+
+    /// **A layer was pinned and its bytes moved** — said once, by name, in both registers a person
+    /// reads: the head's warning stream and the model's notice.
+    ///
+    /// It is `plugin_untrusted` and not `plugin_refused`: nothing was refused and nothing is
+    /// broken. What happened is that a layer a person said *these bytes are mine* about is not
+    /// that layer any more, so every call it makes is adjudicated again until somebody pins it.
+    fn say_broken_pin(&self, hub: &Arc<Hub>, broken: &letibot_plugins::BrokenPin) {
+        let said = format!(
+            "the plugin layer `{}` ({}) is not pinned any more: its bytes changed after it was \
+             pinned. What was pinned is module sha256 {} and manifest sha256 {}; what is on disk \
+             now is module sha256 {} and manifest sha256 {}. Every call it makes is adjudicated \
+             again until `/plugin trust {}` pins what is there now",
+            broken.name,
+            broken.scope,
+            broken.pin.module,
+            broken.pin.manifest,
+            broken.module,
+            broken.manifest,
+            broken.name,
+        );
+        {
+            let mut inner = self.lock();
+            if !inner.said.insert(said.clone()) {
+                return;
+            }
+            inner.notices.push(said.clone());
+        }
+        hub.publish(SessionEvent::Warning {
+            code: "plugin_untrusted".into(),
+            detail: said,
+            compaction: None,
+        });
     }
 
     /// **A candidate was refused: the old layer stays, and somebody is told.**
@@ -1939,6 +2012,9 @@ pub struct Answering {
     pub name: String,
     pub scope: Scope,
     pub capabilities: Vec<Capability>,
+    /// **Whether this layer runs freely** — a built-in, or a layer whose bytes a person pinned
+    /// (D17). An `exec` look of an unpinned one goes through the gate; of a free one, it runs.
+    pub trusted: bool,
 }
 
 /// The same layer, as a sentence a model reads: `name (scope)`.
@@ -1965,6 +2041,7 @@ impl PluginHost {
                 name: l.manifest.name.clone(),
                 scope: l.scope,
                 capabilities: l.manifest.capabilities.clone(),
+                trusted: l.trusted,
             })
     }
 
@@ -2175,11 +2252,51 @@ impl PluginHost {
     }
 }
 
+/// **Where a write's provenance goes** — D17's third arm, on the daemon's side of
+/// `letibot_tools::provenance::Sink`.
+///
+/// It filters to what is about a layer (`Trust::note_write` does: a `plugin.toml`, a module, or a
+/// file beside one) and appends to the trust book, so *who wrote these bytes* is a fact on disk.
+/// A record is one line per path, rewritten by the newest write — the question a person asks is
+/// *who put this here*, not *how many times*.
+///
+/// **The book is its own `Arc<Trust>`, not the host's.** The runtime is built when the harness
+/// opens and the host when the daemon opens the session, so the two cannot share an object; they
+/// share the FILE, which is the thing that matters, and the host's stack re-reads it on its poll.
+pub struct Provenance {
+    trust: Arc<letibot_plugins::Trust>,
+    session: String,
+}
+
+impl Provenance {
+    pub fn new(session: impl Into<String>) -> Provenance {
+        Provenance {
+            trust: letibot_plugins::Trust::open_default(),
+            session: session.into(),
+        }
+    }
+
+    /// The same, over a book a test hands in.
+    pub fn over(trust: Arc<letibot_plugins::Trust>, session: impl Into<String>) -> Provenance {
+        Provenance {
+            trust,
+            session: session.into(),
+        }
+    }
+}
+
+impl letibot_tools::provenance::Sink for Provenance {
+    fn wrote(&self, path: &std::path::Path, bytes: &[u8]) {
+        self.trust.note_write(path, bytes, &self.session);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use letibot_plugins::{BuildError, Manifest, Module};
     use letibot_tools::runtime::GateDecision;
+    use letibot_tools::schema::Access;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A module that answers from a file beside it, so a test can change what a layer says by
@@ -2550,19 +2667,47 @@ mod tests {
 
     /// The tool, wired to a host built over `root` — the two halves `Harness::open` and
     /// `Sessions::open_plugins` put together, in the order they put them.
+    ///
+    /// **The layer is PINNED**, which is what D17 asks of anything placed after the binary: a
+    /// layer whose bytes nobody recorded is adjudicated on every call, and the tests in this
+    /// module are about the seam between a tool and its layer rather than about that ladder. The
+    /// ladder's own tests are [`a_layer_nobody_pinned_is_adjudicated_on_every_call`] and
+    /// [`a_pinned_layer_runs_freely_and_a_changed_one_is_refused_by_name`].
     fn tool_for(
         root: &Path,
         declared: DeclaredTool,
         hub: &Arc<Hub>,
     ) -> crate::plugins::tool::PluginTool {
-        let host = Arc::new(PluginHost::discover(
-            "s-tool",
-            root,
-            None,
-            None,
-            Arc::new(RoundLoader),
-            Arc::new(FileBuilder),
-        ));
+        tool_for_with(root, declared, hub, true)
+    }
+
+    /// [`tool_for`], with the pin taken or not — the one argument the ladder's tests vary.
+    fn tool_for_with(
+        root: &Path,
+        declared: DeclaredTool,
+        hub: &Arc<Hub>,
+        pinned: bool,
+    ) -> crate::plugins::tool::PluginTool {
+        let trust = letibot_plugins::Trust::in_memory();
+        if pinned {
+            trust
+                .pin(
+                    &declared.layer,
+                    &root.join(".letibot/plugins").join(&declared.layer),
+                )
+                .expect("the layer's bytes are pinned");
+        }
+        let host = Arc::new(
+            PluginHost::discover(
+                "s-tool",
+                root,
+                None,
+                None,
+                Arc::new(RoundLoader),
+                Arc::new(FileBuilder),
+            )
+            .with_trust(trust),
+        );
         let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
             Arc::new(std::sync::Mutex::new(Some(host)));
         crate::plugins::tool::PluginTool::new(
@@ -2572,6 +2717,215 @@ mod tests {
             slot,
             hub.clone(),
         )
+    }
+
+    /// **D17's third arm: a model's write records the sha256 of what it wrote.**
+    ///
+    /// The tool reports the bytes; `Provenance` is what turns that into a record in the trust
+    /// book, and `Trust::note_write` is what decides the report is about a layer at all. The hash
+    /// is cross-checked against the one `Trust::pin` computes from the same file, so the record
+    /// and the pin cannot disagree about which bytes they are talking about.
+    #[test]
+    fn a_models_write_records_the_sha256_of_the_bytes_it_wrote() {
+        let root = tempdir("provenance");
+        let trust = letibot_plugins::Trust::open(root.join("plugin-trust.json"));
+        let sink = Provenance::over(trust.clone(), "s-writer");
+        let dir = root.join(".letibot/plugins/one");
+        std::fs::create_dir_all(&dir).expect("the layer dir");
+        let manifest = dir.join("plugin.toml");
+        std::fs::write(
+            &manifest,
+            "name = \"one\"\npurpose = \"p\"\nhooks = [\"pane_x\"]\ncapabilities = []\ncontract = 1\n",
+        )
+        .expect("a manifest");
+        let bytes = std::fs::read(&manifest).expect("the bytes");
+        let wrote = {
+            use letibot_tools::provenance::Sink as _;
+            sink.wrote(&manifest, &bytes);
+            // A file that is not about a layer is not provenance about one, and a book of every
+            // write on the box would bury the records that matter.
+            sink.wrote(&root.join("README.md"), b"# not a layer");
+            trust.writes_for(&dir)
+        };
+        assert_eq!(wrote.len(), 1, "one record, for the layer's own file: {wrote:?}");
+        assert_eq!(wrote[0].session, "s-writer");
+        let pin = trust.pin("one", &dir).expect("a pin");
+        assert_eq!(
+            wrote[0].sha256, pin.manifest,
+            "the record and the pin name the same bytes"
+        );
+        // And it is a fact on disk: a second book over the same file reads it back.
+        let reopened = letibot_plugins::Trust::open(trust.path().unwrap());
+        assert_eq!(reopened.writes().len(), 1, "the record survives the process");
+    }
+
+    /// **D17's second arm: a layer nobody pinned is adjudicated on EVERY call.**
+    ///
+    /// The subject of the decision is the call itself — the tool's name, its arguments and the
+    /// class its layer's capabilities make it — and it is `admit_unasked`, so a layer can never
+    /// put a question to a person. This test stands a decider in for the gate, because what is
+    /// under test is the seam: *did this tool ask, on this call, before the layer answered?*
+    #[test]
+    fn a_layer_nobody_pinned_is_adjudicated_on_every_call() {
+        struct Says(GateDecision, std::sync::Mutex<Vec<String>>);
+        impl crate::plugins::tool::Decides for Says {
+            fn admit_unasked(
+                &self,
+                name: &str,
+                access: Access,
+                _args: &Value,
+            ) -> Option<GateDecision> {
+                self.1
+                    .lock()
+                    .unwrap()
+                    .push(format!("{name}/{access:?}"));
+                Some(match &self.0 {
+                    GateDecision::Admit => GateDecision::Admit,
+                    GateDecision::Refuse { outcome, tell } => GateDecision::Refuse {
+                        outcome: outcome.clone(),
+                        tell: tell.clone(),
+                    },
+                })
+            }
+        }
+
+        let (root, declared) = tool_project(
+            "tool-unpinned",
+            "{\"outcome\":\"ok\",\"payload\":\"answered\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let tool = tool_for_with(&root, declared[0].clone(), &hub, false);
+
+        // **Admitted by the ladder, and only then does the layer answer.**
+        let admits = Says(GateDecision::Admit, std::sync::Mutex::new(Vec::new()));
+        let out = tool.call(Some(&admits), &json!({}));
+        assert_eq!(out.payload, "answered", "the ladder admitted it");
+        assert_eq!(
+            *admits.1.lock().unwrap(),
+            vec!["probe/Read".to_string()],
+            "the gate was asked once, about this tool"
+        );
+        // **Every call**, not the first: a layer whose bytes nobody pinned is decided again each
+        // time it is asked for something.
+        let _ = tool.call(Some(&admits), &json!({}));
+        assert_eq!(admits.1.lock().unwrap().len(), 2);
+
+        // **Refused by the ladder, and the refusal names the layer and both hashes.**
+        let refuses = Says(
+            GateDecision::Refuse {
+                outcome: letibot_transcript::ToolOutcome::NotRun {
+                    why: "it would need your approval".into(),
+                },
+                tell: String::new(),
+            },
+            std::sync::Mutex::new(Vec::new()),
+        );
+        let out = tool.call(Some(&refuses), &json!({}));
+        match &out.outcome {
+            letibot_transcript::ToolOutcome::NotRun { why } => {
+                assert!(why.contains("would need your approval"), "{why}")
+            }
+            other => panic!("a refused layer is `not_run`, not {other:?}"),
+        }
+        assert!(out.payload.contains("`claude-transcript`"), "{}", out.payload);
+        assert!(out.payload.contains("not pinned"), "{}", out.payload);
+        assert!(out.payload.contains("sha256"), "{}", out.payload);
+
+        // **And with no gate at all, it does not run either** — `run` is the caller that has
+        // none, and a layer nobody pinned runs only where the ladder can be asked.
+        let out = tool.run(&json!({}));
+        assert!(matches!(
+            out.outcome,
+            letibot_transcript::ToolOutcome::NotRun { .. }
+        ));
+        assert!(out.payload.contains("no gate"), "{}", out.payload);
+    }
+
+    /// **D17's first and third arms, end to end**: a pinned layer runs freely (the gate is never
+    /// asked), and a byte change after the pin un-pins it — the refusal names the layer and both
+    /// hashes, and the session is told once by name.
+    #[test]
+    fn a_pinned_layer_runs_freely_and_a_changed_one_is_refused_by_name() {
+        struct Never;
+        impl crate::plugins::tool::Decides for Never {
+            fn admit_unasked(&self, _: &str, _: Access, _: &Value) -> Option<GateDecision> {
+                panic!("a pinned layer runs freely: the gate is never asked")
+            }
+        }
+
+        let (root, declared) = tool_project(
+            "tool-pinned",
+            "{\"outcome\":\"ok\",\"payload\":\"answered\"}",
+            "{}",
+            "",
+        );
+        let hub = Hub::new("s-tool");
+        let trust = letibot_plugins::Trust::in_memory();
+        let dir = root.join(".letibot/plugins/claude-transcript");
+        let pin = trust.pin("claude-transcript", &dir).expect("a pin");
+        let host = Arc::new(
+            PluginHost::discover(
+                "s-tool",
+                &root,
+                None,
+                None,
+                Arc::new(RoundLoader),
+                Arc::new(FileBuilder),
+            )
+            .with_trust(trust.clone()),
+        );
+        let slot: Arc<std::sync::Mutex<Option<Arc<PluginHost>>>> =
+            Arc::new(std::sync::Mutex::new(Some(host.clone())));
+        let tool = crate::plugins::tool::PluginTool::new(
+            declared[0].clone(),
+            "s-tool",
+            root.clone(),
+            slot,
+            hub.clone(),
+        );
+        let out = tool.call(Some(&Never), &json!({}));
+        assert_eq!(out.payload, "answered", "a pinned layer runs freely");
+
+        // **The bytes move** — the module is rebuilt, which is the shape the rule exists for.
+        // The stack picks the rebuild up the way it does in the daemon: the poll sees it, the gate
+        // applies it, and the pin is decided again against what was applied.
+        std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt").expect("a rebuild");
+        let pending = host.lock().stack.poll_changes();
+        assert_eq!(pending.len(), 1, "the rebuild is a candidate");
+        host.lock()
+            .stack
+            .apply(pending.into_iter().next().unwrap())
+            .expect("the rebuilt layer applies");
+        let news = host.lock().stack.refresh_trust();
+        assert_eq!(news.len(), 1, "the pin broke: {news:?}");
+        assert_eq!(news[0].name, "claude-transcript");
+        // The layer is adjudicated again, so the decider that panics for a free layer is replaced
+        // by one that refuses — which is what an unpinned layer's call meets.
+        struct Refuses;
+        impl crate::plugins::tool::Decides for Refuses {
+            fn admit_unasked(&self, _: &str, _: Access, _: &Value) -> Option<GateDecision> {
+                Some(GateDecision::Refuse {
+                    outcome: letibot_transcript::ToolOutcome::NotRun {
+                        why: "it would need your approval".into(),
+                    },
+                    tell: String::new(),
+                })
+            }
+        }
+        let out = tool.call(Some(&Refuses), &json!({}));
+        assert!(
+            matches!(out.outcome, letibot_transcript::ToolOutcome::NotRun { .. }),
+            "{:?}",
+            out.outcome
+        );
+        assert!(out.payload.contains(&pin.module), "the pinned hash: {}", out.payload);
+        assert!(
+            out.payload.contains("not pinned any more"),
+            "{}",
+            out.payload
+        );
     }
 
     #[test]
@@ -4332,6 +4686,77 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    /// **A built-in's `exec` look runs FREELY** — D17's first arm, which is the operator's own
+    /// sentence: *"Only the builtins run freely"*, `exec` included. The layer is the binary's own
+    /// bytes and nobody placed it at run time, so there is nobody to ask and nothing to pin.
+    ///
+    /// The gate here refuses everything it is shown, so this test fails in two ways without the
+    /// arm: the probe would have been asked (it must not be), and the look's own exit would have
+    /// been a refusal rather than the program's.
+    #[test]
+    fn a_builtins_exec_look_runs_without_the_gate() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-builtin");
+        // No disk layer at all: the ONLY layer is the built-in below.
+        let table = Table::new();
+        let host = Arc::new(table_host(&root, &table));
+        let answers: BTreeMap<String, Script> = [(
+            key("condition_shell"),
+            vec![
+                Some(json!({"look": {"exec": ["true"]}, "every_s": 5})),
+                Some(json!({"fired": "the look came back"})),
+            ],
+        )]
+        .into_iter()
+        .collect();
+        let manifest = Manifest::parse(
+            "name = \"shell\"\npurpose = \"p\"\nhooks = [\"condition_shell\"]\n\
+             capabilities = [\"exec:true\"]\ncontract = 1\n",
+        )
+        .expect("a manifest");
+        host.lock().stack.register_builtin(
+            letibot_plugins::Layer {
+                id: String::new(),
+                scope: letibot_plugins::Scope::BuiltIn,
+                dir: std::path::PathBuf::new(),
+                manifest,
+                sha256: String::new(),
+                manifest_sha256: String::new(),
+                disabled: false,
+                trusted: false,
+                pin: None,
+            },
+            Box::new(TableModule {
+                hooks: answers.keys().cloned().collect(),
+                answers,
+                calls: Mutex::new(BTreeMap::new()),
+            }),
+        );
+        let probe = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::NotRun {
+                    why: "nothing a built-in runs should have reached this gate".into(),
+                },
+                "",
+            )
+        });
+        let armed = conditions_with(&host, Some(probe.clone()))
+            .arm("shell", json!({}))
+            .expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        assert!(
+            probe.seen().is_empty(),
+            "a built-in runs freely: the gate was asked {:?}",
+            probe.seen()
+        );
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        assert_eq!(handed["look"]["exit"], json!(0), "the program really ran");
     }
 
     /// **A look the gate admits RUNS** — and what the gate was asked is the call a `bash` of that

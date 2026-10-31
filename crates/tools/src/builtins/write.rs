@@ -123,6 +123,9 @@ fn create(ctx: &mut InvokeCtx<'_>, path: &str, content: &str) -> Invocation {
         return write_failed(ctx, path, e);
     }
     ctx.files.record(path, content.as_bytes(), true);
+    // **Who wrote these bytes, at the write** — D17's third arm. A `plugin.toml` or a module this
+    // call lands is provenance about a layer, and the daemon's sink is what records it.
+    ctx.wrote(path, content.as_bytes());
 
     let lines = if content.is_empty() {
         0
@@ -234,6 +237,7 @@ fn overwrite(ctx: &mut InvokeCtx<'_>, path: &str, content: &str, bytes: &[u8]) -
         return write_failed(ctx, path, e);
     }
     ctx.files.record(path, out.as_bytes(), true);
+    ctx.wrote(path, out.as_bytes());
 
     let after = out.replace("\r\n", "\n");
     let span = changed_span(&file.lf, &after);
@@ -319,6 +323,65 @@ mod tests {
             r.render().contains("did not exist and was created"),
             "{}",
             r.render()
+        );
+    }
+
+    /// **A write reports the bytes it landed, where they landed** — D17's third arm.
+    ///
+    /// The tool's half of provenance is exactly this: *this call wrote these bytes to this
+    /// path*, once the backend accepted it. Whether the path is about a layer, and where the
+    /// record goes, is the sink's (`harnessd::plugins::Provenance` → `letibot_plugins::Trust`).
+    ///
+    /// The path is ABSOLUTE, resolved against the session's workspace: a record keyed by a
+    /// relative path would be a different key in every process that read it.
+    #[test]
+    fn a_write_and_an_edit_report_the_bytes_they_landed() {
+        struct Keeps(std::sync::Mutex<Vec<(std::path::PathBuf, Vec<u8>)>>);
+        impl crate::provenance::Sink for Keeps {
+            fn wrote(&self, path: &std::path::Path, bytes: &[u8]) {
+                self.0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((path.to_path_buf(), bytes.to_vec()));
+            }
+        }
+
+        let mut h = writable_harness();
+        let keeps = std::sync::Arc::new(Keeps(std::sync::Mutex::new(Vec::new())));
+        h.rt.provenance = Some(keeps.clone());
+        let manifest = "name = \"one\"\npurpose = \"p\"\nhooks = []\ncapabilities = []\ncontract = 1\n";
+        let r = h.call(
+            "write",
+            &serde_json::json!({
+                "path": ".letibot/plugins/one/plugin.toml",
+                "content": manifest,
+            })
+            .to_string(),
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let r = h.call(
+            "edit",
+            &serde_json::json!({
+                "path": ".letibot/plugins/one/plugin.toml",
+                "old_string": "purpose = \"p\"",
+                "new_string": "purpose = \"a plugin\"",
+            })
+            .to_string(),
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+
+        let seen = keeps.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(seen.len(), 2, "one report per landed write: {seen:?}");
+        assert!(
+            seen.iter()
+                .all(|(p, _)| p.is_absolute() && p.ends_with(".letibot/plugins/one/plugin.toml")),
+            "the path is absolute and names the file: {seen:?}"
+        );
+        // The bytes are the file's, not the call's: the edit reports what it left behind.
+        assert_eq!(String::from_utf8_lossy(&seen[0].1), manifest);
+        assert!(
+            String::from_utf8_lossy(&seen[1].1).contains("a plugin"),
+            "the second report is the edited bytes"
         );
     }
 

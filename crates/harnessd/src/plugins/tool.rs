@@ -59,7 +59,7 @@ use std::sync::{Arc, Mutex};
 use letibot_plugins::{Capability, DeclaredTool, Scope, ToolDecl};
 use letibot_sessionlog::hub::Hub;
 use letibot_tools::Invocation;
-use letibot_tools::runtime::{InvokeCtx, Tool};
+use letibot_tools::runtime::{GateDecision, InvokeCtx, Tool};
 use letibot_tools::schema::{Access, ToolSchema};
 use serde_json::{Value, json};
 
@@ -103,6 +103,24 @@ const MATCHES_CAP: usize = 40;
 
 /// The contract version every `tool_` input carries, like every other hook's.
 const TOOL_V: u32 = 1;
+
+/// **The one question a plugin tool puts to a gate** — `Gate::admit_unasked`, reached through the
+/// runtime's own door (`InvokeCtx::admit_unasked`).
+///
+/// A trait rather than the `InvokeCtx` itself because the question is the whole of what this tool
+/// needs from a runtime, and a test that has to build an `InvokeCtx` (a backend, a spiller, a file
+/// ledger) to ask it would be a test of the runtime. [`PluginTool::invoke`] is the only production
+/// caller and it passes the context.
+pub trait Decides {
+    /// `None` when there is no gate to ask, which the caller reads as *nothing could judge it*.
+    fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision>;
+}
+
+impl Decides for InvokeCtx<'_> {
+    fn admit_unasked(&self, name: &str, access: Access, args: &Value) -> Option<GateDecision> {
+        InvokeCtx::admit_unasked(self, name, access, args)
+    }
+}
 
 /// **One tool a layer declared, as the runtime sees it.**
 pub struct PluginTool {
@@ -197,15 +215,28 @@ impl Tool for PluginTool {
         )
     }
 
-    fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        self.run(args)
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        // **D17's second arm, at the one door a model's call comes through.** A layer whose bytes
+        // nobody pinned is adjudicated on every call, without a card; a built-in or a pinned layer
+        // runs freely. `ctx` is passed because the gate lives on it — see
+        // [`PluginTool::call`].
+        self.call(Some(ctx), args)
     }
 }
 
 impl PluginTool {
     /// **The call, without the runtime's context** — this tool reads nothing from it, and a test
     /// that had to build an `InvokeCtx` would be a test of the runtime rather than of the seam.
+    ///
+    /// **A trust decision needs a gate, so a caller with no context has none**: an unpinned
+    /// layer's tool is `not_run` with the sentence saying so, which is the fail-closed direction
+    /// for the one caller that is not the runtime (a test standing the seam up).
     pub fn run(&self, args: &Value) -> Invocation {
+        self.call(None, args)
+    }
+
+    /// **The whole call**: D17's decision first, then the layer.
+    pub fn call(&self, decider: Option<&dyn Decides>, args: &Value) -> Invocation {
         let Some(host) = self.slot.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
             return Invocation::not_run(
                 "this session has no plugin host yet",
@@ -219,6 +250,88 @@ impl PluginTool {
                 ),
             );
         };
+        if let Some(refusal) = self.admit(&host, decider, args) {
+            return refusal;
+        }
+        self.answer(&host, args)
+    }
+
+    /// **May this call run?** — `None` when it may, and the `not_run` result that says why when it
+    /// may not.
+    ///
+    /// Three arms, and the middle one is the whole of D17:
+    ///
+    /// * the declaring layer is a **built-in or pinned** → run freely, the gate is not consulted;
+    /// * it is **not pinned** → `Gate::admit_unasked`, every call. No card, so a layer can never
+    ///   put a question to a person, and the ladder's refusal is the answer;
+    /// * the layer is not on the stack at all → refused, because a tool whose declaration this
+    ///   host cannot find is a tool nobody can say is pinned.
+    ///
+    /// The subject of the call is the tool itself: its name, its arguments, and the class its
+    /// layer's capabilities make it ([`PluginTool::access`]). That is what a `permission` rule is
+    /// written against, and it is why an unpinned layer's read-only tool gets an audit row even
+    /// though a read is admitted.
+    fn admit(
+        &self,
+        host: &PluginHost,
+        decider: Option<&dyn Decides>,
+        args: &Value,
+    ) -> Option<Invocation> {
+        let Some(layer) = host.layer(&self.layer) else {
+            return Some(Invocation::not_run(
+                format!("the plugin layer `{}` is not on this session's stack", self.layer),
+                format!(
+                    "`{}` is declared by `{}` ({}) and this session's stack does not hold that \
+                     layer any more — it was removed, disabled and dropped, or the declaration is \
+                     in a scope this session no longer reads. Nothing was run.",
+                    self.decl.name, self.layer, self.scope
+                ),
+            ));
+        };
+        if layer.trusted {
+            return None;
+        }
+        let sentence = layer.untrusted_sentence();
+        let Some(decision) = decider.and_then(|decides| {
+            decides.admit_unasked(&self.decl.name, PluginTool::access(&self.caps), args)
+        }) else {
+            return Some(Invocation::not_run(
+                format!("the plugin layer `{}` is not pinned", self.layer),
+                format!(
+                    "{sentence}. Nothing ran, because this call had no gate to judge it with — \
+                     a layer nobody pinned runs only where the ladder can be asked."
+                ),
+            ));
+        };
+        let GateDecision::Refuse { outcome, tell } = decision else {
+            return None;
+        };
+        let why = match &outcome {
+            letibot_transcript::ToolOutcome::NotRun { why } => why.clone(),
+            letibot_transcript::ToolOutcome::Denied { .. } => {
+                let tell = tell.trim();
+                if tell.is_empty() {
+                    "the gate denied it".to_string()
+                } else {
+                    format!("the gate denied it — {tell}")
+                }
+            }
+            other => format!("the gate refused it: {other:?}"),
+        };
+        Some(Invocation::not_run(
+            format!("`{}` was not run: {why}", self.decl.name),
+            format!(
+                "{sentence}. The gate judged the call and would not admit it, and a layer nobody \
+                 pinned is never put to a person as a card — pin the bytes with `/plugin trust \
+                 {}` if this layer is yours.",
+                self.layer
+            ),
+        ))
+    }
+
+    /// **The call, answered by the stack** — the loop of `tool_` rounds and the result it settles
+    /// on.
+    fn answer(&self, host: &PluginHost, args: &Value) -> Invocation {
         let hook = self.decl.hook();
         // **Round 0 has looked at nothing**, and every round replaces the results wholesale: the
         // layer asked for these looks and this call is its answer to them.

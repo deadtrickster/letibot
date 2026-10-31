@@ -486,6 +486,9 @@ fn write_out(
     // what the file became. Recording the *new* content is what makes that true
     // rather than a courtesy.
     ctx.files.record(path, out.as_bytes(), true);
+    // And who wrote it: an `edit` into a layer directory is a model's write of that layer's
+    // bytes, which is D17's third arm.
+    ctx.wrote(path, out.as_bytes());
 
     let span = changed_span(&file.lf, &after);
     let lines: Vec<&str> = display_lines(&after);

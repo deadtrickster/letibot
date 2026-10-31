@@ -470,9 +470,73 @@ pub struct InvokeCtx<'a> {
     /// could ever have delivered its result. `bash` refuses `background: true` here rather than
     /// starting work nobody can read. See [`ToolRuntime::with_one_shot`].
     pub one_shot: bool,
+    /// **Where a write's provenance goes** — D17's third arm. `None` in a runtime with no daemon
+    /// behind it, and then nothing is recorded.
+    provenance: Option<&'a dyn crate::provenance::Sink>,
 }
 
 impl InvokeCtx<'_> {
+    /// **Say that this call wrote these bytes here** — D17's third arm, recorded at the write.
+    ///
+    /// Called by a tool AFTER the backend accepted the write, so a refused or failed one records
+    /// nothing. The path is resolved against the session's workspace first (a write names a path
+    /// relative to it), because a sink should never have to guess which directory `src/lib.rs`
+    /// was relative to.
+    ///
+    /// **A remote placement records nothing.** The bytes landed on another machine and its own
+    /// daemon is the one that reads the layer; a record here would name a path that does not
+    /// exist on this box, which is worse than no record at all.
+    pub fn wrote(&self, path: &str, bytes: &[u8]) {
+        let Some(sink) = self.provenance else {
+            return;
+        };
+        if self.backend.host_label().is_some() {
+            return;
+        }
+        let workspace = self.backend.workspace_path().map(std::path::PathBuf::from);
+        let absolute = crate::provenance::absolute(std::path::Path::new(path), workspace.as_deref());
+        sink.wrote(&absolute, bytes);
+    }
+
+    /// **Put a call to the gate without a card** — the door a tool of an UNPINNED plugin layer
+    /// goes through (DECISIONS.md D17).
+    ///
+    /// `Some(decision)` is what the gate said; `None` means this runtime has no gate, which the
+    /// caller reads as *nothing could judge it* — the fail-closed direction for a layer whose bytes
+    /// nobody has pinned.
+    ///
+    /// The gate's lock is taken and released around the ladder, exactly as [`Gate::admit_unasked`]
+    /// documents: no adjudicator, no guard model, no circuit breaker, so a layer's tool can never
+    /// put a question to a person and never closes the session's gate to its own model's calls.
+    pub fn admit_unasked(
+        &self,
+        name: &str,
+        access: crate::schema::Access,
+        args: &serde_json::Value,
+    ) -> Option<GateDecision> {
+        let gate = self.gate?;
+        let scripts: [crate::runtime::ScriptSource; 0] = [];
+        // The same workspace a call of the model's own reports, so a `permission` rule written for
+        // one covers the other: `workspace_path()` is the directory the session works in, and
+        // `root_path()` the fallback for a substrate that only knows its root.
+        let workspace = self
+            .backend
+            .workspace_path()
+            .or_else(|| self.backend.root_path())
+            .unwrap_or_else(|| self.backend.describe());
+        let call = GateCall {
+            name,
+            access,
+            args,
+            turn_id: self.turn_id,
+            call_id: self.call_id,
+            workspace: &workspace,
+            target_exists: None,
+            scripts: &scripts,
+        };
+        Some(gate.lock().unwrap_or_else(|e| e.into_inner()).admit_unasked(&call))
+    }
+
     /// **Put a memory ask above the ceiling to the operator.** See [`Gate::grant_memory`].
     /// The gate's lock is taken for the question, as `admit` takes it: a card may wait
     /// minutes for a person, and a `/mode` typed meanwhile must not move the gate.
@@ -1990,6 +2054,11 @@ pub struct ToolRuntime {
     /// `None` in a runtime with no plugin stack — every test's, and every session the daemon did
     /// not open — and then the call path is exactly what it was before there were plugins.
     pub call_hook: Option<std::sync::Arc<dyn CallHook>>,
+    /// **Where a write's provenance goes** — D17's third arm: *the sha256 of every plugin module
+    /// and manifest a model writes is recorded at the write*. `None` in a runtime with no daemon
+    /// behind it, and then nothing is recorded, which is the same answer a box with no plugin
+    /// layers would give.
+    pub provenance: Option<std::sync::Arc<dyn crate::provenance::Sink>>,
 }
 
 /// **A call the model proposed and this layer reproposed as a different tool.**
@@ -2026,6 +2095,7 @@ impl ToolRuntime {
             repairs_told: Default::default(),
             one_shot: false,
             call_hook: None,
+            provenance: None,
         }
     }
 
@@ -2052,6 +2122,14 @@ impl ToolRuntime {
     /// property of this field being `None` rather than a promise.
     pub fn with_call_hook(mut self, hook: std::sync::Arc<dyn CallHook>) -> Self {
         self.call_hook = Some(hook);
+        self
+    }
+
+    /// **Wire where a write's provenance goes** — D17's third arm. The daemon installs this so a
+    /// plugin module or manifest the model writes is recorded at the write; a runtime nobody
+    /// wired records nothing, which is what a box with no plugin layers wants.
+    pub fn with_provenance(mut self, sink: std::sync::Arc<dyn crate::provenance::Sink>) -> Self {
+        self.provenance = Some(sink);
         self
     }
 
@@ -2574,6 +2652,7 @@ impl ToolRuntime {
                     .and_then(|t| t.open_plan())
                     .unwrap_or(false),
                 one_shot: self.one_shot,
+                provenance: self.provenance.as_ref().map(|s| &**s),
             };
             tool.invoke(&mut ctx, &args)
         };

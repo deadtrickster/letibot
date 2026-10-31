@@ -423,9 +423,10 @@ impl Stack {
         news
     }
 
-    /// **The layer a person or a tool named** — by id (`p1`), by its manifest name, or by the
-    /// directory it sits in. `None` when nothing matches, and never a guess between two: a caller
-    /// that has to choose is a caller that should have named an id.
+    /// **The layer a person or a tool named** — by id (`p1`), by its manifest name, by the
+    /// directory it sits in, or by that directory's own name. `None` when nothing matches, and
+    /// never a guess between two: a caller that has to choose is a caller that should have named
+    /// an id.
     pub fn layer_named(&self, what: &str) -> Option<&Layer> {
         let dir = Path::new(what);
         self.layers
@@ -436,6 +437,14 @@ impl Stack {
                 self.layers
                     .iter()
                     .find(|l| !l.dir.as_os_str().is_empty() && l.dir == dir)
+            })
+            // **The name `declared_tools` carries** is the layer's DIRECTORY name, not its path —
+            // a tool's `DeclaredTool::layer` is what a refusal names, so this spelling has to
+            // find the layer it came from.
+            .or_else(|| {
+                self.layers.iter().find(|l| {
+                    l.dir.file_name().is_some_and(|n| n == what) && !l.dir.as_os_str().is_empty()
+                })
             })
     }
 

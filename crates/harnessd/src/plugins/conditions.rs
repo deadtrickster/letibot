@@ -208,6 +208,9 @@ impl StackOver {
     /// against a *different* command does not. `turn_id` and `call_id` are empty because no turn
     /// and no call own a watch's look; the audit row says so rather than borrowing an id.
     ///
+    /// **A layer that runs freely never reaches this function** (D17): a built-in and a pinned
+    /// layer's `exec` look runs without the ladder, and the check is the first line of it.
+    ///
     /// `None` is *run it*. Anything else is what the caller returns: a refusal to hand the layer, or
     /// [`Look::Deferred`] — the gate was busy, so nothing was decided, nothing is run, and nothing is
     /// said to anybody.
@@ -218,6 +221,15 @@ impl StackOver {
         argv: &[String],
         workspace: &std::path::Path,
     ) -> Option<Look> {
+        // **D17's first two arms: a built-in, or a layer whose bytes a person pinned, runs
+        // freely** — `exec` included. That is the operator's own rule (*"Only the builtins run
+        // freely; anything I place later needs a pin"*), and the pin is what stands in for the
+        // judgement a card would otherwise be: a person read these bytes and said they are theirs.
+        //
+        // A layer nobody pinned is adjudicated below, on every look, exactly as before.
+        if self.host.free_layer(hook) {
+            return None;
+        }
         let Some(gate) = self.gate.as_deref() else {
             let why = format!(
                 "`{program}` was not run: this session has no gate, so nothing could judge whether \

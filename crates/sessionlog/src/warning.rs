@@ -160,6 +160,13 @@ pub const TABLE: &[(&str, Class)] = &[
     // and the layer is the one that has to change — and deduped at the source, so it cannot become
     // the same warning every polling interval.
     ("plugin_look", Class::Routine),
+    // **A layer that was pinned and is not any more** (D17, the operator 2026-10-31: *"anything I
+    // place later needs a pin"*). Its bytes changed after the pin, so every call it makes is
+    // adjudicated again until somebody pins what is there now. Routine by the same rule as the
+    // four above: the ladder did its job — the layer is not trusted, and nothing it did was
+    // trusted either — and the person is the one who can re-pin it. Said once per (layer, bytes),
+    // never per poll, which is `Stack::refresh_trust`'s `said_pins`.
+    ("plugin_untrusted", Class::Routine),
     // **The fold saying what it is doing while it does it** — *"compacting half 1 of 2: the
     // most recent exchanges — 348 item(s), 940612 token(s) to read"*, and then what the half
     // answered. Routine by the same rule as the four above: the operation the operator is
@@ -1319,8 +1326,11 @@ mod the_register_census {
         //     restore, said anyway and for the clock (`restart::nothing_running`). Its own word
         //     because it is its own sentence: `restart_reminded` over an empty list would tell a
         //     head to draw *"reminded: nothing"*.
-        assert_eq!(TABLE.len(), 168, "the table's size");
-        assert_eq!(count(Class::Routine), 66);
+        //   · **169, not 168**: `plugin_untrusted` (Routine) — D17's ladder noticing that a pinned
+        //     layer's bytes moved, said once by name with both hashes. See
+        //     `crates/harnessd/src/plugins.rs`'s `say_broken_pin`.
+        assert_eq!(TABLE.len(), 169, "the table's size");
+        assert_eq!(count(Class::Routine), 67);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 89);
         // A code with an id is read by its family.

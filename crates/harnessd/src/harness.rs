@@ -5442,6 +5442,14 @@ impl Harness {
             // `background: true`: there is no later head and no daemon left watching when that
             // job's result arrives. See `InvokeCtx::one_shot`.
             .with_one_shot(cfg.one_shot)
+            // **Who wrote a layer's bytes, recorded at the write** — D17's third arm. A `write` or
+            // an `edit` that lands a `plugin.toml`, a module or a file beside one appends to the
+            // trust book, so *who put this here* is a fact on disk rather than a guess from a path.
+            // The book is the file the plugin host's stack also reads, so a record taken here is
+            // visible to the layer's own trust decision at its next poll.
+            .with_provenance(std::sync::Arc::new(crate::plugins::Provenance::new(
+                cfg.session_id.clone(),
+            )))
             .with_operator_waiting(std::sync::Arc::new(move || waiting_hub.has_queued_prompt()))
             .with_completion_delivered(std::sync::Arc::new(move |job: &str| {
                 delivering.as_ref().is_some_and(|w| w.delivering(job))

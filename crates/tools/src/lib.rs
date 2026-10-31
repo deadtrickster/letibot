@@ -121,6 +121,7 @@ pub mod mode;
 pub mod notes_keeper;
 pub mod permission;
 pub mod project_code;
+pub mod provenance;
 pub mod references;
 pub mod remote;
 pub mod result;
