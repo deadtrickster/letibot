@@ -3129,7 +3129,12 @@ impl SshBackend {
         });
         let _ = std::fs::remove_file(&staging);
         let bundle = bundle?;
-        let incoming = format!("{mirror}/incoming-{}-{}-{}.bundle", std::process::id(), run, short);
+        let incoming = format!(
+            "{mirror}/incoming-{}-{}-{}.bundle",
+            std::process::id(),
+            run,
+            short
+        );
         ssh.write_abs(&incoming, &bundle).map_err(place)?;
         let staged = format!("refs/heads/letibot/{short}");
         ssh.must(

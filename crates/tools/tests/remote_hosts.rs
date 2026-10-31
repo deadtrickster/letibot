@@ -692,7 +692,11 @@ fn a_plain_folder_is_refused_for_remote_placement() {
 fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
     let rig = Rig::new("halfmirror");
     // The state a lost `git init` leaves: the directory, no repository in it.
-    let mirror = rig.dir.join("home").join("letibot-remote").join("the-repo.git");
+    let mirror = rig
+        .dir
+        .join("home")
+        .join("letibot-remote")
+        .join("the-repo.git");
     std::fs::create_dir_all(&mirror).expect("a directory where a mirror belongs");
 
     let b = SshBackend::place(&rig.spec()).expect("the placement is arranged");
@@ -702,7 +706,9 @@ fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
         mirror.display()
     );
     assert!(
-        std::path::Path::new(b.worktree_path()).join("README").is_file(),
+        std::path::Path::new(b.worktree_path())
+            .join("README")
+            .is_file(),
         "and the checkout is there: {}",
         b.worktree_path()
     );
@@ -751,7 +757,15 @@ fn two_placements_at_once_never_read_each_others_bundle() {
     // **HEAD moves while it is held.**
     std::fs::write(rig.repo.join("later.txt"), b"later\n").expect("a file");
     git(&rig.repo, &["add", "later.txt"]);
-    git(&rig.repo, &["commit", "-q", "-m", "made while the other placement was in flight"]);
+    git(
+        &rig.repo,
+        &[
+            "commit",
+            "-q",
+            "-m",
+            "made while the other placement was in flight",
+        ],
+    );
     let later = git(&rig.repo, &["rev-parse", "HEAD"]).trim().to_string();
     assert_ne!(start, later, "the second placement sends a different tree");
 
@@ -779,7 +793,11 @@ fn two_placements_at_once_never_read_each_others_bundle() {
     );
 
     // And the mirror keeps no bundle: 19 MB per placement, for ever, was the other half.
-    let mirror = rig.dir.join("home").join("letibot-remote").join("the-repo.git");
+    let mirror = rig
+        .dir
+        .join("home")
+        .join("letibot-remote")
+        .join("the-repo.git");
     let left: Vec<String> = std::fs::read_dir(&mirror)
         .expect("the mirror")
         .flatten()

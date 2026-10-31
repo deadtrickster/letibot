@@ -136,7 +136,10 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         Some(d.workspace.display().to_string().as_str()),
         "the folder, which a socket's hash cannot say: {text}"
     );
-    assert_eq!(v["socket"].as_str(), Some(d.socket.display().to_string().as_str()));
+    assert_eq!(
+        v["socket"].as_str(),
+        Some(d.socket.display().to_string().as_str())
+    );
     // **A NUMBER, not a string**: the shell's `json_str` cannot see a number and `json_num`
     // cannot see a string, and `pid` is read through `json_field` for exactly that reason.
     assert!(
