@@ -1825,7 +1825,11 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
     let dir = std::env::temp_dir().join(format!("letibot-seed-retired-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("todo-template.md"), "## Phase 0\n\n- [ ] only row\n").unwrap();
+    std::fs::write(
+        dir.join("todo-template.md"),
+        "## Phase 0\n\n- [ ] only row\n",
+    )
+    .unwrap();
     let path = dir.join("head.toml");
     let key = "w|model_endpoint_retry|3000|deadbeefdeadbeef".to_string();
 
@@ -1835,7 +1839,10 @@ fn a_seed_does_not_write_another_heads_dismissals_away() {
     let mut b = app();
     b.prefs_path = Some(path.clone());
     b.load_prefs();
-    assert!(b.dismissed.is_empty(), "the premise: it has retired nothing");
+    assert!(
+        b.dismissed.is_empty(),
+        "the premise: it has retired nothing"
+    );
 
     // One head retired a notice and saved it. The file is the record.
     let mut a = app();

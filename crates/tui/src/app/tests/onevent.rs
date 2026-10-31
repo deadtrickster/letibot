@@ -77,7 +77,11 @@ fn screen(a: &mut App) -> String {
 /// and neither is the event gone from the screen.
 fn collapsed(a: &mut App, what: &str) {
     let s = screen(a);
-    assert_eq!(a.notice_rows.len(), 0, "{what}: the row is drawn again\n{s}");
+    assert_eq!(
+        a.notice_rows.len(),
+        0,
+        "{what}: the row is drawn again\n{s}"
+    );
     assert_eq!(a.card_rows.len(), 1, "{what}: and its card is not\n{s}");
 }
 
@@ -130,11 +134,7 @@ fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
     let (mut a, hub) = watched();
     a.key(Key::CtrlN);
 
-    a.apply(hello(
-        "s",
-        vec![brief("s", "one", false)],
-        hub.snapshot(),
-    ));
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     let s = screen(&mut a);
     assert_eq!(a.notice_rows.len(), 0, "a resync drew the row again\n{s}");
 
@@ -143,18 +143,18 @@ fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
         vec![brief("other", "two", false)],
         Hub::new("other").snapshot(),
     ));
-    a.apply(hello(
-        "s",
-        vec![brief("s", "one", false)],
-        hub.snapshot(),
-    ));
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     let s = screen(&mut a);
     assert_eq!(
         a.notice_rows.len(),
         0,
         "a switch away and back drew the row again\n{s}"
     );
-    assert_eq!(a.card_rows.len(), 0, "and the retired card is not back\n{s}");
+    assert_eq!(
+        a.card_rows.len(),
+        0,
+        "and the retired card is not back\n{s}"
+    );
 }
 
 /// **A note the reader did NOT retire gives its rows back when its card cannot be drawn** — the
@@ -170,11 +170,7 @@ fn a_snapshot_warning_with_no_card_gives_its_row_back() {
     let _ = reseat(&hub);
     // A head that never watched it: the whole conversation arrives in one snapshot.
     let mut a = app();
-    a.apply(hello(
-        "s",
-        vec![brief("s", "one", false)],
-        hub.snapshot(),
-    ));
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     let s = screen(&mut a);
     assert_eq!(
         a.notice_rows.len(),
