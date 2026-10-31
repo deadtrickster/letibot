@@ -1264,6 +1264,64 @@ lock. Files that are created and removed need no lock at all.
 * **The old socket names are not cleaned up.** A daemon built before this change left
   `ssh-<host>.sock` behind; it expires on its own `ControlPersist` and nothing reads it again.
 
+## As built (R101): the mirror is made by one placement and the bundle belongs to one
+
+Three packages started together on one host, and two of them failed with `placing this session on
+lab2x1: … handing the bundle to the remote repository` — a sentence with no reason in it, because
+the fetch's own stderr went to `/dev/null`. Two shared names were behind it, both in
+`SshBackend::place`, and both are gone.
+
+### The mirror was guarded by a directory test
+
+```sh
+if [ ! -d {mirror} ]; then git init --bare {mirror} >/dev/null; fi
+```
+
+A directory is not a repository, and three placements starting together each pass that test before
+any of them creates anything. **MEASURED 2026-10-28: `git init --bare` three at once on one path —
+two of the three exit 128, in 30 of 30 rounds.** The loser has already made the directory, so every
+later placement's `[ ! -d ]` skips the init and the next step fails on a directory that is not a
+repository — the reported sentence, from a race that had finished minutes earlier. The step now
+loops until `{mirror}/objects` exists (bounded at ~5 s) and answers the *directory*, not `git init`'s
+exit status.
+
+### The bundle went over under the mirror's name
+
+The far side's copy was `{mirror}/incoming.bundle` — one name per MIRROR, so every placement of one
+repository on one host wrote and fetched through the same file. Nothing there fails loudly:
+`git fetch -f incoming.bundle +HEAD:refs/heads/letibot/<mine>` creates *my* ref from *whatever*
+bundle is there, so a placement that loses the race is handed **a checkout of somebody else's
+commit** and says nothing about it. It also left 19 MB per placement in the bare mirror for ever.
+
+It is now `{mirror}/incoming-<pid>-<counter>-<short>.bundle` — the same per-run counter the local
+staging file uses, for the same reason — fetched once and removed by the same call, which is safe to
+be asked again (a step whose first attempt already consumed the file succeeds if the ref is there).
+And the fetch's own words now reach the failure: `git fetch refused the bundle: …` instead of
+*it said nothing*.
+
+### Tests, and what they cost
+
+`crates/tools/tests/remote_hosts.rs`, both against the fake ssh:
+
+| test | pre-fix |
+|---|---|
+| `a_mirror_that_is_only_a_directory_is_made_a_repository` | red: `handing the bundle to the remote repository on fake: exit 128: it said nothing` |
+| `two_placements_at_once_never_read_each_others_bundle` | red: the held placement's worktree is at the OTHER placement's commit |
+
+The second is the forcing test the R101 brief asked for. It is deterministic rather than
+likely: the fake ssh can be told to hold one call (`<dir>/hold` names a needle and a release
+file), so the first placement is stopped at its hand-off, the repository's `HEAD` moves while it is
+held, a second placement runs start to finish, and only then is the first let go. Each takes about a
+second.
+
+### What this does not do
+
+* **Two placements of the SAME commit still share a mirror and a per-session ref**, which is correct:
+  the ref is `refs/heads/letibot/<short>`, one per session.
+* **A concurrent `git worktree add` is still two processes in one repository.** They write different
+  `worktrees/<id>` and different branches, and git locks each of those itself; nothing here adds a
+  lock of its own.
+
 ## The merge gate on a declared host (2026-10-29)
 
 The operator: *"i told you about other hosts so you actually use that capability for running gates

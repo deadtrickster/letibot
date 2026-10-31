@@ -81,6 +81,12 @@ impl Rig {
         // **The fake ssh records its argv and its environment**, and refuses to be anything but
         // a passthrough: the flags under test are the ones it is HANDED, so it must not interpret
         // them (a fake that understood `-i` would be testing itself).
+        //
+        // **And it can be told to HOLD one call**, which is how a race between two placements is
+        // made deterministic rather than likely: `<dir>/hold` names a needle and a release file,
+        // a command containing the needle waits (bounded) for the release, and `<dir>/hold.entered`
+        // is touched so the test knows the hold was reached. Nothing writes that file in an
+        // ordinary test, so every other test in this binary is unaffected.
         let ssh = bin.join("ssh");
         let log = dir.join("ssh.log");
         write_executable(
@@ -92,10 +98,21 @@ impl Rig {
                  export PATH='{}':$PATH\n\
                  export HOME='{}'\n\
                  for last; do :; done\n\
+                 h='{hold}'\n\
+                 if [ -f \"$h\" ]; then\n\
+                 \x20 needle=$(sed -n 1p \"$h\")\n\
+                 \x20 release=$(sed -n 2p \"$h\")\n\
+                 \x20 case \"$last\" in *\"$needle\"*)\n\
+                 \x20   : > '{hold}.entered'\n\
+                 \x20   n=0\n\
+                 \x20   while [ ! -f \"$release\" ]; do n=$((n+1)); [ $n -gt 600 ] && break; sleep 0.05; done ;;\n\
+                 \x20 esac\n\
+                 fi\n\
                  exec bash -lc \"$last\"\n",
                 log.display(),
                 bin.display(),
-                home.display()
+                home.display(),
+                hold = dir.join("hold").display()
             ),
         );
         // **letibot's own key and known host**, in a config directory of this test's own — the
@@ -657,6 +674,119 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         "nothing was arranged on the host either: {}",
         rig.worktree.display()
     );
+}
+
+/// **R101: a mirror that exists but is not a repository is made complete, not trusted.**
+///
+/// `[ ! -d <mirror> ]` was the whole test before `git init --bare`, and a DIRECTORY is not a
+/// repository. Two ways the directory is there and the repository is not, both measured:
+///
+/// * three placements starting together on a cold host each test `[ ! -d ]` and then run
+///   `git init --bare` on the same path — **two of the three exit 128** in 30 of 30 rounds, and a
+///   loser has already made the directory by then;
+/// * the winner can be killed between its `mkdir` and its `objects/`.
+///
+/// Either way the next placement skips the init and fails at the hand-off, which is the sentence
+/// the operator saw: *handing the bundle to the remote repository*, from a race that had finished.
+#[test]
+fn a_mirror_that_is_only_a_directory_is_made_a_repository() {
+    let rig = Rig::new("halfmirror");
+    // The state a lost `git init` leaves: the directory, no repository in it.
+    let mirror = rig.dir.join("home").join("letibot-remote").join("the-repo.git");
+    std::fs::create_dir_all(&mirror).expect("a directory where a mirror belongs");
+
+    let b = SshBackend::place(&rig.spec()).expect("the placement is arranged");
+    assert!(
+        mirror.join("objects").is_dir(),
+        "the mirror was completed: {}",
+        mirror.display()
+    );
+    assert!(
+        std::path::Path::new(b.worktree_path()).join("README").is_file(),
+        "and the checkout is there: {}",
+        b.worktree_path()
+    );
+}
+
+/// **R101: two placements at once never read each other's bundle** — the forcing test.
+///
+/// The name the bundle went over under was `{mirror}/incoming.bundle` — one name per MIRROR, so
+/// every placement of one repository on one host wrote and fetched through the same file. Nothing
+/// in that fails loudly: `git fetch -f incoming.bundle +HEAD:refs/heads/letibot/<mine>` creates
+/// *my* ref from *whatever* bundle is there, so a placement that loses the race is handed a
+/// checkout of somebody else's commit and says nothing about it.
+///
+/// The race is made deterministic rather than likely: the fake ssh holds the first placement at
+/// its hand-off (before the fetch runs) until the test says so, the repository's `HEAD` moves
+/// while it is held — a commit made while another placement is in flight, which is how one mirror
+/// comes to hold two different trees — and the second placement then runs start to finish.
+#[test]
+fn two_placements_at_once_never_read_each_others_bundle() {
+    let rig = Rig::new("at-once");
+    let first = rig.spec();
+    let start = git(&rig.repo, &["rev-parse", "HEAD"]).trim().to_string();
+
+    // Hold the FIRST placement at its hand-off. The needle is its own staged ref, which appears
+    // in no other command of the placement.
+    let hold = rig.dir.join("hold");
+    let release = rig.dir.join("release");
+    std::fs::write(&hold, format!("letibot/{SHORT}\n{}\n", release.display())).expect("the hold");
+
+    let handle = {
+        let spec = first.clone();
+        std::thread::spawn(move || SshBackend::place(&spec).map(|b| b.worktree_path().to_string()))
+    };
+
+    // Wait until it is inside the hand-off, i.e. its bundle is on the far side.
+    let entered = rig.dir.join("hold.entered");
+    let waited = Instant::now();
+    while !entered.exists() && waited.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        entered.exists(),
+        "the first placement never reached its hand-off"
+    );
+
+    // **HEAD moves while it is held.**
+    std::fs::write(rig.repo.join("later.txt"), b"later\n").expect("a file");
+    git(&rig.repo, &["add", "later.txt"]);
+    git(&rig.repo, &["commit", "-q", "-m", "made while the other placement was in flight"]);
+    let later = git(&rig.repo, &["rev-parse", "HEAD"]).trim().to_string();
+    assert_ne!(start, later, "the second placement sends a different tree");
+
+    // The second placement, start to finish, with its own bundle.
+    let mut second = rig.spec();
+    second.name = "s-02beef00".into();
+    let other = SshBackend::place(&second).expect("the second placement is arranged");
+    assert_eq!(
+        git(Path::new(other.worktree_path()), &["rev-parse", "HEAD"]).trim(),
+        later,
+        "the second placement got the tree it sent"
+    );
+
+    // Let the first one finish, and ask what it was handed.
+    std::fs::write(&release, b"go\n").expect("the release");
+    let mine = handle
+        .join()
+        .expect("the first placement thread")
+        .expect("the first placement is arranged");
+    assert_eq!(
+        git(Path::new(&mine), &["rev-parse", "HEAD"]).trim(),
+        start,
+        "a placement is handed ITS OWN commit, never the one another placement sent through the \
+         same file"
+    );
+
+    // And the mirror keeps no bundle: 19 MB per placement, for ever, was the other half.
+    let mirror = rig.dir.join("home").join("letibot-remote").join("the-repo.git");
+    let left: Vec<String> = std::fs::read_dir(&mirror)
+        .expect("the mirror")
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains("incoming"))
+        .collect();
+    assert!(left.is_empty(), "no bundle is left in the mirror: {left:?}");
 }
 
 /// **A name that is not in the file is refused, with the ones that are.**

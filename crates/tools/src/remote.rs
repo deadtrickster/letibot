@@ -3052,13 +3052,30 @@ impl SshBackend {
         // the refusal read like a quoting bug.
         ssh = ssh.with_dir(root.clone());
 
-        // **A bare mirror, once.** Reused by every later session onto the same repository,
-        // so a second child on the same host sends only its own commits.
+        // **A bare mirror, made COMPLETE by whichever placement gets there first.** Reused by
+        // every later session onto the same repository, so a second child on the same host sends
+        // only its own commits.
+        //
+        // The answer is the directory's `objects/`, not `git init`'s exit status, and that is the
+        // whole of it: three placements starting together on one host each tested `[ ! -d ]` and
+        // then ran `git init --bare` on the same path, and **two of the three exited 128** in
+        // every one of thirty measured rounds (MEASURED 2026-10-28, `git init --bare` three at
+        // once, one path). A loser also leaves the directory behind, so the next placement's
+        // `[ ! -d ]` skips the init and the fetch that follows fails on a directory that is not a
+        // repository — the same sentence the operator saw, *handing the bundle to the remote
+        // repository*, from a race that finished minutes earlier.
+        let objects = format!("{mirror}/objects");
         ssh.must(
             "making the mirror",
             &format!(
-                "if [ ! -d {m} ]; then git init --bare {m} >/dev/null; fi",
-                m = quote(&mirror)
+                "i=0\n\
+                 while [ ! -d {o} ]; do\n\
+                 \x20 i=$((i+1))\n\
+                 \x20 [ $i -le 100 ] || {{ echo {m} could not be made a repository >&2; exit 1; }}\n\
+                 \x20 git init --bare -q {m} >/dev/null 2>&1 || sleep 0.05\n\
+                 done",
+                m = quote(&mirror),
+                o = quote(&objects)
             ),
         )
         .map_err(place)?;
@@ -3072,11 +3089,20 @@ impl SshBackend {
         // meet each other's `.lock`. **The counter is the part that guarantees it.** A clock alone
         // did not: macOS's has microsecond resolution, and two placements in one test binary got
         // the same name (MEASURED 2026-10-27, the Mac gate: `….bundle.lock': File exists`).
+        //
+        // **The same counter names the copy that goes over**, and that is R101: the far side's
+        // name used to be `{mirror}/incoming.bundle` — one name per MIRROR, so every placement of
+        // one repository on one host wrote and fetched through the same file. Two at once and the
+        // fetch that landed second read the first one's bytes: the ref it creates is its own, so
+        // nothing fails — the session is simply handed a checkout of somebody else's commit
+        // (MEASURED, and forced by `two_placements_at_once_never_read_each_others_bundle`). A
+        // mirror that kept every bundle also kept 19 MB per placement for ever.
         static PLACED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let run = PLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let staging = std::env::temp_dir().join(format!(
             "letibot-remote-{}-{}-{}-{}.bundle",
             std::process::id(),
-            PLACED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            run,
             short,
             SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -3103,13 +3129,24 @@ impl SshBackend {
         });
         let _ = std::fs::remove_file(&staging);
         let bundle = bundle?;
-        let incoming = format!("{mirror}/incoming.bundle");
+        let incoming = format!("{mirror}/incoming-{}-{}-{}.bundle", std::process::id(), run, short);
         ssh.write_abs(&incoming, &bundle).map_err(place)?;
         let staged = format!("refs/heads/letibot/{short}");
         ssh.must(
             "handing the bundle to the remote repository",
             &format!(
-                "git -C {m} fetch -f {b} +HEAD:{st} >/dev/null 2>&1 && \
+                // **The fetch's own words, and the bundle removed only after it.** `2>&1` into
+                // /dev/null was why the operator's failure said *handing the bundle to the remote
+                // repository* and nothing else — no branch, no reason. And a step that is asked
+                // again (this one is, when a call did not answer) must not fail because the first
+                // attempt already consumed the file: gone means the ref is what is left to check.
+                "rc=0; said=; b={b}\n\
+                 if [ -f \"$b\" ]; then\n\
+                 \x20 said=$(git -C {m} fetch -f \"$b\" +HEAD:{st} 2>&1) || rc=$?\n\
+                 \x20 rm -f \"$b\"\n\
+                 fi\n\
+                 if [ \"$rc\" != 0 ]; then echo \"git fetch refused the bundle: $said\" >&2; \
+                 exit $rc; fi\n\
                  git -C {m} rev-parse --verify {st} >/dev/null",
                 m = quote(&mirror),
                 b = quote(&incoming),
