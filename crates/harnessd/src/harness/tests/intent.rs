@@ -469,3 +469,49 @@ fn a_monitor_notice_says_which_of_the_four_endings_it_was() {
         Some("[monitor] `flowy` was retired: the seat was released.")
     );
 }
+
+/// **The trail holds only what it reads** — R66.
+///
+/// `trail()` takes the last [`TRAIL_SCAN`] utterances and clips each to [`UTTERANCE_CHARS`];
+/// the buffer behind it kept every user-side text for the life of the session, so a long
+/// session's trail was a per-session term with no ceiling at all — and the census could only
+/// have reported a number with nothing over it.
+///
+/// Nothing observable through `trail()` changes, which is why this asserts on the BUFFER: the
+/// caps are now the store's and the reader's both, and a test of the reader alone cannot see
+/// that. The second half pins what a clip must never lose: an authorisation that reads as
+/// complete when it is not.
+#[test]
+fn the_trail_holds_only_what_it_reads() {
+    let m = TrailMirror::default();
+    for i in 0..TRAIL_SCAN + 5 {
+        m.say(Speaker::Operator, &format!("utterance {i}"), None);
+    }
+    let (bytes, held) = m.held();
+    assert_eq!(held, TRAIL_SCAN, "the trail kept more than it can read");
+    let expected: usize = (5..TRAIL_SCAN + 5)
+        .map(|i| format!("utterance {i}").len())
+        .sum();
+    assert_eq!(
+        bytes, expected,
+        "it must keep the LAST ones — those are the ones `trail()` reads"
+    );
+
+    let long = "x".repeat(UTTERANCE_CHARS + 400);
+    m.say(Speaker::Operator, &long, None);
+    let (after, n) = m.held();
+    assert_eq!(n, TRAIL_SCAN, "one more utterance does not grow the buffer");
+    assert_eq!(
+        after,
+        bytes - "utterance 5".len() + UTTERANCE_CHARS,
+        "the oldest went and the new one was stored clipped"
+    );
+    let t = m.trail();
+    // The walk is backwards, so the NEWEST utterance is the first one in the list.
+    let newest = t.utterances.first().expect("the newest utterance");
+    assert!(
+        newest.clipped,
+        "a clipped authorisation must say it was clipped"
+    );
+    assert_eq!(newest.text.chars().count(), UTTERANCE_CHARS);
+}
