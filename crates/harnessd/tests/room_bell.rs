@@ -167,10 +167,13 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let heard = Arc::clone(&seen);
     let observer = Client::connect(
-        &scratch.socket(),
+        scratch.socket(),
         Speaker::top_level("s-observer"),
         Arc::new(move |e: &letibot_room::Event| {
-            heard.lock().unwrap_or_else(|e| e.into_inner()).push(e.clone())
+            heard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(e.clone())
         }),
     )
     .expect("an observer joins the room");
@@ -219,10 +222,248 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         other => panic!("#1 is claimed again: {other:?}"),
     };
     assert!(
-        waits_on.as_ref().is_some_and(|w| w.text.contains("working on it")),
+        waits_on
+            .as_ref()
+            .is_some_and(|w| w.text.contains("working on it")),
         "a claim with no words of its own still acknowledges: {waits_on:?}"
     );
     // The observer's own channel is not this test's subject; dropping it closes its socket, which
     // is the room's `note_gone` and the claim's way back — nothing here asserts on it.
     drop(observer);
+}
+
+/// **Rule 2 at the daemon's door — a reconnect is told what it missed, in words, once.**
+///
+/// `crates/room/tests/bell.rs` proves the room COUNTS a gap and hands the count over with the
+/// `Welcome`. The count is not the rule; the rule is that the client does something with it, and
+/// the something is `SessionRoom::note_gap`: one sentence pushed into the session's queue, one
+/// ring of its bell, and the sentence names the reads that cannot be wrong. Without this test the
+/// daemon half was a claim about a private method — a `take_missed` that nobody called, or a
+/// sentence composed and never rung, would both have passed everything else in the tree.
+///
+/// What it would have failed on: `Client::take_missed` existed and `wake::missed_line` existed, and
+/// the two were joined by one line in a reader thread's loop. A client that reconnected was told
+/// *you missed four* by a number nobody read — which is the silent resynchronisation the rule is
+/// about, wearing the words of its own fix.
+#[test]
+fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
+    let scratch = Scratch::new("gap-line");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
+    let rung = Arc::new(AtomicUsize::new(0));
+    let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+        let rung = Arc::clone(&rung);
+        Arc::new(move |_: &str| {
+            rung.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let session = "s-gap-line";
+
+    // ---- the session, and then its absence --------------------------------
+    let first = SessionRoom::connect(session, &scratch.socket(), Arc::clone(&bell), None)
+        .expect("the session's connection to the room");
+    first
+        .call(
+            "post",
+            &serde_json::json!({"verb": "post", "tag": "ram", "body": "8 GB for the suite"}),
+        )
+        .expect("a post");
+    // **Its own post is news to it**, and the queue is process-wide: take it now, or the gap's
+    // sentence below is asserted against a list that already had something in it. Waited for
+    // rather than taken at once — the reply to a `post` returns when the SERVER has answered, and
+    // the sentence is composed on this side's reader thread a moment later.
+    wait_until("the poster to be told what it made", || {
+        wake::waiting(session) >= 1
+    });
+    let own = wake::take(session);
+    assert!(
+        own.iter().any(|l| l.contains("posted #1")),
+        "the poster is told what it made: {own:?}"
+    );
+    drop(first);
+    wait_until("the room to notice the close", || server.connections() == 0);
+
+    // ---- an event with nobody behind the socket ---------------------------
+    // A claim by somebody else, addressed to the poster — which is `session`, and `session` is
+    // not here. The room counts it and the count is the whole of what it can say.
+    let claimant = Client::connect(
+        scratch.socket(),
+        Speaker::top_level("s-gap-claimant"),
+        Arc::new(|_: &letibot_room::Event| {}),
+    )
+    .expect("the claimant joins the room");
+    let claimed = claimant
+        .request(&Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        })
+        .expect("a claim");
+    assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
+    let rung_before = rung.load(Ordering::SeqCst);
+
+    // ---- the reconnect ----------------------------------------------------
+    let back = SessionRoom::connect(session, &scratch.socket(), Arc::clone(&bell), None)
+        .expect("the session comes back");
+    wait_until("the gap to be said", || wake::waiting(session) >= 1);
+    let said = wake::take(session);
+    assert_eq!(
+        said.len(),
+        1,
+        "one gap is ONE sentence, however many events fell into it: {said:?}"
+    );
+    let line = &said[0];
+    for wanted in [
+        "1 event(s)",
+        "not replayed",
+        "`room queue <tag>`",
+        "`room holding`",
+    ] {
+        assert!(
+            line.contains(wanted),
+            "the sentence names the count and the reads that cannot be wrong ({wanted:?}): {line}"
+        );
+    }
+    assert!(
+        rung.load(Ordering::SeqCst) > rung_before,
+        "and it RINGS: a sentence nobody is woken for is a mailbox, which is the thing this file \
+         exists not to be"
+    );
+
+    // **And nothing is left for the next turn.** The count was taken by the `Welcome`, so the
+    // reader's next pass finds zero — a client that re-reported the same gap would tell the model
+    // the room had gone quiet again every few seconds.
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(wake::waiting(session), 0, "the gap is said once: {said:?}");
+    drop(back);
+}
+
+/// **R57 at the daemon's door — a turn ending rings nothing; a message under the tag does.**
+///
+/// R57's confusion, in one place: *a child's completion is not a firing.* On this side of the room
+/// a subagent finishing IS a turn ending — `Harness` runs the turn, the child's session was never a
+/// room member, and `SessionRoom::turn_ended` stops the beat and nothing else. So nothing is rung,
+/// the claim it held is still held, and a client queued behind it is not woken to say so. What IS a
+/// bell is a message arriving under the tag, which is the only thing that ever was.
+///
+/// **What it would have failed on:** the natural wrong implementation — an `abandon` on the turn's
+/// end, *"the work stopped, so give the item back"* — is plausible, is what a session that crashed
+/// gets, and would make every completion an event. It also explains the old sentence: a client that
+/// treats a completion as a firing waits for the child for ever, because the child's completion
+/// rings a bell that says nothing about the item and the item never moves.
+#[test]
+fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
+    let scratch = Scratch::new("r57");
+    // The server must outlive the clients: dropping it closes the listener under a connection that
+    // is still being served.
+    let _server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
+    let rung = Arc::new(AtomicUsize::new(0));
+    let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+        let rung = Arc::clone(&rung);
+        Arc::new(move |_: &str| {
+            rung.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    let me = SessionRoom::connect("s-turn-end", &scratch.socket(), Arc::clone(&bell), None)
+        .expect("the session's connection to the room");
+    me.call(
+        "post",
+        &serde_json::json!({"verb": "post", "tag": "ram", "body": "8 GB for the suite"}),
+    )
+    .expect("a post");
+    let claimed = me
+        .call("claim", &serde_json::json!({"verb": "claim", "tag": "ram"}))
+        .expect("a claim");
+    assert!(claimed.contains("#1"), "{claimed}");
+
+    // **An observer queued under the same tag**, so *nothing happened* is a fact about a channel
+    // that works rather than about a channel that was never open.
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::clone(&seen);
+    let observer = Client::connect(
+        scratch.socket(),
+        Speaker::top_level("s-r57-observer"),
+        Arc::new(move |e: &letibot_room::Event| {
+            heard
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(e.clone())
+        }),
+    )
+    .expect("an observer joins the room");
+    observer
+        .request(&Request::Post {
+            id: "o1".into(),
+            tag: "ram".into(),
+            body: "the other 8 GB".into(),
+        })
+        .expect("the observer posts, which makes it a member of the tag");
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    seen.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    let rung_before = rung.load(Ordering::SeqCst);
+
+    // ---- a turn, begun and ended ------------------------------------------
+    // The whole of what "the subagent finished" is on this side of the socket.
+    me.turn_started();
+    std::thread::sleep(std::time::Duration::from_millis(120));
+    me.turn_ended();
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let events = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert!(
+        events.is_empty(),
+        "a turn ending is not a room event: the room hears nothing about it: {events:?}"
+    );
+    assert_eq!(
+        rung.load(Ordering::SeqCst),
+        rung_before,
+        "and nothing rings — not for the session, not for the tag"
+    );
+    // **And the claim survives**, which is the half that makes the old confusion expensive: a
+    // completion is not an abandonment, so the item is still held and the queue still says so.
+    let queue = observer
+        .request(&Request::Queue { tag: "ram".into() })
+        .expect("a queue read");
+    let Response::Queue { rows, .. } = queue else {
+        panic!("a queue read: {queue:?}");
+    };
+    let held = rows.iter().find(|r| r.id == 1).expect("#1 is in the queue");
+    assert!(
+        matches!(&held.state, State::Claimed { claim } if claim.by == "s-turn-end"),
+        "a turn ending gives nothing back: {held:?}"
+    );
+
+    // ---- and a message under the tag IS a bell ----------------------------
+    let third = Client::connect(
+        scratch.socket(),
+        Speaker::top_level("s-r57-third"),
+        Arc::new(|_: &letibot_room::Event| {}),
+    )
+    .expect("a third session joins the room");
+    third
+        .request(&Request::Post {
+            id: "t1".into(),
+            tag: "ram".into(),
+            body: "8 GB more".into(),
+        })
+        .expect("a post under the tag");
+    wait_until(
+        "the message to reach the session queued under the tag",
+        || {
+            seen.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|e| matches!(e, letibot_room::Event::Posted { by, .. } if by == "s-r57-third"))
+        },
+    );
+}
+
+/// Wait until `f` says so — for a fact that arrives on a thread rather than as a frame.
+fn wait_until(what: &str, mut f: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        if f() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("waited ten seconds for {what}");
 }

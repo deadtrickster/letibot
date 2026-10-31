@@ -19,6 +19,16 @@
 //! unless firecode was told `--no-net`, and it has whatever the project's
 //! `firecode.layer` installed.
 //!
+//! # A VM agent has no room connection, and that is the door rather than an omission
+//!
+//! A session placed here is a **subagent**, and the room refuses a subagent at its door by name
+//! (`Refused::Subagent`); `Harness::open` gives a session with a parent no link at all. This door
+//! would not help even if one existed: `firecode in --project P --cwd D 'cmd'` runs **one
+//! command** and returns its output, so there is no message verb to ring — a bell that arrives
+//! while the guest is idle has nothing to be delivered into. A VM agent speaks through the parent
+//! that spawned it, which is the room's rule for every child (`docs/room.md` § *The bell, per
+//! client*).
+//!
 //! # Files are the guest's
 //!
 //! There is no shared filesystem — Firecracker has no virtio-fs — so every

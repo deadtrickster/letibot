@@ -193,15 +193,39 @@ daemon's own `Hello` makes.
 firecode's fourth rule, paid for there: **a bell is something that can inject a turn.** A client that
 only acts when a person prompts it cannot be woken; the room is a mailbox to it, not a bell.
 
-The room produces the events; delivering them is the daemon's job and the next slice's. What this
-slice settles is what is worth ringing about: `Posted`, `Claimed`, `Done`, `Abandoned`, `Raised`,
-`Asked`, `Ruled` — and **not a beat**, because a bell that rings five times a minute is a bell nobody
-listens to.
+The room produces the events; delivering them is the daemon's job. What is worth ringing about is
+`Posted`, `Claimed`, `Done`, `Abandoned`, `Raised`, `Asked`, `Ruled` — and **not a beat**, because a
+bell that rings five times a minute is a bell nobody listens to.
 
-The other three of firecode's rules land on the daemon's side too, and they are worth stating here
-so the next slice does not rediscover them: start listening before you start working; one read is
-not membership; **acknowledge before you act** — a one-line "seen, doing X" before the work, because
-silence reads as absence.
+The other three of firecode's rules land on the daemon's side too: **listen before you start
+working** (a note posted mid-turn is read at the round boundary, not after the work it would have
+changed); **one read is not membership** (a `queue` read leaves no subscription behind, and a client
+that was away is told how much it missed rather than handed a `Welcome` that looks the same as
+never having left); **acknowledge before you act** — a one-line *seen, doing X* before the work,
+because silence reads as absence.
+
+### The bell, per client
+
+**Verified per client, never assumed.** This box runs four kinds of client that could plausibly be
+woken by a room event, and two of them cannot be — which is a fact about the code and not a gap to
+be discovered later. Each row names the mechanism, or the absence and its reason.
+
+| client | is it a room client? | can a room event start a turn? | the mechanism, or the absence |
+|---|---|---|---|
+| **a leticode session** (`crates/harnessd`) | yes — one `SessionRoom` per top-level session, opened by `Harness::open` when the box has a coordinator | **yes** | the socket reader turns the `Event` into a sentence (`room::wake::sentence`), pushes it on the session's queue, and rings `Bell::ring_wake`; the worker's `Harness::wake` finds it, puts it in front of the model as `Speaker::Agent`, and runs a turn. Proved live by `crates/harnessd/tests/room_bell_turn.rs`, and the mid-turn half by `room_bell.rs` |
+| **the head** (`letibot-tui`) | **no** | no — it is woken by the daemon, and a room event reaches the screen as the turn it starts | `letibot-tui` does not depend on `letibot-room` and holds no socket. Its room pane is drawn from the daemon's plugin feed (`crates/harnessd/src/plugins/room_feed.rs`), so it is a picture of the room and never a subscriber to it. A room note draws a **notice row** in the transcript (the `Speaker::Agent` item the turn opened with), never a card: a card is *a person must*, and a bell is addressed to a model |
+| **the bridge** (`crates/bridge`, `Head::wait`) | **no** | no — `wait` answers on an open ask, a failure, a turn that ended, or the deadline; a room event is none of those | `letibot-bridge` does not depend on `letibot-room`. A room event reaches a bridge head only *through* a turn in the session the bridge holds — so `wait` returns `TurnEnded` afterwards, and a room event can never be the `Ask` that exits `10`. Stated on `Head::wait`'s own doc |
+| **a firecode VM agent** (`crates/tools/src/firecode.rs`) | **no** | no — it is a subagent, and the room refuses a subagent at the door by name (`Refused::Subagent`) | `Harness::open` gives a session with a parent **no link at all** rather than one that refuses (the seat does not name `room` either), and a VM agent's own door is `firecode in --project P 'cmd'` — an exec channel that runs one command, with no message verb to ring. A VM agent speaks through its parent, which is the room's rule for every child |
+
+**What the two absences cost, and what they do not.** A head and a bridge head are both *clients of
+the daemon*, and that is the design: the daemon is the only process with a room connection per
+session, so it is the only place a bell can become a turn. What they lose is the ability to see a
+room event that the daemon chose not to turn into a turn — a `Claimed` on a tag agent's queue, which
+arrives as a note and not a wake (slice 5's cost model). What they keep is everything that matters:
+the pane, the transcript row, and the turn.
+
+`crates/harnessd/tests/room_bell_turn.rs` asserts both absences as manifests rather than as prose:
+the day `tui` or `bridge` grows the dependency, the test fails and names this table.
 
 ## The precedent: the review queue's own session
 

@@ -22,6 +22,13 @@
 //! restarted — unless the age is in front of the person. *"Restarted clean" and "restarted empty"
 //! must never look the same*, and only the sentence tells them apart.
 //!
+//! **And this pane is a picture, not a subscription.** The head has no room connection of its own:
+//! the daemon holds one per top-level session and the feed above is what it reads through
+//! (`docs/room.md` § *The bell, per client*). So a room event reaches a person as **the turn it
+//! started** — the notice row in the transcript — and never as a card here. A card means *a person
+//! must answer*, and a bell is addressed to a model; the `room` panel's `bell` line says so in the
+//! place a reader would otherwise wait for one.
+//!
 //! # What it draws
 //!
 //! * **`room`** (`r`) — the identity, the arbiter and whether it is up, who is connected, and the
@@ -396,6 +403,18 @@ fn header(feed: &Feed) -> Value {
         "value": feed.connected.join(", "),
         "role": "faint",
         "tail": format!("{} session(s) connected", feed.connected.len()),
+    }));
+    // **The bell, and who can hear it.** A person who reads a queue and waits for something to
+    // happen on this screen is waiting for a turn: the head holds no room connection, so a room
+    // event arrives as the notice row of the turn the daemon ran for it (`docs/room.md` § *The
+    // bell, per client*). Said here rather than left to be discovered, because the absence looks
+    // exactly like a room where nothing is happening.
+    lines.push(json!({
+        "label": "bell",
+        "value": "a room event starts a turn in the session it names",
+        "role": "faint",
+        "tail": "this pane holds no room connection: a note reaches this screen as that turn, never \
+                 as a card",
     }));
     lines.push(json!({
         "label": "items",

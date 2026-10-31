@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use letibot_room::client::Client;
 use letibot_room::server::Server;
-use letibot_room::{Event, Request, Response, Room, Speaker};
+use letibot_room::{Event, Refused, Request, Response, Room, Speaker};
 
 /// A directory of this test's own, removed when the test ends.
 struct Scratch(PathBuf);
@@ -111,16 +111,33 @@ fn a_read_is_not_membership_and_a_gap_is_counted() {
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
 
     // ---- the reader that is not a member ----------------------------------
-    // `s-reader` posts nothing and claims nothing: it only ever READS the queue, which is what
-    // makes it not an audience member (`Server::route`'s first paragraph). The read is not what is
-    // being tested — what is being tested is that a read leaves no subscription behind.
-    let (reader, _reader_bells) = client(&server, "s-reader");
+    // `s-reader` posts once (so the room has met it and #1 has a poster to address) and then only
+    // READS. The read is not what is being tested — what is being tested is that a read leaves no
+    // subscription behind: the connection is the subscription, and a `queue` frame neither creates
+    // one nor keeps a closed socket alive.
+    let (reader, reader_bells) = client(&server, "s-reader");
     let item = post(&reader, "p1", "ram", "8 GB for the suite");
     let queue = call(&reader, Request::Queue { tag: "ram".into() });
     assert!(matches!(queue, Response::Queue { .. }), "{queue:?}");
+    // **The channel was live while the socket was.** A poster is told what it made, so this is the
+    // proof that the arm below is about the CLOSE and not about a channel that never carried
+    // anything.
+    assert!(
+        reader_bells
+            .try_recv()
+            .is_ok_and(|e| matches!(e, Event::Posted { .. })),
+        "the connection heard its own post"
+    );
     drop(reader);
     until("the room to notice the reader's close", || {
         server.connections() == 0
+    });
+    // **And it hears nothing more.** A read bought no subscription: the channel went with the
+    // socket, so the claim below cannot be delivered to it — which is the fact the third arm's
+    // count is built on. This is the arm that would have failed had a `queue` read registered the
+    // session somewhere the router still rang.
+    until("the reader's channel to go with its socket", || {
+        matches!(reader_bells.try_recv(), Err(TryRecvError::Disconnected))
     });
 
     // ---- the standing bell ------------------------------------------------
@@ -129,7 +146,13 @@ fn a_read_is_not_membership_and_a_gap_is_counted() {
     let (standing, standing_bells) = client(&server, "s-standing");
     post(&standing, "p2", "ram", "the other 8 GB");
     let claimer = client(&server, "s-claimer").0;
-    let claimed = call(&claimer, Request::Claim { id: "c1".into(), tag: "ram".into() });
+    let claimed = call(
+        &claimer,
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
+    );
     assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
     // **The first event on this channel is its own post**, which is the room telling a poster what
     // it made. What this arm is about is the one after it: a claim by somebody else, delivered to a
@@ -202,7 +225,10 @@ fn a_gap_is_counted_per_event_and_taken_once() {
     let (other, _other_bells) = client(&server, "s-other");
     let claimed = call(
         &other,
-        Request::Claim { id: "c1".into(), tag: "ram".into() },
+        Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        },
     );
     assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
     let back_in = call(
@@ -238,6 +264,88 @@ fn a_gap_is_counted_per_event_and_taken_once() {
         0,
         "a connection that missed nothing is told nothing: {:?}",
         again.welcome()
+    );
+}
+
+/// **R57 — a child's completion is not a firing, and a message to it is.**
+///
+/// The row this pins is `TODO.md`'s R57 read from the room's side, and the confusion it names is
+/// expensive: *wait for the child* once meant *wait for ever* because a client that treated a
+/// session's own end as news rang a bell nobody was listening for, and one that treated a message
+/// as a mailbox heard nothing at all. In a room the two are different things, and this test says
+/// which is which:
+///
+/// * **a session leaving is not an event.** `Room::note_gone` produces the events of the CLAIMS
+///   given back and nothing else — a session that held nothing leaves silently, so a child
+///   finishing cannot ring this bell, however the child finished;
+/// * **a subagent cannot be a member at all** (`Refused::Subagent`, `tests/subagent.rs`), so its
+///   completion has no connection to ring even if the room wanted to;
+/// * **a message to it IS an event**, and it is addressed by name: a `post` under the tag the
+///   session is queued on is rung to that session, and that is the only way the room ever tells
+///   anybody anything.
+///
+/// What it would have failed on before it existed: nothing in the room distinguished *an item
+/// moved* from *a session stopped*, so a reader of `note_gone` had no way to tell that the second
+/// is not a bell — and the count a reconnect is told (`missed`) would have included every session
+/// that simply went home.
+#[test]
+fn a_childs_completion_is_not_a_firing_and_a_message_to_it_is() {
+    let mut room = Room::new();
+    // ---- a session leaving is not an event ---------------------------------
+    // The child holds nothing. Its daemon closed its socket; the room has nothing to say.
+    let quiet = room.note_gone(
+        "s-parent-sub-1",
+        "`s-parent-sub-1`'s room connection closed",
+        1_000,
+    );
+    assert!(
+        quiet.is_empty(),
+        "a session that held nothing leaves silently — a completion is not a firing: {quiet:?}"
+    );
+
+    // **A claim given back IS one**, and the difference is the whole rule: what rings is the item
+    // moving, never the session ending. The holder's departure is the REASON, not the event.
+    let parent = Speaker::top_level("s-parent");
+    room.post(&parent, "p", "ram", "8 GB for the suite", 1_001)
+        .expect("a post");
+    room.claim(&parent, "c", "ram", 1_002).expect("a claim");
+    let loud = room.note_gone("s-parent", "`s-parent`'s room connection closed", 1_003);
+    assert_eq!(loud.len(), 1, "one claim, one abandonment: {loud:?}");
+    assert!(
+        matches!(&loud[0], Event::Abandoned { by, item, .. } if *item == 1 && by == "s-parent"),
+        "and it is about the ITEM, in the holder's name: {:?}",
+        loud[0]
+    );
+
+    // ---- and a message to a session is addressed to it ---------------------
+    // The room's one way of telling anybody anything is an event about an item, and the session a
+    // message is FOR is the session it is addressed to. That is what a bell has to reach.
+    let said = room
+        .post(
+            &Speaker::top_level("s-child"),
+            "p2",
+            "ram",
+            "the other 8 GB",
+            1_004,
+        )
+        .expect("a post");
+    assert!(
+        said.events.iter().any(|e| e.named().contains(&"s-child")),
+        "a message names the session it came from, which is how the router knows whom to ring: \
+         {:?}",
+        said.events
+    );
+
+    // ---- and a subagent cannot be a member, so it cannot be rung -----------
+    // The door's own refusal, kept here as the third arm because it is why a child's completion
+    // cannot be a room event at all: the room never met it.
+    let child = Speaker::subagent("s-parent-sub-1", "s-parent");
+    assert!(
+        matches!(
+            room.post(&child, "p3", "ram", "8 GB", 1_005).err(),
+            Some(Refused::Subagent { .. })
+        ),
+        "a subagent is refused at every verb, so it has no bell to ring"
     );
 }
 

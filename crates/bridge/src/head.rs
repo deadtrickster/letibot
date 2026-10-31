@@ -1723,6 +1723,17 @@ impl Head {
     /// **A failure that was already there when this head attached does not count**: a
     /// `wait` fired after a `send` must not report the previous turn's death as this
     /// one's.
+    ///
+    /// **And this head holds no room connection, so a room event never wakes it directly.**
+    /// `docs/room.md` § *The bell, per client* is the table; this is the row. The bridge is a
+    /// client of the DAEMON: it reads the session protocol, so what can end a wait is an ask, a
+    /// failure, a turn that ended, or the deadline. A room event is none of those — it becomes a
+    /// sentence in the daemon (`room::wake`), the daemon runs a turn for it, and this wait sees the
+    /// turn start and then `TurnEnded` with the model's answer. The consequence a caller must not
+    /// be surprised by: **a room event can never be the `Ask` that exits `10`**, because a card is
+    /// something a person must answer and a bell is addressed to a model. Giving this head a room
+    /// connection of its own would make it a second place a bell becomes a turn, which is the one
+    /// thing the room's design keeps in a single process.
     pub fn wait(&self, deadline: Instant) -> Attention {
         let mut g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         let baseline = match &g.turn {
