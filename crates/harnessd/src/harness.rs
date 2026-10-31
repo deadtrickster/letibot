@@ -4462,6 +4462,20 @@ impl Harness {
                 )))
                 .map_err(|e| HarnessError::Setup(format!("registering the room tool: {e}")))?;
         }
+        // **The host's own changelog, written.** A change to this machine's configuration — a
+        // governor, a sysctl, a unit's limit — is done by a `bash` call and then recorded here, so
+        // that a month later the reason and the operator's own words are in a file instead of in a
+        // conversation nobody kept. Registered BEFORE `with_session_tools`, for the reason the
+        // queue and the room are: that function seats a `nowhere` one only where none is, and the
+        // real scope is the one that can record. The ROLE decides who seats it, and `list`
+        // narrows to a read so a read-only seat can still read the record.
+        registry
+            .register(Box::new(
+                letibot_tools::builtins::changelog::HostChangelogTool::new(std::sync::Arc::new(
+                    crate::changelog_scope::ConfigChangelog::new(cfg.session_id.clone()),
+                )),
+            ))
+            .map_err(|e| HarnessError::Setup(format!("registering the host changelog: {e}")))?;
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),
