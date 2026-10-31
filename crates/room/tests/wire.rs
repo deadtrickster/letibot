@@ -100,6 +100,10 @@ fn every_frame_round_trips_through_json() {
             beat_every_ms: 5_000,
             threshold: 3,
             identity: "the room on /tmp/room.sock — started 4s ago".to_string(),
+            // **The count is the SERVER's**, so a `Room` driven directly by a test answers zero —
+            // and the round trip is what this vector is for: the field is on the wire either way.
+            missed: 2,
+            missed_since_ms: 1_500,
         },
         Response::Posted {
             id: "r1".to_string(),

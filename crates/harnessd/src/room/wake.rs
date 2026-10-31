@@ -111,6 +111,35 @@ pub fn sentence(event: &letibot_room::Event) -> Option<String> {
     })
 }
 
+/// **The sentence a gap in the bell becomes** — firecode's second rule, *one read is not
+/// membership*, applied to the one case a room can be honest about.
+///
+/// The room keeps no log, so it cannot say what it rang for while a session was away; what it can
+/// say is how many times it rang and when the first was (`wire`'s version-4 note). The sentence
+/// therefore names the count, names the READS that cannot be wrong, and says in words that nothing
+/// will be replayed — a client told *you missed four* and left to guess which four would believe it
+/// had the picture, and the whole point of a bell is that a session does not have to poll to know
+/// it does not.
+///
+/// `since_ms` is the room's clock (`server::now_ms`), and `now` is passed in rather than read so the
+/// sentence can be asserted instead of matched loosely.
+pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
+    let gap = if since_ms == 0 || since_ms > now {
+        String::new()
+    } else {
+        format!(
+            "the first of them was {} ago; ",
+            letibot_room::duration(now.saturating_sub(since_ms))
+        )
+    };
+    format!(
+        "[room] this session's connection to the room was down, and {count} event(s) were addressed \
+         to it while it was — {gap}they are not replayed, because the room keeps no log. Read the \
+         state instead of the bells: `room queue <tag>`, `room holding` and `room questions` answer \
+         as things stand, and a claim this session held was given back when its socket closed."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

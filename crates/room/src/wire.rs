@@ -82,7 +82,12 @@ use crate::room::{
 /// than drawn without it, because a pane that silently omitted the column would say *no agent* for
 /// every tag on an older room.
 ///
-/// # 4: a room is a PROJECT's
+/// # 4: a room is a PROJECT's, and the room says what it could NOT deliver
+///
+/// Two additions, written on two branches at once and landed as one number: each was `4` on its
+/// own branch, and this tree has one `4` — so a client either speaks both or is refused by name.
+///
+/// ## The project, and the three fields it came with
 ///
 /// The operator, 2026-10-31: *"yeah i want a room … the herarchy was
 /// `<project>/<top-sessions>/<subagents>*|system/`"*. Until 4 there was one room per box and its
@@ -100,6 +105,24 @@ use crate::room::{
 /// * [`crate::Question`]'s `project` — which room asked, stamped by the server, because two rooms
 ///   number their questions from 1 and an arbiter that heard both would otherwise rule on the
 ///   wrong one.
+///
+/// ## The gap the bell could not ring through
+///
+/// The room keeps no log ([`Request::Hello`]'s sibling rule, and the reason a replay window is not
+/// a history), so an event addressed to a session whose connection was down is gone. Nothing said
+/// so: a session that reconnected was handed a `Welcome` identical to a session that had never
+/// been away, which is a bell that is silent about the hours it was not ringing.
+///
+/// So [`Response::Welcome`] carries `missed` — how many events the router addressed to this session
+/// while it had no connection — and `missed_since_ms`, the first of them. **The count is the
+/// honest answer and a replay is not**: the room cannot say what the events were, and a client told
+/// *you missed four* re-reads the state (`queue`, `holding`, `questions`), which cannot be wrong.
+/// A client that speaks 3 is refused by name rather than left believing it heard everything.
+///
+/// **The count is the SERVER's, keyed by session, and the router is what increments it** — so an
+/// ordinary session counts the gap in the one room it is in, and the arbiter, which every room
+/// addresses, counts the gaps of all of them. It is taken (not read) when a `Hello` is answered, so
+/// a client is told about the gap that has just ended and never about the same one twice.
 pub const ROOM_PROTOCOL_VERSION: u16 = 4;
 
 /// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
@@ -257,6 +280,18 @@ pub enum Response {
         /// read: an age read once at connect is a wrong age for ever after.
         #[serde(default)]
         identity: String,
+        /// **How many events this session was addressed by while it had no connection** — see the
+        /// version-4 note on [`ROOM_PROTOCOL_VERSION`]. `0` for a session that has never been away,
+        /// and for the first connection of one the room has not met.
+        ///
+        /// The router counts an event once per session it would have reached, so the number is
+        /// *how many bells rang where nobody was*, not how many events happened.
+        #[serde(default)]
+        missed: u64,
+        /// **When the first of them was routed** — so the sentence a client composes can say how
+        /// long the gap was. `0` when nothing was missed.
+        #[serde(default)]
+        missed_since_ms: u64,
     },
     Refused {
         /// The frame's id, when it had one.
@@ -448,6 +483,11 @@ impl Room {
                     // `Server::answer_frame`. A `Room` driven directly by a test gets the empty
                     // string, and a client never does.
                     identity: String::new(),
+                    // **A `Room` has no connections, so it has never failed to deliver one.** The
+                    // count is the SERVER's for the same reason the identity is: it is a fact
+                    // about a socket, and this dispatch has no socket.
+                    missed: 0,
+                    missed_since_ms: 0,
                 })
             }
             Request::Post { id, tag, body } => {

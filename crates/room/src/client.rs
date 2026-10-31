@@ -71,6 +71,13 @@ pub struct Welcome {
     /// of the connect: a reader that wants the age now asks [`Request::Room`], which carries the
     /// same sentence taken at the moment of the read.
     pub identity: String,
+    /// **How many events the room addressed to this session while it had no connection**, and when
+    /// the first of them was routed — `0`/`0` for a session that has never been away.
+    ///
+    /// The room keeps no log, so this is a COUNT and not a replay: a client told *you missed four*
+    /// re-reads the state, which cannot be wrong. See `wire`'s version-4 note.
+    pub missed: u64,
+    pub missed_since_ms: u64,
 }
 
 impl Default for Welcome {
@@ -80,6 +87,8 @@ impl Default for Welcome {
             beat_every_ms: crate::room::DEFAULT_BEAT_EVERY_MS,
             threshold: crate::room::ABANDON_THRESHOLD,
             identity: String::new(),
+            missed: 0,
+            missed_since_ms: 0,
         }
     }
 }
@@ -209,6 +218,21 @@ impl Client {
         Client { inner }
     }
 
+    /// **What the last connection missed, and forget it** — `(count, first_ms)` from the `Welcome`,
+    /// zeroed as it is read.
+    ///
+    /// The room keeps no log, so a count is the whole of what it can say (`wire`'s version-4
+    /// note). **Taking rather than reading** is what makes one gap one sentence: the count arrives
+    /// with the `Hello` that ends the gap, and a caller that reported the same number on every poll
+    /// would tell the model the room had gone quiet again every second.
+    pub fn take_missed(&self) -> (u64, u64) {
+        let mut w = self.inner.welcome.lock().expect("the welcome lock");
+        let out = (w.missed, w.missed_since_ms);
+        w.missed = 0;
+        w.missed_since_ms = 0;
+        out
+    }
+
     /// **One verb, one reply.**
     ///
     /// A connection that has failed is re-opened and the frame is sent again — which is safe
@@ -328,6 +352,8 @@ impl Client {
                 beat_every_ms,
                 threshold,
                 identity,
+                missed,
+                missed_since_ms,
                 ..
             } => {
                 *self.inner.welcome.lock().expect("the welcome lock") = Welcome {
@@ -335,6 +361,8 @@ impl Client {
                     beat_every_ms,
                     threshold,
                     identity,
+                    missed,
+                    missed_since_ms,
                 };
             }
             Response::Refused { why, .. } => {

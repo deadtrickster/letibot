@@ -82,6 +82,10 @@ pub struct SessionRoom {
     /// **The room instance this link last saw** — the lease's `started_ms`. A change here that no
     /// marker claims is a crash, which is the one cause of a restart nobody asks for.
     seen: Mutex<Option<u64>>,
+    /// **The worker's bell**, kept as well as handed to the client — see [`SessionRoom::note_gap`].
+    /// A gap in the connection is the one thing a session must be woken for that no event can
+    /// carry, because the events are exactly what it did not hear.
+    bell: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 impl std::fmt::Debug for SessionRoom {
@@ -190,6 +194,7 @@ impl SessionRoom {
             // been up for an hour did not witness anything, so the instance is recorded and no
             // marker is written.
             seen: Mutex::new(letibot_room::room_started_ms(socket)),
+            bell,
         });
         SessionRoom::reader(&room);
         Ok(room)
@@ -218,6 +223,13 @@ impl SessionRoom {
                     // rather than on a change is what makes that self-healing, and it is one small
                     // frame a second on a connection that is already reading one.
                     me.say_who_is_here();
+                    // **And a gap in the bell, said once.** A connection that was down and is back
+                    // was handed a count with its `Welcome`; the events themselves are gone, so the
+                    // session is woken to re-read the state rather than left believing it heard
+                    // everything (`wake::missed_line`). After the tree, because the wake it rings
+                    // may read the room — and a room that has just been told who is in it is the
+                    // one the woken turn should see.
+                    me.note_gap();
                     drop(me);
                     std::thread::sleep(std::time::Duration::from_millis(PANE_READ_EVERY_MS));
                     if weak.strong_count() == 0 {
@@ -393,6 +405,29 @@ impl SessionRoom {
             .write(&path);
     }
 
+    /// **Report a gap in the bell, once** — firecode's second rule at the one place the room can be
+    /// honest about it.
+    ///
+    /// The room keeps no log, so an event addressed to a session whose connection was down is
+    /// gone. What the room CAN say is how many there were (`Client::take_missed`, taken so one gap
+    /// is one sentence), and the honest client is the one that wakes the session for it: a note
+    /// nobody rings for is a mailbox, which is the thing this whole file exists not to be.
+    ///
+    /// It rings **once per gap and never per event**, so the cost rule the tag agents are built on
+    /// (`wake::push` for a comparison, `bell()` for a judgement) is not broken by it: a reconnect is
+    /// a rare event, and the number in the sentence is what the model acts on.
+    fn note_gap(&self) {
+        let (count, since_ms) = self.client.take_missed();
+        if count == 0 {
+            return;
+        }
+        wake::push(
+            &self.session,
+            wake::missed_line(count, since_ms, letibot_room::server::now_ms()),
+        );
+        (self.bell)(&self.session);
+    }
+
     /// **What the pane is told about the restart** — whether this host may ask for one, why not
     /// when it may not, and the note the last one left.
     fn restart_view(&self) -> RestartView {
@@ -426,13 +461,63 @@ impl SessionRoom {
     }
 
     /// One verb, and the sentence a model reads back.
+    ///
+    /// **`claim` acknowledges itself** — firecode's third rule, *acknowledge before acting*, because
+    /// silence reads as absence: from the queue, a claim with no word on it is indistinguishable
+    /// from a session that took the item and died. The room already has the field (`Claim::waiting`,
+    /// the shape a reminder is drawn from), so the word is one more frame on a connection that is
+    /// already open — and it is said HERE rather than left to the model, because a model at work is
+    /// precisely the one that will not think about the queue's bookkeeping.
+    ///
+    /// A refusal of the acknowledgement is not a refusal of the claim: the claim stands, and the
+    /// sentence says which half landed. A model told *you hold #7* and then *the room was not told
+    /// what it is for* can act; one told only the first would believe the queue could see it.
     pub fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
         let request = request_of(verb, args)?;
+        let acknowledges = matches!(verb, "claim" | "claim_item");
         let response = self
             .client
             .request(&request)
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
-        answer_sentence(&response, &self.session)
+        let said = answer_sentence(&response, &self.session)?;
+        if !acknowledges {
+            return Ok(said);
+        }
+        let Response::Claimed { item, .. } = &response else {
+            return Ok(said);
+        };
+        let doing = args.get("text").and_then(|v| v.as_str()).unwrap_or("");
+        Ok(match self.ack(item.id, doing) {
+            Ok(what) => format!("{said} — and it is on the room, before the work: {what}"),
+            Err(why) => format!(
+                "{said}, but saying what it is for did not reach the room ({why}) — the claim \
+                 itself stands, so the item is not lost, but nobody queued behind you can see what \
+                 you are doing with it"
+            ),
+        })
+    }
+
+    /// **"Seen, doing X", on the room** — the sentence [`SessionRoom::call`] adds to a claim.
+    ///
+    /// `doing` is the caller's own words when it gave any (`claim` accepts the `text` field the
+    /// `waiting` verb documents), and a bare *working on it* otherwise: a claim whose holder said
+    /// nothing is still better answered than one that never spoke, and the room's reminder shape
+    /// wants a sentence either way.
+    fn ack(&self, item: u64, doing: &str) -> Result<String, String> {
+        let doing = doing.trim();
+        let text = if doing.is_empty() {
+            format!("seen #{item}; working on it")
+        } else {
+            format!("seen #{item}: {doing}")
+        };
+        self.client
+            .request(&Request::Waiting {
+                id: request_id(&format!("ack-{item}")),
+                item,
+                text: text.clone(),
+            })
+            .map(|_| text)
+            .map_err(|e| e.to_string())
     }
 
     /// **Every reminder the room owes, as data rather than as a sentence.**
@@ -510,6 +595,14 @@ impl RoomFeed for SessionRoom {
             .client
             .request(&frame)
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
+        // **A claim made by a key acknowledges itself too** — firecode's third rule is about the
+        // act, not about who performed it: a person who takes a row and walks off is the same
+        // silence to the queue as a model that does.
+        if let Response::Claimed { item, .. } = &response
+            && verb == "claim"
+        {
+            let _ = self.ack(item.id, "");
+        }
         // **And re-read at once**, so the frame the person sees next is the state their key made
         // — the reader thread would catch up within a second, and a second of *nothing happened* is
         // the one thing a key must never look like.

@@ -2091,6 +2091,28 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
+        // **Then the room, at the boundary a running turn actually reaches** — firecode's first
+        // rule, *listen before you work*.
+        //
+        // A room event becomes a sentence on the connection's own thread (`crate::room::wake`) and
+        // `Harness::wake` reads that queue between turns. That is one door, and it is the wrong one
+        // for a session in the middle of a long turn: the message that says *`s-b` claimed the tag
+        // you were about to take* arrives after the work it would have changed. MEASURED 2026-10-31
+        // (branch `agent/the-bell-per-client`): `try_next` had five sources and none of them was the
+        // room, so a room note waited for the turn to end while the engine was polling this function
+        // every step boundary.
+        //
+        // **It is the same queue, taken by whichever door gets there first** — `wake::take` empties
+        // it — so a note is delivered exactly once, mid-turn or between turns, and no bookkeeping is
+        // needed to keep the two from both speaking.
+        let room = crate::room::wake::take(&self.hub.session_id());
+        if !room.is_empty() {
+            let text = room.join("\n\n");
+            if let Some(t) = &self.trail {
+                t.say(Speaker::Agent, &text, Some(Instant::now()));
+            }
+            return Some(SteeringMessage::normal(text));
+        }
         // Then a background job or subagent of THIS session's own that has ended. It is
         // here, above the monitors, because the monitors block below returns early when
         // this session has no monitor registry — and a read-only seat that can only

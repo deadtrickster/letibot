@@ -36,7 +36,7 @@
 //! and *restarted empty* cannot be read as the same thing. There is no store to be empty: an
 //! in-memory room is empty at every start, and it says so rather than looking quiet.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -96,6 +96,22 @@ struct Inner {
     stop: AtomicBool,
     /// How many connections have been served since the start — the pane's *is anybody here*.
     served: AtomicU64,
+    /// **The events this room addressed to a session that had no connection** — the count and the
+    /// first of them, per session, taken (and cleared) by that session's next `Hello`.
+    ///
+    /// It exists because the room keeps no log: an event routed to nobody is gone, and a session
+    /// that reconnects is owed the fact that it was away rather than a `Welcome` identical to a
+    /// session that had never left. See `wire`'s version-4 note.
+    missed: Mutex<BTreeMap<String, Missed>>,
+}
+
+/// **How long a session was out of earshot, and how much it missed while it was** — see
+/// [`Inner::missed`]. `since_ms` is the FIRST of them, so a client can say how wide the gap was
+/// rather than only how deep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Missed {
+    count: u64,
+    since_ms: u64,
 }
 
 /// **A handle to a running server** — what the coordinator's own threads use: the tie-breaker reads
@@ -150,6 +166,7 @@ impl Server {
                 arbiter: Mutex::new(None),
                 agents: Mutex::new(None),
                 lease: Mutex::new(None),
+                missed: Mutex::new(BTreeMap::new()),
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
             }),
@@ -419,7 +436,20 @@ impl Server {
             ruling_in
         };
         match &mut answer.response {
-            Response::Welcome { identity, .. } => *identity = self.identity_at(&room, now),
+            Response::Welcome {
+                identity,
+                missed,
+                missed_since_ms,
+                ..
+            } => {
+                *identity = self.identity_at(&room, now);
+                // **The gap this session just came back from**, taken as the `Hello` is answered:
+                // the frame that says *you are connected* is the only one that can say *and here
+                // is what happened while you were not*.
+                let was = self.take_missed(&who.session);
+                *missed = was.count;
+                *missed_since_ms = was.since_ms;
+            }
             Response::Room {
                 identity,
                 arbiter,
@@ -760,6 +790,19 @@ impl Server {
     /// * **the arbiter**, for every event and from every room, because a question is addressed to it
     ///   and it is never a poster. It is one session of the box's own room, so this is the line that
     ///   lets it hear a project it is not in — and `Question::project` is what tells it which.
+    ///
+    /// **And the audience is counted before it is written to.** A member that has no connection is
+    /// a bell that rang where nobody was, and the room owes that session the fact of it: the count
+    /// goes into [`Inner::missed`] and the next `Hello` carries it back (`wire`'s version-4 note).
+    /// Counting here rather than at each verb is what makes it one rule: every event this room ever
+    /// produces is routed by this function, so no event can be lost silently — a dropped connection
+    /// mid-`route`, a session between two daemons, and a tag agent nobody has seated yet are the
+    /// same fact and get the same number.
+    ///
+    /// **The count is per ROOM and keyed by SESSION**, which is the pair this function has: the
+    /// audience is derived from `project`'s queue, so a session is told about the gap in the room
+    /// it was routed in — and the arbiter, whose connection is in the box's room and whose audience
+    /// membership is every room's, is the one session that hears all of them.
     fn route(&self, project: &str, events: &[Event]) {
         if events.is_empty() {
             return;
@@ -774,6 +817,9 @@ impl Server {
             .filter(|c| c.project == project)
             .cloned()
             .collect();
+        // **The arbiter's own connection, which is in the BOX's room** and hears every project's
+        // events — a question is addressed to it and it is never a poster, so without this the one
+        // session that must rule on a project it is not in would be a room it cannot hear.
         let boxed: Vec<Arc<Conn>> = self
             .inner
             .conns
@@ -783,17 +829,25 @@ impl Server {
             .filter(|c| arbiter.as_deref() == Some(c.who.session.as_str()) && c.project != project)
             .cloned()
             .collect();
-        if conns.is_empty() && boxed.is_empty() {
-            return;
-        }
+        // **Who is listening, by session.** A set because the audience below is a set too: a
+        // session that is both a poster and the holder is one bell, and one count.
+        let here: BTreeSet<&str> = conns
+            .iter()
+            .chain(boxed.iter())
+            .map(|c| c.who.session.as_str())
+            .collect();
+        let now = now_ms();
+        // **There is no early return for a room nobody is connected to**, and that is the bell's
+        // whole rule: an audience with no connection is the case the count exists for, so it is
+        // derived and counted whether or not there is anybody to write to.
         for event in events {
-            let audience = self.with_room(project, |room| {
+            let audience: BTreeSet<String> = self.with_room(project, |room| {
                 let tag = if event.tag().is_empty() {
                     room.item(event.item()).map(|i| i.tag.clone())
                 } else {
                     Some(event.tag().to_string())
                 };
-                let mut who: Vec<String> = match &tag {
+                let mut who: BTreeSet<String> = match &tag {
                     Some(tag) => room
                         .queue(tag)
                         .into_iter()
@@ -802,7 +856,7 @@ impl Server {
                                 .chain(i.holder().map(str::to_string))
                         })
                         .collect(),
-                    None => Vec::new(),
+                    None => BTreeSet::new(),
                 };
                 who.extend(event.named().into_iter().map(str::to_string));
                 // **And the tag's own agent**, which is a member of every queue under that tag and
@@ -818,14 +872,29 @@ impl Server {
                         .as_deref()
                         .and_then(|t| crate::tag_session(&crate::lease::host_key(), t))
                 {
-                    who.push(agent);
+                    who.insert(agent);
+                }
+                // The arbiter hears everything, so it is an audience member like any other — and
+                // a room whose arbiter is not connected has missed every event, which is exactly
+                // the fact a reconnected arbiter should be told.
+                if let Some(arbiter) = &arbiter {
+                    who.insert(arbiter.clone());
                 }
                 who
             });
+            // **The bell rang where nobody was** — counted for every audience member with no
+            // connection, before anything is written, so a session that comes back is told the
+            // size of the gap instead of a `Welcome` a session that was never away also gets.
+            for session in &audience {
+                if !here.contains(session.as_str()) {
+                    self.count_missed(session, now);
+                }
+            }
+            // **The arbiter is written to through `boxed`**, because its connection is in another
+            // room; it is in `audience` like every other member (the closure above inserts it), so
+            // this one test covers both lists.
             for conn in conns.iter().chain(boxed.iter()) {
-                let mine = audience.iter().any(|s| *s == conn.who.session)
-                    || arbiter.as_deref() == Some(conn.who.session.as_str());
-                if !mine {
+                if !audience.contains(&conn.who.session) {
                     continue;
                 }
                 let _ = write_to(
@@ -836,6 +905,32 @@ impl Server {
                 );
             }
         }
+    }
+
+    /// **One event was addressed to a session that is not here** — see [`Server::route`].
+    fn count_missed(&self, session: &str, now: u64) {
+        let mut missed = self.inner.missed.lock().expect("the missed lock");
+        let entry = missed.entry(session.to_string()).or_insert(Missed {
+            count: 0,
+            since_ms: now,
+        });
+        entry.count += 1;
+    }
+
+    /// **What this session missed, and forget it** — the `Hello`'s half of
+    /// [`Server::count_missed`]. Taking rather than reading is the whole of the design: the number
+    /// is a statement about the gap that just ended, and a client told the same gap twice would
+    /// think the room had gone quiet a second time.
+    fn take_missed(&self, session: &str) -> Missed {
+        self.inner
+            .missed
+            .lock()
+            .expect("the missed lock")
+            .remove(session)
+            .unwrap_or(Missed {
+                count: 0,
+                since_ms: 0,
+            })
     }
 }
 
