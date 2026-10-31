@@ -2,7 +2,7 @@
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, row_strings, trim_to};
+use crate::ui::render::{RenderConfig, trim_to};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;

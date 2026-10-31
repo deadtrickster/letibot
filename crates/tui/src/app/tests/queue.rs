@@ -615,7 +615,7 @@ fn the_edge_alarms_on_an_unjudged_target_and_clears_when_it_is_green() {
     snap.targets[0].state = "green".into();
     a.apply(queue_frame(snap));
     let rows = a.screen(160, 24);
-    let screen = rows.join("\n");
+    let _screen = rows.join("\n");
     assert!(
         !edge_row(&rows).contains(" red") && !edge_row(&rows).contains("in review"),
         "green clears the alarm and the moot red-tip review: {:?}",

@@ -5,7 +5,7 @@
 
 use super::bindings::Act;
 use super::*;
-use crate::ui::panes::queue::{QRow, Selected, Verb, verb_moves};
+use crate::ui::panes::queue::{Selected, Verb, verb_moves};
 use letibot_plugin::pane::Act as RowAct;
 use std::ops::ControlFlow;
 

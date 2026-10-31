@@ -850,7 +850,7 @@ fn the_decode_line_does_not_repeat_the_prompts_cache_numbers() {
             },
         },
     )));
-    let line = a.turn_status(120);
+    let _line = a.turn_status(120);
     // The header is where those numbers live.
     let header = a.header_line(200);
     assert!(header.contains("41.2k ctx"), "{header}");

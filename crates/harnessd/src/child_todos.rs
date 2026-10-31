@@ -382,7 +382,6 @@ impl ChildTodos for ParentTodos {
 mod tests {
     use super::*;
 
-    use letibot_sessionlog::Hub;
     use letibot_sessionlog::registry::SessionWiring;
     use letibot_tokencore::store::{TodoItem, TodoStatus};
 

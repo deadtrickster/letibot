@@ -48,7 +48,7 @@ fn the_tools_description_names_the_cap_it_enforces() {
 /// own words.
 #[test]
 fn a_title_over_the_cap_is_refused_by_name_and_nothing_is_written() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let long = "x".repeat(TODO_TITLE_MAX + 1);
     let r = rt.invoke(
@@ -81,7 +81,7 @@ fn a_title_over_the_cap_is_refused_by_name_and_nothing_is_written() {
 /// that passes is the row the model gets back.
 #[test]
 fn a_title_at_the_cap_is_written() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let exact = "y".repeat(TODO_TITLE_MAX);
     let r = rt.invoke(
@@ -100,7 +100,7 @@ fn a_title_at_the_cap_is_written() {
 /// model for anything long, so it has to be the thing that actually passes.
 #[test]
 fn a_long_detail_after_the_separator_is_not_the_title() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let content = format!("fix the flaky test — {}", "d".repeat(TODO_TITLE_MAX * 3));
     let r = rt.invoke(
@@ -126,7 +126,7 @@ fn a_long_detail_after_the_separator_is_not_the_title() {
 #[test]
 fn a_row_written_before_the_cap_can_still_be_restated_and_moved() {
     let legacy = "L".repeat(TODO_TITLE_MAX * 2);
-    let (mut rt, board) = runtime_with(vec![TodoItem {
+    let (rt, board) = runtime_with(vec![TodoItem {
         content: legacy.clone(),
         status: TodoStatus::Pending,
         by: TodoBy::Model,
@@ -165,7 +165,7 @@ fn a_row_written_before_the_cap_can_still_be_restated_and_moved() {
 #[test]
 fn a_parents_target_write_follows_the_same_cap() {
     let child = Arc::new(TodoBoard::new(Vec::new()));
-    let (mut rt, own, _fake) = children_runtime(child.clone());
+    let (rt, own, _fake) = children_runtime(child.clone());
     let mut sink = RecordingToolSink::new();
 
     let long = "z".repeat(TODO_TITLE_MAX + 1);

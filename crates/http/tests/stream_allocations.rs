@@ -14,7 +14,7 @@
 //! per-CHUNK costs, and one frame per chunk is the real shape of an SSE response.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 
 mod alloc_stats {
     use std::alloc::{GlobalAlloc, Layout, System};

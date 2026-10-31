@@ -1071,7 +1071,7 @@ fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     let mut features = rano::term::Features::default();
     features.clipboard = true;
     a.set_features(features);
-    let screen = a.screen(100, 40);
+    let _screen = a.screen(100, 40);
     let (y, _) = a.file_rows[0].clone();
 
     // A press and a release with no motion between them: the edit row's click, the popup.

@@ -239,7 +239,7 @@ fn a_target_write_reaches_the_child_and_not_this_board() {
         "the child's step",
         TodoStatus::InProgress,
     )]));
-    let (mut rt, own, _fake) = children_runtime(child);
+    let (rt, own, _fake) = children_runtime(child);
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -275,7 +275,7 @@ fn a_target_write_reaches_the_child_and_not_this_board() {
 #[test]
 fn the_target_paths_own_refusals_are_by_name() {
     let child = Arc::new(TodoBoard::new(Vec::new()));
-    let (mut rt, own, _fake) = children_runtime(child.clone());
+    let (rt, own, _fake) = children_runtime(child.clone());
     let mut sink = RecordingToolSink::new();
 
     // `target` and `operator` in one call: two boards' concerns, refused together.
@@ -336,7 +336,7 @@ fn the_target_paths_own_refusals_are_by_name() {
 /// honest answer, rather than a write quietly aimed at this session's own board.
 #[test]
 fn a_target_with_no_children_behind_it_is_refused_by_name() {
-    let (mut rt, own) = runtime();
+    let (rt, own) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",

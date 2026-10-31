@@ -137,7 +137,7 @@ impl HeadClient {
         caps: Caps,
     ) -> Result<(HeadClient, FrameReader<UnixStream>), ClientError> {
         let stream = UnixStream::connect(path.as_ref())?;
-        let mut reader = FrameReader::new(stream.try_clone()?);
+        let reader = FrameReader::new(stream.try_clone()?);
         let mut writer = FrameWriter::new(stream);
         writer.write(&ClientFrame::Attach {
             protocol_version: PROTOCOL_VERSION,

@@ -54,4 +54,4 @@ pub(crate) use rano::agent::screens::ATTACH_IMPATIENT;
 /// The cat's frames — rano's (`rano::agent::loading`), one copy for the attach screen and the
 /// fill and compaction rows — named here for the tests that pin their width and their walk.
 #[cfg(test)]
-pub(crate) use rano::agent::loading::{CAT_FRAMES, CAT_SLOT, cat_frame};
+pub(crate) use rano::agent::loading::{CAT_FRAMES, CAT_SLOT};

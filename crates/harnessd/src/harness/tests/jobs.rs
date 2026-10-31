@@ -317,7 +317,6 @@ fn a_redirected_jobs_window_is_the_tail_of_its_file() {
 // and the only one that can prove the fixture is the operator's measurement.
 mod job_tail {
     use super::*;
-    use letibot_tools::ProcessHost as _;
     use letibot_tools::exec::{HostProcesses, ScopeKind, SpawnRequest};
     use std::time::Duration;
 

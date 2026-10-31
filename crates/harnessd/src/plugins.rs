@@ -4802,7 +4802,6 @@ mod tests {
     /// broken watch without deleting it.
     #[test]
     fn a_trapping_condition_layer_falls_down() {
-        use letibot_tools::exec::monitor::Condition as _;
         use letibot_tools::exec::plugin_condition::PluginConditions as _;
         let root = tempdir("condition-trap");
         let table = Table::new();

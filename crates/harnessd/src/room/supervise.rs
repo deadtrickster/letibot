@@ -39,7 +39,7 @@
 //! that wants to record *why* it was asked has it without a second channel. The same frame is what
 //! a test asserts on: a control whose act could not be observed is a control nobody can review.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// **How long one launcher verb may take.** The launcher's own stop waits ten seconds for the

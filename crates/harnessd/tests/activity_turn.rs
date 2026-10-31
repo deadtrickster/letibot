@@ -250,7 +250,7 @@ impl Fake {
         std::thread::spawn(move || {
             let mut turn = 0usize;
             for conn in listener.incoming() {
-                let Ok(mut conn) = conn else { continue };
+                let Ok(conn) = conn else { continue };
                 // The request is drained and discarded: what this fake answers is the script, and a
                 // provider that answered from the conversation would be a second model.
                 let _ = read_request(&conn);

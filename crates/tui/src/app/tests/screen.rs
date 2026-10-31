@@ -57,7 +57,7 @@ fn the_window_title_names_the_session_and_follows_a_rename() {
 /// the left-aligned bar had, so a narrow screen loses the same end it always did.
 #[test]
 fn the_keymap_line_is_centred() {
-    let mut a = app();
+    let a = app();
     for w in [40usize, 60, 80, 100, 120, 210] {
         let bar = a.hint_bar(w);
         let left = bar.chars().take_while(|c| *c == ' ').count();

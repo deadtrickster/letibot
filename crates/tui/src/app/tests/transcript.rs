@@ -6002,7 +6002,7 @@ fn the_counts_land_on_a_sentence_that_fills_its_line() {
             1,
             "no marker at all at {width} columns:\n{screen}"
         );
-        let at = screen
+        let _at = screen
             .lines()
             .position(|l| l.contains("[3 tool calls]"))
             .unwrap_or_else(|| panic!("the counts are missing at {width} columns:\n{screen}"));

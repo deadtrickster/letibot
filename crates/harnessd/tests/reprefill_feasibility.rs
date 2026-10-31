@@ -50,7 +50,6 @@
 
 use letibot_tokencore::control::{resolve, tokenize_spans};
 use letibot_tokencore::store::live_view::LiveView;
-use letibot_tokencore::vocab::Vocab;
 use letibot_transcript::TranscriptItem;
 
 fn env_path(var: &str, fallback: String) -> std::path::PathBuf {

@@ -32,7 +32,6 @@
 //!    `Bye` is published by the connection thread before the worker has ended (that half is
 //!    `crates/tui/tests/stop_daemon.rs`'s).
 
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};

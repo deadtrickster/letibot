@@ -217,7 +217,7 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
     let head = hub.attach("tui", "dead", Caps::default(), 0);
 
     // Each door: spend the sweep first (what the idle arm does), run the door, check the list.
-    let mut door = |name: &str, sessions: &mut Sessions<'_>, run: &dyn Fn(&mut Sessions<'_>)| {
+    let door = |name: &str, sessions: &mut Sessions<'_>, run: &dyn Fn(&mut Sessions<'_>)| {
         sessions.sweep_abandoned_calls();
         assert!(
             sessions.sweep_due_at().is_none(),

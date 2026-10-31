@@ -139,7 +139,7 @@ fn a_postponed_row_is_marked_in_what_the_model_is_shown() {
         "the mark's meaning has to be in the reply, not only in the mark: {shown}"
     );
     // The state is the OPERATOR's, so the word is not one this tool takes.
-    let (mut rt, _board) = runtime();
+    let (rt, _board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -194,7 +194,7 @@ fn a_cancelled_row_is_marked_and_the_word_is_not_the_models() {
         "the mark's meaning has to be in the reply, not only in the mark: {shown}"
     );
     // The state is the OPERATOR's, so the word is not one this tool takes.
-    let (mut rt, _board) = runtime();
+    let (rt, _board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -477,7 +477,7 @@ fn the_union_is_two_contiguous_blocks_so_a_half_is_a_suffix_not_a_scatter() {
 /// refuses.
 #[test]
 fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     board.set_operator(vec![TodoItem {
         content: "plain quoting".into(),
         status: TodoStatus::Pending,
@@ -537,7 +537,7 @@ fn an_operator_block_inside_a_todos_entry_is_refused_by_name() {
 /// not about the model touching the operator's rows at all.
 #[test]
 fn an_unknown_field_other_than_operator_is_refused_too() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     board.set_operator(vec![TodoItem {
         content: "a row".into(),
         status: TodoStatus::Pending,
@@ -571,7 +571,7 @@ fn an_unknown_field_other_than_operator_is_refused_too() {
 
 #[test]
 fn a_row_the_operator_wrote_is_moved_by_its_own_words() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     board.set_operator(vec![
         TodoItem {
             content: "restart the daemon".into(),
@@ -900,7 +900,7 @@ fn the_stores_union_is_split_back_into_its_two_halves() {
 /// that would have meant a removal.
 #[test]
 fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -969,7 +969,7 @@ fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
 
 #[test]
 fn a_missing_list_a_bad_status_and_an_empty_entry_all_refuse_by_name() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke("t1", &call("{}"), &mut sink);
     assert!(

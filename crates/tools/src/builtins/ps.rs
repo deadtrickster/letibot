@@ -213,7 +213,7 @@ mod tests {
         reg.register(Box::new(Ps)).unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let rt = ToolRuntime::new(reg, Box::new(backend));
         rt.invoke(
             "t",
             &ToolCall {

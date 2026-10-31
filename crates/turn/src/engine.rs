@@ -426,7 +426,7 @@ impl TurnEngine {
         let mut out = String::new();
         let mut run: Vec<TokenId> = Vec::new();
         let mut images = 0usize;
-        let mut flush = |run: &mut Vec<TokenId>, out: &mut String| {
+        let flush = |run: &mut Vec<TokenId>, out: &mut String| {
             if !run.is_empty() {
                 out.push_str(&decoder.decode(run));
                 run.clear();

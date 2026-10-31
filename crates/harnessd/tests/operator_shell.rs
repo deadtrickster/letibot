@@ -26,11 +26,11 @@ use std::time::{Duration, Instant};
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::{Dialect, Harness, Parts};
-use letibot_sessionlog::client::{HeadClient, Inbound, pump};
+use letibot_sessionlog::client::{HeadClient, pump};
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::protocol::{Caps, ClientFrame, ServerFrame};
-use letibot_sessionlog::server::{ServerHandle, serve_registry};
+use letibot_sessionlog::server::serve_registry;
 use letibot_sessionlog::{Registry, SessionWiring, SnapshotItem};
 use letibot_tools::{AdjudicationDecision, AdjudicationRequest, Adjudicator};
 use letibot_transcript::{CallOrigin, Speaker, TranscriptItem};
@@ -428,7 +428,7 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     let server = serve_registry(registry, &socket).expect("bind");
     // The harness borrows `Parts` for its life, and the runner thread below takes
     // the harness while this thread keeps `p` — both alive to the end of the test.
-    let mut h = h;
+    let h = h;
 
     // The two frames the double sends, serialized here so the double cannot drift.
     let attach = serde_json::to_string(&ClientFrame::Attach {

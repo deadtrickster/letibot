@@ -87,7 +87,7 @@ impl App {
     pub(crate) fn track_gate_tails(&mut self) {
         let now = self.queue_now();
         let mut fresh: std::collections::HashMap<String, GateTail> = Default::default();
-        let mut note =
+        let note =
             |fresh: &mut std::collections::HashMap<String, GateTail>, key: String, tail: &str| {
                 let since_ms = match self.gate_tails.get(&key) {
                     Some(old) if old.text == tail => old.since_ms,

@@ -2,7 +2,7 @@
 //! drawn by `rano::agent::notes` from the notes this head holds.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, row_strings, trim_to};
+use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::notes::{self as view, Listed, NoteClass, NotesList, Settled};
 
 impl App {

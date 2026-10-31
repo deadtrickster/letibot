@@ -1200,7 +1200,7 @@ fn the_gate_card_says_how_long_there_is_and_what_silence_does() {
     // **No deadline, nothing drawn.** `null` is §11.5's *wait forever* — a policy,
     // not missing information — so there is no silence for a clause to describe and
     // no countdown to draw. §13.2b, answered the other way round from `unreadable 0`.
-    let mut a = app();
+    let a = app();
     let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
     d.deadline = None;
     let bare = a.decision_lines(&d, 200).join("\n");
@@ -1290,7 +1290,7 @@ fn the_row_count_is_the_kinds_own_field_in_both_directions() {
 fn the_card_names_the_files_the_action_would_write() {
     use letibot_sessionlog::event::{OptionKind, WriteTarget};
 
-    let mut a = app();
+    let a = app();
     // The operator's own case: a script that rewrites one file, approved as an exec.
     let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
     d.access = "exec".into();

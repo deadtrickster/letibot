@@ -192,7 +192,7 @@ fn a_session_that_never_chose_resumes_on_the_daemon_default() {
     let path = dir.path.join("sessions.db");
     let session_id = "provider-unswitched";
     {
-        let s = Store::open(&path).expect("the store opens");
+        let _s = Store::open(&path).expect("the store opens");
         seeded_store(&path, session_id);
         // No provider_choice written: NULL is the state.
     }

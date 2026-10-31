@@ -642,7 +642,7 @@ fn one_worker_serving_two_sessions_takes_them_in_the_order_they_were_prompted() 
 #[test]
 fn a_stop_closes_the_registry_even_with_a_command_queued_and_nobody_draining() {
     let (reg, server) = start("stopnow");
-    let a = reg.get("a").unwrap();
+    let _a = reg.get("a").unwrap();
 
     let (mut client, _hello, reader) =
         HeadClient::attach(server.path(), "a", 0, "tui", "dead", Caps::default()).unwrap();

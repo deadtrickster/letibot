@@ -3453,7 +3453,6 @@ mod tests {
 #[cfg(test)]
 mod mode_steering_tests {
     use super::*;
-    use crate::testing::*;
 
     /// **Looking is not taking.**
     ///

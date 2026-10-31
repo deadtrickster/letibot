@@ -658,7 +658,7 @@ fn a_peek_can_ask_for_rows_and_gets_the_session_it_names() {
 #[test]
 fn a_peek_at_an_unknown_session_is_rejected_by_name() {
     let registry = Registry::new();
-    let parent = registry
+    let _parent = registry
         .create("s-parent", "parent", SessionWiring::default())
         .expect("create");
 

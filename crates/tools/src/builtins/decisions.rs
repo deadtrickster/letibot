@@ -661,7 +661,7 @@ mod tests {
             .unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let b = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(b));
+        let rt = crate::runtime::ToolRuntime::new(reg, Box::new(b));
         rt.invoke(
             "t",
             &letibot_transcript::ToolCall {
@@ -774,7 +774,7 @@ mod tests {
             .unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let b = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = crate::runtime::ToolRuntime::new(reg, Box::new(b));
+        let rt = crate::runtime::ToolRuntime::new(reg, Box::new(b));
         let r = rt.invoke(
             "t",
             &letibot_transcript::ToolCall {

@@ -521,7 +521,7 @@ fn the_other_doors_into_the_notes_dir_are_refused_and_the_tool_still_writes() {
 #[test]
 fn read_reaches_the_box_wide_dir_and_a_miss_lists_what_exists() {
     let mut h = writable_harness();
-    let (ws, global) = h.notes_dirs();
+    let (_ws, global) = h.notes_dirs();
     std::fs::create_dir_all(&global).expect("global dir");
     std::fs::write(global.join("box-rules.md"), "box-wide rule\n").expect("fixture");
     let by_path = format!(

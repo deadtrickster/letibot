@@ -8,7 +8,7 @@ use super::*;
 /// break every edge into it with nothing said.
 #[test]
 fn a_plan_writes_its_edges_and_the_reply_shows_them() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -48,7 +48,7 @@ fn a_plan_writes_its_edges_and_the_reply_shows_them() {
 /// store's from being two spellings a reader has to know.
 #[test]
 fn a_need_may_be_written_in_the_tagged_form() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -79,7 +79,7 @@ fn a_need_may_be_written_in_the_tagged_form() {
 /// model writing a kind nobody can answer is told so rather than silently dropped.)
 #[test]
 fn a_need_of_a_kind_this_build_does_not_know_is_refused_by_name() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -121,7 +121,7 @@ fn a_need_of_a_kind_this_build_does_not_know_is_refused_by_name() {
 /// never be a child's, so there is exactly one shape here and it has to be the tagged one.
 #[test]
 fn a_plan_can_wait_on_a_child_by_its_session_id() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -183,7 +183,7 @@ fn a_plan_can_wait_on_a_child_by_its_session_id() {
 /// for the same reason a child's session id is: it is what `job_output` and `job_kill` are given.
 #[test]
 fn a_plan_can_wait_on_a_job_by_its_handle() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -261,7 +261,7 @@ fn a_plan_can_wait_on_a_job_by_its_handle() {
 /// one level down: an edge that names nothing is not an edge.
 #[test]
 fn an_empty_need_and_a_malformed_needs_are_refused_by_name() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -1042,7 +1042,7 @@ fn the_sticky_choice_moves_on_when_the_named_row_becomes_blocked() {
 #[test]
 fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
     let child = Arc::new(TodoBoard::new(vec![]));
-    let (mut rt, own, _fake) = children_runtime(child);
+    let (rt, own, _fake) = children_runtime(child);
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",
@@ -1091,7 +1091,7 @@ fn a_child_named_in_needs_by_its_slug_is_stored_as_its_id() {
 /// with it later"* is a row waiting on a one-shot timer.
 #[test]
 fn a_row_waits_on_a_monitor_until_it_ends() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     let r = rt.invoke(
         "t1",

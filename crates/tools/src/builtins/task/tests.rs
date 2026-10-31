@@ -319,7 +319,7 @@ fn task_result_tells_a_working_child_from_an_idle_one_and_a_wedged_one() {
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
         let mut reg = Registry::new();
         reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let rt = ToolRuntime::new(reg, Box::new(backend));
         rt.invoke(
             "t1",
             &letibot_transcript::ToolCall {
@@ -606,7 +606,7 @@ fn a_child_finishing_enqueues_its_branch() {
         reg.register(Box::new(TaskStartTool::new(runner.clone())))
             .unwrap();
         reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend.clone()));
+        let rt = ToolRuntime::new(reg, Box::new(backend.clone()));
         let mut sink = crate::NullToolSink;
         let _ = rt.invoke(
             "t1",
@@ -1030,7 +1030,7 @@ fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
     let mut reg = Registry::new();
     reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
     let backend = crate::backend::HostBackend::new(&ws).unwrap();
-    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let r = rt.invoke(
         "t1",
@@ -1102,7 +1102,7 @@ fn the_placement_is_in_the_answer() {
     let mut reg = Registry::new();
     reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
     let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let r = rt.invoke(
         "t1",
@@ -1173,7 +1173,7 @@ fn the_main_tree_is_named_as_the_exception() {
     let mut reg = Registry::new();
     reg.register(Box::new(TaskStartTool::new(runner))).unwrap();
     let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let r = rt.invoke(
         "t1",
@@ -1451,7 +1451,7 @@ fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
         .unwrap();
     let d = crate::backend::tempdir::TempDir::new();
     let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let rt = ToolRuntime::new(reg, Box::new(backend));
     let mut sink = crate::NullToolSink;
     let mut call = |name: &str, args: &str| {
         rt.invoke(
@@ -1714,7 +1714,7 @@ fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
         reg.register(Box::new(TaskMessageTool::new(runner.clone())))
             .unwrap();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let rt = ToolRuntime::new(reg, Box::new(backend));
         let mut sink = crate::NullToolSink;
         rt.invoke(
             "t1",

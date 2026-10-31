@@ -10,7 +10,7 @@ use super::*;
 /// keeps every row it had.
 #[test]
 fn an_empty_list_is_refused_and_removes_nothing() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     rt.invoke(
         "t1",
@@ -51,7 +51,7 @@ fn an_empty_list_is_refused_and_removes_nothing() {
 /// would pass a count of `snapshot().len()` and fail here.
 #[test]
 fn a_quote_marks_exactly_one_row() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     rt.invoke(
         "t1",
@@ -119,7 +119,7 @@ fn a_quote_marks_exactly_one_row() {
 /// WRITTEN** — not the row, and not the `todos` beside it.
 #[test]
 fn a_quote_that_fits_no_row_is_refused_by_name() {
-    let (mut rt, board) = runtime();
+    let (rt, board) = runtime();
     let mut sink = RecordingToolSink::new();
     rt.invoke(
         "t1",
@@ -167,7 +167,7 @@ fn a_quote_that_fits_no_row_is_refused_by_name() {
 /// something else.
 #[test]
 fn a_quote_that_fits_two_rows_is_refused_naming_both() {
-    let (mut rt, board) = runtime_with(vec![
+    let (rt, board) = runtime_with(vec![
         TodoItem {
             content: "same words".into(),
             status: TodoStatus::Pending,

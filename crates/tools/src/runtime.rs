@@ -3018,7 +3018,7 @@ mod tests {
         reg.register(Box::new(CommandProbe { ran: ran.clone() }))
             .unwrap();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(RewritingGate {
+        let rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(RewritingGate {
             path: script.clone(),
             to: "print('swapped')\n".into(),
         }));
@@ -3053,7 +3053,7 @@ mod tests {
         reg.register(Box::new(CommandProbe { ran: ran.clone() }))
             .unwrap();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(AdmitGate));
+        let rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(AdmitGate));
         let mut sink = RecordingToolSink::default();
         let r = rt.invoke(
             "t1",
@@ -3171,7 +3171,7 @@ mod tests {
     fn a_read_only_tool_never_reaches_the_gate() {
         // Clause 4, as a control-flow fact rather than a promise: the gate panics
         // if it is consulted, and this call must not consult it.
-        let mut rt = runtime(Access::Read);
+        let rt = runtime(Access::Read);
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
         assert_eq!(r.outcome, ToolOutcome::Ok);
@@ -3186,7 +3186,7 @@ mod tests {
         .unwrap();
         let d = crate::backend::tempdir::TempDir::new();
         let backend = crate::backend::HostBackend::new(d.path()).unwrap();
-        let mut rt = ToolRuntime::new(reg, Box::new(backend));
+        let rt = ToolRuntime::new(reg, Box::new(backend));
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
         match r.outcome {
@@ -3202,7 +3202,7 @@ mod tests {
 
     #[test]
     fn an_unknown_tool_comes_back_with_the_list_and_the_nearest_name() {
-        let mut rt = runtime(Access::Read);
+        let rt = runtime(Access::Read);
         let mut sink = RecordingToolSink::new();
         let r = rt.invoke("t1", &call("probes", "{}"), &mut sink);
         assert!(r.payload.contains("probe"), "{}", r.payload);
@@ -3556,7 +3556,7 @@ mod tests {
 
     #[test]
     fn the_events_bracket_the_call() {
-        let mut rt = runtime(Access::Read);
+        let rt = runtime(Access::Read);
         let mut sink = RecordingToolSink::new();
         rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
         assert_eq!(sink.kinds(), vec!["ToolStarted", "ToolFinished"]);

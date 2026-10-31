@@ -850,7 +850,7 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
     let c = consulted.clone();
     let sink = Arc::new(RecordingDenialSink::default());
     let mut g = wired_gate(
-        move |b: &mut ModelBrief| {
+        move |_b: &mut ModelBrief| {
             c.fetch_add(1, Ordering::Relaxed);
             OracleAnswer::NotAuthorised {
                 why: "no witness".into(),
