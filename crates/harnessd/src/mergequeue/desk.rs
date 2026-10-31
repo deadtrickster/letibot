@@ -23,7 +23,7 @@ use letibot_tokencore::store::{
 };
 use letibot_tools::builtins::queue::QueueDesk;
 
-use super::gate::now_ms;
+use super::gate::{self, now_ms};
 use super::{git, notices, settings, verbs};
 
 /// **The repository a session's queue verbs are about, and its target** — the one `workspace`
@@ -208,6 +208,17 @@ const SHOWN_TAIL: usize = 3;
 /// The characters a row's own words may run to in a bounded answer.
 const SHOWN_EVIDENCE: usize = 200;
 
+/// **How recently a step's log must have grown for the line to say `tail moving`** — a build
+/// prints between crates and a test run prints between binaries, so a minute of silence is not a
+/// stall; a minute is long enough that a moving tail is news and short enough that a reader sees
+/// it in the same breath as the step.
+const TAIL_MOVING_MS: u64 = 60_000;
+
+/// **How long a step's log may stand still before the line says it may be stuck** — the same ten
+/// minutes the head's queue pane waits (`GATE_QUIET_MS`), because it is the same question about
+/// the same file, and two answers to it would be one too many.
+const TAIL_STILL_MS: u64 = 10 * 60 * 1000;
+
 /// **The states rows are counted in, in the queue's own order** — the flow, not the alphabet: what
 /// waits, what is running, what is parked on a person.
 const FLOW: [&str; 10] = [
@@ -374,7 +385,13 @@ fn served(store: &Store) -> Result<Vec<String>, String> {
 /// **`all` — one line per repository**, so the whole box fits in a screenful: which target is in
 /// what state, what is open, and whether anybody serves it. Detail is what the other two forms are
 /// for.
+///
+/// **A repository whose gate is running says so here too** — `letibot  GATING · step 3 of 4 ·
+/// 6m12s · 3 queued` — because the session that needs this most is the one in ANOTHER repository:
+/// it has no row for this gate and no reason to open one, and the fans it hears are this. The
+/// step and the clock only: the tail is the detail's, and this line is a screenful for the box.
 fn every(store: &Store) -> Result<String, String> {
+    let now = now_ms();
     let repos = served(store)?;
     let healths = store.target_healths().map_err(|e| e.to_string())?;
     let reviews = store.review_rows(None).map_err(|e| e.to_string())?;
@@ -390,10 +407,19 @@ fn every(store: &Store) -> Result<String, String> {
     }
     let mut out = format!("every repository ({header})\n");
     for (repo, name) in repos.iter().zip(short_names(&repos)) {
-        let state = match newest(&healths, repo) {
+        let health = newest(&healths, repo);
+        let mut state = match health {
             Some(h) => h.state.as_str().to_uppercase(),
             None => "no target".into(),
         };
+        if let Some(g) = health.and_then(running_now) {
+            state.push_str(&format!(
+                " · step {} of {} · {}",
+                g.step.max(1),
+                g.of.max(1),
+                dur_human(now.saturating_sub(g.started_ms))
+            ));
+        }
         let open = states_of(
             reviews
                 .iter()
@@ -582,15 +608,28 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
 
 /// **A repository's target, and the gate that failed on it** — the whole tail in the full shape
 /// (`None`), the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what was cut.
+///
+/// **A target whose gate is running says what it is doing, on its own line** (2026-11-01). The
+/// operator, hearing the fans and looking at a screen: *"nothing about gate — and the same for
+/// other sessions — gate is invisible"*. Everything about the running step was already in the
+/// snapshot and in a merge row's detail, and a detail is a click away — so a session in this
+/// repository, and a person reading its `status`, had no way to learn that the machine was
+/// working rather than stuck. This is the headline: which step, how long, and whether its output
+/// is moving. The tail itself stays the detail's business.
 fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
+    let now = now_ms();
     let mut out = String::new();
     for h in healths {
+        let running = running_now(h)
+            .map(|g| format!(" · {}", gate_words(&g, now)))
+            .unwrap_or_default();
         out.push_str(&format!(
-            "target `{}` in {}: {} at {}\n  {}\n",
+            "target `{}` in {}: {} at {}{}\n  {}\n",
             h.target,
             h.repository,
             h.state.as_str().to_uppercase(),
             short_sha(&h.sha),
+            running,
             h.evidence.lines().next().unwrap_or_default()
         ));
         if h.state == HealthState::Green {
@@ -616,6 +655,74 @@ fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
         }
     }
     out
+}
+
+/// **The gate `h`'s target is running, if it is running one** — the health row says whether a gate
+/// is on the tip, and the gate says which step. Two facts from two places, asked together so no
+/// caller can pair them wrongly.
+fn running_now(h: &TargetHealth) -> Option<gate::RunningGate> {
+    (h.state == HealthState::Gating)
+        .then(|| gate::running(&h.repository))
+        .flatten()
+}
+
+/// **The gate a target is running, in one clause** — which step of how many, how long it has been
+/// on it, and whether its output is still moving. The same three facts a merge row's detail gives
+/// at length, on the target's own line, because that line is where a person looks first and the
+/// detail is a click away. The tail itself is not here: a headline is not the whole story.
+fn gate_words(g: &gate::RunningGate, now: u64) -> String {
+    format!(
+        "step {} of {} · {} · {}",
+        g.step.max(1),
+        g.of.max(1),
+        dur_human(now.saturating_sub(g.started_ms)),
+        tail_words(g, now)
+    )
+}
+
+/// **Is the step's output moving?** — answered from ONE read, because the log's own mtime is when
+/// its last byte landed. The head's pane needs two snapshots to answer this; a `status` answer is
+/// one shot, and the file already carries the second half of the comparison.
+fn tail_words(g: &gate::RunningGate, now: u64) -> String {
+    let wrote = bytes_human(g.log_bytes);
+    let Some(at) = g.wrote_ms else {
+        return format!("{wrote} written");
+    };
+    let still = now.saturating_sub(at);
+    if still < TAIL_MOVING_MS {
+        format!("tail moving ({wrote})")
+    } else if still < TAIL_STILL_MS {
+        format!("tail moved {} ago ({wrote})", dur_human(still))
+    } else {
+        format!(
+            "tail still for {} — it may be stuck ({wrote})",
+            dur_human(still)
+        )
+    }
+}
+
+/// **A duration as a person reads it** — the shape the head's queue pane uses (`6m12s`), so a model
+/// reading `status` and a person reading the pane are told the same thing in the same words.
+fn dur_human(ms: u64) -> String {
+    if ms < 1_000 {
+        format!("{ms} ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m{:02}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
+/// **Bytes as a person reads them** — a step's output is thousands of them, and the exact count is
+/// a fact nobody acts on.
+fn bytes_human(n: u64) -> String {
+    if n < 1024 {
+        format!("{n} B")
+    } else if n < 1024 * 1024 {
+        format!("{} KiB", n / 1024)
+    } else {
+        format!("{} MiB", n / (1024 * 1024))
+    }
 }
 
 /// **The rows a bounded answer prints, worst first** — what is parked on a person, then what is
@@ -1261,5 +1368,202 @@ mod tests {
             "{full}"
         );
         assert!(!full.contains("+2 more"), "nothing is counted away: {full}");
+    }
+
+    // ===== The gate is visible where a person looks first (2026-11-01) =====
+    //
+    // The operator, twice in one minute: *"nothing about gate — and the same for other sessions —
+    // gate is invisible"*, then *"very nasty actually - fans just start spinning"*. The fans were
+    // the gate compiling on another box, the queue said `gating`, and nothing a session could read
+    // said WHICH STEP or for how long — the merge row's detail said it, and a detail is a click
+    // away, in a pane, on a row nobody had a reason to open.
+
+    /// A `RunningGate` as the gate's own read hands one back, with its clock and its log placed
+    /// where the test wants them.
+    fn a_gate(
+        step: usize,
+        of: usize,
+        ran_ms: u64,
+        bytes: u64,
+        wrote: Option<u64>,
+    ) -> gate::RunningGate {
+        gate::RunningGate {
+            command: "cargo test --offline --workspace --no-fail-fast".into(),
+            step,
+            of,
+            started_ms: 1_000_000,
+            tail: String::new(),
+            log_bytes: bytes,
+            wrote_ms: wrote.map(|ago| 1_000_000 + ran_ms - ago),
+        }
+    }
+
+    /// **The gate's clause is the three facts a merge row's detail carries, in one line** — which
+    /// step of how many, how long, and whether the output is moving. The exact words, so the two
+    /// readers of this line (a model's `status` and a person's eye) cannot drift apart.
+    #[test]
+    fn a_running_gates_clause_names_the_step_the_clock_and_the_moving_tail() {
+        let now = 1_000_000 + 372_000; // 6m12s in
+        let g = a_gate(3, 4, 372_000, 36 * 1024, Some(2_000));
+        assert_eq!(
+            gate_words(&g, now),
+            "step 3 of 4 · 6m12s · tail moving (36 KiB)"
+        );
+        // **A tail that has stood still is not called moving**, and the two bands are the pane's
+        // own: minutes of silence is a build between crates, ten of them is a step going nowhere.
+        let quiet = a_gate(3, 4, 372_000, 36 * 1024, Some(300_000));
+        assert_eq!(
+            tail_words(&quiet, now),
+            "tail moved 5m00s ago (36 KiB)",
+            "five minutes of silence is said, not hidden"
+        );
+        let stuck = a_gate(3, 4, 900_000, 36 * 1024, Some(700_000));
+        assert_eq!(
+            tail_words(&stuck, 1_000_000 + 900_000),
+            "tail still for 11m40s — it may be stuck (36 KiB)",
+            "past ten minutes the line stops short of a verdict it cannot support"
+        );
+        // **A log nothing can read is not a stall** — the bytes are said and the verdict withheld.
+        let unreadable = a_gate(1, 2, 4_000, 12, None);
+        assert_eq!(tail_words(&unreadable, 1_004_000), "12 B written");
+    }
+
+    /// **The target's line says the gate while it runs, and nothing about it when the target is
+    /// green** — the operator's *"gate is invisible"*, in the one place every session reads: the
+    /// default `status`, which is this session's own repository and a screenful of it.
+    #[test]
+    fn the_default_status_names_the_gates_step_and_not_when_the_target_is_green() {
+        let dir = TempDir::new("desk-gate");
+        let mine = a_repo(&dir.0, "mine", None);
+        let db = dir.0.join("sessions.db");
+        let store = Store::open(&db).unwrap();
+        let wt = dir.0.join("landing");
+        std::fs::create_dir_all(&wt).unwrap();
+        let log = dir.0.join("step.log");
+        std::fs::write(&log, "x".repeat(36 * 1024)).unwrap();
+        gate::watch(&wt, &mine);
+        gate::watch_step(
+            &wt,
+            "cargo test --offline --workspace --no-fail-fast",
+            3,
+            4,
+            &log,
+        );
+        let mut health = TargetHealth {
+            repository: mine.clone(),
+            target: "main".into(),
+            sha: "ec3cb01e8a6f4d2c9b1a".into(),
+            state: HealthState::Gating,
+            checked_ms: 1,
+            evidence: "gating `main`'s tip".into(),
+            gate_steps: vec![],
+        };
+        store.set_target_health(&health, "test").unwrap();
+        let desk = a_desk(&db, Path::new(&mine));
+
+        let said = desk.status(false, None).unwrap();
+        let line = said
+            .lines()
+            .find(|l| l.starts_with("target `main`"))
+            .unwrap_or_else(|| panic!("the target's line: {said}"));
+        assert!(
+            line.starts_with(&format!(
+                "target `main` in {mine}: GATING at ec3cb01e8a6f · step 3 of 4 · "
+            )),
+            "the state, the tip and the step: {line}"
+        );
+        assert!(
+            line.ends_with(" · tail moving (36 KiB)"),
+            "and whether the output is moving: {line}"
+        );
+        // **A headline, not the story** — the clause is bounded by its own words, so a long path
+        // is the only thing that can make this line long.
+        let clause = line.split(": ").nth(1).unwrap_or_default();
+        assert!(
+            clause.chars().count() < 100,
+            "the gate's clause is a headline: {clause:?}"
+        );
+        // **And `repository:` prints it too** — the third scope is the same target line, in full.
+        let full = desk.status(false, Some(".")).unwrap();
+        assert!(
+            full.contains("GATING at ec3cb01e8a6f · step 3 of 4 · ")
+                && full.contains("tail moving (36 KiB)"),
+            "the named scope carries the gate as well: {full}"
+        );
+
+        // **The same gate, judged green, says nothing about it** — the clause belongs to the
+        // state, not to a step entry left lying in the gate's own registry.
+        health.state = HealthState::Green;
+        health.evidence = "gating `main`'s tip".into();
+        store.set_target_health(&health, "test").unwrap();
+        let said = desk.status(false, None).unwrap();
+        let line = said
+            .lines()
+            .find(|l| l.starts_with("target `main`"))
+            .unwrap_or_else(|| panic!("the target's line: {said}"));
+        assert_eq!(
+            line,
+            format!("target `main` in {mine}: GREEN at ec3cb01e8a6f"),
+            "a green target's line is unchanged: {said}"
+        );
+        assert!(!said.contains("step 3 of 4"), "{said}");
+        drop(gate::step_guard(&wt));
+    }
+
+    /// **`all` carries it too, per repository** — the session that needs this most is the one in
+    /// ANOTHER repository: it has no row for this gate, no reason to open one, and the fans it
+    /// hears are this.
+    #[test]
+    fn all_says_which_step_another_repositorys_gate_is_on() {
+        let dir = TempDir::new("desk-gate-all");
+        let mine = a_repo(&dir.0, "mine", None);
+        let other = a_repo(&dir.0, "other", None);
+        let db = dir.0.join("sessions.db");
+        let store = Store::open(&db).unwrap();
+        let wt = dir.0.join("landing");
+        std::fs::create_dir_all(&wt).unwrap();
+        let log = dir.0.join("step.log");
+        std::fs::write(&log, "building\n").unwrap();
+        gate::watch(&wt, &mine);
+        gate::watch_step(&wt, "cargo test --offline --workspace", 3, 4, &log);
+        store
+            .set_target_health(
+                &TargetHealth {
+                    repository: mine.clone(),
+                    target: "main".into(),
+                    sha: "ec3cb01e8a6f4d2c9b1a".into(),
+                    state: HealthState::Gating,
+                    checked_ms: 1,
+                    evidence: "gating `main`'s tip".into(),
+                    gate_steps: vec![],
+                },
+                "test",
+            )
+            .unwrap();
+        a_review(&store, &mine, "r-mine", "waiting its turn", 10);
+        a_review(&store, &other, "r-other", "waiting its turn", 11);
+        // The session is in `other`: this is the reader the line exists for.
+        let desk = a_desk(&db, Path::new(&other));
+
+        let said = desk.status(true, None).unwrap();
+        let line = said
+            .lines()
+            .find(|l| l.starts_with("mine  "))
+            .unwrap_or_else(|| panic!("the other repository's line: {said}"));
+        assert!(
+            line.starts_with("mine  GATING · step 3 of 4 · ") && line.contains(" · 1 waiting"),
+            "the state, the step, its clock, then what is open: {line}"
+        );
+        assert!(
+            !line.contains("tail"),
+            "a screenful for the box keeps the headline, not the tail: {line}"
+        );
+        // And a repository whose target was never gated says exactly what it said before.
+        let quiet = said
+            .lines()
+            .find(|l| l.starts_with("other  "))
+            .unwrap_or_else(|| panic!("{said}"));
+        assert_eq!(quiet, "other  no target · 1 waiting · unserved", "{said}");
+        drop(gate::step_guard(&wt));
     }
 }
