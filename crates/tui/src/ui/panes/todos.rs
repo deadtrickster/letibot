@@ -502,6 +502,13 @@ fn need_words(n: &TodoNeed) -> String {
         TodoNeed::Child { id } => format!("child {}", clean_line(id)),
         TodoNeed::Job { handle } => format!("job {}", clean_line(handle)),
         TodoNeed::Monitor { name } => format!("monitor {}", clean_line(name)),
+        // **The room's item, by the number the `room` tool takes** — the edge the daemon's room
+        // pass puts on a `you hold …` row while the room is working on it, so the row is quiet on
+        // purpose and a person can see why.
+        TodoNeed::Room { item, working } => format!(
+            "room item #{item}{}",
+            if *working { " (the room is working on it)" } else { "" }
+        ),
         TodoNeed::Operator { question, options } => format!(
             "YOU — \"{}\" ({}) — enter on the row answers it",
             clean_line(question),

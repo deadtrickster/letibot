@@ -535,6 +535,94 @@ impl TodoBoard {
         n
     }
 
+    /// **The ROOM's rows, replaced — one per item the session holds, and the only door on this
+    /// board that can take one of the model's own rows away.**
+    ///
+    /// `rows` is `(item, row)` for every item this session holds, as the daemon's room pass last
+    /// read them from the room; an item that is not in it is one the session no longer holds, and
+    /// the row this pass wrote for it is removed here — the operator's *"retired when the item is"*.
+    /// It is the same shape [`TodoBoard::set_queue`] has and for the same argument: a room row is
+    /// not a record of work somebody decided to do, it is the ROOM seen from a session, and the
+    /// record of it is the room. So it does not break *"only i should be able to delete todo
+    /// items"* — that rule is about the model's plan, and this half is not a plan.
+    ///
+    /// **The rows go in the MODEL's half, because `by` is `Model`** — *"the row is the session's
+    /// own (`by: yours`)"*, so the nag says *yours* and the model may dispose of it with `update`.
+    /// What keeps that honest is [`room_items`]: this door removes only a row that carries a room
+    /// edge naming an item the pass no longer holds, so a row the model wrote about something else
+    /// is left exactly where it is.
+    ///
+    /// **Retirement is by the EDGE and not by a record of what was written**, and that is the half
+    /// that makes a restart work: `Harness::open` rebuilds the board from the store, so a pass in a
+    /// new process has written nothing and remembers nothing — and a `you hold …` row whose item was
+    /// finished while the daemon was down would otherwise sit there for ever, which is the
+    /// claim-versus-fact this whole design is arranged to avoid. The edge is on the row, loud or
+    /// quiet, so the row says whose it is.
+    ///
+    /// **A row that already says the same thing is REUSED** — the board has one key and it is the
+    /// trimmed `content`, so a row with these words IS this row, whoever typed it: it is moved into
+    /// place rather than appended beside. That is what stops the pass from putting a second copy of
+    /// the same sentence on a board the model had already said it on.
+    ///
+    /// Returns how many rows the pass now holds, and bumps the version only when something actually
+    /// changed — the rule every other writer here keeps, so a claim that has not moved costs no
+    /// store write and no publish on every idle pass.
+    pub fn set_room_rows(&self, rows: Vec<(u64, TodoItem)>) -> usize {
+        let n = rows.len();
+        let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
+        let mut changed = false;
+        let held: BTreeSet<u64> = rows.iter().map(|(item, _)| *item).collect();
+        // **The items this session no longer holds take their rows with them** — found by the edge
+        // the pass put on them, which is on the row whether it is quiet or loud.
+        let before = half.len();
+        half.retain(|t| {
+            let gone = crate::builtins::todo::room_items(t)
+                .iter()
+                .any(|item| !held.contains(item));
+            !gone
+        });
+        if half.len() != before {
+            changed = true;
+        }
+        for (_, row) in rows {
+            let want = row.content.trim().to_string();
+            // The pass's own edge, and the only one it owns on a row.
+            let edge: Vec<TodoNeed> = row
+                .needs
+                .iter()
+                .filter(|n| matches!(n, TodoNeed::Room { .. }))
+                .cloned()
+                .collect();
+            match half.iter_mut().find(|t| t.content.trim() == want) {
+                // **Reused**: the words are the key, so this is the same row — the pass's edge and
+                // the row's state are what it has to say, and nothing else moves. Any other edge on
+                // the row (a `Row`, a `Job`, a question) is the model's or the operator's and stays.
+                Some(had) => {
+                    let mut needs: Vec<TodoNeed> = had
+                        .needs
+                        .iter()
+                        .filter(|n| !matches!(n, TodoNeed::Room { .. }))
+                        .cloned()
+                        .collect();
+                    needs.extend(edge);
+                    if had.needs != needs || had.status != row.status {
+                        had.needs = needs;
+                        had.status = row.status;
+                        changed = true;
+                    }
+                }
+                None => {
+                    half.push(row);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        n
+    }
+
     /// **A PARENT's write: an UPSERT scoped to the parent's own authorship** — the shape the model's
     /// own half takes too, and for the same reason.
     ///
@@ -1448,6 +1536,42 @@ pub fn waits_on_a_running_job(row: &TodoItem, jobs: &RunningJobs) -> bool {
     })
 }
 
+/// **Whether a row waits on a ROOM ITEM the room is still working on** — the fourth quiet, beside
+/// [`waits_on_a_child_with_room_to_breathe`] and [`waits_on_a_running_job`].
+///
+/// The operator's ask, 2026-10-29: *"just like with todo top level session get reminds (with ability
+/// to mark waits_on) so they dont occupy it for ever"*. The daemon's room pass writes one row per
+/// item a session holds and says, on the row, whether the room is carrying what the holder waits for
+/// — [`TodoNeed::Room`]'s `working`. So **the fact is the row's own** and there is nothing to hand
+/// in: no clock, no snapshot, no caller.
+///
+/// That is why this predicate takes one argument where its two neighbours take a row and a
+/// snapshot, and it is worth stating because it is the one place this file reads a fact off the ROW
+/// instead of out of the daemon. The reason is that the fact is not the daemon's: whether the room is
+/// working on an item is the coordinator's, and the daemon already asked it once — in the pass that
+/// wrote this row — rather than once per idle check per session.
+///
+/// A caller that does not narrow gets the other half of the same design: [`unmet_needs`] says the
+/// room is working on `#3`, and [`blocked_line`] says so in words.
+pub fn waits_on_the_room(row: &TodoItem) -> bool {
+    row.needs
+        .iter()
+        .any(|n| matches!(n, TodoNeed::Room { working: true, .. }))
+}
+
+/// **The room items a row is the pass's own record of** — every item number its room edges name,
+/// loud or quiet. `TodoBoard::set_room_rows` retires by this, which is what lets a board rebuilt
+/// from a store still find the rows the pass wrote: the edge is on the row, so no memory is needed.
+pub fn room_items(row: &TodoItem) -> Vec<u64> {
+    row.needs
+        .iter()
+        .filter_map(|n| match n {
+            TodoNeed::Room { item, .. } => Some(*item),
+            _ => None,
+        })
+        .collect()
+}
+
 /// **Whether a row waits on a job or child that has ENDED but whose completion the model has not
 /// digested yet** — the grace after a wait, and the third quiet beside
 /// [`waits_on_a_child_with_room_to_breathe`] and [`waits_on_a_running_job`].
@@ -1901,6 +2025,11 @@ fn all_on_the_operator(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> bool
             // blocked only on them is not a plan to fix either.
             let rooted = unmet.iter().all(|(name, fate)| match fate {
                 NeedFate::OperatorAsked | NeedFate::JobRunning | NeedFate::MonitorWatching => true,
+                // **A room item the room is working on is a root too**, for the reason the job and
+                // the monitor are: it is not the plan's to move, and a plan blocked only on it is
+                // not a plan to fix. The holder ends the silence by clearing its wait or finishing
+                // the item, and the next pass writes that on the row.
+                NeedFate::RoomWorking => true,
                 NeedFate::ChildRunning(child) => child.age < CHILD_ROOM_TO_BREATHE,
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
@@ -2006,6 +2135,15 @@ pub enum NeedFate {
     /// what is here is the fate for a caller that did not narrow. Not met yet, because the row's
     /// answer is in a completion the model has not acted on.
     EndedUnread,
+    /// **The room is working on the item this row holds** — a [`TodoNeed::Room`] edge, which the
+    /// daemon's room pass puts on the row while the holder has told the room what it waits for and
+    /// its beat is fresh. The row is SILENT about it ([`waits_on_the_room`]): the holder said what
+    /// it is waiting on, and the room is carrying it, so there is nothing the plan could do.
+    ///
+    /// **It carries no payload, for [`NeedFate::JobRunning`]'s reason**: the item's number is
+    /// already the need's name, and the only thing a reader has to know is that the blocker is still
+    /// there and is not the plan's to move.
+    RoomWorking,
     /// **The operator was asked a question and has not answered it** — the row waits on a person
     /// ([`TodoNeed::Operator`]). The name beside it is the question.
     ///
@@ -2138,6 +2276,18 @@ fn unmet_needs(
                     out.push((handle.clone(), NeedFate::EndedUnread));
                 }
             }
+            // **The room is working on it, so the edge is NOT met** — see [`waits_on_the_room`],
+            // which is the same fact read by the caller that narrows. The name printed is the room's
+            // own `#3`: it is what `room`'s `done`, `beat` and `abandon` take, so the model can act
+            // on it from the reminder without looking anything up.
+            //
+            // **`working: false` is the other half and it is MET**: nothing outside is going to
+            // move this item, so the row is the holder's own work and the check must name it.
+            TodoNeed::Room {
+                item,
+                working: true,
+            } => out.push((format!("#{item}"), NeedFate::RoomWorking)),
+            TodoNeed::Room { working: false, .. } => {}
             // **The operator has not answered, so the edge is NOT met** — and the name the message
             // prints is the QUESTION, because that is what the model has to try to work out while
             // it waits. Whether it is answered is on the board itself: an answer replaces this edge
@@ -2187,6 +2337,12 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             ),
             NeedFate::MonitorWatching => format!(
                 "the monitor `{name}`, still watching — its firing reaches you as soon as it fires"
+            ),
+            // **A room item is named by the number the room's own verbs take**, and the sentence
+            // says the one thing that ends the silence: the wait, which the holder clears itself.
+            NeedFate::RoomWorking => format!(
+                "the room item `{name}`, which you hold and told the room you are waiting on — the \
+                 check stays quiet until that wait ends"
             ),
             NeedFate::EndedUnread => format!(
                 "`{name}`, which has ended — its completion is reaching you; read it before \
@@ -3912,6 +4068,15 @@ fn render(todos: &[TodoItem]) -> String {
                         // same rule the nag's own line keeps.
                         TodoNeed::Job { handle } => format!("the job `{handle}`"),
                         TodoNeed::Monitor { name } => format!("the monitor `{name}`"),
+                        // **The room's item, by the number `room`'s own verbs take** — the edge
+                        // the daemon's room pass puts on a `you hold …` row while the room is
+                        // working on it, so a model reading its list sees why the row is quiet.
+                        TodoNeed::Room { item, working } => {
+                            format!(
+                                "the room item `#{item}`{}",
+                                if *working { " (the room is working on it)" } else { "" }
+                            )
+                        }
                         // **The operator, by the question** — the words they were asked, so the
                         // model can see what it is waiting for and try to work it out itself.
                         TodoNeed::Operator { question, .. } => {

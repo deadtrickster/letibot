@@ -183,4 +183,5 @@ mod needs;
 mod operator;
 mod quotes;
 mod r93;
+mod room;
 mod wait_on;

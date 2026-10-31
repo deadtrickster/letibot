@@ -1529,6 +1529,29 @@ pub enum TodoNeed {
     /// row waiting on a one-shot timer. **A name that is not watching is a monitor that ended**,
     /// [`TodoNeed::Job`]'s own ruling for a handle after a restart.
     Monitor { name: String },
+    /// **A ROOM ITEM the holder has on its board** — the edge the daemon's room pass puts on the
+    /// row it writes for a claim (`you hold `ram` #3 — 8 GB`), so the reminder the operator asked
+    /// for (*"just like with todo top level session get reminds"*) arrives through the idle check
+    /// and needs no model call.
+    ///
+    /// **`working` is the whole of quiet-or-loud, and it is ON THE ROW rather than handed in from
+    /// outside.** `true` means the holder told the room what it is waiting for (`room waiting`) and
+    /// its claim's beat is fresh: the room is carrying it, so the row is BLOCKED and the check says
+    /// nothing. `false` means nothing outside is going to move this item — no declared wait, or a
+    /// beat that has stopped and a room that will take it back at its next sweep — so the row is
+    /// READY and the check names it. That is why this variant is unlike [`TodoNeed::Job`] and
+    /// [`TodoNeed::Child`]: the fact is the ROW's, because the daemon that wrote the row is the one
+    /// that asked the room, and a board that had to be handed a room snapshot would be a second
+    /// reader of one answer.
+    ///
+    /// **The edge is on every room row, loud or quiet**, and that is what lets a board that has
+    /// just been rebuilt from a store still find the rows the pass wrote: retirement is *a row whose
+    /// room edge names an item this session no longer holds*, which needs no memory to survive a
+    /// daemon restart.
+    ///
+    /// **The number is the room's item id**, `#3`'s `3`: the name `room`'s own verbs take (`done`,
+    /// `beat`, `abandon`), so the model can act on it from the reminder without looking anything up.
+    Room { item: u64, working: bool },
     /// **The OPERATOR, asked a question** — the row cannot start until a person answers it.
     ///
     /// The operator's ask, verbatim: *"a todo can be dependent on todo, and todo can be dependend

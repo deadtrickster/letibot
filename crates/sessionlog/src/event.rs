@@ -322,6 +322,11 @@ pub enum TodoNeed {
     Job { handle: String },
     /// **A MONITOR, by the name it was armed under** — see `TodoNeed::Monitor` in the store.
     Monitor { name: String },
+    /// **A ROOM ITEM the holder has on its board** — see `TodoNeed::Room` in the store for the whole
+    /// of why the quiet/loud fact is the ROW's rather than a caller's. The number is the room's
+    /// item id, the one `room`'s `done`/`beat`/`abandon` take; `working` is whether the room is
+    /// carrying what the holder said it waits for.
+    Room { item: u64, working: bool },
     /// **The OPERATOR, asked a question with these choices** — the row waits until a person
     /// answers. See `TodoNeed::Operator` in the store; a head draws it as `waits on you` and
     /// opens the question card from it.
