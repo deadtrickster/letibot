@@ -307,9 +307,14 @@ fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_f
         "{}",
         r.failure
     );
-    let held_for = r.deadline_ms.unwrap().saturating_sub(gate::now_ms());
+    // **The LENGTH of the wait, read off the row's own two stamps.** `deadline_ms` is set from the
+    // `now` the pool read and `state_ms` is the store's, taken microseconds later, so the pair is
+    // the wait itself. Measured against `gate::now_ms()` it was instead *how long the fixture had
+    // been running*: MEASURED 2026-10-31, 48 323 ms on a box carrying six copies of this binary,
+    // with the row's own pair still saying 60 000.
+    let held_for = r.deadline_ms.unwrap().saturating_sub(r.state_ms);
     assert!(
-        (50_000..=60_000).contains(&held_for),
+        (59_000..=60_000).contains(&held_for),
         "the first wait is a minute: {held_for}"
     );
 
@@ -325,7 +330,11 @@ fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_f
         w.one_reviewer();
         assert_eq!(w.row().state, ReviewState::Waiting, "{:?}", w.row());
     }
-    let held_for = w.row().deadline_ms.unwrap().saturating_sub(gate::now_ms());
+    let held_for = w
+        .row()
+        .deadline_ms
+        .unwrap()
+        .saturating_sub(w.row().state_ms);
     assert!(
         held_for > 4 * 60_000,
         "the third wait is five minutes: {held_for}"
