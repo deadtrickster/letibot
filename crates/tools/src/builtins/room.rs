@@ -64,8 +64,9 @@ impl RoomLink for NoRoom {
     fn call(&self, _verb: &str, _args: &Value) -> Result<String, String> {
         Err(
             "this session has no room: the box's coordinator is a daemon of its own (`harnessd \
-             --room`), and this daemon was not started with one, so there is nothing to post to, \
-             claim, or hold"
+             --room`, which `letibot --room` starts on this box), and no socket was there when this \
+             session opened, so there is nothing to post to, claim, or hold. A session opened after \
+             the coordinator starts has one"
                 .to_string(),
         )
     }
@@ -406,5 +407,16 @@ mod tests {
         assert!(!ok);
         assert!(text.contains("harnessd --room"), "{text}");
         assert!(!NoRoom.beats_on_my_behalf());
+    }
+
+    /// **A session with no room is told how the box gets one.** The launcher starts a coordinator
+    /// whenever one is not serving, so the answer to *there is no room* is a verb a person (or the
+    /// model reading this refusal) can run — and a sentence that stopped naming it would send the
+    /// model looking for a socket it cannot start.
+    #[test]
+    fn a_session_with_no_room_is_told_which_verb_starts_one() {
+        let (ok, text) = invoke(Arc::new(NoRoom), json!({"verb": "queue", "tag": "ram"}));
+        assert!(!ok);
+        assert!(text.contains("letibot --room"), "{text}");
     }
 }
