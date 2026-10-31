@@ -22,6 +22,15 @@
 //!    session, once per session and bound. A log line and a warning, not a panic: a panic takes
 //!    every session down with it, and the point is to see the leak while the daemon still runs.
 //!
+//!    **And what the HARNESS holds** (R66, `crate::footprint`): a hub can account for its log, its
+//!    view and its heads' queues, but the biggest per-session structures are on the other side of
+//!    the wire — the in-memory transcript, the ledger's token region, the authorisation trail —
+//!    and a census that could not see them answered *which session grew* with an `rss` line. Each
+//!    hub carries a `Footprint` its harness registers at open, the census prints it per session,
+//!    and the arm names the session that is past the ceiling its own harness states. The probe
+//!    that runs the brief's 50 × 200 × 1 MiB experiment by hand, and what each of its numbers
+//!    proves, is `.letibot/notes/r66-the-full-probe-and-what-it-would-prove.md`.
+//!
 //! The fourth half lives in `cli.rs`: the daemon's own leaf gets `memory.high`, so past it the
 //! kernel throttles the daemon instead of letting it take the box. This module reads that
 //! leaf's `memory.events` and says when the throttle has started.
@@ -316,15 +325,17 @@ pub fn summary(
     let items: usize = census.iter().map(|(c, _)| c.view.items).sum();
     let heads: usize = census.iter().map(|(c, _)| c.heads).sum();
     let jobs: usize = census.iter().map(|(_, j)| j).sum();
+    let harness: usize = census.iter().map(|(c, _)| c.footprint.total()).sum();
     format!(
         "rss {} · heap live {} (peak {}) · {large_n} large alloc(s) · {threads} threads · {} \
          sessions · logs {} / {log_events} events · view {items} items · {heads} heads · {jobs} \
-         job rows",
+         job rows · harness {}",
         human_bytes(rss),
         human_bytes(live as u64),
         human_bytes(peak as u64),
         census.len(),
         human_bytes(log_bytes as u64),
+        human_bytes(harness as u64),
     )
 }
 
@@ -350,6 +361,29 @@ pub fn broken_bounds(c: &HubCensus) -> Vec<(&'static str, String)> {
             format!(
                 "a head's queue holds {} events against its {} bound",
                 c.head_queue_max, c.head_queue_bound
+            ),
+        ));
+    }
+    // **What the session's HARNESS holds** (R66) — the one term a growing daemon could not name
+    // before this: `Session::items`, the ledger's token region and the authorisation trail are on
+    // the harness and not on the hub, so a census that only counted hub structures reported a
+    // daemon inside every bound while it grew. The ceiling is the harness's own (see
+    // `crate::footprint`), which is what makes this a bound CHECKED rather than one chosen here.
+    if c.footprint.over_ceiling() {
+        let f = &c.footprint;
+        out.push((
+            "footprint",
+            format!(
+                "this session's harness holds {} against its {} ceiling — transcript {} ({} \
+                 rows), token region {} ({} tokens), trail {} ({} utterances)",
+                human_bytes(f.total() as u64),
+                human_bytes(f.ceiling_bytes as u64),
+                human_bytes(f.items_text_bytes as u64),
+                f.items,
+                human_bytes(f.ledger_region_bytes as u64),
+                f.ledger_tokens,
+                human_bytes(f.trail_bytes as u64),
+                f.trail_utterances,
             ),
         ));
     }
@@ -388,10 +422,15 @@ fn full_census(
     );
     let mut by_log: Vec<&(HubCensus, usize)> = census.iter().collect();
     by_log.sort_by_key(|(c, _)| std::cmp::Reverse(c.log_bytes));
-    s.push_str("  hubs holding most (log bytes / events · view items, settled, warnings, subagents · heads, longest queue · job rows):\n");
+    s.push_str(
+        "  hubs holding most (log bytes / events · view items, settled, warnings, subagents · \
+         heads, longest queue · job rows · harness: transcript, region, trail / ceiling):\n",
+    );
     for (c, jobs) in by_log.iter().take(10) {
+        let f = &c.footprint;
         s.push_str(&format!(
-            "    {} — log {} / {} · view {} {} {} {} · heads {} q{} · jobs {}\n",
+            "    {} — log {} / {} · view {} {} {} {} · heads {} q{} · jobs {} · harness {} \
+             ({} + {} + {}) / {}\n",
             c.session_id,
             human_bytes(c.log_bytes as u64),
             c.log_events,
@@ -401,8 +440,42 @@ fn full_census(
             c.view.subagents,
             c.heads,
             c.head_queue_max,
-            jobs
+            jobs,
+            human_bytes(f.total() as u64),
+            human_bytes(f.items_text_bytes as u64),
+            human_bytes(f.ledger_region_bytes as u64),
+            human_bytes(f.trail_bytes as u64),
+            human_bytes(f.ceiling_bytes as u64),
         ));
+    }
+    // **And the same list by what the HARNESS holds**, because the two orders are different
+    // questions: a hub with the longest log is not the session that grew.
+    let mut by_footprint: Vec<&(HubCensus, usize)> = census.iter().collect();
+    by_footprint.sort_by_key(|(c, _)| std::cmp::Reverse(c.footprint.total()));
+    if by_footprint
+        .first()
+        .is_some_and(|(c, _)| c.footprint.total() > 0)
+    {
+        s.push_str("  sessions whose harness holds most (of its own ceiling):\n");
+        for (c, _) in by_footprint.iter().take(10) {
+            let f = &c.footprint;
+            if f.total() == 0 {
+                break;
+            }
+            s.push_str(&format!(
+                "    {} — {} / {} · transcript {} ({} rows) · region {} ({} tokens) · trail {} \
+                 ({} utterances)\n",
+                c.session_id,
+                human_bytes(f.total() as u64),
+                human_bytes(f.ceiling_bytes as u64),
+                human_bytes(f.items_text_bytes as u64),
+                f.items,
+                human_bytes(f.ledger_region_bytes as u64),
+                f.ledger_tokens,
+                human_bytes(f.trail_bytes as u64),
+                f.trail_utterances,
+            ));
+        }
     }
     let mut ts: Vec<(&String, &usize)> = threads.iter().collect();
     ts.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
@@ -456,5 +529,60 @@ mod tests {
         assert!(LIVE.load(Ordering::Relaxed) >= before + 1000);
         assert!(PEAK.load(Ordering::Relaxed) >= before + 1000);
         LIVE.fetch_sub(1000, Ordering::Relaxed);
+    }
+
+    /// **The term R66 could not name** — a session's harness past the ceiling it states for
+    /// itself is reported, and the sentence says which part grew. Three shapes, because the
+    /// three have to be told apart: a hub with NO footprint registered states no ceiling and is
+    /// never reported, one inside its ceiling is not, and one past it is.
+    #[test]
+    fn a_harness_past_its_ceiling_is_named_and_one_inside_it_is_not() {
+        let ceiling = 4 << 20;
+        let inside = HubCensus {
+            session_id: "s".into(),
+            footprint: letibot_sessionlog::hub::Footprint {
+                items: 12,
+                items_text_bytes: 1 << 20,
+                ledger_region_bytes: 1 << 20,
+                ledger_tokens: 262_144,
+                trail_bytes: 1024,
+                trail_utterances: 3,
+                ceiling_bytes: ceiling,
+            },
+            ..Default::default()
+        };
+        assert!(broken_bounds(&inside).is_empty());
+
+        // A hub nobody registered a footprint on: no ceiling, so nothing to be over. The census
+        // of every test hub and every head's hub takes this arm.
+        let unregistered = HubCensus {
+            session_id: "s".into(),
+            footprint: letibot_sessionlog::hub::Footprint {
+                items_text_bytes: 1 << 30,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(broken_bounds(&unregistered).is_empty());
+
+        let over = HubCensus {
+            footprint: letibot_sessionlog::hub::Footprint {
+                items_text_bytes: 3 << 20,
+                ledger_region_bytes: 2 << 20,
+                ..inside.footprint
+            },
+            ..inside
+        };
+        let broken = broken_bounds(&over);
+        let kinds: Vec<&str> = broken.iter().map(|(k, _)| *k).collect();
+        assert_eq!(kinds, vec!["footprint"]);
+        let sentence = &broken[0].1;
+        // `human_bytes` rounds whole MiB, so these are the words the operator would read.
+        for named in ["5 MiB", "4 MiB", "transcript 3 MiB", "token region 2 MiB"] {
+            assert!(
+                sentence.contains(named),
+                "the sentence must name {named}: {sentence}"
+            );
+        }
     }
 }
