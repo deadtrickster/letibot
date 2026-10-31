@@ -1458,10 +1458,6 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     assert_eq!(health().state, HealthState::Green);
 }
 
-/// **A red target rings its project's root sessions, once per red tip; a branch blocked in
-/// review rings the root of its tree, once** (R76 item 1). FAILS before R76: the only door was
-/// `raise`, a warning on every hub that no model reads.
-#[test]
 /// **A red target puts its sentence on a session, not only on a bell** — the operator's report of
 /// 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*. A ring wakes a
 /// project's roots and leaves what happened to the store; a session that is merely woken cannot
@@ -1496,6 +1492,10 @@ fn a_red_target_is_told_to_a_session_not_only_rung() {
     assert_eq!(w.door.warnings("target_red").len(), 1, "one card too");
 }
 
+/// **A red target rings its project's root sessions, once per red tip; a branch blocked in
+/// review rings the root of its tree, once** (R76 item 1). FAILS before R76: the only door was
+/// `raise`, a warning on every hub that no model reads.
+#[test]
 fn a_red_target_and_a_blocked_review_ring_the_project_once_each() {
     let w = World::new("ring");
     commit(&w.repo, "broken", "x\n", "red");
