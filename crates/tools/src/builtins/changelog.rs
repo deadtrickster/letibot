@@ -229,6 +229,23 @@ pub fn append(path: &Path, line: &Line) -> std::io::Result<()> {
     file.sync_all()
 }
 
+/// **Can a line be appended here?** Asked *before* a change is applied, by the tools that make
+/// one (`host_config`), because a change that lands with no line in the file is the state this
+/// whole module exists to end.
+///
+/// It creates the directory and the file if they are not there — an empty changelog reads as
+/// *no change recorded*, which is the same answer as no file — and touches nothing else.
+pub fn writable(path: &Path) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map(|_| ())
+}
+
 /// The `host_changelog` tool.
 pub struct HostChangelogTool {
     /// `None` is a registry with no daemon behind it — see [`HostChangelogTool::nowhere`].

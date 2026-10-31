@@ -1355,6 +1355,15 @@ pub mod roles {
                 // record that stays empty. The tool applies nothing; `revert` hands back the value
                 // and the seat undoes it.
                 "host_changelog",
+                // **`host_config`: this box's own settings, in the platform's own vocabulary.**
+                // The operator's ask, from the room's design: *keyboard and input*, and *perf
+                // policy*, with the privilege stated and every change recorded — the record being
+                // `host_changelog` one entry up, which is why the two are seated together. A
+                // setting this platform has not got is refused by name (macOS's `perf-policy` is
+                // not Linux's `cpu-governor`), and `set` reads the current value first so the
+                // record's `before` is real. `set` runs the platform's own tool, so the schema
+                // declares `Exec` and the gate sees it; `settings` and `read` narrow to a read.
+                "host_config",
                 // `transcript` and `digest`: this session's own conversation,
                 // including what compaction replaced. Seated together on purpose
                 // — `transcript` reports the count of what it did not show and
@@ -1466,7 +1475,13 @@ pub mod roles {
         // operator reported, and a seat that can `bash` the change but not write it down is the
         // seat that leaves it. It is `Write`, so it rides this seat's writable backend and asks
         // for nothing new — the orchestrator seat, which opens read-only, deliberately has it not.
-        r.max_tools = 37;
+        // **Thirty-eight since `host_config`**, the setting itself rather than its record: a seat
+        // that can write down why the governor is `performance` and cannot read what the governor
+        // is has the half that arrives a month too late. It takes its own seat for the reason the
+        // ones before it did, and it is seated HERE and not on the orchestrator for
+        // `host_changelog`'s reason one entry up: `set` runs a command, and the read-only seat is
+        // the one `letibot --read-only` and the room's coordinator open on.
+        r.max_tools = 38;
         r
     }
 
@@ -3497,8 +3512,11 @@ mod tests {
         // since `room`**, the host's tagged queues, which a top-level session needs and a subagent
         // must not have. **Thirty-six since `host_changelog`**, the record of what a host setting
         // was, what it is now, why and on whose words — seated here and not on the orchestrator,
-        // because it is a `Write` tool and that seat is the read-only one.
-        assert_eq!(seat.tools.len(), 36, "{:?}", seat.tools);
+        // because it is a `Write` tool and that seat is the read-only one. **Thirty-seven since
+        // `host_config`**, the setting itself, which takes its own seat for the same reason: it is
+        // the tool that reads the value the record is about, and `set` runs the platform's own
+        // tool.
+        assert_eq!(seat.tools.len(), 37, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

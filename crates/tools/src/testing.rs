@@ -94,6 +94,9 @@ pub struct Harness {
     _changelog: std::path::PathBuf,
     /// Held so the directory `_changelog` lives in is removed with the harness.
     _changelog_dir: TempDir,
+    /// The platform `host_config` runs on here: a fixture, never this box — a test that drove the
+    /// real one would change the operator's keyboard repeat or their governor.
+    _host_config: Arc<FixturePlatform>,
 }
 
 impl Harness {
@@ -131,6 +134,12 @@ impl Harness {
     /// tool wrote without going through the tool.
     pub fn changelog_file(&self) -> &std::path::Path {
         &self._changelog
+    }
+
+    /// The platform `host_config` runs on here, so a test can read what was applied — and can
+    /// assert that nothing was, which is the half a refusal is about.
+    pub fn host_config(&self) -> Arc<FixturePlatform> {
+        Arc::clone(&self._host_config)
     }
 
     /// What is actually on disk, read without going through the backend.
@@ -314,6 +323,7 @@ pub fn runner_harness_with_gate(
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
     })
 }
 
@@ -351,6 +361,7 @@ pub fn text_only_runner_harness() -> Harness {
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
     }
 }
 
@@ -420,6 +431,7 @@ pub fn confined_harness_with_gate(
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
         _changelog: std::path::PathBuf::new(),
         _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
     })
 }
 
@@ -533,6 +545,26 @@ fn build_ext(
             crate::builtins::changelog::HostChangelogTool::new(changelog_scope),
         ))
         .expect("the host changelog registers");
+    // The host config's platform is a FIXTURE, and its privilege is a fixed refusal: a test that
+    // drove this box's real `defaults`/`xset` would change the operator's keyboard repeat, and one
+    // that detected privilege would answer differently on a root box than on theirs.
+    let host_config = FixturePlatform::new();
+    registry
+        .register(Box::new(
+            crate::builtins::host_config::HostConfigTool::new(std::sync::Arc::new(
+                TestChangelogScope {
+                    file: changelog_file.clone(),
+                    who: "s-fixture".to_string(),
+                },
+            ))
+            .with_platform(
+                Arc::clone(&host_config) as Arc<dyn crate::builtins::host_config::Platform>
+            )
+            .with_privilege(crate::builtins::host_config::Privilege::None(
+                "the fixture has no askpass, and this is the sentence a person would read".into(),
+            )),
+        ))
+        .expect("the host config registers");
     // The session tool rides every registry, exactly as the real harness seats it:
     // the read-only roles name `todo_write`, so a registry they resolve against has
     // to include it. An empty board — these tests are not about the todo pane.
@@ -621,6 +653,131 @@ impl crate::builtins::changelog::ChangelogScope for TestChangelogScope {
 
     fn who(&self) -> String {
         self.who.clone()
+    }
+}
+
+/// **The platform a fixture's `host_config` runs on.** Two settings — one that needs root and one
+/// that does not — a value each, and every apply recorded.
+///
+/// A fixture rather than [`crate::builtins::host_config::this_box`] because the tool's whole point
+/// is that it changes the machine: a test that drove the real arm would change the operator's
+/// keyboard repeat or their governor, and a suite may not do that. `applied` is what a refusal is
+/// measured against — *nothing ran* is a claim about this vector.
+pub struct FixturePlatform {
+    knob: std::sync::Mutex<String>,
+    rooted: std::sync::Mutex<String>,
+    applied: std::sync::Mutex<Vec<String>>,
+}
+
+/// The fixture's settings, in the shape a platform's are.
+const FIXTURE_SETTINGS: &[crate::builtins::host_config::Setting] = &[
+    crate::builtins::host_config::Setting {
+        name: "fixture-knob",
+        unit: "a word",
+        needs_root: false,
+        note: "read from the fixture, written by the fixture",
+    },
+    crate::builtins::host_config::Setting {
+        name: "fixture-root-knob",
+        unit: "a word",
+        needs_root: true,
+        note: "read from the fixture, written with `sudo` — so a fixture without privilege refuses",
+    },
+];
+
+impl FixturePlatform {
+    /// A platform whose two settings read `before` and `root-before`.
+    pub fn new() -> Arc<FixturePlatform> {
+        Arc::new(FixturePlatform {
+            knob: std::sync::Mutex::new("before".to_string()),
+            rooted: std::sync::Mutex::new("root-before".to_string()),
+            applied: std::sync::Mutex::new(Vec::new()),
+        })
+    }
+
+    /// What `fixture-knob` is now.
+    pub fn knob(&self) -> String {
+        self.knob.lock().expect("the fixture's knob").clone()
+    }
+
+    /// Every command the tool has run here, in order — empty after a refusal.
+    pub fn applied(&self) -> Vec<String> {
+        self.applied.lock().expect("the fixture's log").clone()
+    }
+
+    fn setting(name: &str) -> Option<&'static crate::builtins::host_config::Setting> {
+        FIXTURE_SETTINGS.iter().find(|s| s.name == name)
+    }
+
+    fn cell(&self, name: &str) -> Option<&std::sync::Mutex<String>> {
+        match name {
+            "fixture-knob" => Some(&self.knob),
+            "fixture-root-knob" => Some(&self.rooted),
+            _ => None,
+        }
+    }
+}
+
+impl crate::builtins::host_config::Platform for FixturePlatform {
+    fn name(&self) -> &'static str {
+        "fixture"
+    }
+
+    fn settings(&self) -> &'static [crate::builtins::host_config::Setting] {
+        FIXTURE_SETTINGS
+    }
+
+    fn read(
+        &self,
+        setting: &str,
+    ) -> Result<crate::builtins::host_config::Reading, crate::builtins::host_config::Refusal> {
+        match self.cell(setting) {
+            Some(cell) => Ok(crate::builtins::host_config::Reading {
+                value: cell.lock().expect("the fixture's value").clone(),
+                how: "the fixture".to_string(),
+                note: String::new(),
+            }),
+            None => Err(crate::builtins::host_config::Refusal::new(
+                format!("the fixture has no `{setting}`"),
+                "The fixture's settings are `fixture-knob` and `fixture-root-knob`. Nothing was \
+                 changed.",
+            )),
+        }
+    }
+
+    fn apply(
+        &self,
+        setting: &str,
+        value: &str,
+        privilege: &crate::builtins::host_config::Privilege,
+    ) -> Result<crate::builtins::host_config::Applied, crate::builtins::host_config::Refusal> {
+        let Some(s) = Self::setting(setting) else {
+            return Err(crate::builtins::host_config::Refusal::new(
+                format!("the fixture has no `{setting}`"),
+                "Nothing was changed.",
+            ));
+        };
+        let command = if s.needs_root {
+            let (argv, _) = privilege
+                .as_root(&[format!("fixture-write {value}")])
+                .map_err(|r| {
+                    crate::builtins::host_config::Refusal::new(
+                        format!("{} (the fixture's own sentence)", r.what),
+                        r.why,
+                    )
+                })?;
+            argv.join(" ")
+        } else {
+            format!("fixture-write {value}")
+        };
+        self.applied
+            .lock()
+            .expect("the fixture's log")
+            .push(command.clone());
+        if let Some(cell) = self.cell(setting) {
+            *cell.lock().expect("the fixture's value") = value.to_string();
+        }
+        Ok(crate::builtins::host_config::Applied { ran: vec![command] })
     }
 }
 

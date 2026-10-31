@@ -288,6 +288,13 @@ pub fn with_session_tools(
     if reg.get(builtins::changelog::TOOL).is_none() {
         reg.register(Box::new(builtins::changelog::HostChangelogTool::nowhere()))?;
     }
+    // **This box's own settings**, and the same shape one arm down: a seat that names it must
+    // resolve on every registry this function builds, and the tool then says there is no changelog
+    // behind it. `read` and `settings` still answer — they change nothing — and `set` refuses
+    // before it runs anything, which is the rule the changelog one arm up exists for.
+    if reg.get(builtins::host_config::TOOL).is_none() {
+        reg.register(Box::new(builtins::host_config::HostConfigTool::nowhere()))?;
+    }
     Ok(reg)
 }
 

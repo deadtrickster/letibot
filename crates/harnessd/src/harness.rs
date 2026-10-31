@@ -4544,6 +4544,18 @@ impl Harness {
                 )),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the host changelog: {e}")))?;
+        // **This box's own settings, in the platform's own vocabulary** — the reading and the
+        // writing the record above is about. Seated right after it, on the same config dir, for the
+        // reason the two are one idea: a `set` here reads the current value, applies the platform's
+        // own command and appends the changelog line, so the record's `before` is a measurement and
+        // not a guess. Registered BEFORE `with_session_tools` for the same reason as the line above.
+        registry
+            .register(Box::new(
+                letibot_tools::builtins::host_config::HostConfigTool::new(std::sync::Arc::new(
+                    crate::changelog_scope::ConfigChangelog::new(cfg.session_id.clone()),
+                )),
+            ))
+            .map_err(|e| HarnessError::Setup(format!("registering the host config: {e}")))?;
         registry = letibot_tools::with_session_tools(
             registry,
             todo_board.clone(),

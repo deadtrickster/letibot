@@ -65,6 +65,12 @@ tidy list quietly missing one.
 `host_changelog`, three verbs, one tool — the shape `room` and `notes` have, because the verbs act
 on one noun (a line in one file).
 
+**`host_config` is the tool that fills it.** Its `set` reads the current value, applies the
+platform's own command and then calls this tool's `record` verb, so the line's `before` is a
+measurement rather than a guess, and its reply carries the change's number. `host_changelog` stays
+the record and nothing else: a change made by a `bash` call is still recorded here by hand, which
+is why `record` is a verb of its own. See [host-config.md](host-config.md).
+
 | verb | takes | answers |
 |---|---|---|
 | `record` | `what`, `before`, `after`, `why`, `words`, optional `host` | the change's number, and `revert N` as the call that undoes it |

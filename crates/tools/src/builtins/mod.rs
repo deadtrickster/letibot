@@ -46,6 +46,9 @@ pub mod fanout_bg;
 pub mod glob;
 pub mod grep;
 pub mod harness_view;
+/// `host_config` — this box's own settings, in the platform's own vocabulary, every change
+/// recorded in [`changelog`]. The first slice: keyboard and input, and perf policy.
+pub mod host_config;
 pub mod hosts;
 pub mod intent;
 pub mod jobs;
