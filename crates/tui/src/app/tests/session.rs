@@ -2793,3 +2793,97 @@ fn an_older_daemon_is_said_as_one() {
         "{said}"
     );
 }
+
+// ──────────────── `/sessions`, Enter, and where the head thinks it is ────────────────
+
+/// **Enter on the parent of the session you are in goes there.**
+///
+/// The operator, verbatim: *"/sessions showed me you but enter didnt work"*. The picker's Enter is
+/// `switch_to` and `switch_to` refuses a row whose id is the one the head is already on (`already
+/// here`), so the question is whether the row resolved to the session he was in. This pins the
+/// path itself: standing in a child, the family list is drawn, the parent's row carries a `switch`,
+/// and Enter on it asks the daemon for the parent — not for the child, and not for nothing.
+#[test]
+fn a_picker_enter_on_the_parent_of_the_session_you_are_in_goes_there() {
+    let mut a = app();
+    a.apply(hello(
+        "s-sub-1",
+        vec![
+            brief("s", "the main conversation", true),
+            {
+                let mut child = brief("s-sub-1", "find the bug in the reader", true);
+                child.parent_session_id = Some("s".into());
+                child
+            },
+            {
+                let mut sibling = brief("s-sub-2", "audit the store", false);
+                sibling.parent_session_id = Some("s".into());
+                sibling
+            },
+        ],
+        Hub::new("s-sub-1").snapshot(),
+    ));
+    assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
+    let at = a
+        .picker_rows()
+        .iter()
+        .position(|r| r.id == "s")
+        .expect("the parent is on the family list");
+    a.picker_sel = at;
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::Switch("s".into())),
+        "Enter on the parent's row did not ask for the parent"
+    );
+    // And the head is waiting for it rather than sitting on the child's screen as though the key
+    // had been ignored — see `entering_a_subagent_says_that_a_switch_is_in_flight`.
+    assert!(a.attaching);
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("switching to the main conversation"),
+        "{screen}"
+    );
+}
+
+/// **A LIST DOES NOT SEAT A HEAD** — a `Sessions` frame naming another session asks for the rows,
+/// it does not re-label the screen.
+///
+/// `Sessions { current }` is the daemon saying where this connection is. The arm used to write
+/// that over `self.session_id` and nothing else, so a head could end up claiming a session whose
+/// transcript it did not hold — and `switch_to`'s `if id == self.session_id` then answered
+/// `already here` for the row the operator was looking at, which is the one state in which *"/sessions
+/// showed me you but enter didnt work"* is literally true. The rows are what is wrong when the two
+/// disagree, and the frame that re-reads them is a resync.
+#[test]
+fn a_session_list_does_not_move_the_head_without_seating_it() {
+    let mut a = app();
+    a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+    let _ = a.take_actions();
+    // The daemon's answer to the `ListSessions` every seating asks for, naming a session this
+    // head is not drawing.
+    a.apply(ServerFrame::Sessions {
+        sessions: a_family(),
+        current: "s".into(),
+        created: None,
+    });
+    assert_eq!(
+        a.session_id, "s-sub-1",
+        "a list moved the head off the session it is drawing"
+    );
+    assert!(
+        a.take_actions().contains(&Action::Resync),
+        "the head took the daemon's word about the seat and asked for nothing"
+    );
+    // And the list itself was applied — the rows, which is what a list is FOR.
+    assert_eq!(a.sessions.len(), 5);
+    // A list naming the session this head IS in asks for nothing at all.
+    a.apply(ServerFrame::Sessions {
+        sessions: a_family(),
+        current: "s-sub-1".into(),
+        created: None,
+    });
+    assert!(
+        !a.take_actions().contains(&Action::Resync),
+        "the ordinary answer was read as a disagreement"
+    );
+}

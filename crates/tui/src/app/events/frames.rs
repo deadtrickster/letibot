@@ -86,7 +86,23 @@ impl App {
             } => {
                 // Kept whole, like the `Hello` arm above — see it for why the filter is gone.
                 self.sessions = sessions;
-                self.session_id = current;
+                // **A LIST DOES NOT SEAT A HEAD** — `current` is where the daemon's socket is,
+                // and `self.session_id` is the session this head is DRAWING. The two are made
+                // equal by a seating (`load`), and this arm used to write the daemon's answer
+                // over the head's own, which moved the id without moving the rows: from then on
+                // the head claimed to be in a session whose transcript it did not hold, and
+                // `/sessions`' Enter on that session said `already here` and did nothing — the
+                // operator's *"/sessions showed me you but enter didnt work"*, from the one
+                // state in which the row he pointed at really was not where he was.
+                //
+                // When they disagree the ROWS are what is wrong, and the one frame that
+                // re-reads the session the daemon says this head is in is a resync — a
+                // `Switch` would be answered `already here`, because the daemon is already
+                // there. One ask, no new state, and it terminates: the snapshot's own
+                // `session_id` is the daemon's, so the next answer agrees.
+                if current != self.session_id {
+                    self.queued.push(Action::Resync);
+                }
                 // **And the rows the list is the source of are re-derived from it, here.**
                 //
                 // A `Sessions` frame REPLACES `self.sessions`, and `self.sessions` is what
