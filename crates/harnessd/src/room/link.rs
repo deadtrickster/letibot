@@ -266,12 +266,7 @@ impl letibot_tools::builtins::room::RoomLink for SessionRoom {
 impl RoomFeed for SessionRoom {
     fn snapshot(&self) -> RoomSnapshot {
         let welcome = self.client.welcome();
-        match self
-            .room
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-        {
+        match self.room.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(snap) => snap,
             // **The first frame is a promise, and the second is the answer.** The reader thread
             // starts at connect and reads once a second; a pane opened before the first read lands
@@ -372,7 +367,9 @@ fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
             let question: u64 = question
                 .strip_prefix('q')
                 .and_then(|n| n.parse().ok())
-                .ok_or_else(|| format!("`{entry}` names no question — a question's entry is `q<number>:…`"))?;
+                .ok_or_else(|| {
+                    format!("`{entry}` names no question — a question's entry is `q<number>:…`")
+                })?;
             let (decision, to) = match rest.split_once(':') {
                 Some((d, t)) => (d, Some(t)),
                 None => (rest, None),
@@ -382,9 +379,7 @@ fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
                 ("drop", None) => Decision::Drop {
                     why: "dropped from the room pane".to_string(),
                 },
-                ("hand", Some(to)) if !to.is_empty() => Decision::Hand {
-                    to: to.to_string(),
-                },
+                ("hand", Some(to)) if !to.is_empty() => Decision::Hand { to: to.to_string() },
                 ("hand", _) => {
                     return Err(format!(
                         "`{entry}` names no session — `hand` needs one, and the pane draws a row \
@@ -826,7 +821,9 @@ mod tests {
         let abandon = pane_frame("abandon", "i12").expect("abandon");
         match (&release, &abandon) {
             (
-                Request::Abandon { item: 12, why: one, .. },
+                Request::Abandon {
+                    item: 12, why: one, ..
+                },
                 Request::Abandon {
                     item: 12, why: two, ..
                 },
@@ -888,8 +885,7 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}))
-            .expect("s-a connects");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {})).expect("s-a connects");
 
         // Two items under one tag, posted by another session so `s-a` can claim the head.
         let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
@@ -944,7 +940,10 @@ mod tests {
         let entry = format!("q{}:retry", questions[0].id);
         let said = me.act(&entry, "rule").expect("a ruling");
         assert!(said.contains("is answered"), "{said}");
-        assert!(server.open_questions().is_empty(), "and the question is closed");
+        assert!(
+            server.open_questions().is_empty(),
+            "and the question is closed"
+        );
         assert!(
             server.items()[0].claimable(),
             "`retry` puts it back at the head with its count kept"
@@ -952,7 +951,9 @@ mod tests {
 
         // **A key the room will not take is refused in the room's own words** — the person is told
         // what happened to it rather than left with a key that did nothing.
-        let refused = me.act("i2", "release").expect_err("`s-a` holds nothing on #2");
+        let refused = me
+            .act("i2", "release")
+            .expect_err("`s-a` holds nothing on #2");
         assert!(refused.contains("does not hold"), "{refused}");
 
         drop(other);

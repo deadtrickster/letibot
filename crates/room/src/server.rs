@@ -672,7 +672,10 @@ mod tests {
         for said in [&fresh, &settled] {
             assert!(said.contains("holding 0 item(s)"), "{said}");
             assert!(said.contains("no store"), "{said}");
-            assert!(said.contains("a restart begins with no items at all"), "{said}");
+            assert!(
+                said.contains("a restart begins with no items at all"),
+                "{said}"
+            );
         }
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
@@ -703,7 +706,10 @@ mod tests {
         match answer.response {
             Response::Bye { why } => {
                 assert!(why.contains("lab2x1"), "the room's own name: {why}");
-                assert!(why.contains("the-other-box"), "and the one asked for: {why}");
+                assert!(
+                    why.contains("the-other-box"),
+                    "and the one asked for: {why}"
+                );
                 assert!(why.contains("Nothing was done"), "{why}");
             }
             other => panic!("a wrong room is a clean Bye: {other:?}"),

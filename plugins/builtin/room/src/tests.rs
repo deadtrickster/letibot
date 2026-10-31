@@ -108,7 +108,12 @@ fn row_with<'a>(view: &'a Value, id: &str) -> Value {
     rows(view)
         .into_iter()
         .find(|r| r["id"] == json!(id))
-        .unwrap_or_else(|| panic!("no row `{id}` in {}", serde_json::to_string_pretty(view).unwrap()))
+        .unwrap_or_else(|| {
+            panic!(
+                "no row `{id}` in {}",
+                serde_json::to_string_pretty(view).unwrap()
+            )
+        })
 }
 
 /// **The pane's rows, on the three items a queue is read for**: a tag with two of them, one claimed
@@ -189,10 +194,10 @@ fn a_tag_draws_its_items_with_the_beat_age_and_the_count() {
 fn a_row_this_session_holds_leads_with_release_and_offers_abandon() {
     let feed = feed(
         json!([{"tag": "ram", "counts": {"items": 1, "claimed": 1},
-                "rows": [item(7, "8 GB", "claimed", json!({
-                    "claimant": "s-a", "claim_age_ms": 5_000, "beat_age_ms": 1_000,
-                    "claimable": false, "mine": true,
-                }))]}]),
+        "rows": [item(7, "8 GB", "claimed", json!({
+            "claimant": "s-a", "claim_age_ms": 5_000, "beat_age_ms": 1_000,
+            "claimable": false, "mine": true,
+        }))]}]),
         json!([]),
     );
     let view = view(&feed);
@@ -208,7 +213,10 @@ fn a_row_this_session_holds_leads_with_release_and_offers_abandon() {
         "and `x` is the harder sentence on the same room verb"
     );
     // And it says whose it is, in the strong role.
-    assert_eq!(row["facts"][0], json!({"text": "held by s-a", "role": "strong"}));
+    assert_eq!(
+        row["facts"][0],
+        json!({"text": "held by s-a", "role": "strong"})
+    );
 }
 
 /// **A frozen item offers nothing** — it is not claimable, and its question is the `a` panel.
@@ -216,20 +224,19 @@ fn a_row_this_session_holds_leads_with_release_and_offers_abandon() {
 fn a_frozen_item_says_so_and_offers_no_key() {
     let feed = feed(
         json!([{"tag": "ram", "counts": {"items": 1, "live": 1, "frozen": 1},
-                "rows": [item(9, "8 GB", "abandoned", json!({
-                    "abandonments": 3, "frozen": true, "claimable": false, "question": 2,
-                }))]}]),
+        "rows": [item(9, "8 GB", "abandoned", json!({
+            "abandonments": 3, "frozen": true, "claimable": false, "question": 2,
+        }))]}]),
         json!([]),
     );
     let view = view(&feed);
     let row = row_with(&view, "i9");
     assert_eq!(row["enter"], json!(null));
     assert!(
-        row["under"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|u| u.as_str().unwrap_or_default().starts_with("frozen until a ruling")),
+        row["under"].as_array().unwrap().iter().any(|u| u
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("frozen until a ruling")),
         "{}",
         row["under"]
     );
@@ -260,7 +267,10 @@ fn the_badge_counts_what_the_room_is_waiting_on() {
 
     let mut idle = feed(json!([]), json!([]));
     idle.counts = Counts::default();
-    assert_eq!(view(&idle)["badge"], json!({"text": "0 live", "role": "faint"}));
+    assert_eq!(
+        view(&idle)["badge"],
+        json!({"text": "0 live", "role": "faint"})
+    );
 }
 
 /// **Each of the four verbs appears on the row that would do something**, which is this layer's
@@ -269,13 +279,13 @@ fn the_badge_counts_what_the_room_is_waiting_on() {
 fn the_four_controls_are_each_on_the_row_that_would_move() {
     let feed = feed(
         json!([{"tag": "ram", "counts": {"items": 2, "claimable": 1, "claimed": 1},
-                "rows": [
-                   item(1, "8 GB", "open", json!({})),
-                   item(2, "2 GB", "claimed", json!({
-                       "claimant": "s-a", "mine": true, "claimable": false,
-                       "claim_age_ms": 1_000, "beat_age_ms": 500,
-                   })),
-                ]}]),
+        "rows": [
+           item(1, "8 GB", "open", json!({})),
+           item(2, "2 GB", "claimed", json!({
+               "claimant": "s-a", "mine": true, "claimable": false,
+               "claim_age_ms": 1_000, "beat_age_ms": 500,
+           })),
+        ]}]),
         json!([{
             "id": 4, "entry": "q4", "item": 1, "tag": "ram", "body": "8 GB",
             "about": "item_raised", "asked_age_ms": 9_000,
@@ -289,7 +299,10 @@ fn the_four_controls_are_each_on_the_row_that_would_move() {
     // `rule` on each decision the question offers.
     assert_eq!(row_with(&view, "i1")["enter"]["verb"], json!("claim"));
     assert_eq!(row_with(&view, "i2")["enter"]["verb"], json!("release"));
-    assert_eq!(row_with(&view, "i2")["actions"][0]["verb"], json!("abandon"));
+    assert_eq!(
+        row_with(&view, "i2")["actions"][0]["verb"],
+        json!("abandon")
+    );
     let decisions: Vec<(String, String)> = rows(&view)
         .into_iter()
         .filter(|r| r["id"].as_str().unwrap_or_default().starts_with("q4:"))
@@ -320,7 +333,8 @@ fn the_four_controls_are_each_on_the_row_that_would_move() {
     for r in rows(&view) {
         if r["enter"]["verb"] == json!("rule") {
             assert_eq!(
-                r["enter"]["verb"], json!("rule"),
+                r["enter"]["verb"],
+                json!("rule"),
                 "every decision row carries the SAME verb and a different entry"
             );
         }
@@ -370,8 +384,17 @@ fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
     broken.unreadable = Some("the room at /tmp/room.sock did not answer in 10s".to_string());
     let view = view(&broken);
     assert_eq!(view["panels"].as_array().unwrap().len(), 1);
-    assert_eq!(view["panels"][0]["unavailable"]["why"], json!("the room at /tmp/room.sock did not answer in 10s"));
-    assert_eq!(view["panels"][0]["unavailable"]["fix"].as_str().unwrap().contains("harnessd --room"), true);
+    assert_eq!(
+        view["panels"][0]["unavailable"]["why"],
+        json!("the room at /tmp/room.sock did not answer in 10s")
+    );
+    assert_eq!(
+        view["panels"][0]["unavailable"]["fix"]
+            .as_str()
+            .unwrap()
+            .contains("harnessd --room"),
+        true
+    );
 }
 
 /// **A host that hands no feed is told apart from a room with nothing in it.**
@@ -390,13 +413,13 @@ fn no_feed_is_its_own_sentence() {
 fn every_act_names_one_of_the_four_controls() {
     let feed = feed(
         json!([{"tag": "ram", "counts": {"items": 2, "claimable": 1, "claimed": 1},
-                "rows": [
-                   item(1, "8 GB", "open", json!({})),
-                   item(2, "2 GB", "claimed", json!({
-                       "claimant": "s-a", "mine": true, "claimable": false,
-                       "claim_age_ms": 1_000, "beat_age_ms": 500,
-                   })),
-                ]}]),
+        "rows": [
+           item(1, "8 GB", "open", json!({})),
+           item(2, "2 GB", "claimed", json!({
+               "claimant": "s-a", "mine": true, "claimable": false,
+               "claim_age_ms": 1_000, "beat_age_ms": 500,
+           })),
+        ]}]),
         json!([{"id": 2, "entry": "q2", "item": 1, "tag": "ram", "body": "8 GB",
                 "about": "item_raised", "asked_age_ms": 1_000, "text": "…", "lost": 3,
                 "behind": 0}]),
@@ -416,10 +439,16 @@ fn every_act_names_one_of_the_four_controls() {
     }
     assert!(!seen.is_empty(), "the fixture offers keys");
     for verb in &seen {
-        assert!(declared.contains(&verb.as_str()), "`{verb}` is not one of the four");
+        assert!(
+            declared.contains(&verb.as_str()),
+            "`{verb}` is not one of the four"
+        );
     }
     // And all four are reached by this one fixture, so the set is not accidentally a subset.
     for want in declared {
-        assert!(seen.iter().any(|v| v == want), "`{want}` is never offered: {seen:?}");
+        assert!(
+            seen.iter().any(|v| v == want),
+            "`{want}` is never offered: {seen:?}"
+        );
     }
 }

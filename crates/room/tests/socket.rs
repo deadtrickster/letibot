@@ -120,18 +120,16 @@ fn a_client_that_named_another_room_is_refused_with_both_names() {
     .expect_err("a wrong room is refused");
     let said = refused.to_string();
     assert!(said.contains("lab2x1"), "the room's own name: {said}");
-    assert!(said.contains("the-other-box"), "and the one asked for: {said}");
+    assert!(
+        said.contains("the-other-box"),
+        "and the one asked for: {said}"
+    );
 
     // **And the room's own name is let in** — the same client, naming the right room, connects.
     // (`Client::connect` sends `host_name()`, which is what a server's default name IS; every other
     // test in this file leans on that.)
-    let good = Client::connect_named(
-        server.path(),
-        Speaker::top_level("s-a"),
-        "lab2x1",
-        wake,
-    )
-    .expect("the right room is reached");
+    let good = Client::connect_named(server.path(), Speaker::top_level("s-a"), "lab2x1", wake)
+        .expect("the right room is reached");
     assert!(
         good.welcome().identity.contains("no store"),
         "the welcome carries the room's own sentence: {}",

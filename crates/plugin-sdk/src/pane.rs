@@ -429,7 +429,9 @@ mod tests {
         assert!(why.contains("watchers"), "{why}");
         assert!(why.contains("monitors"), "and the ones it does know: {why}");
         // Every feed the plan names is here, so a later pane adds no mechanism.
-        for name in ["sessions", "monitors", "jobs", "todos", "git", "queue", "room"] {
+        for name in [
+            "sessions", "monitors", "jobs", "todos", "git", "queue", "room",
+        ] {
             assert!(Feed::parse(name).is_ok(), "{name}");
         }
         assert_eq!(Feed::parse("queue"), Ok(Feed::Queue));

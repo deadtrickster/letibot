@@ -62,9 +62,9 @@ pub mod conditions;
 pub mod contract;
 pub mod desk;
 pub mod feed;
-pub mod room_feed;
 pub mod look;
 pub mod rano;
+pub mod room_feed;
 pub mod scaffold;
 // **A tool a layer declares, and the looks its hook asks the host to run** — `tool_` in
 // `docs/plugins-plan.md` §4.8. It is a module rather than a section of this file because it is a
@@ -5480,7 +5480,11 @@ mod tests {
         let answer = r#"{"title":"the room","panels":[{"id":"queues","title":"queues",
             "summary":[{"tree":{"rows":[{"id":"i1","cells":["8 GB"],
             "enter":{"verb":"claim","id":"i1"}}]}}]}]}"#;
-        let root = room_project("room-key", answer, "\"claim\", \"release\", \"abandon\", \"rule\"");
+        let root = room_project(
+            "room-key",
+            answer,
+            "\"claim\", \"release\", \"abandon\", \"rule\"",
+        );
         let hub = Hub::new("s-room-pane");
         let host = PluginHost::discover(
             "s-room-pane",
@@ -5499,7 +5503,13 @@ mod tests {
         assert_eq!(inputs.len(), 1, "one render, one call");
         let feed = &inputs[0]["feeds"]["room"];
         assert_eq!(feed["here"], json!("s-room-pane"));
-        assert!(feed["identity"].as_str().unwrap_or_default().contains("no store"), "{feed}");
+        assert!(
+            feed["identity"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no store"),
+            "{feed}"
+        );
         assert_eq!(feed["tags"][0]["tag"], json!("ram"));
         assert_eq!(feed["tags"][0]["rows"][0]["entry"], json!("i1"));
         assert_eq!(feed["tags"][0]["rows"][0]["claimable"], json!(true));
@@ -5538,7 +5548,9 @@ mod tests {
                     if code == "room_act_refused" && detail.contains("does not hold")
             )),
             "the room's refusal reaches the person: {:?}",
-            said.iter().map(|e| format!("{:?}", e.event)).collect::<Vec<_>>()
+            said.iter()
+                .map(|e| format!("{:?}", e.event))
+                .collect::<Vec<_>>()
         );
 
         drop(other);
@@ -5554,7 +5566,11 @@ mod tests {
             "summary":[{"tree":{"rows":[{"id":"i1","cells":["8 GB"],
             "enter":{"verb":"veto","id":"i1"}}]}}]}]}"#;
         // The manifest declares the four, and `veto` is not one of them.
-        let root = room_project("room-veto", answer, "\"claim\", \"release\", \"abandon\", \"rule\"");
+        let root = room_project(
+            "room-veto",
+            answer,
+            "\"claim\", \"release\", \"abandon\", \"rule\"",
+        );
         let hub = Hub::new("s-plugins");
         let host = PluginHost::discover(
             "s-plugins",

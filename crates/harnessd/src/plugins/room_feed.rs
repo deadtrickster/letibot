@@ -308,7 +308,8 @@ mod tests {
 
     fn snapshot(items: Vec<Item>) -> RoomSnapshot {
         RoomSnapshot {
-            identity: "the room on /tmp/room.sock — started 4s ago and holding 3 item(s)".to_string(),
+            identity: "the room on /tmp/room.sock — started 4s ago and holding 3 item(s)"
+                .to_string(),
             arbiter: Some("s-room-abc".to_string()),
             connected: vec!["s-a".to_string()],
             lease_ms: 90_000,
@@ -377,7 +378,10 @@ mod tests {
         assert_eq!(disk["state"], json!("abandoned"));
         assert_eq!(disk["abandonments"], json!(2));
         assert_eq!(disk["claimable"], json!(true));
-        assert_eq!(disk["last_why"], json!("its beat stopped — the last one was 1m 30s old"));
+        assert_eq!(
+            disk["last_why"],
+            json!("its beat stopped — the last one was 1m 30s old")
+        );
 
         // And the counts a header reads.
         assert_eq!(value["counts"]["items"], json!(3));
@@ -395,7 +399,11 @@ mod tests {
             claimed(2, "ram", "s-b", NOW - 200_000, NOW - 90_001),
         ]));
         let rows = &value["tags"][0]["rows"];
-        assert_eq!(rows[0]["stale"], json!(false), "a beat at the boundary is alive");
+        assert_eq!(
+            rows[0]["stale"],
+            json!(false),
+            "a beat at the boundary is alive"
+        );
         assert_eq!(rows[1]["stale"], json!(true), "one past it is not");
     }
 
@@ -440,7 +448,10 @@ mod tests {
         let mut item = open(1, "ram", "8 GB\nand a\tfast disk", "s-a", 0);
         item.body = "8 GB\nand a\tfast disk".to_string();
         let value = feed(snapshot(vec![item]));
-        assert_eq!(value["tags"][0]["rows"][0]["body"], json!("8 GB and a fast disk"));
+        assert_eq!(
+            value["tags"][0]["rows"][0]["body"],
+            json!("8 GB and a fast disk")
+        );
     }
 
     /// **The clock is quantised to the second**, so a pane's cache hits for the rest of it.

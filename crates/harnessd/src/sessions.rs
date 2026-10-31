@@ -2943,11 +2943,10 @@ impl<'a> Sessions<'a> {
         // `sessions` feed is drawn from it (`docs/plugins-plan.md` §4.9). The registry is the one
         // holder of *every* session, live and on disk, so it is the whole source; a host built by
         // a test has none and a pane that declares the feed says so on its screen.
-        let host = crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(
-            Arc::new(crate::plugins::feed::RegistryFeed::new(
-                self.registry.clone(),
-            )),
-        );
+        let host =
+            crate::plugins::PluginHost::production(session_id, &workspace).with_sessions(Arc::new(
+                crate::plugins::feed::RegistryFeed::new(self.registry.clone()),
+            ));
         // **And the session's own connection to the box's room**, so a room pane is drawn from it
         // and its four controls have somewhere to go. `None` on a box with no coordinator, and on a
         // subagent — and a host with no room hands a layer that declares the feed **no key**, which

@@ -325,6 +325,33 @@ not the folder's local model, and a provider session's byte vocabulary needs no 
 is `harnessd --room` and nothing else. An operator who wants another model runs
 `harnessd --room --model …` by hand, and every launcher after that finds it and leaves it alone.
 
+### Slice 3, as built — the pane, and the room's name on the wire
+
+| what the list asked for | where it is |
+|---|---|
+| the queues per tag, with each item's claimant, the age of its beat and its abandonment count | `crates/harnessd/src/plugins/room_feed.rs` — the `room` feed, built from the session's own connection (`room::link::SessionRoom` reads `Request::Room` once a second on a thread of its own) |
+| the room's own identity, printed | the feed's `identity` field, which is `Server::identity()` verbatim — *started T ago and holding N item(s)*, and the sentence saying the room keeps no store. `Server::identity_at(now)` exists so a test can pin the age |
+| the four manual controls | `plugins/builtin/room` draws them; `room::link::pane_frame` turns a row's entry and verb into a frame; `PluginHost::action` performs it and says a refusal (`room_act_refused`) |
+| the room's name in the protocol | `ROOM_PROTOCOL_VERSION` 2: `Hello.room`, `Welcome.identity`, and a `Bye` that names which side is older |
+
+**The four controls, and what each is in the room's own vocabulary.** `claim` is `claim_item` — on
+behalf of the session whose pane it is, and the item must still be the head. `release` and
+`abandon` are the SAME verb (`abandon`) with two different sentences left on the item's history: a
+voluntary release is still an abandonment and still counted, so the difference the person gets is
+the reason, and the reason is the host's to write. `rule` answers a question, and the decision
+rides in the row's entry (`q3:retry`, `q3:drop`, `q3:hand:<session>`) because the decision is what
+the person picked.
+
+**A key is only offered where it would do something.** A row held by somebody else carries no act:
+`claim` would be refused `Busy` and `release` would be refused `NotHeld`. A row this session holds
+leads with `release` and offers `x` for `abandon`. A frozen item offers nothing — its question is
+the `a` panel, where the decisions are rows.
+
+**The manifest gates both doors to a verb.** `actions = ["claim", "release", "abandon", "rule"]`,
+and `View::validate_for` refuses a row whose `enter` OR whose letter names a verb that is not in it.
+The daemon runs that check before a pane is drawn (`plugins::validated`), so a layer cannot reach a
+verb nobody reviewed.
+
 ### Still owed
 
 1. **Restart the server**, asked of the daemon that supervises the coordinator and not performed by
@@ -404,33 +431,6 @@ What is still open here, so nobody reads this as finished:
 * **The pass asks the room once per session per tick**, which is one socket frame each. On a box
   with a coordinator and many sessions that is the cost; a box with none pays one `Option` test and
   is not woken for it at all (`Sessions::has_a_room`).
-
-### Slice 3, as built — the pane, and the room's name on the wire
-
-| what the list asked for | where it is |
-|---|---|
-| the queues per tag, with each item's claimant, the age of its beat and its abandonment count | `crates/harnessd/src/plugins/room_feed.rs` — the `room` feed, built from the session's own connection (`room::link::SessionRoom` reads `Request::Room` once a second on a thread of its own) |
-| the room's own identity, printed | the feed's `identity` field, which is `Server::identity()` verbatim — *started T ago and holding N item(s)*, and the sentence saying the room keeps no store. `Server::identity_at(now)` exists so a test can pin the age |
-| the four manual controls | `plugins/builtin/room` draws them; `room::link::pane_frame` turns a row's entry and verb into a frame; `PluginHost::action` performs it and says a refusal (`room_act_refused`) |
-| the room's name in the protocol | `ROOM_PROTOCOL_VERSION` 2: `Hello.room`, `Welcome.identity`, and a `Bye` that names which side is older |
-
-**The four controls, and what each is in the room's own vocabulary.** `claim` is `claim_item` — on
-behalf of the session whose pane it is, and the item must still be the head. `release` and
-`abandon` are the SAME verb (`abandon`) with two different sentences left on the item's history: a
-voluntary release is still an abandonment and still counted, so the difference the person gets is
-the reason, and the reason is the host's to write. `rule` answers a question, and the decision
-rides in the row's entry (`q3:retry`, `q3:drop`, `q3:hand:<session>`) because the decision is what
-the person picked.
-
-**A key is only offered where it would do something.** A row held by somebody else carries no act:
-`claim` would be refused `Busy` and `release` would be refused `NotHeld`. A row this session holds
-leads with `release` and offers `x` for `abandon`. A frozen item offers nothing — its question is
-the `a` panel, where the decisions are rows.
-
-**The manifest gates both doors to a verb.** `actions = ["claim", "release", "abandon", "rule"]`,
-and `View::validate_for` refuses a row whose `enter` OR whose letter names a verb that is not in it.
-The daemon runs that check before a pane is drawn (`plugins::validated`), so a layer cannot reach a
-verb nobody reviewed.
 
 ## What the state machine assumes
 

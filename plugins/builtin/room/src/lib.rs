@@ -531,7 +531,11 @@ fn questions(feed: &Feed) -> Value {
                 "it has lost its claimants — offer it again, give it to somebody, or drop it"
             }],
         }));
-        rows.push(decision_row(q, "retry", "retry — offer it again, the count kept"));
+        rows.push(decision_row(
+            q,
+            "retry",
+            "retry — offer it again, the count kept",
+        ));
         rows.push(decision_row(
             q,
             "drop",

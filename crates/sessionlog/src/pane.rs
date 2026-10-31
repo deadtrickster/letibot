@@ -992,7 +992,10 @@ mod tests {
         let why = undeclared_action.validate_for(&declared).unwrap_err();
         assert!(why.contains("`rule`"), "{why}");
         assert!(why.contains("i12"), "the row it is on: {why}");
-        assert!(why.contains("claim, abandon"), "and what was declared: {why}");
+        assert!(
+            why.contains("claim, abandon"),
+            "and what was declared: {why}"
+        );
 
         // And the row's own `enter`, as before.
         let undeclared_enter = row(
