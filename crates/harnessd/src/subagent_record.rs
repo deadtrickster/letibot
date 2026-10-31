@@ -53,6 +53,7 @@ use letibot_tokencore::store::{Store, SubagentRun};
 use letibot_tools::builtins::task::{
     Downgrade, Placement, RestoreMode, TaskSpec, TaskStatus, WorktreePlacement,
 };
+use letibot_transcript::TranscriptItem;
 use serde::{Deserialize, Serialize};
 
 /// **How many restarts in a row a child may be brought back from** without its daemon having
@@ -247,15 +248,48 @@ pub struct SubagentRecord {
     /// The daemon's registry, whose `is_stopping` is what tells an orderly shutdown's stop from a
     /// person's.
     pub registry: Arc<Registry>,
+    /// **The row its spawn could not write**, kept so that the child's own acts can write it
+    /// later.
+    ///
+    /// A spawn is not refused over a busy store — the work is worth more than the record — so a
+    /// `put_subagent_run` that comes back `database is locked` used to be printed and dropped,
+    /// which left a child nothing could list, answer for or resume (MEASURED 2026-11-01). The
+    /// row is held here instead and written at the child's first act that touches it
+    /// ([`Self::settled`], [`Self::killed`], [`Self::later_turn_began`]), when the store has
+    /// usually finished whatever it was doing.
+    pub pending: Option<SubagentRun>,
 }
 
 impl SubagentRecord {
+    /// **The row the spawn could not write is written now** — see [`Self::pending`]. A no-op for
+    /// every record whose row landed at the spawn, and for one that lands now: the read is what
+    /// keeps it from being written twice.
+    fn ensure_written(&self) {
+        let Some(row) = &self.pending else { return };
+        let wrote = self.store.with(|s| {
+            if s.subagent_run(&self.child)
+                .map_err(|e| e.to_string())?
+                .is_some()
+            {
+                return Ok(());
+            }
+            s.put_subagent_run(row).map_err(|e| e.to_string())
+        });
+        if let Err(why) = wrote {
+            eprintln!(
+                "  {} · the row it was started under is still not written ({why})",
+                self.child
+            );
+        }
+    }
+
     /// **The child's first turn settled** — or was stopped. `killed` is the slot's own flag.
     ///
     /// The one judgement here is the shutdown: once the daemon has begun to stop
     /// (`Registry::is_stopping`), whatever ends the child's turn is the daemon's ending and not
     /// the child's — see the arm below.
     pub fn settled(&self, status: &TaskStatus, killed: bool) {
+        self.ensure_written();
         let wrote = if self.registry.is_stopping() {
             // **The daemon's ending, not the child's.** `Registry::close` interrupts every turn in
             // flight, and an interrupted turn comes back as an ANSWER — whatever the child had
@@ -305,6 +339,7 @@ impl SubagentRecord {
     /// its row still said `done`, so the next daemon left it, every door then disagreed about it,
     /// and the sweep it was waiting on was never mentioned again.
     pub fn later_turn_began(&self) -> Option<String> {
+        self.ensure_written();
         match self.store.with(|s| {
             s.reopen_subagent_run(&self.child)
                 .map_err(|e| e.to_string())
@@ -353,6 +388,7 @@ impl SubagentRecord {
         if self.registry.is_stopping() {
             return;
         }
+        self.ensure_written();
         if let Err(why) = self.store.with(|s| {
             s.settle_subagent_run(&self.child, "killed", Some("stopped"))
                 .map_err(|e| e.to_string())
@@ -538,6 +574,68 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
     }
 }
 
+/// **What a child with NO record reads as** — the second witness, and the answer that used to be
+/// *nothing at all*.
+///
+/// A `subagent_run` row is written before the child's thread exists, and a store that refused
+/// that write (MEASURED 2026-11-01: `sqlite: database is locked`, printed and carried on) leaves
+/// a child that no door can see: not in `task_result`'s list, refused by `task_resume` as never
+/// started, and absent from the restart's own restore. Its session row is a different write —
+/// made by the child when it opens — so it is usually still there, and it is all a reader has.
+///
+/// **Two readings, and the difference is the child's last row.** An `Assistant` with no call
+/// after it is a finished turn (`StoredSession::last_item`'s rule, the one the subagents pane
+/// already uses for a child its head did not watch end), so its text IS the answer — returned as
+/// `Done`, exactly as a recorded child's answer is. Anything else is a turn that was still going
+/// when the rows stopped: there is no answer, and the sentence says so rather than inventing
+/// one.
+pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild) -> TaskStatus {
+    let id = &child.id;
+    if let Some(TranscriptItem::Assistant {
+        text, tool_calls, ..
+    }) = &child.last_item
+        && tool_calls.is_empty()
+        && !text.trim().is_empty()
+    {
+        return TaskStatus::Done {
+            answer: text.clone(),
+            child: None,
+        };
+    }
+    TaskStatus::Failed {
+        why: format!(
+            "nothing is running it, and no record of it was ever written: the store refused the \
+             row its spawn writes (it was busy), so no settlement of it was collected and \
+             `task_resume` cannot bring it back — the spawn's own description is what it would \
+             need, and that is the row that is missing. Its last row is {}. Its session `{id}` \
+             and its transcript hold everything it did — `transcript` with session=\"{id}\" reads \
+             it — and it worked in `{}`.",
+            ended_in(child.last_item.as_ref()),
+            child.workspace_root
+        ),
+    }
+}
+
+/// **How a child's transcript ended**, in the words a parent needs — the companion of
+/// [`a_child_with_no_record`].
+fn ended_in(last: Option<&TranscriptItem>) -> String {
+    match last {
+        None => "nothing: it wrote no row of its own at all".into(),
+        Some(TranscriptItem::Assistant { tool_calls, .. }) if !tool_calls.is_empty() => format!(
+            "a call it had just asked for (`{}`) and never got an answer to",
+            tool_calls[0].name
+        ),
+        Some(TranscriptItem::Assistant { .. }) => "an empty answer".into(),
+        Some(TranscriptItem::ToolResult { name, .. }) => {
+            format!("the result of `{name}`, so the turn went on from there")
+        }
+        Some(TranscriptItem::User { .. }) => "the prompt it was given".into(),
+        Some(TranscriptItem::Reasoning { .. }) => "a thought it never finished".into(),
+        Some(TranscriptItem::System { .. }) => "a notice it was given".into(),
+        Some(TranscriptItem::SegmentMark { .. }) => "a mark in its conversation".into(),
+    }
+}
+
 /// **Whether `task_resume` may bring this child back** — the explicit, one-call door (the
 /// operator: *"this is what you wre running and how to restart that"*). `Ok` is its spec.
 ///
@@ -710,6 +808,61 @@ mod tests {
     }
 
     const NEW: &str = "new";
+
+    /// **A spawn whose row the store refused still leaves a record when the child settles.**
+    ///
+    /// The row is written before the child's thread exists, so a `database is locked` there used
+    /// to print and be dropped — and the child then had no record at all (MEASURED 2026-11-01).
+    /// The row is kept on the record instead ([`SubagentRecord::pending`]) and written at the
+    /// child's first act that touches it, which is this: its own settlement, minutes later, when
+    /// the store has finished whatever it was doing.
+    #[test]
+    fn a_row_the_spawn_could_not_write_is_written_when_the_child_settles() {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-record-pending-{}-{}.db",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{s}", path.display()));
+        }
+        let store = RunStore {
+            path: path.clone(),
+            cell: Default::default(),
+        };
+        let mut row = run("running");
+        row.child_id = "s-1-sub-lost".into();
+        let record = SubagentRecord {
+            store: store.clone(),
+            child: "s-1-sub-lost".into(),
+            registry: Registry::new(),
+            pending: Some(row),
+        };
+        assert!(
+            store
+                .with(|s| s.subagent_run("s-1-sub-lost").map_err(|e| e.to_string()))
+                .unwrap()
+                .is_none(),
+            "the state this test is about: a spawn whose row was not written"
+        );
+        record.settled(
+            &TaskStatus::Done {
+                answer: "the sweep is in".into(),
+                child: None,
+            },
+            false,
+        );
+        let written = store
+            .with(|s| s.subagent_run("s-1-sub-lost").map_err(|e| e.to_string()))
+            .unwrap()
+            .expect("the row the spawn could not write is written at the settlement");
+        assert_eq!(written.state, "done");
+        assert_eq!(written.outcome.as_deref(), Some("the sweep is in"));
+        assert_eq!(written.parent_id, "s-1");
+        for s in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{s}", path.display()));
+        }
+    }
 
     #[test]
     fn a_running_child_of_a_gone_daemon_is_resumed_with_its_own_spec() {
@@ -1053,6 +1206,69 @@ mod tests {
         // And a record written before the field existed decodes with no name rather than failing.
         let old = r#"{"role":"coder","placement":"host"}"#;
         assert_eq!(RecordedSpec::from_json(old).unwrap().slug, None);
+    }
+
+    /// **A child with no record reads two ways, and the difference is its last row** — an
+    /// answer is returned as an answer, and anything else is said to be gone rather than dressed
+    /// up as one.
+    ///
+    /// The state this describes is not hypothetical: a `put_subagent_run` that comes back
+    /// `database is locked` prints and carries on, and the child it was for then has no record at
+    /// all (MEASURED 2026-11-01 — `s-…-sub-1793488007308855461`, six and a half minutes of work,
+    /// four commits, and no row).
+    #[test]
+    fn a_child_with_no_record_reads_its_own_last_row() {
+        let child = |last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
+            id: "s-1-sub-lost".into(),
+            title: Some("the-notices-stay-collapsed".into()),
+            role: Some("coder".into()),
+            workspace_root: "/wt/agent-lost".into(),
+            created_ms: 1,
+            last_item: last,
+        };
+        // An answer with no call after it is a finished turn: its text IS the answer.
+        let answered = a_child_with_no_record(&child(Some(TranscriptItem::Assistant {
+            text: "the sweep is in".into(),
+            tool_calls: vec![],
+            truncated: false,
+        })));
+        assert_eq!(
+            answered,
+            TaskStatus::Done {
+                answer: "the sweep is in".into(),
+                child: None,
+            }
+        );
+        // A turn that was still going when the rows stopped has NO answer, and the sentence says
+        // where the child was and where its work still is.
+        let gone = a_child_with_no_record(&child(Some(TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "ok".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        })));
+        let TaskStatus::Failed { why } = gone else {
+            panic!("a child mid-turn has no answer: {gone:?}");
+        };
+        assert!(why.contains("no record of it was ever written"), "{why}");
+        assert!(why.contains("the result of `bash`"), "{why}");
+        assert!(
+            why.contains("`transcript` with session=\"s-1-sub-lost\""),
+            "{why}"
+        );
+        assert!(why.contains("/wt/agent-lost"), "{why}");
+        assert!(
+            !why.contains("task_resume` with task="),
+            "nothing can resume it: {why}"
+        );
+        // And a child that wrote no row of its own at all.
+        let TaskStatus::Failed { why } = a_child_with_no_record(&child(None)) else {
+            panic!("a child that wrote nothing has no answer");
+        };
+        assert!(why.contains("it wrote no row of its own at all"), "{why}");
     }
 
     #[test]

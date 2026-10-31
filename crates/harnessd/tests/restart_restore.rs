@@ -955,6 +955,132 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     d.stop(None);
 }
 
+/// **A child whose record was never written is still this session's child** — listed, readable,
+/// and refused by name when nothing can bring it back.
+///
+/// MEASURED 2026-11-01 on the operator's daemon: `s-…-sub-1793488007308855461`
+/// (`the-notices-stay-collapsed`) was working when the daemon restarted, and after the restart
+/// `task_result` listed 54 subagents and **that one was not among them** — not `working`, not
+/// `answered`, not `failed`. It was not filtered out: its `subagent_run` row was never written.
+/// The daemon's own log says so in as many words —
+///
+/// ```text
+///   s-…-sub-1793488007308855461 · not recorded (sqlite: database is locked); it runs, and a
+///   daemon restart will not bring it back
+/// ```
+///
+/// — and the child went on working for six and a half minutes, wrote 1456 rows and left four
+/// commits, with nothing anywhere that named it as a child of this session except its own
+/// session row. That row is the second witness, and this is the test that reads it: the store is
+/// staged as a lost spawn leaves it (a child session, no `subagent_run` row, a turn that never
+/// ended), the parent is opened, and every door a model has is asked about the child.
+#[test]
+fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("a daemon and its children", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-lost-child");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    // **One recorded child, so the store has a window** — it began recording children at this
+    // row, and a reader that ignored the window would list every child this store ever had.
+    let store = Store::open(&dir.store()).unwrap();
+    let mut kept = run(
+        "s-restart-parent-sub-kept",
+        PARENT,
+        "done",
+        &TaskSpec {
+            slug: Some("kept".into()),
+            ..TaskSpec::default()
+        },
+    );
+    kept.outcome = Some("kept is in".into());
+    kept.delivered = true;
+    store.put_subagent_run(&kept).unwrap();
+    // **And the child the store refused the row for**: its session, and nothing else.
+    let lost = "s-restart-parent-sub-lost";
+    store
+        .put_session(&letibot_tokencore::store::SessionRecord {
+            id: lost.into(),
+            title: Some("the-notices-stay-collapsed".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/wt/agent-the-notices-stay-collapsed".into(),
+            owner: "deadtrickster".into(),
+            role: Some("coder".into()),
+            approvers: vec![],
+            parent_session_id: Some(PARENT.into()),
+        })
+        .unwrap();
+    assert!(
+        store.subagent_run(lost).unwrap().is_none(),
+        "the state this test is about: a child with no record"
+    );
+
+    let d = a_daemon(&parts, &cfg);
+    // **Listed** — by its handle, marked as a child with no record rather than silently missing.
+    let listed = d.call("task_result", serde_json::json!({})).payload;
+    eprintln!("--- what task_result lists ---\n{listed}");
+    assert!(
+        listed.contains(lost),
+        "a child the daemon lost is not absent from the list: {listed}"
+    );
+    assert!(
+        listed.contains(&format!("{lost} — gone with no answer")),
+        "and it says what it is: {listed}"
+    );
+    assert!(
+        listed.contains("s-restart-parent-sub-kept") && listed.contains("answered"),
+        "the recorded child reads as it always did: {listed}"
+    );
+
+    // **Readable** — the single-handle answer says it is gone, where its work is, and how to read
+    // it, and does not pretend to resume what has no description to resume from.
+    let r = task_result(&d, lost);
+    eprintln!("--- what task_result says about it ---\n{}", r.payload);
+    assert!(
+        r.payload.contains("no record of it was ever written"),
+        "{}",
+        r.payload
+    );
+    assert!(
+        r.payload.contains("/wt/agent-the-notices-stay-collapsed"),
+        "{}",
+        r.payload
+    );
+    assert!(
+        r.payload
+            .contains(&format!("`transcript` with session=\"{lost}\"")),
+        "{}",
+        r.payload
+    );
+    // By its name too, which the store's `title` carries.
+    let by_name = task_result(&d, "the-notices-stay-collapsed");
+    assert!(
+        by_name.payload.contains("no record of it was ever written"),
+        "{}",
+        by_name.payload
+    );
+    // **And `task_resume` says why it cannot come back** rather than calling it a stranger.
+    let resumed = d.call("task_resume", serde_json::json!({"task": lost}));
+    assert!(
+        resumed
+            .payload
+            .contains("there is no record of it to resume from"),
+        "{}",
+        resumed.payload
+    );
+    d.stop(None);
+}
+
 /// **A job the old daemon's orderly stop ended is reminded** — pg-noop's `slt-sweep` (j17239),
 /// killed at 02:05:55 by `end_running("the daemon stopping")`: after a clean restart no job row
 /// reads `running`, so the reminder was never given.

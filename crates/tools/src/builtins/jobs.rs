@@ -1691,6 +1691,7 @@ mod tests {
                     handle: h.into(),
                     slug: Some(s.into()),
                     own: true,
+                    lost: false,
                 })
                 .collect()
             }

@@ -20821,6 +20821,48 @@ impl HarnessTaskRunner {
             })
     }
 
+    /// **This session's children the store names and the record does not** — see
+    /// [`letibot_tokencore::store::Store::children_without_runs`], whose window is what keeps this
+    /// to the children a record was *due* for.
+    ///
+    /// **The review queue's session is not asked**, for the reason
+    /// [`HarnessTaskRunner::record_start`] does not record its children: a reviewer is the queue's
+    /// (it has its own lease and starts its own), so *no record* is the ordinary state there and
+    /// the queue's pane is the door onto it. Measured on the operator's box, that session has 447
+    /// such children and every one of them would have been news to a model.
+    fn unrecorded_children(&self) -> Vec<letibot_tokencore::store::UnrecordedChild> {
+        if self.base.session_id == crate::sessions::gatekeeper::session(&self.base.workspace) {
+            return Vec::new();
+        }
+        let Some(store) = self.run_store() else {
+            return Vec::new();
+        };
+        let me = self.base.session_id.clone();
+        store
+            .with(|s| {
+                let since = s
+                    .first_subagent_run_ms()
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or(0);
+                s.children_without_runs(&me, since)
+                    .map_err(|e| e.to_string())
+            })
+            .unwrap_or_default()
+    }
+
+    /// [`Self::unrecorded_children`] for one handle — the same gatekeeper rule and the same store.
+    fn unrecorded_child(&self, handle: &str) -> Option<letibot_tokencore::store::UnrecordedChild> {
+        if self.base.session_id == crate::sessions::gatekeeper::session(&self.base.workspace) {
+            return None;
+        }
+        let store = self.run_store()?;
+        let me = self.base.session_id.clone();
+        store
+            .with(|s| s.child_without_run(&me, handle).map_err(|e| e.to_string()))
+            .ok()
+            .flatten()
+    }
+
     /// **Write a fresh child's row** — `running`, owned by this daemon, with the subtask and the
     /// spawn's description — and hand back the record its slot moves. See
     /// `crate::subagent_record`.
@@ -20861,12 +20903,22 @@ impl HarnessTaskRunner {
                 "  {sub_id} · not recorded ({why}); it runs, and a daemon restart will not bring \
                  it back"
             );
-            return None;
+            // **The row is kept rather than dropped.** A busy store is a moment, not a verdict:
+            // the child's own settlement (or kill, or later turn) writes this row, so a spawn
+            // that lost the write still leaves a record — and a child that never gets that far is
+            // still named by its session (`children`, `look`).
+            return Some(crate::subagent_record::SubagentRecord {
+                store,
+                child: sub_id.to_string(),
+                registry: self.registry.clone(),
+                pending: Some(run),
+            });
         }
         Some(crate::subagent_record::SubagentRecord {
             store,
             child: sub_id.to_string(),
             registry: self.registry.clone(),
+            pending: None,
         })
     }
 
@@ -21029,6 +21081,7 @@ impl HarnessTaskRunner {
             store: store.clone(),
             child: run.child_id.clone(),
             registry: self.registry.clone(),
+            pending: None,
         };
         let notice = crate::subagent_record::child_notice(letibot_sessionlog::registry::now_ms());
         match self.spawn_child(
@@ -21323,11 +21376,24 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let run = store
             .with(|s| s.subagent_run(handle).map_err(|e| e.to_string()))?
             .filter(|r| r.parent_id == self.base.session_id)
-            .ok_or_else(|| {
-                format!(
+            .ok_or_else(|| match self.unrecorded_child(handle) {
+                // **A child whose record was never written cannot be resumed, and it says so.**
+                // The spawn's own description is what a resume is given — the subtask, the role,
+                // the placement, the worktree — and that is exactly the row that is missing. The
+                // refusal names the two things that are still there rather than calling the child
+                // a stranger.
+                Some(child) => format!(
+                    "`{handle}` is one of this session's children, and there is no record of it to \
+                     resume from: the store refused the row its spawn writes, so the subtask it was \
+                     given and the placement it worked in were never written down. Nothing was \
+                     spawned. Its session `{handle}` and its work in `{}` are still there — \
+                     `transcript` with session=\"{handle}\" reads what it did.",
+                    child.workspace_root
+                ),
+                None => format!(
                     "this session started no subagent `{handle}` that the store remembers; \
                      `task_result` with no `task` lists the ones it did. Nothing was spawned."
-                )
+                ),
             })?;
         let held = self
             .slot(handle)
@@ -21878,7 +21944,14 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .filter(|r| r.parent_id == me);
         match run {
             Some(run) => crate::subagent_record::recorded_status(&run, self.registry.instance()),
-            None => letibot_tools::builtins::task::TaskStatus::Unknown,
+            // **No record: its own session is the witness.** A spawn whose row the store refused
+            // still opened a session, and that session is the only thing left that says this
+            // child existed — answering `Unknown` made the third door say *"no subagent called
+            // … was started here"* about a child this session started and whose work is on disk.
+            None => match self.unrecorded_child(handle) {
+                Some(child) => crate::subagent_record::a_child_with_no_record(&child),
+                None => letibot_tools::builtins::task::TaskStatus::Unknown,
+            },
         }
     }
 
@@ -21951,6 +22024,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 handle: h.clone(),
                 slug: s.slug.clone(),
                 own: s.owner == me,
+                lost: false,
             })
             .collect();
         let runs = self
@@ -21977,8 +22051,25 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     handle: run.child_id,
                     slug: Some(slug),
                     own: true,
+                    lost: false,
                 }),
             }
+        }
+        // **And the children whose record was never written** — a spawn whose `subagent_run` row
+        // the store refused. The record is what this list was built from, so such a child was
+        // simply absent: not `working`, not `answered`, not `failed` (MEASURED 2026-11-01, a child
+        // that ran six and a half minutes and left four commits). Its own session is the second
+        // witness, and it is named by the same handle.
+        for child in self.unrecorded_children() {
+            if out.iter().any(|c| c.handle == child.id) {
+                continue;
+            }
+            out.push(ChildName {
+                handle: child.id,
+                slug: child.title.clone().filter(|t| !t.trim().is_empty()),
+                own: true,
+                lost: true,
+            });
         }
         out
     }

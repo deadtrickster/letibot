@@ -1270,6 +1270,7 @@ impl Named {
             handle: handle.into(),
             slug: slug.map(str::to_string),
             own,
+            lost: false,
         };
         Named {
             kids: std::sync::Mutex::new(vec![
@@ -1297,6 +1298,7 @@ impl TaskRunner for Named {
             handle: handle.clone(),
             slug: Some(slug),
             own: true,
+            lost: false,
         });
         Ok(handle)
     }
@@ -1694,6 +1696,7 @@ fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
                 handle: "sub-a-child-called-parent".into(),
                 slug: Some(PARENT_HANDLE.into()),
                 own: true,
+                lost: false,
             }]
         }
         fn parent(&self) -> Option<String> {

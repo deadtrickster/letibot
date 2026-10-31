@@ -479,6 +479,11 @@ pub struct ChildName {
     pub handle: String,
     pub slug: Option<String>,
     pub own: bool,
+    /// **No `subagent_run` row was ever written for this child** — its spawn lost the store to
+    /// another writer, so the runner read it from the child's own session instead of from a
+    /// record. A lost child has no collected answer and nothing that resumes it, so the listing
+    /// says so rather than drawing it exactly as a recorded one.
+    pub lost: bool,
 }
 
 impl ChildName {
@@ -897,6 +902,7 @@ pub trait TaskRunner: Send + Sync {
                 handle,
                 slug: None,
                 own: true,
+                lost: false,
             })
             .collect()
     }
@@ -1811,17 +1817,35 @@ impl Tool for TaskResultTool {
                 // child between turns is the sentence this change exists to stop printing, and the
                 // word comes from the same judgement the single-handle answer uses
                 // (`ChildDoing::said`). A runner that keeps no reading keeps the old words.
-                let state = match &status {
-                    TaskStatus::Running { note, .. } => match (status.doing(), note) {
-                        (Some(doing), Some(n)) => format!("{} — {n}", doing.said()),
-                        (Some(doing), None) => doing.said().to_string(),
-                        (None, Some(n)) => format!("running — {n}"),
-                        (None, None) => "running".into(),
-                    },
-                    TaskStatus::Done { .. } => "answered".into(),
-                    TaskStatus::Failed { .. } => "failed".into(),
-                    TaskStatus::Unknown => "unknown".into(),
-                };
+                //
+                // **A child with no record is marked as one**: its state is read from its own
+                // session, which is the only witness there is — so a reader is told which of the
+                // two it is looking at rather than drawing a lost child exactly as a recorded one.
+                let state =
+                    if c.lost {
+                        match &status {
+                        TaskStatus::Done { .. } => {
+                            "answered, read from its own session — no record of it was ever \
+                             written"
+                                .to_string()
+                        }
+                        _ => "gone with no answer — nothing is running it, and no record of it was \
+                              ever written"
+                            .to_string(),
+                    }
+                    } else {
+                        match &status {
+                            TaskStatus::Running { note, .. } => match (status.doing(), note) {
+                                (Some(doing), Some(n)) => format!("{} — {n}", doing.said()),
+                                (Some(doing), None) => doing.said().to_string(),
+                                (None, Some(n)) => format!("running — {n}"),
+                                (None, None) => "running".into(),
+                            },
+                            TaskStatus::Done { .. } => "answered".into(),
+                            TaskStatus::Failed { .. } => "failed".into(),
+                            TaskStatus::Unknown => "unknown".into(),
+                        }
+                    };
                 out.push_str(&format!("  {} — {state}\n", c.label()));
             }
             return Invocation::ok(out);

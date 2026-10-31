@@ -3281,6 +3281,7 @@ impl<'a> Sessions<'a> {
                 },
                 child: session_id.to_string(),
                 registry: self.registry.clone(),
+                pending: None,
             });
         let prior = record.as_ref().and_then(|r| r.later_turn_began());
         let out = run_turn(
