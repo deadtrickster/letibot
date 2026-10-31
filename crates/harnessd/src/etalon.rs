@@ -418,7 +418,7 @@ impl Report {
         if !self.not_run_constructs.is_empty() {
             out.push_str("\nnot_run, by construct (commands it appears in / commands it is the only reason for):\n");
             let mut v: Vec<_> = self.not_run_constructs.iter().collect();
-            v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            v.sort_by_key(|e| std::cmp::Reverse(e.1.0));
             for (k, (any, alone)) in v {
                 out.push_str(&format!("  {any:>6} / {alone:>6}  {k}\n"));
             }

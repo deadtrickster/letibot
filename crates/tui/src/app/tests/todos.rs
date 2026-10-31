@@ -447,7 +447,7 @@ fn the_todo_card_takes_a_title_and_a_detail_and_adds_them_as_yours() {
 
     // **An empty title is refused and the card STAYS UP**, which is the one field rule.
     a.command("todo");
-    assert!(matches!(a.key(Key::Enter), None));
+    assert!(a.key(Key::Enter).is_none());
     assert!(
         a.todo_draft.is_some(),
         "the card came down on an empty title"
@@ -1684,9 +1684,8 @@ fn starter_todos_copy_onto_the_operators_half() {
         a.todo_seed_pending,
         "the attach saw a due seed and is waiting for the board"
     );
-    assert_eq!(
+    assert!(
         a.queued.iter().any(|q| matches!(q, Action::ListTodos)),
-        true,
         "the board read the seed waits on was queued: {:?}",
         a.queued
     );
@@ -1950,7 +1949,7 @@ fn a_title_over_the_cap_is_refused_at_the_operators_own_doors() {
     // up, and what was typed is not lost.
     a.command("todo");
     typed(&mut a, &long);
-    assert!(matches!(a.key(Key::Enter), None), "nothing was added");
+    assert!(a.key(Key::Enter).is_none(), "nothing was added");
     assert!(a.todo_draft.is_some(), "the card stayed up");
     let said = a.notice.clone().unwrap_or_default();
     assert!(

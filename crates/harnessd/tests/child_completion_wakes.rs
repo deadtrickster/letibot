@@ -57,10 +57,10 @@ use letibot_transcript::{Speaker, ToolOutcome, TranscriptItem, UserPart};
 use letibot_turn::Endpoint;
 
 /// The canned server the turn crate's tests replay, shared by path rather than copied — a
-/// second copy of the wire shape would drift from the first. `dead_code` allowed because this
-/// file writes its own server (it has to hold one request and answer the others): what it takes
-/// from here is [`canned::Frame`] and [`canned::sse_body`].
-#[allow(dead_code)]
+/// second copy of the wire shape would drift from the first. This file writes its own server
+/// (it has to hold one request and answer the others): what it takes from here is
+/// [`canned::Frame`] and [`canned::sse_body`], and the file's own `dead_code` allow covers the
+/// rest.
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

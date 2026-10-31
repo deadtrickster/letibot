@@ -22,7 +22,6 @@ use letibot_sessionlog::registry::{Registry, SessionWiring};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 use letibot_turn::CompactionOutcome;
 
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

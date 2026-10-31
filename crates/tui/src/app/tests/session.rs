@@ -1557,7 +1557,7 @@ fn the_frame_before_the_attach_claims_nothing_about_the_session() {
     ));
     let frame = a.screen(80, 24);
     let flat = frame.join("\n");
-    assert_eq!(a.attaching, false, "the Hello did not clear it");
+    assert!(!a.attaching, "the Hello did not clear it");
     assert!(
         flat.contains("has said nothing yet"),
         "an empty session after the Hello must say so: {flat:?}"

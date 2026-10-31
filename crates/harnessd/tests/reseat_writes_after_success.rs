@@ -19,7 +19,6 @@ use letibot_tokencore::store::Store;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 use letibot_turn::CompactionOutcome;
 
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

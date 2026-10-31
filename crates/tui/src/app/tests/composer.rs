@@ -1109,7 +1109,7 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     b.pending_prompts.push("a queued line".into());
     typed(&mut b, "half a thought");
     assert!(
-        matches!(b.key(Key::Up), None),
+        b.key(Key::Up).is_none(),
         "a draft's Up is not the queue's recall"
     );
     assert_eq!(b.input(), "half a thought", "and the draft is untouched");
@@ -1163,7 +1163,7 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     c.pending_prompts.push("a queued line".into());
     typed(&mut c, "half a thought");
     assert!(
-        matches!(c.key(Key::Up), None),
+        c.key(Key::Up).is_none(),
         "a draft's Up is not the queue's recall"
     );
     assert_eq!(
@@ -1177,7 +1177,7 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
         "and the queue is not taken back on the way"
     );
     assert!(
-        matches!(c.key(Key::Down), None),
+        c.key(Key::Down).is_none(),
         "Down walks back out of the history"
     );
     assert_eq!(c.input(), "half a thought", "the draft survived the walk");

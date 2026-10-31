@@ -14,7 +14,7 @@ fn cells_sends_the_screen_with_the_message() {
     // that: an unrendered head has no cells, and an empty block would read as a
     // blank terminal.
     assert!(
-        matches!(a.submit("/cells look at this".into()), None),
+        a.submit("/cells look at this".into()).is_none(),
         "a head that has drawn nothing must refuse rather than send emptiness"
     );
     let _ = a.screen(100, 12);

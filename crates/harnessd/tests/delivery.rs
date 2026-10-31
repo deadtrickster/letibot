@@ -23,7 +23,6 @@ use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

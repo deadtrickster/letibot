@@ -373,12 +373,10 @@ mod job_tail {
     /// gate over the same predicate this crate's other host-spawning tests take (see
     /// `jobwatch.rs`).
     fn a_host(name: &str) -> Option<(std::path::PathBuf, std::sync::Arc<HostProcesses>)> {
-        let Some(_) = letibot_tokencore::apparatus::present(
+        let _ = letibot_tokencore::apparatus::present(
             "a process-lifetime tree (cgroup v2; process groups on macOS)",
             letibot_tools::host_tree().is_ok(),
-        ) else {
-            return None;
-        };
+        )?;
         let root = std::env::temp_dir().join(format!(
             "letibot-jobtail-{name}-{pid}",
             pid = std::process::id()

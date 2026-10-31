@@ -14,7 +14,6 @@ use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
 use letibot_metrics::{Event, kind};
 use letibot_sessionlog::hub::Hub;
 
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

@@ -297,7 +297,7 @@ pub fn build(
     let mut shapes: Vec<ShapeAgg> = aggs.into_values().collect();
     shapes.sort_by(|a, b| b.count.cmp(&a.count).then(a.shape.cmp(&b.shape)));
     let n_cells = SIDE * SIDE;
-    let mut rng = Lcg(0x5eed_1e71_b07);
+    let mut rng = Lcg(0x05ee_d1e7_1b07);
     let mut proto: Vec<Vec<f32>> = (0..n_cells)
         .map(|_| {
             let mut p: Vec<f32> = (0..DIM).map(|_| rng.next_f32()).collect();

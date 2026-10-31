@@ -25,8 +25,6 @@
 //! background job — each gate says so and skips. **No model**: every turn is answered by a stub
 //! on the shared `canned` frames, held on a gate so the child is mid-turn at the clear.
 
-#![allow(dead_code)]
-
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -52,7 +50,6 @@ mod canned;
 use canned::Frame;
 
 const IM_END: u32 = 248046;
-const THINK_OPEN: u32 = 248068;
 const THINK_CLOSE: u32 = 248069;
 
 const PATIENCE: Duration = Duration::from_secs(30);
@@ -619,10 +616,6 @@ impl Stub {
         }
     }
 
-    fn bodies(&self) -> Vec<String> {
-        self.shared.inner.lock().unwrap().bodies.clone()
-    }
-
     /// Wait until at least `n` requests have arrived. `false` is the timeout, so a caller
     /// can say what it was waiting for rather than hang.
     fn wait_for_requests(&self, n: usize) -> bool {
@@ -647,23 +640,6 @@ impl Stub {
         let mut g = self.shared.inner.lock().unwrap();
         g.released = g.released.max(n);
         self.shared.cv.notify_all();
-    }
-
-    /// **What the model was handed for request `n`** — the token ids, detokenized with the
-    /// vocabulary the child tokenized with.
-    fn prompt_of(&self, n: usize, vocab: &Vocab) -> String {
-        let body = self.bodies().get(n).cloned().unwrap_or_default();
-        let json: serde_json::Value =
-            serde_json::from_str(&body).unwrap_or_else(|e| panic!("request {n} is JSON: {e}"));
-        let ids: Vec<u32> = json["prompt"]
-            .as_array()
-            .unwrap_or_else(|| panic!("request {n} carries a prompt: {body}"))
-            .iter()
-            .map(|v| v.as_u64().expect("a token id") as u32)
-            .collect();
-        vocab
-            .detokenize(&ids, true)
-            .unwrap_or_else(|e| panic!("request {n}'s ids decode: {e}"))
     }
 }
 
@@ -813,15 +789,6 @@ impl TempDir {
 
     fn path(&self) -> &std::path::Path {
         &self.path
-    }
-
-    /// The path as `read` takes it: relative to the session root, which is `/tmp`.
-    fn relative(&self) -> String {
-        self.path
-            .file_name()
-            .expect("a temp dir has a name")
-            .to_string_lossy()
-            .into_owned()
     }
 }
 

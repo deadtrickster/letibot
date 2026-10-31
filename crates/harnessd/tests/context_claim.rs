@@ -24,7 +24,6 @@ use letibot_sessionlog::hub::Hub;
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
 // Shared by path with the turn crate, which uses the parts this file does not.
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 

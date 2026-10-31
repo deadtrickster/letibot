@@ -7650,9 +7650,8 @@ impl Harness {
             let payload = format!(
                 "**no result — the executor is gone.**\n\n{}                 \n\nThe call was dispatched and nothing ever answered it. The daemon's tool thread \
                  and the call's process were both gone by the time this was noticed, and the round \
-                 had already ended, so there was nothing left to interrupt.\n\n{}",
+                 had already ended, so there was nothing left to interrupt.\n\n{tail}",
                 format!("`{name}` (call `{call_id}`)"),
-                tail,
             );
             results.push(TranscriptItem::ToolResult {
                 call_id: call_id.clone(),

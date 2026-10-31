@@ -115,7 +115,7 @@ impl Tool for Ps {
                             .partial_cmp(&a.cpu_percent())
                             .unwrap_or(std::cmp::Ordering::Equal)
                     }),
-                    "mem" => all.sort_by(|a, b| b.rss_kb.cmp(&a.rss_kb)),
+                    "mem" => all.sort_by_key(|r| std::cmp::Reverse(r.rss_kb)),
                     other => {
                         return Invocation::failed(
                             format!("ps: `top` is `cpu` or `mem`, not `{other}`"),

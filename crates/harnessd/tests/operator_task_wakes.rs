@@ -52,7 +52,6 @@ use letibot_tokencore::Vocab;
 use letibot_tokencore::store::{SessionRecord, Store};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
 
-#[allow(dead_code)]
 #[path = "../../turn/tests/support/canned.rs"]
 mod canned;
 
