@@ -67,9 +67,10 @@ impl AgentLedger {
     /// the count and the clock do not move for an agent that was already there, because nothing
     /// happened to it.
     pub fn seat(&self, tag: &str, session: &str, now: u64) -> TagAgent {
+        let tag = key(tag);
         let mut g = self.lock();
-        let entry = g.entry(tag.to_string()).or_insert_with(|| TagAgent {
-            tag: tag.to_string(),
+        let entry = g.entry(tag.clone()).or_insert_with(|| TagAgent {
+            tag: tag.clone(),
             session: session.to_string(),
             reseats: 0,
             since_ms: now,
@@ -84,9 +85,10 @@ impl AgentLedger {
     /// the one event the count exists for, and it is why `seat` and `reseat` are two calls: a caller
     /// that has not checked liveness must not be able to inflate the number.
     pub fn reseat(&self, tag: &str, session: &str, now: u64) -> TagAgent {
+        let tag = key(tag);
         let mut g = self.lock();
-        let entry = g.entry(tag.to_string()).or_insert_with(|| TagAgent {
-            tag: tag.to_string(),
+        let entry = g.entry(tag.clone()).or_insert_with(|| TagAgent {
+            tag: tag.clone(),
             session: session.to_string(),
             reseats: 0,
             since_ms: now,
@@ -103,12 +105,20 @@ impl AgentLedger {
     }
 
     pub fn of(&self, tag: &str) -> Option<TagAgent> {
-        self.lock().get(tag).cloned()
+        self.lock().get(&key(tag)).cloned()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, TagAgent>> {
         self.agents.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// **The room's own spelling of a tag, as a key** — `normalise_tag` and nothing else, so `RAM` and
+/// `ram` are one agent rather than two entries pointing at one session. The room already normalises
+/// what it stores, and this is the second reader of that rule; a private copy would be the drift
+/// `.letibot/notes/the-activity-and-the-delivery-had-two-copies-of-one-rule.md` is about.
+fn key(tag: &str) -> String {
+    crate::normalise_tag(tag).unwrap_or_else(|_| tag.trim().to_lowercase())
 }
 
 #[cfg(test)]
@@ -127,6 +137,18 @@ mod tests {
         let back = ledger.reseat("ram", "s-room-k-ram", 10_000);
         assert_eq!((back.reseats, back.since_ms), (1, 10_000));
         assert_eq!(ledger.reseat("ram", "s-room-k-ram", 11_000).reseats, 2);
+    }
+
+    /// **`RAM` and `ram` are one queue, so they are one agent** — the ledger keys on the room's own
+    /// spelling, and two entries for one session would be a pane drawing two agents for one tag.
+    #[test]
+    fn the_ledger_folds_two_spellings_of_one_tag() {
+        let ledger = AgentLedger::new();
+        ledger.seat("RAM", "s-room-k-ram", 1_000);
+        ledger.seat(" ram ", "s-room-k-ram", 2_000);
+        assert_eq!(ledger.all().len(), 1, "{:?}", ledger.all());
+        assert_eq!(ledger.of("ram").map(|a| a.tag), Some("ram".to_string()));
+        assert_eq!(ledger.of("RAM").map(|a| a.since_ms), Some(1_000));
     }
 
     #[test]
