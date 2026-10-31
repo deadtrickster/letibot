@@ -1198,8 +1198,15 @@ impl Standings {
                 continue;
             }
             match (word, self.gate) {
+                // **The gate's step rides with the merge queue's own word** — the operator,
+                // 2026-11-01: *"i think queue now merges reviews and gating (i.e. git merges) not
+                // that convenient - before they were separate tabs"*. Replacing `being merged`
+                // with `gating` made one sentence out of two queues, so the line read as *1 in
+                // review · 2 gating* with nothing saying which half was which. The two queues keep
+                // their two words; the step is in parentheses, where it still answers `gate is
+                // invisible`.
                 ("being merged", Some((step, of))) => {
-                    words.push(format!("{n} gating (step {step} of {of})"))
+                    words.push(format!("{n} being merged (gate step {step} of {of})"))
                 }
                 _ => words.push(format!("{n} {word}")),
             }

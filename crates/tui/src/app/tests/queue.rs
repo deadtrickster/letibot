@@ -947,6 +947,11 @@ fn gating_target(
 /// **The edge says which step of the gate is running**, at 80 columns, where the merge column used
 /// to say only `1 being merged` — the operator's *"gate is invisible"*, on the one line every
 /// screen carries.
+///
+/// **And it says it without fusing the two queues** — the operator, 2026-11-01: *"i think queue now
+/// merges reviews and gating (i.e. git merges) not that convenient"*. Replacing `being merged` with
+/// `gating` turned two queues into one sentence, so the step rides in parentheses beside the merge
+/// queue's own word instead of standing in for it.
 #[test]
 fn the_edge_names_the_gates_step_at_eighty_columns() {
     let mut a = builtin();
@@ -965,19 +970,18 @@ fn the_edge_names_the_gates_step_at_eighty_columns() {
     // The words first, because they are what the line is made of.
     assert_eq!(
         a.queue_standings().words().as_deref(),
-        Some("2 gating (step 3 of 4)"),
-        "the column's count, worded by what the gate is doing"
+        Some("2 being merged (gate step 3 of 4)"),
+        "the merge queue's own word, with the gate's step beside it"
     );
     let rows = a.screen(80, 24);
     let edge = edge_row(&rows);
     assert!(
-        edge.contains("2 gating (step 3 of 4)"),
+        edge.contains("2 being merged (gate step 3 of 4)"),
         "drawn whole at eighty columns: {edge:?}"
     );
-    assert!(!edge.contains("being merged"), "{edge:?}");
     // **And it is still the door** — the span the frame drew is the span a click acts on, which
     // is the rule the standings keep at every width (`standings_rect` reads the drawn row).
-    let words = "2 gating (step 3 of 4)";
+    let words = "2 being merged (gate step 3 of 4)";
     let rect = standings_rect(&a);
     assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
     assert_eq!(
