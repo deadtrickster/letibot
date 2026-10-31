@@ -69,3 +69,34 @@ against the census's numbers; that is the only kind of test that catches a secon
 **A scheduled sentence must not be paced by its own wording, and a notice must not ride a turn.**
 When a sentence has to repeat on a clock AND say something that grows, give it a deadline and a
 rate of its own — the text is the payload, never the schedule.
+
+## 7. UPDATE 2026-11-01 — the arm order made the young-row branch unreachable
+
+The first cut of the separate-deadline clock ordered `arm_census`'s arms:
+
+```rust
+} else if let Some(at) = self.census_said_at {   // the anchor, FIRST
+    self.queue.says.then(|| at + self.repeat)
+} else if self.queue.says {
+    Some(now)
+} else {
+    self.queue.matures_in.map(|left| now + left)  // UNREACHABLE once anything was said
+};
+```
+
+`census_said_at` was written in `census_said` and cleared nowhere. So after a daemon's FIRST
+census, a row that went bad later was young at every re-arm (`says: false, matures_in: Some(..)`),
+the anchor's arm answered `None`, `census_due` was `None`, `next_nag_at` handed the worker no
+deadline, and the rows sat for hours — the exact incident the change exists for. The first incident
+after each start worked and every later one did not: a coin flip, and no test covered a second
+incident because every test ended at the recovery.
+
+**Two halves, both needed:** the young-row arm asked FIRST (robust — it does not depend on having
+*observed* the queue empty, which a row can recover and a new one go bad between two armings
+without), and the anchor cleared when nothing is stuck (so a new set is a first notice at its own
+crossing, not a repeat of a census whose rows are gone).
+
+**The rake:** an `else if` chain over *state that is never reset* silently makes later arms dead
+code, and the dead arm is the one written for the newest case. When adding an arm to a chain,
+ask which earlier condition can already be true for the state the new arm describes — and write
+the test that starts from that state, not from a fresh clock.
