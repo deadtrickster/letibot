@@ -353,6 +353,33 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
         sessions.next_nag_at().is_none(),
         "and nothing is armed for the next interval"
     );
+
+    // **And a SECOND incident** — the defect the review found. A new row goes bad YOUNG, and a
+    // clock that has already said one census must still arm for this one's crossing. The first
+    // incident after each daemon start worked and every later one did not, because the anchor of
+    // the census that was said outlived the rows it was about.
+    let store = Store::open(&path).expect("the store");
+    a_landing(&store, &key, "m-second", MergeState::Failed, now_ms());
+    drop(store);
+    // The arming a transition's own wake would make.
+    sessions.set_stuck_repeat(Duration::from_millis(1));
+    assert_eq!(
+        sessions.note_due_censuses(),
+        0,
+        "a row that went bad just now is the transition's news, not the census's"
+    );
+    let news = sessions.harness_of(&id).expect("open").queue_news();
+    assert!(!news.says, "too young to be news: {news:?}");
+    assert!(news.matures_in.is_some(), "and it will be news: {news:?}");
+    assert!(
+        sessions.next_nag_at().is_some(),
+        "the crossing is ARMED — before the fix this was None, and the row sat there for ever"
+    );
+    assert_eq!(
+        censuses(&registry.get(&id).unwrap()).len(),
+        2,
+        "and nothing has been said about it yet"
+    );
 }
 
 /// **A subagent is not told.** The census is the PROJECT's — a child told *eight rows are stuck in

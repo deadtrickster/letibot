@@ -734,19 +734,33 @@ impl TodoNagClock {
     ///   silence this notice exists to end;
     /// * **never said, and the rows are too young** — armed for the moment the oldest crosses
     ///   [`super::mergequeue::stuck::STUCK_AFTER_MS`], the young child's rule one subject over: an
-    ///   AGE crossing is not an event anything rings;
+    ///   AGE crossing is not an event anything rings. **This arm is asked FIRST**, and that order
+    ///   is load-bearing rather than tidy: a young row is the one case where nothing has been said
+    ///   about it yet, so an EARLIER census's anchor must not swallow it. With the anchor's arm
+    ///   ahead of this one, a second incident in a daemon's life armed nothing at all — the row
+    ///   went bad, the transition's own wake re-armed the clock while it was still young, and the
+    ///   project session then went quiet for ever (found by review, 2026-11-01: the first incident
+    ///   after each start worked and every later one did not).
     /// * **said already** — one [`super::mergequeue::stuck::STUCK_REPEAT_MS`] after the last
     ///   DELIVERY, and nothing at all once the rows are gone. A tree that goes quiet must stop
     ///   nagging, or the next reader learns to ignore it.
     fn arm_census(&mut self, now: Instant) {
+        // **A queue with nothing stuck ENDS that census**, so the next set of rows starts its own
+        // clock: without this, the anchor of a census whose rows are gone would pace the first
+        // notice of the next incident at up to one interval.
+        if !self.queue.says && self.queue.matures_in.is_none() {
+            self.census_said_at = None;
+        }
         self.census_due = if matches!(self.hold, NagHold::Paused { .. }) {
             None
+        } else if let Some(left) = self.queue.matures_in {
+            Some(now + left)
         } else if let Some(at) = self.census_said_at {
             self.queue.says.then(|| at + self.repeat)
         } else if self.queue.says {
             Some(now)
         } else {
-            self.queue.matures_in.map(|left| now + left)
+            None
         };
     }
 

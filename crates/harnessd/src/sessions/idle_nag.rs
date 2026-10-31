@@ -1317,3 +1317,107 @@ fn an_operators_message_does_not_postpone_or_repeat_the_census() {
     );
     assert_eq!(clock.census_due_at(), armed);
 }
+
+/// **A SECOND incident in one daemon's life gets its own clock** — the defect the review found,
+/// and the reason the young-row arm is asked first.
+///
+/// The shape: a census is said, its rows recover, and a new row goes bad while it is still young.
+/// Every arming in that window is `says: false, matures_in: Some(..)` — so an arm that reads the
+/// LAST CENSUS'S ANCHOR before it reads `matures_in` answers *nothing*, the project session goes
+/// quiet, `next_nag_at` hands the worker no deadline, and the rows sit there exactly as the
+/// operator reported. The first incident after each start worked; every later one did not.
+///
+/// FAILS before the fix: `census_due_at()` is `None` from the third assertion on, and stays `None`.
+#[test]
+fn a_second_incident_after_a_recovery_is_armed_for_its_own_crossing() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+
+    // **The first incident**: said once, and the repeat armed an interval out.
+    clock.queue(news());
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    deliver(&mut clock, t0);
+    assert_eq!(clock.census_due_at(), Some(t0 + super::STUCK_REPEAT));
+
+    // **The rows recover**, and the arming that follows sees an empty queue: the anchor goes with
+    // it, because that census is about rows that are gone.
+    clock.queue(super::QueueNews::none());
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(60),
+        &no_children(),
+        &no_jobs(),
+    );
+    assert_eq!(clock.census_due_at(), None);
+
+    // **A new row goes bad, young.** Armed for its crossing — not silenced by the old anchor.
+    clock.queue(super::QueueNews {
+        says: false,
+        matures_in: Some(Duration::from_secs(15 * 60)),
+    });
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(120),
+        &no_children(),
+        &no_jobs(),
+    );
+    assert_eq!(
+        clock.census_due_at(),
+        Some(t0 + Duration::from_secs(120 + 15 * 60)),
+        "the second incident is armed for the moment it becomes news"
+    );
+
+    // **And at the crossing it is due at once** — a first notice, not a repeat.
+    clock.queue(news());
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(120 + 15 * 60),
+        &no_children(),
+        &no_jobs(),
+    );
+    assert_eq!(
+        clock.census_due_at(),
+        Some(t0 + Duration::from_secs(120 + 15 * 60)),
+        "a new set of rows is said at once when it crosses"
+    );
+}
+
+/// **And the same when nothing OBSERVED the queue empty** — the arm order is what saves this one,
+/// not the clearing.
+///
+/// A row can recover and a new one go bad between two armings, so no re-arm ever sees `says: false,
+/// matures_in: None` and the anchor is never cleared. The young-row arm being asked FIRST is what
+/// keeps the crossing armed in that case; the clearing is a second, weaker half that only helps
+/// when the empty state was seen.
+#[test]
+fn a_young_row_arms_its_crossing_even_under_an_older_census_anchor() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(news());
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    deliver(&mut clock, t0);
+
+    // **Straight to a young row**, with no `QueueNews::none()` in between — so `census_said_at`
+    // still holds `t0` and only the arm order can answer.
+    clock.queue(super::QueueNews {
+        says: false,
+        matures_in: Some(Duration::from_secs(15 * 60)),
+    });
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(60),
+        &no_children(),
+        &no_jobs(),
+    );
+    assert_eq!(
+        clock.census_due_at(),
+        Some(t0 + Duration::from_secs(60 + 15 * 60)),
+        "the crossing is armed whatever was said before"
+    );
+}
