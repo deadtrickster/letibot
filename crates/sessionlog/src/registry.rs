@@ -2447,11 +2447,21 @@ impl Registry {
                 RingWait::Ring(Ring::Close(id)) => return WorkOrIdle::Work(Work::Close(id)),
                 // A wake for a session this registry does not hold is dropped, the
                 // same way a command for one is: the session is gone and there is
-                // nothing to wake.
+                // nothing to wake. **And it is SAID** (2026-10-31): this arm and
+                // `harnessd::sessions::wake_route`'s `Gone` are the two places a ring can be
+                // discarded, and both used to discard it in silence — so a settlement that
+                // woke nobody had no witness anywhere. What is behind the ring is not lost:
+                // a job's or a child's row carries `delivered = 0` until the model is told, and
+                // the session's next open says it (`Harness::deliver_settlements_left_undelivered`).
                 RingWait::Ring(Ring::Woken(id)) => {
                     if self.get(&id).is_some() {
                         return WorkOrIdle::Work(Work::Woken(id));
                     }
+                    eprintln!(
+                        "  {id} · a wake was dropped: no session of that id is held here. A \
+                         settlement behind it is still a row with `delivered = 0`, and the \
+                         session's next open says it."
+                    );
                 }
                 RingWait::Ring(Ring::Command(id)) => {
                     let Some(hub) = self.get(&id) else { continue };

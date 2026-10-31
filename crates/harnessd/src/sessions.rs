@@ -1117,6 +1117,22 @@ fn wake_route(held_by_the_daemon: bool, live_owner: Option<Owner>) -> WakeRoute 
     }
 }
 
+/// **What a ring nobody can serve is called** — the sentence [`Sessions::wake`] prints and
+/// publishes when [`wake_route`] answers [`WakeRoute::Gone`].
+///
+/// A pure function so the wording is a thing a test can hold: the alternative was two
+/// `eprintln!`s and a warning detail written inline, which is how a sentence and its code drift
+/// apart. It says what is NOT lost as well as what is, because the honest answer to *a wake went
+/// nowhere* is *the settlement behind it is still a row*.
+fn dropped_wake(session: &str) -> String {
+    format!(
+        "a wake for `{session}` was dropped: this daemon is not holding that session (it was \
+         closed, its open failed, or it has not been opened yet), so nothing could run the turn \
+         it was for. A job or child settlement behind it is not lost — its row is in the store \
+         with `delivered = 0`, and the session's next open says it."
+    )
+}
+
 /// **What a shutdown's wait for the subagent threads came to** — the two outcomes
 /// [`Sessions::drain_subagents`] distinguishes, so a caller's log can say which it was rather
 /// than only speaking up when something went wrong.
@@ -4140,8 +4156,19 @@ impl<'a> Sessions<'a> {
     /// session that owns the settlement (its parent) rather than the tree's root.
     ///
     /// `Ignored` is left for what it honestly means: the session is gone from the registry
-    /// altogether. Nothing is lost when that happens — a session that has closed handed its
-    /// undrained settlements up a level first (`jobwatch::JobWatchers::stop`).
+    /// altogether — **and since 2026-10-31 it says so**, because a dropped wake used to be the
+    /// only fact in this file with no sentence anywhere.
+    ///
+    /// # A wake that is dropped, and why it is still not a loss
+    ///
+    /// [`WakeRoute::Gone`] is *this daemon is not holding that session*: it was closed, or its
+    /// open failed, or it has not been opened yet. Nothing can run a turn for it, so the ring is
+    /// answered `Ignored` — and a settlement behind that ring is **not** lost with it, because a
+    /// settlement is a row before it is a wake: `subagent_run`/`job` carry `delivered = 0` until
+    /// the model is told, and `Harness::deliver_settlements_left_undelivered` queues that row at
+    /// the session's next open. What IS lost is the fact that a ring went nowhere, which is why
+    /// [`dropped_wake`] is printed here and published on the hub when there is one to publish on:
+    /// a wake for a session nobody serves is the kind of silence this tree keeps paying for.
     pub fn wake(&mut self, session_id: &str) -> Outcome {
         // A session on its own thread is woken THERE. On this struct `open` does not hold it, so
         // `wake_route` already answers `ItsOwnReader` — this is only the spawn, for a session that
@@ -4164,7 +4191,11 @@ impl<'a> Sessions<'a> {
                     Outcome::Ignored
                 };
             }
-            WakeRoute::Gone => return Outcome::Ignored,
+            WakeRoute::Gone => {
+                self.warn(session_id, "wake_undelivered", dropped_wake(session_id));
+                eprintln!("  {} · {}", session_id, dropped_wake(session_id));
+                return Outcome::Ignored;
+            }
         }
         // **A wake's turn is a turn** — it appends rows, it can reach the wall, and a session that
         // only ever woke would have compacted never — so it takes the shared tail like every
@@ -6243,13 +6274,30 @@ mod the_wake_route {
         assert_eq!(wake_route(false, Some(Owner::Worker)), WakeRoute::Gone);
     }
 
-    /// A session with no hub at all has nobody to hand anything to — and that is not a loss:
-    /// a session that closed handed its undrained settlements up a level first
-    /// (`jobwatch::JobWatchers::stop`), so the wake it would have been told by is no longer the
-    /// one holding the notice.
+    /// A session with no hub at all has nobody to hand anything to — and that is not a loss of
+    /// the SETTLEMENT: a child's or a job's row carries `delivered = 0` until the model is told,
+    /// and the session's next open says it (`Harness::deliver_settlements_left_undelivered`).
     #[test]
     fn a_session_that_is_gone_is_nothing() {
         assert_eq!(wake_route(false, None), WakeRoute::Gone);
+    }
+
+    /// **A dropped wake is a SENTENCE, and it names the session** — the half the board named as
+    /// *HOLE NAMED, NOT FIXED*: `Gone` used to be `return Outcome::Ignored` with nothing said
+    /// anywhere, so a ring that woke nobody was the one fact in this file with no witness.
+    ///
+    /// It has to say the second half too. *A wake went nowhere* reads as *a settlement was lost*,
+    /// and the honest answer is that it was not: the row is durable and the next open delivers
+    /// it. A sentence that only said the first half would send a reader looking for a lost child.
+    #[test]
+    fn a_dropped_wake_names_the_session_and_says_what_is_not_lost() {
+        let said = super::dropped_wake("s-gone");
+        assert!(said.contains("s-gone"), "{said}");
+        assert!(
+            said.contains("delivered = 0") && said.contains("next open"),
+            "the sentence must say the settlement is still a row, or a reader looks for a \
+             lost child: {said}"
+        );
     }
 }
 

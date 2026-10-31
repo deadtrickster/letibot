@@ -706,6 +706,13 @@ pub const TABLE: &[(&str, Class)] = &[
     // title cannot be recorded, the session the operator asked for does not resume, and
     // an import that stopped part-way or had nothing to read.
     ("session_unavailable", Class::Failure),
+    // **A ring nobody could serve** (`Sessions::wake`'s `Gone`): a settlement arrived for a
+    // session this daemon is not holding — closed, its open failed, or not opened yet — so no
+    // turn could run for it. A Failure because it is the one thing about that arrival that
+    // nothing else records: the settlement itself is a row with `delivered = 0` and the next
+    // open says it (`Harness::deliver_settlements_left_undelivered`), but *a wake went nowhere*
+    // has no other witness.
+    ("wake_undelivered", Class::Failure),
     ("transcript_store", Class::Failure),
     ("decision_corpus", Class::Failure),
     ("title_not_stored", Class::Failure),
@@ -1329,10 +1336,15 @@ mod the_register_census {
         //   · **169, not 168**: `plugin_untrusted` (Routine) — D17's ladder noticing that a pinned
         //     layer's bytes moved, said once by name with both hashes. See
         //     `crates/harnessd/src/plugins.rs`'s `say_broken_pin`.
-        assert_eq!(TABLE.len(), 169, "the table's size");
+        //   · **170, not 169**: `wake_undelivered` (Failure) — a settlement arrived for a session
+        //     this daemon is not holding (closed, its open failed, not opened yet), so the ring
+        //     woke nobody. A Failure by `wake_failed`'s ruling one register up: the settlement is
+        //     still a row with `delivered = 0` and the session's next open says it, but a notice
+        //     the model was owed did not reach it, and *a wake went nowhere* had no other witness.
+        assert_eq!(TABLE.len(), 170, "the table's size");
         assert_eq!(count(Class::Routine), 67);
         assert_eq!(count(Class::Refused), 13, "the thirteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 89);
+        assert_eq!(count(Class::Failure), 90);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
