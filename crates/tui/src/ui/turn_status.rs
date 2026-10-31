@@ -349,6 +349,17 @@ impl App {
         if let Some(step) = &self.booting {
             out.push((format!("daemon {step}"), Role::Pending, false));
         }
+        // **A switch in flight, which is the screen's own subject while it lasts.** The rows on
+        // the screen are the session being LEFT (a switch cannot draw the one it is going to
+        // before the daemon has sent it), so without this line the head says nothing at all
+        // about the only thing happening — and the operator read that as the head ignoring the
+        // key: *"pressed enter on its row — main session visible (you) and then subagent session
+        // loaded"*, *"some async action finishes sometimes and meanwhile something else is
+        // shown"*. Above the notice because it is a state and the notice is an acknowledgement
+        // that expires; it goes when the `Hello` for that session lands.
+        if let Some(to) = self.switching_to() {
+            out.push((format!("switching to {to}…"), Role::Pending, false));
+        }
         if let Some(n) = &self.notice {
             out.push((format!("· {n}"), Role::Keyword, true));
         }

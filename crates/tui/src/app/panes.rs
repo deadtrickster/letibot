@@ -113,8 +113,13 @@ impl App {
     pub(crate) fn fold_subagents(&mut self) {
         let known: Vec<SubagentState> = std::mem::take(&mut self.subagents);
         let mut rows: Vec<SubagentState> = Vec::with_capacity(known.len().max(4));
+        // **The session whose children these are** — the one this head is in, or the one whose
+        // pane it is looking at while a switch is in flight. See [`App::subagent_parent`], which
+        // is the whole rule; this line is why `esc` out of a subagent no longer draws an empty
+        // list while the switch to its parent lands.
+        let parent = self.subagent_parent().to_string();
         for b in &self.sessions {
-            if b.parent_session_id.as_deref() != Some(self.session_id.as_str()) {
+            if b.parent_session_id.as_deref() != Some(parent.as_str()) {
                 continue;
             }
             // The merge queue's reviewer, rebuilt from the list — which carries no role, so it is

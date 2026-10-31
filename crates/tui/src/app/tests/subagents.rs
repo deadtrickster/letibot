@@ -1492,3 +1492,127 @@ fn a_two_line_entry_is_one_block_under_the_pointer_and_the_click() {
         picked[task]
     );
 }
+
+// ─────────────────── the wait a switch is, and what is drawn for it ───────────────────
+
+/// **Entering a subagent is a ROUND TRIP, and the head says so while it happens.**
+///
+/// The operator, verbatim: *"entering subagent took ages - pressed enter on its row - main
+/// session visible (you) and then subagent session loaded. this is basically throughout the ui -
+/// some async action finishes sometimes and meanwhile something else is shown"*.
+///
+/// The resume arm of `App::switch_to` has always drawn that wait — `fetching` plus the cat —
+/// because restoring a session out of the store is seconds. The LIVE-switch arm had nothing: the
+/// pane closed, the session being LEFT stayed on the screen, and the only sign a move was in
+/// flight was the frame that finally arrived. Both arms are one state now (`fetching` +
+/// `attaching`), and this is the test that says so: before the `Hello`, the head is attaching,
+/// the status row names the session it is going to, and the conversation it is still drawing is
+/// not passed off as the one that was asked for.
+#[test]
+fn entering_a_subagent_says_that_a_switch_is_in_flight() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    a.key(Key::CtrlG);
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+
+    // **The wait, which is the whole finding.** Nothing has answered yet.
+    assert!(
+        a.attaching,
+        "the head asked for a session and draws as though it had arrived"
+    );
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("switching to find the bug in the reader"),
+        "the status row says nothing about the switch:\n{screen}"
+    );
+    // The cat too — the same placeholder a first attach draws, from the same field: *the head
+    // has been told nothing yet*. A spinner is the honest answer here and a banner is not.
+    assert!(
+        screen.contains("asking the daemon"),
+        "the conversation does not show the wait:\n{screen}"
+    );
+
+    // The daemon answers with the second `Hello`, and the state ends with it.
+    a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+    assert!(!a.attaching, "the Hello did not end the wait");
+    assert_eq!(a.session_id, "s-sub-1");
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        !screen.contains("switching to"),
+        "the sentence outlived the switch:\n{screen}"
+    );
+}
+
+/// **A `Hello` for some OTHER session does not end the wait for the one that was asked for.**
+///
+/// The resume path's rule, and the reason `fetching` is a session id rather than a flag: the head
+/// asks for a session, the daemon seats it somewhere first (a `--continue` lands on whatever the
+/// daemon has open), and that first `Hello` is not the answer. A live switch has the same shape
+/// when two of them overlap — Enter on a row while an earlier switch is still unanswered — and a
+/// pending state that cleared on the wrong `Hello` would take the sentence down while the move it
+/// describes was still in flight.
+#[test]
+fn a_hello_for_another_session_leaves_the_switch_pending() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    a.key(Key::CtrlG);
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+    // The answer to something else entirely — the daemon seating this head where it already was.
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    assert!(
+        a.attaching,
+        "a Hello for the session being LEFT ended the wait"
+    );
+    let screen = a.screen(120, 30).join("\n");
+    assert!(screen.contains("switching to"), "{screen}");
+}
+
+/// **`esc` out of a subagent draws the list it came out of, not the child's empty one.**
+///
+/// The operator's trap, verbatim: *"then I ended up in a trap - esc from subagent brought me to
+/// nowehere (iirc it was an empty subagents pane)"*. The pane lists the CURRENT session's
+/// children, and the head is standing in the child — which has none — so for as long as the
+/// switch took the pane drew `none spawned yet. The model spawns them with the task tool.` over a
+/// parent with two of them. That sentence is a claim about the session, and the session it is
+/// about is the one being entered: the head knows which one it asked for (`fetching`), so the
+/// list, the count and the cursor are that session's from the keystroke, not from the `Hello`.
+#[test]
+fn esc_out_of_a_subagent_lists_the_parent_before_the_switch_lands() {
+    let mut a = inside_a_subagent();
+    assert!(
+        a.subagents.is_empty(),
+        "the premise: the child has no children"
+    );
+    assert_eq!(a.key(Key::Esc), Some(Action::Switch("s".into())));
+    assert!(a.is_open(Surface::Subagents));
+
+    // **Before the parent's `Hello`** — the state the operator sat in.
+    let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["s-sub-1", "s-sub-2"],
+        "the pane drew the child's children while going up to the parent: {ids:?}"
+    );
+    let screen = a.screen(100, 24).join("\n");
+    assert!(
+        !screen.contains("none spawned yet"),
+        "the pane claims nothing was spawned, over the list it came out of:\n{screen}"
+    );
+    assert!(screen.contains("find the bug in the reader"), "{screen}");
+    // And the cursor is on the row the operator climbed out of, which is the row the pane was
+    // opened FOR — `up_from`, read once the list it names is the one on the screen.
+    assert_eq!(
+        a.subagents[a.subagents_sel].session_id, "s-sub-1",
+        "the cursor is not on the child this head came out of"
+    );
+    // The move is still in flight, and the screen says that too.
+    assert!(a.attaching);
+    assert!(screen.contains("switching to"), "{screen}");
+
+    // The parent's `Hello` rebuilds the same list — one answer, not two.
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    assert_eq!(a.session_id, "s");
+    let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
+    assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");
+    assert_eq!(a.subagents[a.subagents_sel].session_id, "s-sub-1");
+}

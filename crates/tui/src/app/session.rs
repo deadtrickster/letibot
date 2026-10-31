@@ -1335,6 +1335,23 @@ impl App {
         self.redraw = true;
     }
 
+    /// **Go to another session** — the one door every switch goes through, and the reason the
+    /// wait is a state rather than a gap.
+    ///
+    /// # The wait, which this used to leave blank
+    ///
+    /// A `Switch` is a round trip: the daemon answers it with a second `Hello` carrying the
+    /// whole snapshot, and until that lands the screen still holds the session being left. The
+    /// resume arm below has always drawn that wait (`fetching` + the cat) and the live-switch arm
+    /// did not — so the operator, entering a subagent: *"pressed enter on its row — main session
+    /// visible (you) and then subagent session loaded"*, and, about the whole head: *"some async
+    /// action finishes sometimes and meanwhile something else is shown"*. Both arms take the same
+    /// state now, from the same field, because a second pending flag is a second behaviour that
+    /// drifts (see [`Self::fetching`], and [`Self::switching_to`] for what is drawn from it).
+    ///
+    /// The rows stay where they are — a switch cannot draw the session it is going to before the
+    /// daemon has sent it — and what changes is that the head now says so: the cat in the
+    /// conversation ([`Self::attaching`]) and `switching to …` in the status row.
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
         if id == self.session_id {
             self.close_surface(Surface::Picker);
@@ -1354,18 +1371,64 @@ impl App {
                 "resuming {} from the store…",
                 self.session_label(&id)
             ));
-            // The cat, until the session is here: a long one is seconds of restoring, and
-            // the screen it would otherwise hold is the session being left — which, for a
-            // head that just started, is an empty one that invites typing.
-            self.fetching = Some(id.clone());
-            self.begin_attach();
+            self.wait_for_session(&id);
             return Some(Action::ResumeSession(id));
         }
         // `since_seq` is not sent: this head has no state for the session it is
         // going to, so a snapshot is the only honest ask. Coming *back* to a
         // session it was watching would be a resume, and this head does not keep
         // per-session marks — it would be a cache with no invalidation rule.
+        self.wait_for_session(&id);
         Some(Action::Switch(id))
+    }
+
+    /// **The wait a switch is, as one act** — both arms of [`Self::switch_to`] call this, which is
+    /// what makes *one pending state* true rather than a claim: `fetching` is the session asked
+    /// for and not yet seated in, `attaching` is *this head has been told nothing yet*, and the
+    /// `Hello` that carries the answer clears both (a `Hello` for any other session leaves them
+    /// standing, which is exactly what an overlapping pair of switches needs).
+    ///
+    /// **The pane's rows come with it, when the pane is what the operator is looking at** — see
+    /// [`Self::subagent_parent`] for the empty list this closes, and for why the composer's count
+    /// is deliberately left on the session the screen still holds.
+    fn wait_for_session(&mut self, id: &str) {
+        self.fetching = Some(id.to_string());
+        self.begin_attach();
+        if self.is_open(Surface::Subagents) {
+            self.fold_subagents();
+        }
+    }
+
+    /// **The session whose children the subagents pane is showing** — the one this head stands in,
+    /// or, while the pane is open and a switch is in flight, the one it has asked to stand in and
+    /// has not been seated in yet.
+    ///
+    /// This is `fetching`'s second reader, and it exists because a switch is a wait. The pane is
+    /// the CURRENT session's children, so `esc` out of a subagent used to draw the child's own
+    /// (empty) list for as long as the switch took — the operator: *"esc from subagent brought me
+    /// to nowehere (iirc it was an empty subagents pane)"*. The list he came out of is the
+    /// parent's, the head knows which session it asked for, and one field is enough to draw it.
+    ///
+    /// **The pane has to be open for the target to win**, and that is not a detail: these rows are
+    /// also the composer's `N subagent running` count, which is a fact about the session on the
+    /// screen — and before the `Hello` the screen is still the session being left.
+    pub(crate) fn subagent_parent(&self) -> &str {
+        match self.fetching.as_deref() {
+            Some(to) if self.is_open(Surface::Subagents) => to,
+            _ => &self.session_id,
+        }
+    }
+
+    /// **The session this head is on its way to, as a person reads it** — `None` when it is not
+    /// going anywhere.
+    ///
+    /// Read by the status row (`switching to …`), and the reason a switch is a state rather than
+    /// a blank screen: the conversation drawn while it happens is the session being LEFT, and
+    /// nothing in it says a move is in flight. [`Self::fetching`] is the fact; this is the
+    /// sentence, and it is deliberately the same field rather than a second one.
+    pub(crate) fn switching_to(&self) -> Option<String> {
+        let id = self.fetching.as_deref()?;
+        (id != self.session_id).then(|| self.session_label(id))
     }
 
     /// **Everything a seated head must ASK FOR, in one place — attach, re-attach, and the
