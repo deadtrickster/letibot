@@ -106,6 +106,7 @@ pub mod etalon;
 pub mod etalon_map;
 pub mod etalon_oracle;
 pub mod facts;
+pub mod footprint;
 pub mod harness;
 pub mod httphead;
 pub mod instruments;
