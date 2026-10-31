@@ -3279,12 +3279,23 @@ fn serve_until(
 /// **Serve `workspace` for a few passes, and record every lease held at any observation** — a
 /// lease is given up when the service stops, so the question *was it ever claimed* is answered by
 /// what was seen while it ran.
+///
+/// **`for_ms` is a floor, not a deadline, and that is measured rather than cautious.** The window
+/// was a fixed 3 500 ms and the two callers assert a lease WAS seen — so on a loaded box, where the
+/// supervisor's first pass has not run yet, the list came back empty and the tests failed with
+/// nothing wrong in the tree. MEASURED twice on this project's own merge gate: `cargo test
+/// --workspace` runs every test binary at once (222 of them), and
+/// `a_repository_with_no_merge_gate_is_not_a_queue_target` and
+/// `a_stale_lease_whose_holder_is_gone_is_released_by_a_passing_supervisor` went red there while
+/// passing alone. So the service stops when the floor has passed **and** something was seen, or at
+/// a ceiling that exists only so a genuinely broken pass fails with a name instead of hanging.
 fn leases_seen_over(
     workspace: &Path,
     db: &Path,
     door: Arc<Door>,
     who: &str,
     for_ms: u64,
+    done: &dyn Fn(&Store) -> bool,
 ) -> (Store, Vec<String>) {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let started = std::time::Instant::now();
@@ -3297,7 +3308,16 @@ fn leases_seen_over(
                     said.push(l.repository.clone());
                 }
             }
-            started.elapsed() > Duration::from_millis(for_ms)
+            let over = started.elapsed() > Duration::from_millis(for_ms);
+            // The ceiling is not a second opinion about the floor: it is what turns *the pass
+            // never ran* from a flake into a failure a reader can see.
+            let ceiling = started.elapsed() > Duration::from_secs(120);
+            let seen_any = !seen.lock().unwrap().is_empty();
+            // **`done` is the fact the caller then asserts** — a lease being seen says the pass
+            // started, not that it finished, and the two callers read a health row the pass writes
+            // after the lease. Measuring only the lease is what made them red under the gate's full
+            // parallelism while green alone.
+            done(s) || (over && seen_any) || ceiling
         }
     };
     let store = serve_until(workspace, Arc::new(GreenGate), door, db, who, &watch);
@@ -3331,9 +3351,11 @@ fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     let never_key = never.display().to_string();
     let db = dir.0.join("sessions.db");
     let door = Arc::new(Door::default());
-    // **Two passes' worth of time**: the supervisor claims every repository it serves in ONE pass,
-    // so a lease it would ever take would have been seen by the second.
-    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500);
+    // **Two passes' worth of time, and the fact this test then asserts** — the health row is written
+    // after the lease, so measuring the lease alone left the assertion racing the pass.
+    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500, &|s| {
+        s.target_health(&queued_key, "main").unwrap().is_some()
+    });
     assert_eq!(
         leases,
         vec![queued_key.clone()],
@@ -3365,7 +3387,9 @@ fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     // **The section is the whole of the opt-in**, so committing one is the whole of what it takes
     // to be served: the next pass asks again and claims the lease.
     commit(&never, "AGENTS.md", GATE_MD, "declare a merge gate");
-    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500);
+    let (store, leases) = leases_seen_over(&dir.0, &db, door.clone(), "a", 3_500, &|s| {
+        s.target_health(&never_key, "main").unwrap().is_some()
+    });
     let mut leases = leases;
     leases.sort();
     assert_eq!(
@@ -3436,10 +3460,20 @@ fn a_stale_lease_whose_holder_is_gone_is_released_by_a_passing_supervisor() {
     let last = moves.last().expect("the release is in the history");
     assert_eq!(last.to_state, "released");
     assert_eq!(last.from_state.as_deref(), Some("letim/1/1"));
+    // **The age is not exactly 600.** `long_ago` is ten minutes before `now`, and the sweeping pass
+    // computes the age when IT runs — a second or two later, and more on a loaded box. Asserting the
+    // literal 600 is what turned this test red on the merge gate while the sweep was right: it
+    // failed on *"its heartbeat was 602 s old"*. The pid is the claim; the age is a range.
+    let said = &last.why;
+    let age: u64 = said
+        .split(" s old")
+        .next()
+        .and_then(|head| head.rsplit(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
     assert!(
-        last.why.contains("999999999") && last.why.contains("600 s old"),
-        "the history says which pid and how old the heartbeat was: {}",
-        last.why
+        said.contains("999999999") && (600..3600).contains(&age),
+        "the history says which pid and how old the heartbeat was: {said}"
     );
     assert_eq!(
         store.transitions("lease", "/projects/fctop").unwrap().len(),
