@@ -463,3 +463,84 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
         "the model is told the job ended, unprompted: {notices:#?}"
     );
 }
+
+/// **The BETWEEN-TURNS door is a third function, and it is the one a daemon actually uses.**
+///
+/// A `!` line typed while the worker is not holding it goes through `crate::bangrun`'s own
+/// thread ([`bangrun::spawn_run`]), which mints nothing itself — it is handed the minted call
+/// and the runtime — so the watcher has to travel as an argument or not at all. That is the
+/// half a fix at the harness cannot reach, and this is the test that says so: `spawn_run` is
+/// called directly, the run is promoted mid-flight, and the settlement must still arrive.
+///
+/// **The rows of that run do not land here** — the thread hands them back as a
+/// `CommandKind::OperatorShellResult` and this fixture has no worker to drain it. That is not
+/// what this test is about: the question is whether the handle the promotion minted is in the
+/// session's watcher set, and the answer is the ring.
+#[test]
+fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
+    let (_dir, mut cfg, parts) = session("op-bangrun-promote");
+    cfg.allow_bash = true;
+    let serv = canned::Canned::serve_replies(vec![a_plain_answer(&parts.vocab, "noted")], 4);
+    cfg.endpoint = serv.endpoint.clone();
+    let (mut h, registry) = adopted(&parts, &cfg);
+    let hub = registry.get(&cfg.session_id).expect("the session's hub");
+    let session_id = cfg.session_id.clone();
+
+    let line = "! sleep 3";
+    let (call_id, call) = h.prepare_operator_shell(line).expect("the line mints");
+    // **The three things `Sessions::dispatch` hands over**, taken from the harness exactly as it
+    // takes them — and the fourth, which is this change: the watcher.
+    let runtime = h.runtime_handle();
+    let watch = h.job_watchers();
+    let session_for_run = session_id.clone();
+    let hub_for_run = hub.clone();
+    let line_for_run = line.to_string();
+    let call_for_run = call.clone();
+    let call_id_for_run = call_id.clone();
+    let runtime_for_run = runtime.clone();
+    let watch_for_run = watch.clone();
+    let spawned = letibot_harnessd::bangrun::spawn_run(
+        session_for_run,
+        call_id_for_run,
+        call_for_run,
+        line_for_run,
+        "dead".to_string(),
+        runtime_for_run,
+        hub_for_run,
+        watch_for_run,
+    );
+    spawned.expect("the run's thread starts");
+    std::thread::sleep(Duration::from_millis(500));
+    // Exactly what Ctrl+O sets, on the hub the run's own wait loop polls.
+    hub.request_promote("dead");
+
+    assert!(
+        woken(&registry, &session_id),
+        "a `!` line run on its own thread (`bangrun`) and moved to the background was never \
+         woken: the thread was handed a runtime and a hub and no watcher, so the handle its \
+         promotion minted went to nobody"
+    );
+    h.wake()
+        .expect("the wake runs")
+        .expect("a settlement is something to say");
+    let notices: Vec<String> = user_rows(&h)
+        .into_iter()
+        .filter(|(s, _)| *s == Speaker::Agent)
+        .map(|(_, t)| t)
+        .collect();
+    assert!(
+        notices
+            .iter()
+            .any(|t| t.starts_with("[job]") && t.contains("backgrounded has ended")),
+        "the model is told the job ended, unprompted: {notices:#?}"
+    );
+}
