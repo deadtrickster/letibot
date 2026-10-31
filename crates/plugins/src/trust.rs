@@ -101,24 +101,25 @@ impl Standing {
                  pinned. What was pinned is module sha256 {} and manifest sha256 {}; what is on \
                  disk now is module sha256 {} and manifest sha256 {}. `/plugin trust {layer}` \
                  pins what is there now",
-                short(&pin.module),
-                short(&pin.manifest),
-                short(module),
-                short(manifest),
+                sha_or_dash(&pin.module),
+                sha_or_dash(&pin.manifest),
+                sha_or_dash(module),
+                sha_or_dash(manifest),
             ),
             _ => format!(
                 "the layer `{layer}` is not pinned: nothing has recorded that these bytes are \
                  yours, so it is adjudicated call by call rather than run freely. Its module is \
                  sha256 {} and its manifest is sha256 {}. `/plugin trust {layer}` pins them",
-                short(module),
-                short(manifest),
+                sha_or_dash(module),
+                sha_or_dash(manifest),
             ),
         }
     }
 }
 
-/// A hash as a sentence quotes it: long enough to compare, short enough to read.
-fn short(sha: &str) -> String {
+/// A hash as a sentence quotes it: **the whole one**. A reader comparing two hashes needs all 64
+/// characters, and a truncated hash in a refusal is a hash nobody can check.
+fn sha_or_dash(sha: &str) -> String {
     if sha.is_empty() {
         "— (no module)".to_string()
     } else {
@@ -366,26 +367,6 @@ impl Trust {
         }
         self.save();
         Ok(pin)
-    }
-
-    /// **Pin a layer whose bytes are already in hand** — a built-in, or a caller that has just
-    /// hashed them. The same statement as [`Trust::pin`], for bytes with no directory.
-    pub fn pin_bytes(&self, name: &str, module: &str, manifest: &str) -> Pin {
-        let pin = Pin {
-            name: name.to_string(),
-            dir: String::new(),
-            module: module.to_string(),
-            manifest: manifest.to_string(),
-            at_ms: now_ms(),
-        };
-        {
-            let mut book = self.lock();
-            book.pins
-                .retain(|p| p.name != pin.name || !p.dir.is_empty());
-            book.pins.push(pin.clone());
-        }
-        self.save();
-        pin
     }
 
     /// **Take a pin back** — by the layer's directory, or by the name it was pinned under. The

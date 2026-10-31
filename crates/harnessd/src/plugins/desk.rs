@@ -143,6 +143,17 @@ impl PluginDesk for SessionPlugins {
              `plugin build {name}`, `plugin test {name}`, `plugin load {name}`.",
             if kind == "pane" { "view" } else { "answer" }
         ));
+        // **Provenance, recorded at the write** — D17's third arm. `scaffold` is a model's write
+        // like any other, and a layer whose bytes nobody recorded is a layer whose authorship is
+        // a guess from its path. The files are read back rather than the template's strings used:
+        // what is on disk is what is recorded.
+        let book = letibot_plugins::Trust::open_default();
+        for rel in [letibot_plugins::MANIFEST, "src/lib.rs"] {
+            let path = dir.join(rel);
+            if let Ok(bytes) = std::fs::read(&path) {
+                book.note_write(&path, &bytes, &self.session);
+            }
+        }
         Ok(said)
     }
 
