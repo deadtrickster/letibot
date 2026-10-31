@@ -56,6 +56,7 @@
 pub mod client;
 pub mod item;
 pub mod lease;
+pub mod restart;
 pub mod room;
 pub mod server;
 pub mod wire;
@@ -63,8 +64,9 @@ pub mod wire;
 pub use item::{Abandonment, Claim, Item, Speaker, State, Wait, Why, duration};
 pub use lease::{
     Acquired, COORDINATOR_LEASE_TTL_MS, CoordinatorLease, Held, Holder, LEASE_BEAT_EVERY_MS,
-    Takeover, coordinator_session, host_key, host_name, lease_path, socket_path,
+    Takeover, coordinator_session, host_key, host_name, lease_path, pid_alive, socket_path,
 };
+pub use restart::{Cause, Marker, marker_path, read_marker, room_running, room_started_ms};
 pub use room::{
     ABANDON_THRESHOLD, About, DEFAULT_BEAT_EVERY_MS, DEFAULT_LEASE_MS, Decision, Event, Facts,
     Holding, Outcome, Question, REPLAY_WINDOW, Refused, Reminder, Room, Ruling, Waiting,

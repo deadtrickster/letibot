@@ -211,14 +211,14 @@ impl CoordinatorLease {
             None => Acquired::Fresh,
             Some(h) => {
                 let age = now.saturating_sub(h.beat_ms);
-                if age <= COORDINATOR_LEASE_TTL_MS && running(h.pid) {
+                if age <= COORDINATOR_LEASE_TTL_MS && pid_alive(h.pid) {
                     return Err(Held {
                         holder: h.clone(),
                         age_ms: age,
                         path: self.path.clone(),
                     });
                 }
-                let why = if !running(h.pid) {
+                let why = if !pid_alive(h.pid) {
                     Takeover::PidGone { pid: h.pid }
                 } else {
                     Takeover::BeatStale { age_ms: age }
@@ -338,7 +338,10 @@ fn parse(text: &str) -> Option<Holder> {
 /// the same user as the asker on every box this runs on, and a lease taken over from a process we
 /// cannot even ask about is the safer of the two mistakes — the alternative is a room nobody can
 /// restart after a uid change.
-fn running(pid: u32) -> bool {
+///
+/// Public because *is the room there* is a question two doors ask: this one, taking over a lease,
+/// and [`crate::restart::room_running`], deciding whether a restart has anything to stop.
+pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
