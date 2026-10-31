@@ -38,8 +38,9 @@ use letibot_tools::builtins::decisions::{
 };
 
 pub struct StoreDecisions {
-    /// This reader's own connection. See `transcript_source`'s module docs: a
-    /// `Connection` is `Send` but not `Sync`, and a tool is both.
+    /// This reader's handle onto the process's one connection. See
+    /// `transcript_source`'s module docs: a `Connection` is `Send` but not `Sync`, and a tool is
+    /// both.
     store: std::sync::Mutex<Store>,
     session_id: String,
 }

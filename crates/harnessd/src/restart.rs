@@ -132,7 +132,8 @@ impl Lifeline {
             match Store::open(p).and_then(|s| s.life_started(&instance, started).map(|()| s)) {
                 Ok(s) => {
                     store = Some(s);
-                    // The heartbeat's own connection, opened here and now for the same reason.
+                    // A second HANDLE on the same connection, moved to the heartbeat's thread:
+                    // `Store::open` shares, so this opens no descriptor of its own.
                     if let Ok(beat) = Store::open(p) {
                         let reg = registry.clone();
                         let _ = std::thread::Builder::new()

@@ -791,41 +791,41 @@ impl Store {
     /// same child enqueued twice is one row), and nothing is written then.
     pub fn enqueue_review(&self, new: &NewReview, by: &str, now_ms: u64) -> Result<bool> {
         self.write_tx(|tx| {
-        let n = tx.execute(
-            "INSERT OR IGNORE INTO review_queue
+            let n = tx.execute(
+                "INSERT OR IGNORE INTO review_queue
                (id, repository, target, kind, session_id, branch, worktree, base_sha, head_sha,
                 brief, priority, fixes, state, owner, evidence, created_ms, state_ms, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'waiting', '', ?13, ?14, ?14, ?14)",
-            params![
-                new.id,
-                new.repository,
-                new.target,
-                new.kind.as_str(),
-                new.session_id,
-                new.branch,
-                new.worktree,
-                new.base_sha,
-                new.head_sha,
-                new.brief,
-                new.priority.as_str(),
-                new.fixes,
-                new.evidence,
-                now_ms as i64,
-            ],
-        )?;
-        if n == 1 {
-            record(
-                tx,
-                "review",
-                &new.id,
-                &new.repository,
-                None,
-                ReviewState::Waiting.as_str(),
-                now_ms,
-                by,
-                &new.evidence,
+                params![
+                    new.id,
+                    new.repository,
+                    new.target,
+                    new.kind.as_str(),
+                    new.session_id,
+                    new.branch,
+                    new.worktree,
+                    new.base_sha,
+                    new.head_sha,
+                    new.brief,
+                    new.priority.as_str(),
+                    new.fixes,
+                    new.evidence,
+                    now_ms as i64,
+                ],
             )?;
-        }
+            if n == 1 {
+                record(
+                    tx,
+                    "review",
+                    &new.id,
+                    &new.repository,
+                    None,
+                    ReviewState::Waiting.as_str(),
+                    now_ms,
+                    by,
+                    &new.evidence,
+                )?;
+            }
             Ok(n == 1)
         })
     }
@@ -1166,86 +1166,86 @@ impl Store {
     ) -> Result<LeaseOutcome> {
         self.write_tx(|tx| {
             let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
-        // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
-        // re-read live, in this transaction, so a daemon already running when a newer build
-        // migrates the file finds out at its next claim (requirement 1). A schema ABOVE this
-        // build's that only added things is a store this daemon still reads: refusing it here
-        // would be the 2026-10-26 refusal a layer down, where the daemon keeps its session and
-        // loses its queue. A schema whose floor moved past this build — or one old enough that
-        // nobody said — still claims nothing.
+            // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
+            // re-read live, in this transaction, so a daemon already running when a newer build
+            // migrates the file finds out at its next claim (requirement 1). A schema ABOVE this
+            // build's that only added things is a store this daemon still reads: refusing it here
+            // would be the 2026-10-26 refusal a layer down, where the daemon keeps its session and
+            // loses its queue. A schema whose floor moved past this build — or one old enough that
+            // nobody said — still claims nothing.
             if !super::floor::readable_here(tx, stored)? {
-            return Ok(LeaseOutcome::WrongSchema {
-                store: stored,
-                mine: SCHEMA_VERSION,
-            });
-        }
-        let held: Option<QueueLease> = tx
-            .query_row(
-                &format!("SELECT {LEASE_COLUMNS} FROM queue_lease WHERE repository = ?1"),
-                params![repository],
-                lease_from_row,
-            )
-            .optional()?;
-        let previous = match held {
-            Some(l) if l.owner == me.owner => None,
-            Some(l) if now_ms.saturating_sub(l.heartbeat_ms) <= ttl_ms => {
-                return Ok(LeaseOutcome::HeldBy(l));
+                return Ok(LeaseOutcome::WrongSchema {
+                    store: stored,
+                    mine: SCHEMA_VERSION,
+                });
             }
-            other => other,
-        };
-        let renewing = previous.is_none()
-            && tx
+            let held: Option<QueueLease> = tx
                 .query_row(
-                    "SELECT 1 FROM queue_lease WHERE repository = ?1 AND owner = ?2",
-                    params![repository, me.owner],
-                    |_| Ok(()),
+                    &format!("SELECT {LEASE_COLUMNS} FROM queue_lease WHERE repository = ?1"),
+                    params![repository],
+                    lease_from_row,
                 )
-                .optional()?
-                .is_some();
-        if renewing {
-            tx.execute(
-                "UPDATE queue_lease SET heartbeat_ms = ?3 WHERE repository = ?1 AND owner = ?2",
-                params![repository, me.owner, now_ms as i64],
-            )?;
-        } else {
-            tx.execute(
-                "INSERT INTO queue_lease (repository, owner, pid, host, build, schema, heartbeat_ms, acquired_ms)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
-                 ON CONFLICT(repository) DO UPDATE SET owner = excluded.owner, pid = excluded.pid,
-                     host = excluded.host, build = excluded.build, schema = excluded.schema,
-                     heartbeat_ms = excluded.heartbeat_ms, acquired_ms = excluded.acquired_ms",
-                params![
-                    repository,
-                    me.owner,
-                    me.pid as i64,
-                    me.host,
-                    me.build,
-                    SCHEMA_VERSION,
-                    now_ms as i64
-                ],
-            )?;
-            let why = match &previous {
-                Some(p) => format!(
-                    "took the lease over from {} (pid {}, {}), whose heartbeat was {} s old",
-                    p.owner,
-                    p.pid,
-                    p.build,
-                    now_ms.saturating_sub(p.heartbeat_ms) / 1000
-                ),
-                None => "took the free lease".to_string(),
+                .optional()?;
+            let previous = match held {
+                Some(l) if l.owner == me.owner => None,
+                Some(l) if now_ms.saturating_sub(l.heartbeat_ms) <= ttl_ms => {
+                    return Ok(LeaseOutcome::HeldBy(l));
+                }
+                other => other,
             };
-            record(
-                tx,
-                "lease",
-                repository,
-                repository,
-                previous.as_ref().map(|p| p.owner.as_str()),
-                &me.owner,
-                now_ms,
-                &me.owner,
-                &why,
-            )?;
-        }
+            let renewing = previous.is_none()
+                && tx
+                    .query_row(
+                        "SELECT 1 FROM queue_lease WHERE repository = ?1 AND owner = ?2",
+                        params![repository, me.owner],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some();
+            if renewing {
+                tx.execute(
+                    "UPDATE queue_lease SET heartbeat_ms = ?3 WHERE repository = ?1 AND owner = ?2",
+                    params![repository, me.owner, now_ms as i64],
+                )?;
+            } else {
+                tx.execute(
+                    "INSERT INTO queue_lease (repository, owner, pid, host, build, schema, heartbeat_ms, acquired_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+                     ON CONFLICT(repository) DO UPDATE SET owner = excluded.owner, pid = excluded.pid,
+                         host = excluded.host, build = excluded.build, schema = excluded.schema,
+                         heartbeat_ms = excluded.heartbeat_ms, acquired_ms = excluded.acquired_ms",
+                    params![
+                        repository,
+                        me.owner,
+                        me.pid as i64,
+                        me.host,
+                        me.build,
+                        SCHEMA_VERSION,
+                        now_ms as i64
+                    ],
+                )?;
+                let why = match &previous {
+                    Some(p) => format!(
+                        "took the lease over from {} (pid {}, {}), whose heartbeat was {} s old",
+                        p.owner,
+                        p.pid,
+                        p.build,
+                        now_ms.saturating_sub(p.heartbeat_ms) / 1000
+                    ),
+                    None => "took the free lease".to_string(),
+                };
+                record(
+                    tx,
+                    "lease",
+                    repository,
+                    repository,
+                    previous.as_ref().map(|p| p.owner.as_str()),
+                    &me.owner,
+                    now_ms,
+                    &me.owner,
+                    &why,
+                )?;
+            }
             Ok(LeaseOutcome::Held { previous })
         })
     }
@@ -1315,21 +1315,21 @@ impl Store {
         self.write_tx(|tx| {
             let n = tx.execute(
                 "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2 AND heartbeat_ms < ?3",
-            params![repository, owner, expired_before_ms as i64],
-        )?;
-        if n == 1 {
-            record(
-                tx,
-                "lease",
-                repository,
-                repository,
-                Some(owner),
-                "released",
-                now_ms,
-                by,
-                why,
+                params![repository, owner, expired_before_ms as i64],
             )?;
-        }
+            if n == 1 {
+                record(
+                    tx,
+                    "lease",
+                    repository,
+                    repository,
+                    Some(owner),
+                    "released",
+                    now_ms,
+                    by,
+                    why,
+                )?;
+            }
             Ok(n == 1)
         })
     }
@@ -1427,42 +1427,42 @@ impl Store {
     /// Write the target's health, and the move in the history when the state changed.
     pub fn set_target_health(&self, h: &TargetHealth, by: &str) -> Result<()> {
         self.write_tx(|tx| {
-        let before: Option<String> = tx
-            .query_row(
-                "SELECT state FROM target_health WHERE repository = ?1 AND target = ?2",
-                params![h.repository, h.target],
-                |r| r.get(0),
-            )
-            .optional()?;
-        tx.execute(
-            "INSERT INTO target_health (repository, target, sha, state, checked_ms, evidence, gate_steps_json)
+            let before: Option<String> = tx
+                .query_row(
+                    "SELECT state FROM target_health WHERE repository = ?1 AND target = ?2",
+                    params![h.repository, h.target],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            tx.execute(
+                "INSERT INTO target_health (repository, target, sha, state, checked_ms, evidence, gate_steps_json)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(repository, target) DO UPDATE SET sha = excluded.sha, state = excluded.state,
                  checked_ms = excluded.checked_ms, evidence = excluded.evidence,
                  gate_steps_json = excluded.gate_steps_json",
-            params![
-                h.repository,
-                h.target,
-                h.sha,
-                h.state.as_str(),
-                h.checked_ms as i64,
-                h.evidence,
-                serde_json::to_string(&h.gate_steps)?,
-            ],
-        )?;
-        if before.as_deref() != Some(h.state.as_str()) {
-            record(
-                tx,
-                "target",
-                &h.target,
-                &h.repository,
-                before.as_deref(),
-                h.state.as_str(),
-                h.checked_ms,
-                by,
-                &format!("{} at {}", h.evidence, h.sha),
+                params![
+                    h.repository,
+                    h.target,
+                    h.sha,
+                    h.state.as_str(),
+                    h.checked_ms as i64,
+                    h.evidence,
+                    serde_json::to_string(&h.gate_steps)?,
+                ],
             )?;
-        }
+            if before.as_deref() != Some(h.state.as_str()) {
+                record(
+                    tx,
+                    "target",
+                    &h.target,
+                    &h.repository,
+                    before.as_deref(),
+                    h.state.as_str(),
+                    h.checked_ms,
+                    by,
+                    &format!("{} at {}", h.evidence, h.sha),
+                )?;
+            }
             Ok(())
         })
     }

@@ -217,8 +217,8 @@ impl RecordedSpec {
 }
 
 /// **The store, opened on first use** — shared by every record a runner writes (it is the
-/// runner's `merge_store` cell: one connection per runner, behind a mutex because a
-/// `rusqlite::Connection` is `Send` and not `Sync`).
+/// runner's `merge_store` cell: one handle per runner onto the process's one connection, filled
+/// behind a mutex on the first write).
 #[derive(Clone)]
 pub struct RunStore {
     pub path: PathBuf,

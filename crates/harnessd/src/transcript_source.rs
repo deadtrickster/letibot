@@ -25,14 +25,14 @@
 //! blobs, the hash chain or the stable prefix — nothing here can move a row, and
 //! the append-only triggers would refuse if it tried.
 //!
-//! # Its own connection
+//! # A handle, not a connection
 //!
 //! `rusqlite::Connection` is `Send` but not `Sync`, and a tool is `Send + Sync`
-//! by trait. So this opens the store file a **second** time behind a `Mutex`
-//! rather than sharing the harness's connection. Two readers on one SQLite file
-//! is the ordinary case, and the separation earns something besides
-//! compilability: a search that takes a second cannot hold the lock the turn
-//! needs to append its next row.
+//! by trait, so this holds the store behind a `Mutex`. It used to open the file a
+//! **second** time for that; since the store became one connection per file per
+//! process (`Store::open`), what it takes is a handle onto the daemon's own. The
+//! cost is the store's lock: a search that takes a second now does hold up the
+//! turn's next append, which is the trade the descriptor measurement bought.
 
 use letibot_tokencore::store::Store;
 use letibot_tools::builtins::transcript::{
@@ -41,7 +41,7 @@ use letibot_tools::builtins::transcript::{
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 pub struct StoreTranscripts {
-    /// This reader's own connection to the store file. See the module docs.
+    /// This reader's handle onto the process's one connection. See the module docs.
     store: std::sync::Mutex<Store>,
     /// The session a call from this harness is about when it names none.
     session_id: String,

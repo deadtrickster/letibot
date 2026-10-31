@@ -32,8 +32,8 @@ pub struct StoreBook {
     path: PathBuf,
     session: String,
     /// **Opened lazily**, and kept: a session that never fans out pays nothing, and one that fans
-    /// out twice pays one open. A second connection to a WAL store is ordinary here rather than a
-    /// workaround — see `Store::path`.
+    /// out twice pays one open. It is a handle onto the process's one connection, not a second
+    /// one — see `Store::path`.
     store: Mutex<Option<Store>>,
 }
 

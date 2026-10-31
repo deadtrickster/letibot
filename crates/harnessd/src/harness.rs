@@ -148,7 +148,8 @@ pub struct Parts {
     /// belongs to the DAEMON and not to any one session's config, handed to every harness so
     /// each can register its own board at open — root, child, resumed or fresh — and read any
     /// other's through the resolver built beside it. The store path rides along because the
-    /// resolver's flush needs a connection of its own (`Store` is `Send` and not `Sync`).
+    /// resolver's flush runs on another thread and reaches the store by path — a handle onto
+    /// the process's one connection, not a second one.
     pub child_boards: std::sync::Arc<crate::child_todos::ChildBoards>,
     /// **The watcher set of the subagent TREE this session belongs to, when it is a
     /// child** (R58).
@@ -3487,10 +3488,10 @@ impl Harness {
                     .map_err(|e| HarnessError::Store(format!("opening {path:?}: {e}")))?,
             ),
         };
-        // Opened from the path rather than shared with `store` above: `Store` holds a
-        // `rusqlite::Connection`, which is `Send` and not `Sync`, and a corpus sink is
-        // shared for the life of the gate. Two connections is the store's declared
-        // shape — WAL, a 5 s busy timeout — not a workaround for one.
+        // A handle onto the connection `store` above holds, not a second one: a corpus sink is
+        // shared for the life of the gate, and since the store became one connection per file
+        // per process the sink's writes queue behind the session's rather than needing a
+        // connection of their own.
         //
         // A store that opens for the session and not for the corpus is a real
         // possibility (a read-only mount, a full disk), and it is reported as
@@ -5280,8 +5281,8 @@ impl Harness {
                 };
                 // **The corpus.** Without this the gate's rows are a `Vec` that dies
                 // with the daemon, and every decision ever made here is gone —
-                // including the labelled ones, which are the expensive kind. A second
-                // connection to the session store, by its own design.
+                // including the labelled ones, which are the expensive kind. It writes
+                // through the session store's own connection, not a second one.
                 let g = match corpus_sink.clone() {
                     Some(sink) => g.with_corpus_sink(sink),
                     None => g,
@@ -5410,11 +5411,11 @@ impl Harness {
         if let Some(w) = &job_watch {
             *tree_watch_slot.lock().expect("tree watch") = Some(Arc::clone(w));
             // **Where a settlement gets written down.** The watcher threads settle jobs on
-            // their own thread and cannot be handed this harness's connection — a
+            // their own thread and cannot be handed this harness's `Store` — a
             // `rusqlite::Connection` is `Send` and not `Sync` — so they are given the store's
-            // PATH and open their own; `Store::path` documents why that is ordinary here and
-            // why it answers `None` for an in-memory store. A run with no store records
-            // nothing, which is the same answer it gives for todos.
+            // PATH and open a handle onto the process's one connection; `Store::path` says why
+            // that is ordinary and why it answers `None` for an in-memory store. A run with no
+            // store records nothing, which is the same answer it gives for todos.
             //
             // **This session's own id, not the tree's**, for the reason the queue is per
             // session: a job a child backgrounded is the child's row, in the child's session.
@@ -20195,10 +20196,9 @@ struct HarnessTaskRunner {
     placed: Arc<std::sync::Mutex<Vec<PlacedChild>>>,
     /// **Where a finished child's entry is written** — the session store, opened on first use.
     ///
-    /// Opened lazily and held as a cell for [`crate::jobwatch::JobRecorder`]'s reasons, which
-    /// are the same two: a store opened at construction is opened for every session that never
-    /// starts a `task_start` child, and a `rusqlite::Connection` is `Send` and not `Sync`, so a
-    /// runner that must be both keeps it behind a mutex rather than in the struct's own hand.
+    /// Opened lazily and held as a cell for [`crate::jobwatch::JobRecorder`]'s reason: a store
+    /// opened at construction is opened for every session that never starts a `task_start`
+    /// child. The cell is a `Mutex` because a `rusqlite::Connection` is `Send` and not `Sync`.
     merge_store: Arc<std::sync::Mutex<Option<Store>>>,
 }
 

@@ -5959,14 +5959,14 @@ impl StoreSessions {
     }
 }
 
-/// **The same second connection, answering a row the view has trimmed** (R19.2b).
+/// **The same handle, answering a row the view has trimmed** (R19.2b).
 ///
 /// One instance does both jobs because they are one store asked two questions, and
-/// because a third connection would be a third thing to keep in WAL's reader set. The
-/// daemon passes this same `Arc` to `Registry::set_source` and `Registry::set_row_source`.
+/// because another handle would be another reader of the same file. The daemon
+/// passes this same `Arc` to `Registry::set_source` and `Registry::set_row_source`.
 /// **R11's locator, against the store** — leticl's ask, second half.
 ///
-/// The same shape as [`RowSource`]: one implementation over the daemon's second connection,
+/// The same shape as [`RowSource`]: one implementation over the daemon's store,
 /// set once at startup, and a registry with none answers `None` exactly as it did before.
 impl letibot_sessionlog::registry::DiagnosticSource for StoreSessions {
     fn diagnostic(
@@ -6269,9 +6269,10 @@ impl SessionSource for StoreSessions {
     }
 
     /// **Both queues, whole, for a head's pane** (R61) — every row, the leases with their
-    /// heartbeats, the targets' health and the last moves, through this source's own connection
-    /// to the file the queues' threads write. A table that could not be read is SAID in the
-    /// snapshot (`unreadable`) and never answered as an empty queue (R61 defect 12, R67 item 15).
+    /// heartbeats, the targets' health and the last moves, through this source's handle onto the
+    /// one connection the queues' own threads write with. A table that could not be read is SAID
+    /// in the snapshot (`unreadable`) and never answered as an empty queue (R61 defect 12, R67
+    /// item 15).
     fn queues(&self) -> letibot_sessionlog::event::QueueSnapshot {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         crate::mergequeue::snapshot(&g)

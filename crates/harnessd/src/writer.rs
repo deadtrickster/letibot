@@ -57,9 +57,9 @@ pub const TTL_MS: u64 = crate::mergequeue::lease::LEASE_TTL_MS;
 ///
 /// Dropping it gives the session back, and the release is guarded on the owner so a claim that
 /// was taken over (its holder judged gone, then coming back) cannot delete the successor's row.
-/// It opens its own connection on the way out because the harness's own store is a `rusqlite`
-/// connection it may already be dropping; a store is two connections by design (see
-/// `Store::path`), and this is the third a shutdown is allowed.
+/// It reaches the store by PATH on the way out because the harness's own handle may already be
+/// dropped; `Store::open` answers the process's one connection, so the release goes through that
+/// rather than through a second one.
 pub struct Claim {
     /// `None` for an in-memory store, which no other process can reach and which has no file for
     /// the release to open.

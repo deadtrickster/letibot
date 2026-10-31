@@ -401,7 +401,7 @@ impl Supervisor {
             }
         }
         // **A block whose owner is gone goes back** (RH9), and the store's own lock is dropped
-        // first: the release opens its own connection and tears down on a host, and holding the
+        // first: the release reaches the store by path and tears down on a host, and holding the
         // tick's lock across an ssh round trip would stall every other writer on the box.
         self.reap_leases(&mut report);
         report
@@ -410,16 +410,17 @@ impl Supervisor {
     /// **The leases whose owner nobody serves, after the grace.** See `crate::leases::reap` for the
     /// rule and `leases::GRACE_MS` for why a restart is not an owner being gone.
     ///
-    /// The decision is taken under the locks and the releasing is not: a release opens its own
-    /// connection and may run an ssh round trip to tear a prefix down, and holding the tick's store
-    /// lock across that would stall every other writer on the box.
+    /// The decision is taken under the locks and the releasing is not: a release reaches the store
+    /// by path — a handle onto the process's one connection — and may run an ssh round trip to tear
+    /// a prefix down, and holding the tick's store lock across that would stall every other writer
+    /// on the box.
     fn reap_leases(&self, report: &mut Tick) {
         let Some(owner) = &self.owner else {
             return;
         };
         let at = (self.now_ms)();
-        // An in-memory store has no second connection, so nothing could release through one. The
-        // honest answer is to say so rather than to pretend the reaper ran.
+        // An in-memory store has no path, so nothing could release through one. The honest answer
+        // is to say so rather than to pretend the reaper ran.
         let Some(path) = self
             .store
             .lock()
@@ -450,7 +451,7 @@ impl Supervisor {
             seen.remove(session);
         }
         drop(seen);
-        // **Now the locks are down.** A release opens its own connection and may run an ssh round
+        // **Now the locks are down.** A release reaches the store by path and may run an ssh round
         // trip to tear a prefix down; holding the tick's store lock across that would stall every
         // other writer on the box.
         for session in due {
@@ -993,7 +994,7 @@ impl Probe for HostProbe {
 }
 
 /// **Start the supervisor as the daemon's own thread** — after [`crate::vm_reap::spawn`] and for
-/// its reason: its own connection, its own clock, and no session's work waiting on it.
+/// its reason: its own thread, its own clock, and no session's work waiting on it.
 ///
 /// **The first tick IS the recovery.** A daemon that starts reads every open record the previous
 /// one left (`Store::open_processes`), checks the hosts once, and writes down what it found — so a

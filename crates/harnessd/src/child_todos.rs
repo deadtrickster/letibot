@@ -32,9 +32,9 @@
 //! exactly the omission `Harness::set_operator_todos` records for the operator's rows
 //! (*"on a session where no turn ever runs again, the operator's rows would sit on the board
 //! unpublished and unwritten"*). So the resolver persists and publishes at the moment of the
-//! write, through its own connection to the session store — the store's declared shape (WAL,
-//! two connections: the harness's and the corpus's) rather than a workaround — and the child's
-//! own `flush_todos` re-publishing the same list at its next boundary is a harmless duplicate.
+//! write, through its own handle onto the session store — the process's one connection to that
+//! file, taken by `Store::open` — and the child's own `flush_todos` re-publishing the same list
+//! at its next boundary is a harmless duplicate.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -53,13 +53,13 @@ use letibot_tools::builtins::todo::{ChildTodos, TodoBoard};
 #[derive(Default)]
 pub struct ChildBoards {
     boards: Mutex<HashMap<String, Arc<TodoBoard>>>,
-    /// The session store's path, for the resolver's own connection. `None` is a storeless
-    /// daemon: the write still lands on the board, publishes to the child's hub, and is honestly
-    /// not durable — the same shape a storeless session's own todos have.
+    /// The session store's path, for the resolver's flush. `None` is a storeless daemon: the
+    /// write still lands on the board, publishes to the child's hub, and is honestly not
+    /// durable — the same shape a storeless session's own todos have.
     store_path: Option<PathBuf>,
-    /// **A second connection to the session store, opened once on first write** — the corpus's
-    /// own declared shape (`Store` is `Send` and not `Sync`, so the `Mutex` is what makes this
-    /// shareable, and the WAL is what makes two connections the design rather than a race).
+    /// **The store, opened once on first write** — a handle onto the process's one connection to
+    /// that file (`Store::open`), behind a `Mutex` because a flush runs on whichever thread wrote
+    /// the board. It used to be a second connection; there is one per file per process now.
     store: Mutex<Option<Store>>,
 }
 
@@ -642,8 +642,8 @@ mod tests {
             "one event — the TodosUpdated — was published to the child's hub"
         );
 
-        // **Persisted.** A second connection reads back what a restart would find.
-        let stored = Store::open(&db).unwrap();
+        // **Persisted.** A connection of its own reads back what a restart would find.
+        let stored = Store::open_private(&db).unwrap();
         let rows = stored.todos("s-child-aaaa").unwrap();
         assert!(
             rows.iter().any(|t| t.content == "seen on the pane"),

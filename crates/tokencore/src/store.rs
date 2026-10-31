@@ -2048,12 +2048,11 @@ impl Store {
 
     /// **The file this store is**, when it has one.
     ///
-    /// A second connection is a normal thing to want here and not a workaround: the watcher
-    /// threads settle jobs on their own thread, a `rusqlite::Connection` is `Send` and not
-    /// `Sync`, and re-opening the file is the only way to write from a thread that must not
-    /// be handed the harness's own connection. `from_connection`'s own comment already says
-    /// two connections exist by design — the worker writes rows and a second answers a head —
-    /// and WAL plus the five-second `busy_timeout` are what make a third harmless.
+    /// A PATH and not a handle because the caller that needs one is on another thread — the
+    /// watcher threads settle jobs, the todo resolver flushes — and a `rusqlite::Connection` is
+    /// `Send` and not `Sync`. What [`Store::open`] answers on that path is this process's own
+    /// connection, not a second one: the path is how a thread that cannot be handed a `Store`
+    /// reaches the store, and the cost of sharing it is the lock `open` documents.
     ///
     /// `None` for an in-memory store, which nobody else can reach. That is an honest
     /// absence rather than an error: a store with no file has no path to give, and a caller
@@ -2092,11 +2091,11 @@ impl Store {
 
     /// **How long a connection waits for the write lock before giving up** — MEASURED, not chosen.
     ///
-    /// Five seconds was the right number when a box held a "third connection": the doc above
-    /// says WAL plus this timeout is what made a third harmless. On 2026-10-10 the same box
-    /// held **478 sessions across 48 projects in one 2.1 GB store, ~11 daemons and dozens of
-    /// connections** wanting the single write lock SQLite allows — and five seconds stopped
-    /// being enough. Four CHILDREN of one session died mid-work on
+    /// Five seconds was the right number when a box held a "third connection": WAL plus this
+    /// timeout was what made a third harmless. On 2026-10-10 the same box held **478 sessions
+    /// across 48 projects in one 2.1 GB store, ~11 daemons and dozens of connections** wanting
+    /// the single write lock SQLite allows — and five seconds stopped being enough. Four
+    /// CHILDREN of one session died mid-work on
     /// `store: row N (…#t0.N): sqlite: database is locked`, and one of them was the child sent
     /// to fix exactly this; the same sentence appears for the queue (*"the queue could not be
     /// served"*) and for a live session's own row.
@@ -2117,11 +2116,11 @@ impl Store {
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
         // WAL lets readers and the writer run at once, but two *writers* still
-        // serialise, and rusqlite's default is to fail immediately rather than wait.
-        // Two connections exist by design — the worker writes rows, a second one
-        // answers a head's list and writes a title — so a rename landing during a
-        // turn's `append_item` must wait a moment rather than come back as
-        // SQLITE_BUSY on a database that is working exactly as intended.
+        // serialise — this process's behind the store's lock, another daemon's or an
+        // `open_private` connection's in SQLite itself — and rusqlite's default is to
+        // fail immediately rather than wait. So a rename landing during a turn's
+        // `append_item` must wait a moment rather than come back as SQLITE_BUSY on a
+        // database that is working exactly as intended.
         //
         // The timeout FIRST: `journal_mode` and `migrate` below already touch the file, and
         // an open that lands while another daemon commits must wait like any other statement
@@ -3811,10 +3810,9 @@ impl Store {
 
     /// The name on disk right now, or `None` for a session nobody has named.
     ///
-    /// Read rather than remembered: a title can be set by a head through the
-    /// registry's own connection while a harness holds an older idea of it, and a
-    /// derivation that trusted its cached copy would overwrite a name the operator
-    /// had just typed.
+    /// Read rather than remembered: a head can set a title from its own thread while a harness
+    /// holds an older idea of it, and a derivation that trusted its cached copy would overwrite a
+    /// name the operator had just typed.
     pub fn title(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -4053,8 +4051,8 @@ impl Store {
     }
 
     /// The provider this session was switched to, or `None` for one that never
-    /// chose. Read rather than remembered for the reason [`Store::title`] is: a
-    /// second connection can write the row while a harness holds an older idea.
+    /// chose. Read rather than remembered for the reason [`Store::title`] is: another writer can
+    /// change the row while a harness holds an older idea.
     pub fn provider_choice(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()

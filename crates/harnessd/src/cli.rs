@@ -2998,7 +2998,8 @@ fn run_query(
             Ok(0)
         }
         Query::Backfill { write } => {
-            // Same reason as the replay below: the backfill opens its own handle.
+            // Same reason as the replay below: the backfill opens the store by path, which answers
+            // this same connection.
             drop(store);
             let mut report = crate::backfill::plan(path)?;
             if write {
@@ -3008,8 +3009,8 @@ fn run_query(
             Ok(0)
         }
         Query::Calibrate { write } => {
-            // The store connection above is dropped by the replay opening its own;
-            // two handles on one WAL database is the store's declared shape.
+            // The store handle above is dropped before the replay opens the same file: both are
+            // the process's one connection, so the drop gives back a handle and not a descriptor.
             drop(store);
             let report = crate::calibrate::replay(cfg, path, 10_000)?;
             print!("{}", report.render());

@@ -1413,11 +1413,10 @@ impl SettlementQueue {
 
 /// **The one thing a settlement needs to leave a record of itself** — a path and a session id.
 ///
-/// Not a `Store`: the harness's connection lives on another thread, and a
-/// `rusqlite::Connection` is `Send` but not `Sync`. So the watcher opens a connection of its own
-/// the first time it has something to write and keeps it — see [`Store::path`] for why a second
-/// connection is ordinary here rather than a workaround (WAL plus the five-second
-/// `busy_timeout` are what make it harmless).
+/// Not a `Store`: the harness's handle lives on another thread. So the watcher opens the store
+/// by path the first time it has something to write and keeps what comes back — and `Store::open`
+/// answers the process's one connection, so what this costs is the store's lock and not a
+/// descriptor (see [`Store::path`]).
 ///
 /// **A failure here kills nothing, and it is SAID.** The notice is what a run depends on; the
 /// row is the history. So a write that fails leaves a missing row — the honest state — where a
