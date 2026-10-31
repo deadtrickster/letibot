@@ -51,8 +51,8 @@ impl Store {
     /// Every project's row, by root.
     pub fn project_modes(&self) -> Result<Vec<ProjectMode>> {
         let conn = self.conn();
-        let mut st = conn
-            .prepare("SELECT root, mode, consented_at FROM project_mode ORDER BY root")?;
+        let mut st =
+            conn.prepare("SELECT root, mode, consented_at FROM project_mode ORDER BY root")?;
         let rows = st
             .query_map([], |r| {
                 Ok(ProjectMode {

@@ -2021,7 +2021,11 @@ impl Store {
     }
 
     fn open_sharing(path: &Path, share: bool) -> Result<Self> {
-        let key = if share { Some(canonical_key(path)) } else { None };
+        let key = if share {
+            Some(canonical_key(path))
+        } else {
+            None
+        };
         // The registry is held across the open so two threads cannot each create a connection to
         // one file. Nothing inside this window opens another store, so it cannot deadlock.
         let mut open = shared_stores().lock().unwrap_or_else(|e| e.into_inner());
@@ -4687,8 +4691,7 @@ impl Store {
     ) -> Result<T> {
         busy::retry_store(|| {
             let conn = self.conn();
-            let tx =
-                rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
+            let tx = rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
             let out = body(&tx)?;
             tx.commit()?;
             Ok(out)
@@ -4922,18 +4925,23 @@ mod corpus_tests {
 
         // **The rate of each**, which is the thing the column exists for: one query, and
         // the answer is a count per token rather than a regex over a sentence.
-        let conn = s.conn();
-        let mut stmt = conn
-            .prepare(
-                "SELECT oracle_reading, COUNT(*) FROM adjudication
-                  WHERE oracle_reading IS NOT NULL GROUP BY 1 ORDER BY 1",
-            )
-            .unwrap();
-        let counts: Vec<(String, i64)> = stmt
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .unwrap();
+        //
+        // **The guard's scope is this block, and that is load-bearing**: the store is one
+        // connection for the whole process, so a guard alive across a later `s.conn()` in this
+        // function would wait on the lock it is itself holding.
+        let counts: Vec<(String, i64)> = {
+            let conn = s.conn();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT oracle_reading, COUNT(*) FROM adjudication
+                      WHERE oracle_reading IS NOT NULL GROUP BY 1 ORDER BY 1",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+        };
         assert_eq!(
             counts,
             [

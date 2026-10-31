@@ -252,11 +252,7 @@ impl Store {
     /// session served by a binary older than its store behaves correctly and is one restart away
     /// from being right, and the operator is the only one who can make that restart happen.
     pub fn newer_store(&self) -> Option<NewerStore> {
-        *self
-            .shared
-            .newer
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        *self.shared.newer.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// **The floor this store records**, or `None` for one written before there were floors.
@@ -309,11 +305,7 @@ impl Store {
         let floor = self.reader_floor()?;
         match floor {
             Some(floor) if floor <= SCHEMA_VERSION => {
-                *self
-                    .shared
-                    .newer
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(NewerStore {
+                *self.shared.newer.lock().unwrap_or_else(|e| e.into_inner()) = Some(NewerStore {
                     found,
                     known: SCHEMA_VERSION,
                 });

@@ -58,8 +58,7 @@ fn descriptors_on(path: &Path) -> usize {
                     let target = target_of(*fd);
                     // `contains`, not `ends_with`: the `-wal` and `-shm` are the same store and do
                     // not end with the db's own name.
-                    target.contains(&name)
-                        && here.as_deref().map_or(true, |h| target.contains(h))
+                    target.contains(&name) && here.as_deref().map_or(true, |h| target.contains(h))
                 })
                 .count()
         })
@@ -94,8 +93,7 @@ fn open(path: &Path) -> Connection {
         .expect("synchronous");
     conn.execute_batch("CREATE TABLE IF NOT EXISTS t (x)")
         .expect("a table");
-    conn.execute("INSERT INTO t VALUES (1)", [])
-        .expect("a row");
+    conn.execute("INSERT INTO t VALUES (1)", []).expect("a row");
     conn
 }
 
@@ -149,7 +147,9 @@ fn sequential_open_and_close_reuses_the_descriptor() {
         conn.close().expect("a close");
     }
     let after = descriptors_on(&path);
-    eprintln!("sequential: {base} with one connection, {after} after twenty more opened and closed");
+    eprintln!(
+        "sequential: {base} with one connection, {after} after twenty more opened and closed"
+    );
     assert!(
         after <= base + 1,
         "twenty connections opened and closed one at a time left {after} descriptors on the file \

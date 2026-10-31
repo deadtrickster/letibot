@@ -1151,7 +1151,15 @@ impl Store {
         now_ms: u64,
     ) -> Result<()> {
         record(
-            &self.conn(), queue, entry_id, repository, from, to, now_ms, by, why,
+            &self.conn(),
+            queue,
+            entry_id,
+            repository,
+            from,
+            to,
+            now_ms,
+            by,
+            why,
         )
     }
 

@@ -147,7 +147,11 @@ fn a_move_from_a_state_the_row_left_is_refused_and_every_real_move_is_recorded()
             .execute("UPDATE queue_transition SET why = 'rewritten'", [])
             .is_err()
     );
-    assert!(s.conn().execute("DELETE FROM queue_transition", []).is_err());
+    assert!(
+        s.conn()
+            .execute("DELETE FROM queue_transition", [])
+            .is_err()
+    );
 }
 
 /// **A move may only write the columns the queue names.** A typo is a refusal, not SQL.
