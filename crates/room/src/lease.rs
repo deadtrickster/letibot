@@ -32,6 +32,20 @@
 //! renamed, so a reader never sees half a lease. [`CoordinatorLease::read`] answers `None` for a
 //! file that is missing, empty or unparseable — a lease nobody can read is not a lease anybody can
 //! be refused by, and pretending otherwise would be a lock that is silently open.
+//!
+//! # The decision is atomic, because the launcher makes races ordinary
+//!
+//! `scripts/letibot` starts a coordinator for the box whenever one is not already serving, so two
+//! sessions opened in the same instant is not a thought experiment: it is two `harnessd --room`
+//! processes inside a millisecond of each other. Read-then-write is not atomic, and MEASURED on the
+//! 2026-11-01 tree, that pair produced **two** `Acquired::Fresh` — the loser then failed at the
+//! SOCKET BIND, so the operator was told about an address in use rather than about the coordinator
+//! that holds the room, and its `release()` deleted the winner's lease (the winner went on serving
+//! with no lease until its next beat put one back). So [`CoordinatorLease::acquire`] takes a lock
+//! for the length of the decision — a sibling file, never renamed, because `write` renames a
+//! temporary OVER the lease and a lock on that inode would follow the file that was just replaced.
+//! The lease itself is still the one claim: this lock is the atomicity of one read-modify-write,
+//! not a second thing to hold.
 
 use std::fmt;
 use std::io;
@@ -44,6 +58,11 @@ pub const COORDINATOR_LEASE_TTL_MS: u64 = 90_000;
 
 /// How often the holder says it is still here — nine beats to the TTL.
 pub const LEASE_BEAT_EVERY_MS: u64 = 10_000;
+
+/// How long one `acquire` waits for its turn at the decision. The act it guards is a read, a
+/// compare and one `rename` — microseconds — so this is only ever spent when the process holding
+/// the lock has stopped (a `SIGSTOP`, a box that slept), and then the fall-through is deliberate.
+pub const DECISION_WAIT_MS: u64 = 2_000;
 
 /// **A coordinator that holds the lease** — who, and since when.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +200,12 @@ impl CoordinatorLease {
     ///
     /// A live holder — a beat inside the TTL and a pid that is running — is [`Held`]. Anything else
     /// is a takeover, and it is written down as one.
+    ///
+    /// The decision is made under [`CoordinatorLease::decision_lock`], so two coordinators starting
+    /// in the same instant answer *one* `Fresh` and *one* [`Held`] naming the winner — see the
+    /// module doc for the measurement that made this necessary.
     pub fn acquire(&self, now: u64) -> Result<Acquired, Held> {
+        let _turn = self.decision_lock();
         let existing = self.read();
         let acquired = match &existing {
             None => Acquired::Fresh,
@@ -227,6 +251,45 @@ impl CoordinatorLease {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
+        }
+    }
+
+    /// **The lock one `acquire` holds while it reads, decides and writes.**
+    ///
+    /// `File`'s locks are `flock` on Unix and die with the process, including on `SIGKILL` — the
+    /// property a filename does not have, which is why `sessionlog::server`'s `FolderClaim` is the
+    /// same shape. The path is the lease's own with `.lock` on the end and is **never unlinked**:
+    /// `write` renames a temporary over the lease, so a lock taken on the lease's inode would be a
+    /// lock on a file that no longer has the name.
+    ///
+    /// A filesystem that cannot lock, and a turn that does not come inside [`DECISION_WAIT_MS`],
+    /// both fall through to the unlocked decision: refusing to start a room is a worse outcome than
+    /// failing to catch a second one, and the socket bind is still behind this.
+    fn decision_lock(&self) -> Option<std::fs::File> {
+        let path = self.path.with_extension("lease.lock");
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .ok()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DECISION_WAIT_MS);
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Some(file),
+                Err(std::fs::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                // Another `acquire` has been in there longer than the bound, or this filesystem
+                // cannot lock at all. Decide unlocked rather than refuse to be a room.
+                Err(_) => return None,
+            }
         }
     }
 
@@ -324,7 +387,17 @@ pub fn host_name() -> String {
 /// session id are all derived from it, and a `DefaultHasher` that changed with a Rust version would
 /// rename a live room.
 pub fn host_key() -> String {
-    let raw = host_name();
+    host_key_of(&host_name())
+}
+
+/// **The key, from the name** — [`host_key`] without the `uname`, so a test can pin the answer and
+/// `scripts/letibot` can be held to the same table.
+///
+/// The launcher derives this key in bash (it has to know the socket before it starts anything), and
+/// the two spellings must agree or the launcher would check a path no coordinator ever binds: it
+/// would start a second one every run and be refused by the lease, for ever, loudly. The shell's
+/// copy is `room_host_key` in `scripts/letibot`, and both are pinned to the table in the test below.
+pub fn host_key_of(raw: &str) -> String {
     let mut safe: String = raw
         .chars()
         .map(|c| {
@@ -555,5 +628,78 @@ mod tests {
             "a unix socket path has a length limit: {key}"
         );
         assert_eq!(coordinator_session(&key), format!("s-room-{key}"));
+    }
+
+    /// **The table `scripts/letibot`'s `room_host_key` is pinned to as well.** The launcher derives
+    /// the socket's name in bash before it starts anything, so a key that disagrees with this one
+    /// means the launcher checks a path no coordinator binds: it starts a second coordinator on
+    /// every run and is refused by the lease, for ever. Both sides carry these four lines.
+    #[test]
+    fn the_host_key_matches_what_the_launcher_derives() {
+        for (raw, want) in [
+            ("lab2x1", "lab2x1-e666427d"),
+            ("MacBook-Pro", "macbook-pro-45a1c8db"),
+            ("dead's box", "dead-s-box-5f45071c"),
+            ("localhost", "localhost-03ad937a"),
+        ] {
+            assert_eq!(
+                host_key_of(raw),
+                want,
+                "the launcher's `room_host_key {raw}` must answer the same key"
+            );
+        }
+        // A name longer than a filename can carry is cut, and its dashes are not left hanging.
+        let long = host_key_of(&"x".repeat(40));
+        assert!(long.starts_with(&"x".repeat(24)), "{long}");
+        assert_eq!(long.len(), 24 + 1 + 8, "{long}");
+        assert_eq!(host_key_of("---"), format!("host-{:08x}", 0xde1b_3246u32));
+    }
+
+    /// **Two coordinators starting in the same instant: one room, and the loser is told who holds
+    /// it.** `scripts/letibot` starts a coordinator whenever one is not serving, so two sessions
+    /// opening together is an ordinary Tuesday — and before the decision lock, both answered
+    /// `Fresh` (the loser then failed at the socket bind, and its `release()` deleted the winner's
+    /// lease).
+    #[test]
+    fn a_race_for_the_lease_gives_one_coordinator_and_names_the_holder() {
+        let t = dir();
+        let path = t.path().join("room.lease");
+        // Eight claimants, all released at once: a barrier rather than a sleep, because the defect
+        // is a window of microseconds and a slow test would step around it.
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let mut threads = Vec::new();
+        for n in 0..8 {
+            let path = path.clone();
+            let barrier = std::sync::Arc::clone(&barrier);
+            threads.push(std::thread::spawn(move || {
+                let lease = CoordinatorLease::owned_by(&path, format!("box/{n}/100"));
+                barrier.wait();
+                lease.acquire(1_000).map(|_| format!("box/{n}/100"))
+            }));
+        }
+        let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+        let winners: Vec<&String> = outcomes.iter().filter_map(|o| o.as_ref().ok()).collect();
+        assert_eq!(
+            winners.len(),
+            1,
+            "one coordinator per box, whatever the race: {winners:?}"
+        );
+        let winner = winners[0].clone();
+        for outcome in &outcomes {
+            if let Err(held) = outcome {
+                assert_eq!(
+                    held.holder.owner, winner,
+                    "the loser is told, by name, who holds the room"
+                );
+                assert!(
+                    held.sentence().contains(&winner),
+                    "and the sentence it refuses with says so: {}",
+                    held.sentence()
+                );
+            }
+        }
+        // And the file names the winner, so the NEXT start is refused by the same name.
+        let lease = CoordinatorLease::owned_by(&path, "box/9/100");
+        assert_eq!(lease.read().map(|h| h.owner), Some(winner));
     }
 }
