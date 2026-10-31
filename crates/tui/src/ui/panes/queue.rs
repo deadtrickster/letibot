@@ -1145,6 +1145,16 @@ pub(crate) struct Standings {
     /// **Target branches nobody could judge** — timed out or blocked (R92 item 5). Nothing lands
     /// on them either, so they are an alarm too, not a quiet edge.
     pub(crate) unjudged: usize,
+    /// **The step the target's own gate is on**, when this repository's target is `gating` —
+    /// `(step, of)`.
+    ///
+    /// The operator, 2026-11-01: *"nothing about gate — and the same for other sessions — gate is
+    /// invisible"*, then *"very nasty actually - fans just start spinning"*. The edge said
+    /// `1 being merged`, which is true of every landing at every moment; the one fact that turns
+    /// it into news is that a gate is running a step of N right now. Bounded to the two numbers
+    /// on purpose: the step's clock and its tail are the merge row's detail's, and the edge is one
+    /// line that must still fit at eighty columns.
+    pub(crate) gate: Option<(usize, usize)>,
 }
 
 impl Standings {
@@ -1160,6 +1170,13 @@ impl Standings {
     /// (`rano`'s `truncate`, through `box_edge`), so the leftmost word is the last one a narrow
     /// terminal loses — and the emergency is the word that must survive. Then a target nobody
     /// could judge, then the four columns in the order they have always had.
+    ///
+    /// **The merge column is worded by what the gate is doing** (2026-11-01): `1 gating (step 3
+    /// of 4)` while this repository's target is being gated, `1 being merged` otherwise. Same
+    /// count either way — the column has always counted `queued` and `gating` together, and a
+    /// queued landing waits on exactly that gate — but the word says the machine is working,
+    /// which is the whole of the operator's *"gate is invisible"*. The step is in parentheses and
+    /// last, so a terminal too narrow for it loses the step and keeps the standing.
     pub(crate) fn words(&self) -> Option<String> {
         let mut words: Vec<String> = Vec::new();
         if self.red > 0 {
@@ -1177,8 +1194,14 @@ impl Standings {
             (self.stuck, "stuck"),
             (self.landed, "landed"),
         ] {
-            if n > 0 {
-                words.push(format!("{n} {word}"));
+            if n == 0 {
+                continue;
+            }
+            match (word, self.gate) {
+                ("being merged", Some((step, of))) => {
+                    words.push(format!("{n} gating (step {step} of {of})"))
+                }
+                _ => words.push(format!("{n} {word}")),
             }
         }
         (!words.is_empty()).then(|| words.join(" · "))
@@ -1213,7 +1236,9 @@ impl Standings {
 /// counting was fixed with them:
 ///
 /// * **`in review`** — `waiting` and `reviewing`, the review queue's open states.
-/// * **`being merged`** — `queued` and `gating`, the merge queue's working states.
+/// * **`being merged`** — `queued` and `gating`, the merge queue's working states. Drawn as
+///   **`gating (step N of M)`** when this repository's target is on a gate right now
+///   ([`Standings::gate`]).
 /// * **`stuck`** — open and stopped: a review that could not be RUN (`blocked`) or whose reviewer
 ///   said `needs_human` (`cannot_decide`), and a landing whose gate was red (`failed`), ran out
 ///   of time (`timed_out`), would not rebase (`conflict`) or could not be started (`blocked`).
@@ -1268,6 +1293,13 @@ pub(crate) fn standings_where(
         match t.state.as_str() {
             "red" => s.red += 1,
             "timed_out" | "blocked" => s.unjudged += 1,
+            // **Which step of the gate is running**, when this repository's target is on one —
+            // the fact the merge column is worded by (`Standings::gate`).
+            "gating" => {
+                if let Some(g) = &t.running_gate {
+                    s.gate = Some((g.step.max(1), g.of.max(1)));
+                }
+            }
             _ => {}
         }
     }

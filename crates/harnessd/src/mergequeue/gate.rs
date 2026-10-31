@@ -307,6 +307,10 @@ pub struct RunningGate {
     /// Every byte the step has written, so *the tail has not moved* can be told apart from *the
     /// step is quiet between lines* — a number that only ever grows while it works.
     pub log_bytes: u64,
+    /// **When the log last grew**, in Unix ms — its own mtime, which is the instant the step's
+    /// last byte landed. One read of it is enough to say *this is still going*, where the bytes
+    /// alone cannot: `None` when the log cannot be read at all.
+    pub wrote_ms: Option<u64>,
 }
 
 /// **The step `repository`'s gate is running, and the tail of its log** — `None` when no gate is
@@ -333,7 +337,17 @@ pub fn running(repository: &str) -> Option<RunningGate> {
         started_ms,
         tail,
         log_bytes,
+        wrote_ms: written_at(&log),
     })
+}
+
+/// When a log last grew, in Unix ms — the moment its last byte landed, which is the one fact that
+/// separates a step that is working from a step that is waiting for something.
+fn written_at(log: &Path) -> Option<u64> {
+    let t = std::fs::metadata(log).ok()?.modified().ok()?;
+    t.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis() as u64)
 }
 
 /// **The end of a log, bounded twice** — at most [`TAIL_BYTES`] read (a seek, so the file's size

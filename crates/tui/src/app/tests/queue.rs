@@ -919,6 +919,105 @@ fn the_longest_standings_fit_on_an_eighty_column_edge() {
     );
 }
 
+// -- the gate, on the edge a person reads without opening anything ---------------------
+//
+// The operator, 2026-11-01, twice in one minute: *"nothing about gate — and the same for other
+// sessions — gate is invisible"*, then *"very nasty actually - fans just start spinning"*. The
+// edge said `1 being merged` — true of every landing at every moment — while a gate compiled a
+// step of four on another box. The step is the fact that turns the word into news.
+
+/// A `GATING` target whose gate is on `step` of `of` — the snapshot a head is sent while it runs.
+fn gating_target(
+    repo: &str,
+    step: usize,
+    of: usize,
+) -> letibot_sessionlog::event::TargetHealthView {
+    let mut t = target(repo, "gating");
+    t.running_gate = Some(letibot_sessionlog::event::QueueRunningGate {
+        command: "cargo test --offline --workspace --no-fail-fast".into(),
+        step,
+        of,
+        started_ms: 1_000,
+        tail: "building\n".into(),
+        log_bytes: 36 * 1024,
+    });
+    t
+}
+
+/// **The edge says which step of the gate is running**, at 80 columns, where the merge column used
+/// to say only `1 being merged` — the operator's *"gate is invisible"*, on the one line every
+/// screen carries.
+#[test]
+fn the_edge_names_the_gates_step_at_eighty_columns() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(
+        Vec::new(),
+        vec![
+            queue_merge_row("m-a", "gating"),
+            queue_merge_row("m-b", "queued"),
+        ],
+    );
+    snap.targets.push(gating_target(LETIBOT, 3, 4));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+
+    // The words first, because they are what the line is made of.
+    assert_eq!(
+        a.queue_standings().words().as_deref(),
+        Some("2 gating (step 3 of 4)"),
+        "the column's count, worded by what the gate is doing"
+    );
+    let rows = a.screen(80, 24);
+    let edge = edge_row(&rows);
+    assert!(
+        edge.contains("2 gating (step 3 of 4)"),
+        "drawn whole at eighty columns: {edge:?}"
+    );
+    assert!(!edge.contains("being merged"), "{edge:?}");
+    // **And it is still the door** — the span the frame drew is the span a click acts on, which
+    // is the rule the standings keep at every width (`standings_rect` reads the drawn row).
+    let words = "2 gating (step 3 of 4)";
+    let rect = standings_rect(&a);
+    assert_eq!(column_of(&edge, words), rect.x, "{edge:?}");
+    assert_eq!(
+        rect.w,
+        words.chars().count(),
+        "the target is the words' width"
+    );
+}
+
+/// **A target that is not gating reads as it always did** — the word is the gate's, so a green
+/// target leaves `1 being merged` alone, and a `gating` target whose snapshot carries no step
+/// (a daemon between two steps) does not invent one.
+#[test]
+fn a_target_that_is_not_gating_keeps_the_old_word() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-a", "gating")]);
+    snap.targets.push(target(LETIBOT, "green"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    assert_eq!(
+        a.queue_standings().words().as_deref(),
+        Some("1 being merged")
+    );
+    assert!(edge_row(&a.screen(120, 24)).contains("1 being merged"));
+
+    // A gate between two steps: the target is `gating` and there is no step to name.
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    let mut snap = queues(Vec::new(), vec![queue_merge_row("m-a", "gating")]);
+    snap.targets.push(target(LETIBOT, "gating"));
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    assert_eq!(
+        a.queue_standings().words().as_deref(),
+        Some("1 being merged"),
+        "no step is running, so none is claimed"
+    );
+}
+
 // -- the edge's standings, as a click target -------------------------------------------
 //
 // The operator, 2026-10-27: *"i want to click '5 in review' and be taken to the merge
