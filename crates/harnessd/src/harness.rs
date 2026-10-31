@@ -18148,6 +18148,13 @@ fn refused_for_want_of_credit(body: &str) -> bool {
         "insufficient_quota",
         "insufficient funds",
         "insufficient credit",
+        // **The same refusal in the words providers actually use, added 2026-10-31.** The
+        // entry this classifier was written for says *"a refusal that says out of credit"*
+        // and that spelling was not in the list, so the sentence that filed the bug was one
+        // of the shapes still retried; `credit balance` is Anthropic's form of it, which
+        // arrives on a 429 as well as a 400. Both name money, which is the whole test here.
+        "out of credit",
+        "credit balance",
         "please recharge",
         "no available resource package",
         "billing",
@@ -24974,6 +24981,20 @@ mod endpoint_retry {
             )
             .is_none()
         );
+        // **The wording this tree's own entry was filed with, and the one Anthropic uses.**
+        // A phrase list is where a variant goes missing: *out of credit* is the sentence
+        // `TODO.md` names and *credit balance is too low* is the other spelling of the same
+        // refusal, and neither was in the list — so a 429 in either shape was still taken six
+        // times, on identical bytes, against an account that cannot pay.
+        for body in [
+            "http 429: you are out of credits",
+            r#"{"error":{"message":"Your credit balance is too low to access the API"}}"#,
+        ] {
+            assert!(
+                http_retry_after(&said(429, body), 0, MAX_HTTP_RETRIES).is_none(),
+                "a billing refusal in another wording was taken again: {body}"
+            );
+        }
         // **The case the exception exists for, and it must survive.** A rate limit names
         // requests-per-minute, not money, and it is transient by construction.
         assert!(
