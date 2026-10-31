@@ -2543,8 +2543,11 @@ mod tests {
     fn a_steps_scratch_is_short_on_a_real_disk_and_gone_when_the_run_ends() {
         // **The decision, as a decision** — no process needed: the box's own root, the tree's name
         // in the directory, and a number that makes two runs two directories.
-        let a = gate_tmp_dir(Path::new("/landing/letibot-a156c9c34c8e"));
-        let b = gate_tmp_dir(Path::new("/landing/letibot-a156c9c34c8e"));
+        // **A fixture name, so this test cannot collide with the live landing tree** (which on this
+        // box is `letibot-a156c9c34c8e`): a test that reuses the real name passes or fails by
+        // accident of the box it runs on.
+        let a = gate_tmp_dir(Path::new("/landing/letibot-fixture-abcdef123456"));
+        let b = gate_tmp_dir(Path::new("/landing/letibot-fixture-abcdef123456"));
         assert_eq!(
             a.parent(),
             Some(Path::new(GATE_TMP_ROOT)),
@@ -2553,7 +2556,7 @@ mod tests {
         );
         assert_ne!(a, b, "one directory per run, not per step");
         assert!(
-            a.to_string_lossy().contains("letibot-a156c9c3"),
+            a.to_string_lossy().contains("letibot-fixture"),
             "a leftover names the tree it belongs to: {}",
             a.display()
         );
@@ -2566,10 +2569,14 @@ mod tests {
             a.as_os_str().len(),
             a.display()
         );
+        // **Not the box's temp directory** — and the yardstick is `/tmp`, not
+        // `std::env::temp_dir()`: a gate step's own `TMPDIR` IS this scratch (that is the change
+        // under test), so comparing a path derived from `GATE_TMP_ROOT` with the temp dir it was
+        // handed is circular and fails exactly when the fix works. The tmpfs this exists to avoid
+        // is `/tmp`.
         assert!(
-            !a.starts_with(std::env::temp_dir()) && !a.starts_with("/tmp"),
-            "not the box's temp directory, which is the tmpfs this exists to avoid: {}",
-            a.display()
+            !GATE_TMP_ROOT.starts_with("/tmp"),
+            "not the box's temp directory, which is the tmpfs this exists to avoid: {GATE_TMP_ROOT}"
         );
 
         let wt = std::env::temp_dir().join(format!("letibot-gate-scratch-{}", std::process::id()));
@@ -2606,8 +2613,11 @@ mod tests {
             !printed.starts_with(&wt),
             "NOT inside the landing tree: {said}"
         );
+        // **Not the box's temp directory**, judged against `/tmp` for the reason above: a gate
+        // step's `TMPDIR` is this very scratch, so `std::env::temp_dir()` here is the thing under
+        // test, not a yardstick.
         assert!(
-            !printed.starts_with(std::env::temp_dir()) && !printed.starts_with("/tmp"),
+            !printed.starts_with("/tmp"),
             "the step used to inherit the box's temp directory: {said}"
         );
         assert!(
