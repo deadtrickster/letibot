@@ -42,6 +42,11 @@ conversation.
 `why` and `words` may not. A record missing either is **refused by name** and nothing is written,
 because a record of *what* with no reason is exactly the complaint above, written down.
 
+`after` is a **measurement**, never the value somebody asked for. A `host_config set` reads the
+setting back after it applies it, and when that read does not answer it records `after: "unread"`
+rather than the ask — a reader a month later is told nothing measured the change, which is true,
+instead of being told the change took, which nobody knows.
+
 A `revert` carries the change's number **and its `what`**. The `what` is there so a file somebody
 truncated by hand cannot make an old revert silently undo whatever now sits at that number: the
 reader reports the mismatch instead of applying it.

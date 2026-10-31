@@ -24,19 +24,32 @@
 //! # Privilege is stated, never assumed
 //!
 //! Each setting says whether it needs root. When it does, the tool needs a way to *ask*, and the
-//! box's answer is `letibot-askpass` (`sudo -A` through the daemon's shim — the password goes
-//! head → daemon → sudo and nowhere else). **A daemon has no tty**, so a bare `sudo` is a hang:
-//! with no askpass there is no channel, and the refusal says so in a sentence a person can act
-//! on rather than waiting two minutes for a prompt that never appears.
+//! box's answer is `letibot-askpass`: `sudo -A` with `SUDO_ASKPASS` naming the helper, and the
+//! password travelling head → daemon → the helper's stdout → sudo, and nowhere else.
+//!
+//! **A helper on `PATH` is not a channel.** The helper attaches to the daemon that owns the
+//! session, on `LETIBOT_SOCKET` and `LETIBOT_SESSION`; with neither in its environment it prints
+//! *not inside a letibot session* and exits 1, and `sudo` reports that no password was given. A
+//! daemon does not export those in its own process — the launcher passes `--socket` as an argv —
+//! so the harness hands this tool the session's [`Channel`] when it builds the registry and the
+//! tool puts both pairs in the command's environment itself. Every other case is a refusal by
+//! name, said before anything runs: no helper, a helper with no session to ask on, a socket that
+//! is not there. A daemon has no tty, so a bare `sudo` is not a prompt — it is a hang.
 //!
 //! # Every change goes into the record
 //!
 //! The apply is the middle of three acts: **read**, apply, **record**. The record's door is
 //! proved open *before* the apply ([`changelog::writable`]) — a change that lands with no line
 //! in the file is exactly the state the changelog exists to end — and the line is written the
-//! moment the apply returns. `why` and `words` are required and are checked **before anything
+//! moment the apply returns. The door comes **after** the `before` read, because that read is the
+//! cheaper refusal and proving the door first would leave an empty changelog file behind for a
+//! change that never happened. `why` and `words` are required and are checked **before anything
 //! runs**: a `set` with no reason is refused while the box is still untouched, which is the only
 //! moment at which refusing costs nothing.
+//!
+//! The `after` is a read too. When the box does not answer that read the record says [`UNREAD`]
+//! rather than the value that was asked for — see [`UNREAD`] for why that distinction is the
+//! point of the field.
 //!
 //! Undoing a change is the changelog's own verb: `host_changelog revert N` hands back the
 //! recorded `before`, and putting the value back is a `set` — a new change, recorded, which is
@@ -53,6 +66,13 @@ use crate::schema::{Access, ToolSchema};
 
 /// The tool's name.
 pub const TOOL: &str = "host_config";
+
+/// **What the record's `after` says when the box did not answer a read-back.** The value that was
+/// *asked for* is not a measurement: writing it into the field whose whole purpose is "what the
+/// machine says now" would be the one claim this record exists to keep honest, made falsely. No
+/// setting here can hold this word — the keyboard ones are integers, `pmset` takes `0`/`1` and a
+/// governor is a word the kernel lists — so it cannot be mistaken for a value.
+pub const UNREAD: &str = "unread";
 
 // ---------------------------------------------------------------------------
 // What a platform hands back
@@ -218,55 +238,134 @@ impl Runner for System {
 /// of the model's reach.
 pub type Elevated = (Vec<String>, Vec<(String, String)>);
 
+/// **The way back to the daemon that can ask a person**: the socket it listens on, and the
+/// session this call belongs to.
+///
+/// Both are what `letibot-askpass` attaches with, and neither is in the daemon's own environment —
+/// the launcher passes the socket as an argv and the session id is the daemon's own field. So the
+/// harness hands them over when it builds the registry, and they travel into the helper's
+/// environment from [`Privilege::as_root`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Channel {
+    /// The daemon's socket — what the helper connects to.
+    pub socket: PathBuf,
+    /// The session the helper attaches as, so the card lands in front of the right person.
+    pub session: String,
+}
+
+impl Channel {
+    pub fn new(socket: impl Into<PathBuf>, session: impl Into<String>) -> Channel {
+        Channel {
+            socket: socket.into(),
+            session: session.into(),
+        }
+    }
+}
+
 /// **How a setting that needs root can be asked for**, decided before anything runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Privilege {
     /// This process is already root: no helper, no question.
     Root,
-    /// `sudo -A` with this helper — `letibot-askpass`, which reaches the head.
-    Askpass(PathBuf),
+    /// `sudo -A` with this helper, over this session's channel to the daemon.
+    Askpass {
+        /// The helper sudo runs — `letibot-askpass`, which reaches the head.
+        helper: PathBuf,
+        /// The socket and session the helper attaches on.
+        channel: Channel,
+    },
     /// There is no way to ask. The sentence says what is missing and what a person can do.
     None(String),
 }
 
 impl Privilege {
-    /// What this session has. `$SUDO_ASKPASS` wins (the daemon's shim points it at the helper);
-    /// otherwise `letibot-askpass` on `PATH`; otherwise nothing, and the sentence says so.
-    pub fn detect() -> Privilege {
+    /// What this session has: the helper this box installed, and the session it would ask on.
+    ///
+    /// The helper is looked for in three places, in this order: `$SUDO_ASKPASS` when it names a
+    /// file (the daemon's shim points it at the helper), `letibot-askpass` **beside this binary**
+    /// (where `harnessd`'s own `sudo::install` writes it, and what a daemon has even though it
+    /// exports nothing), and `PATH`.
+    pub fn detect(channel: Option<&Channel>) -> Privilege {
         // SAFETY: `geteuid` has no preconditions and touches no memory.
         if unsafe { libc::geteuid() } == 0 {
             return Privilege::Root;
         }
-        let named = std::env::var_os("SUDO_ASKPASS").map(PathBuf::from);
-        if let Some(p) = named.filter(|p| p.is_file()) {
-            return Privilege::Askpass(p);
-        }
-        if let Some(p) = which("letibot-askpass") {
-            return Privilege::Askpass(p);
-        }
-        Privilege::None(
-            "this session is not root and has no way to ask for a password: `$SUDO_ASKPASS` \
-             names nothing and `letibot-askpass` is not on `PATH`. A daemon has no terminal, so \
-             a bare `sudo` here would wait for a prompt nobody can see. Start the daemon under \
-             `letibot` (which installs the helper), or run the command yourself in a shell you \
-             are sitting at."
-                .to_string(),
-        )
+        Privilege::of(helper(), channel)
     }
 
-    /// The argv to run `argv` as root, and the environment that carries the helper.
+    /// **The decision, from the two facts it rests on.** [`Privilege::detect`] is what reads the
+    /// process's environment; this takes the answers, so a test can drive every arm without
+    /// racing the environment of the test binary.
+    pub fn of(helper: Option<PathBuf>, channel: Option<&Channel>) -> Privilege {
+        let Some(helper) = helper else {
+            return Privilege::None(
+                "this session is not root and has no way to ask for a password: `$SUDO_ASKPASS` \
+                 names nothing, `letibot-askpass` is not beside this binary and it is not on \
+                 `PATH`. A daemon has no terminal, so a bare `sudo` here would wait for a prompt \
+                 nobody can see. Start the daemon under `letibot` (which installs the helper), or \
+                 run the command yourself in a shell you are sitting at."
+                    .to_string(),
+            );
+        };
+        let Some(channel) = channel else {
+            return Privilege::None(format!(
+                "`letibot-askpass` is here at {}, but this process was not given the session's \
+                 socket and id, so the helper has nobody to ask: it attaches to the daemon that \
+                 owns the session on `LETIBOT_SOCKET` and `LETIBOT_SESSION`, and with neither in \
+                 its environment it prints *not inside a letibot session* and exits 1 while sudo \
+                 reports that no password was given. Nothing was changed. Start the daemon under \
+                 `letibot`, which seats this tool with its session, or run the command yourself \
+                 in a shell you are sitting at.",
+                helper.display()
+            ));
+        };
+        // **The two facts that make the channel an address rather than a path.** A helper pointed
+        // at a socket nobody listens on fails the same way an unset one does, one layer later.
+        let not_an_address = match (channel.session.trim().is_empty(), channel.socket.exists()) {
+            (false, true) => {
+                return Privilege::Askpass {
+                    helper,
+                    channel: channel.clone(),
+                };
+            }
+            (true, _) => "its session id is empty".to_string(),
+            (false, false) => format!(
+                "the daemon's socket {} is not there",
+                channel.socket.display()
+            ),
+        };
+        Privilege::None(format!(
+            "`letibot-askpass` is here at {}, but the session it would ask on is not an address — \
+             {not_an_address}. The helper attaches to the daemon that owns the session, so with \
+             nothing to attach to it prints *not inside a letibot session* and exits 1 while sudo \
+             reports that no password was given. Nothing was changed.",
+            helper.display()
+        ))
+    }
+
+    /// The argv to run `argv` as root, and the environment that carries the helper **and the
+    /// session it asks on**.
     ///
     /// Public because a [`Platform`] is what builds a command and this is where the *how* lives:
     /// a platform that re-implemented it would be a second answer to *can this session ask?*.
     pub fn as_root(&self, argv: &[String]) -> Result<Elevated, Refusal> {
         match self {
             Privilege::Root => Ok((argv.to_vec(), Vec::new())),
-            Privilege::Askpass(helper) => {
+            Privilege::Askpass { helper, channel } => {
                 let mut full = vec!["sudo".to_string(), "-A".to_string()];
                 full.extend(argv.iter().cloned());
                 Ok((
                     full,
-                    vec![("SUDO_ASKPASS".to_string(), helper.display().to_string())],
+                    vec![
+                        ("SUDO_ASKPASS".to_string(), helper.display().to_string()),
+                        (
+                            "LETIBOT_SOCKET".to_string(),
+                            channel.socket.display().to_string(),
+                        ),
+                        ("LETIBOT_SESSION".to_string(), channel.session.clone()),
+                        // What the card in front of the person says the password is for.
+                        ("LETIBOT_COMMAND".to_string(), argv.join(" ")),
+                    ],
                 ))
             }
             Privilege::None(why) => Err(Refusal::new(
@@ -275,6 +374,20 @@ impl Privilege {
             )),
         }
     }
+}
+
+/// **The helper `sudo` would run**, if this box has one: `$SUDO_ASKPASS`, then beside this binary
+/// (`harnessd`'s `sudo::install` writes it there), then `PATH`.
+fn helper() -> Option<PathBuf> {
+    let named = std::env::var_os("SUDO_ASKPASS").map(PathBuf::from);
+    if let Some(p) = named.filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join("letibot-askpass")))
+        .filter(|p| p.is_file());
+    beside.or_else(|| which("letibot-askpass"))
 }
 
 /// The first `name` on `PATH` that is a file — what `command -v` answers, without a shell.
@@ -945,6 +1058,10 @@ pub struct HostConfigTool {
     /// `None` is [`Privilege::detect`] at the call — a test's door, because setting
     /// `$SUDO_ASKPASS` in a test would race every other test in the process.
     privilege: Option<Privilege>,
+    /// The session's socket and id — what `letibot-askpass` attaches with, and what the daemon
+    /// alone knows. `None` on a registry with no daemon behind it, where a setting that needs
+    /// root is then refused by name instead of failing inside `sudo`.
+    channel: Option<Channel>,
 }
 
 impl HostConfigTool {
@@ -955,6 +1072,7 @@ impl HostConfigTool {
             scope: Some(scope),
             platform: this_box(),
             privilege: None,
+            channel: None,
         }
     }
 
@@ -965,7 +1083,16 @@ impl HostConfigTool {
             scope: None,
             platform: this_box(),
             privilege: None,
+            channel: None,
         }
+    }
+
+    /// **The way back to the daemon**, handed over by the harness when the registry is built:
+    /// the socket it listens on and the session this seat belongs to. Without it a helper found
+    /// on `PATH` is a helper with nobody to ask, so `set` refuses by name.
+    pub fn with_channel(mut self, channel: Channel) -> HostConfigTool {
+        self.channel = Some(channel);
+        self
     }
 
     /// Drive another platform — a test's door, and the only way the arm this box is not is ever
@@ -1037,7 +1164,10 @@ impl Tool for HostConfigTool {
     }
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        let privilege = self.privilege.clone().unwrap_or_else(Privilege::detect);
+        let privilege = self
+            .privilege
+            .clone()
+            .unwrap_or_else(|| Privilege::detect(self.channel.as_ref()));
         // The second gate, below the adjudicator's: a change to this box from a session opened
         // read-only is the one thing the backend's own answer must stop.
         if verb_of(args) == "set" && !ctx.backend.is_writable() {
@@ -1196,8 +1326,8 @@ fn set(
     //    never take costs no command at all — not even the read that would become the `before`.
     platform.check(s.name, &value).map_err(Invocation::from)?;
 
-    // 3. The record's door, proved open before the change: a change that lands with no line in
-    //    the file is exactly the state the changelog exists to end.
+    // 3. **No changelog behind this session is a refusal before the first command** — it is a fact
+    //    about the registry, not about the box, so nothing needs measuring to find it out.
     let Some(scope) = scope else {
         return Err(Invocation::failed(
             "this session has no host changelog",
@@ -1206,6 +1336,21 @@ fn set(
              was changed.",
         ));
     };
+
+    // 4. **The `before` is a read.** A setting that cannot be read now cannot be reverted later,
+    //    and an empty `before` would claim there was no such setting. The read comes **before the
+    //    record's door** because it is the cheapest act that can refuse: `writable` creates the
+    //    file, and a change refused at the read would otherwise leave an empty `host-changelog.jsonl`
+    //    behind, which reads as a changelog somebody emptied.
+    let before = platform.read(s.name).map_err(|r| {
+        Invocation::failed(
+            format!("`{}` could not be read, so nothing was changed", s.name),
+            r.why,
+        )
+    })?;
+
+    // 5. The record's door, proved open before the change: a change that lands with no line in
+    //    the file is exactly the state the changelog exists to end.
     let path = scope.path();
     changelog::writable(&path).map_err(|e| {
         Invocation::failed(
@@ -1218,36 +1363,35 @@ fn set(
         )
     })?;
 
-    // 4. **The `before` is a read.** A setting that cannot be read now cannot be reverted later,
-    //    and an empty `before` would claim there was no such setting.
-    let before = platform.read(s.name).map_err(|r| {
-        Invocation::failed(
-            format!("`{}` could not be read, so nothing was changed", s.name),
-            r.why,
-        )
-    })?;
-
-    // 5. The apply. Every refusal below here leaves the box as it was, and says so.
+    // 6. The apply. Every refusal below here leaves the box as it was, and says so.
     let applied = platform
         .apply(s.name, &value, privilege)
         .map_err(Invocation::from)?;
 
-    // 6. **What the box says now**, not what was asked for: the record's `after` has to be the
-    //    truth, or a month later the file argues with the machine.
-    let after = match platform.read(s.name) {
-        Ok(r) => r,
-        Err(r) => Reading::of(value.clone(), r.what).noted(
-            "the box did not answer a read after the change, so this is the value that was asked \
-             for and not one that was measured",
+    // 7. **What the box says now**, not what was asked for: the record's `after` has to be the
+    //    truth, or a month later the file argues with the machine. A read-back that fails is
+    //    recorded as [`UNREAD`] — the value that was ASKED for is not a measurement, and writing
+    //    it down as one is the exact claim this field exists to keep honest.
+    let read_back = platform.read(s.name);
+    let after = match &read_back {
+        Ok(r) => r.value.clone(),
+        Err(_) => UNREAD.to_string(),
+    };
+    let after_note = match &read_back {
+        Ok(r) => r.note.clone(),
+        Err(r) => format!(
+            "the box did not answer a read after the change ({}), so the record says `{UNREAD}`: \
+             the change was applied and nothing measured whether it took",
+            r.what
         ),
     };
 
-    // 7. The record — the changelog's own `record` verb, so one function writes a line.
+    // 8. The record — the changelog's own `record` verb, so one function writes a line.
     let record = json!({
         "verb": "record",
         "what": s.name,
         "before": before.value.clone(),
-        "after": after.value.clone(),
+        "after": after.clone(),
         "why": why,
         "words": words,
     });
@@ -1259,28 +1403,32 @@ fn set(
         Invocation::failed(
             "the change was applied and the record did not land",
             format!(
-                "{} has been changed to `{}`, and {} could not be written ({}). Record it by hand \
+                "{} has been asked to `{}`, and {} could not be written ({}). Record it by hand \
                  with `host_changelog record {{verb: \"record\", what: \"{}\", before: \"{}\", \
                  after: \"{}\", why: \"…\", words: \"…\"}}` — a change with no line in that file \
                  is the state this tool exists to end.",
                 s.name,
-                after.value,
+                value,
                 path.display(),
                 its_own,
                 s.name,
                 before.value,
-                after.value,
+                after,
             ),
         )
     })?;
 
-    let took = if after.value.trim() == value.trim() {
-        format!("the box now reads back `{}`", after.value)
+    let took = if after == UNREAD {
+        format!(
+            "**the box did not answer a read after the change, so the record says `{UNREAD}`** — \
+             the command ran and nothing measured whether the setting moved"
+        )
+    } else if after.trim() == value.trim() {
+        format!("the box now reads back `{after}`")
     } else {
         format!(
-            "**the box still reads back `{}`, not `{}`** — the command exited 0 and the setting \
-             did not move, so the record says what the machine says",
-            after.value, value
+            "**the box still reads back `{after}`, not `{value}`** — the command exited 0 and the \
+             setting did not move, so the record says what the machine says"
         )
     };
     Ok(format!(
@@ -1292,17 +1440,17 @@ fn set(
         } else {
             format!("`{}`", before.value)
         },
-        if after.value.is_empty() {
+        if after.is_empty() {
             "(not set)".to_string()
         } else {
-            format!("`{}`", after.value)
+            format!("`{after}`")
         },
         applied.ran.join("; "),
         took,
-        if after.note.is_empty() {
+        if after_note.is_empty() {
             String::new()
         } else {
-            format!("\n  {}", after.note)
+            format!("\n  {after_note}")
         },
         recorded,
     ))

@@ -91,6 +91,15 @@ fn xset_q(delay: u32, rate: u32) -> Ran {
     ))
 }
 
+/// **A real unix socket on disk** — what a [`Channel`] insists on before it will claim a helper can
+/// attach. A regular file at a `.sock` path would pass `exists` and prove nothing.
+fn a_socket() -> (TempDir, PathBuf) {
+    let dir = TempDir::new();
+    let path = dir.path().join("daemon.sock");
+    std::os::unix::net::UnixListener::bind(&path).expect("a unix socket");
+    (dir, path)
+}
+
 // ---------------------------------------------------------------------------
 // The changelog the tool records into
 // ---------------------------------------------------------------------------
@@ -265,6 +274,240 @@ fn a_read_answers_macos_key_repeat() {
     assert!(said.contains("`key-repeat` = `2`"), "{said}");
     assert!(said.contains("1/60 s"), "the unit is stated: {said}");
     assert_eq!(script.ran(), vec!["defaults read -g KeyRepeat"]);
+}
+
+/// **macOS's delay before the repeat is its own key**, `InitialKeyRepeat`, in the same unit — and a
+/// `set` of it writes that key and not `KeyRepeat`.
+#[test]
+fn a_read_answers_macos_key_repeat_delay() {
+    let (script, platform) = macos("2", "15", "0");
+    let said = read(
+        &platform,
+        &json!({"verb": "read", "setting": "key-repeat-delay"}),
+    )
+    .expect("InitialKeyRepeat is readable");
+    assert!(said.contains("`key-repeat-delay` = `15`"), "{said}");
+    assert!(said.contains("1/60 s"), "{said}");
+    assert!(
+        said.contains("defaults read -g InitialKeyRepeat"),
+        "the key is named: {said}"
+    );
+    assert_eq!(script.ran(), vec!["defaults read -g InitialKeyRepeat"]);
+}
+
+/// **A delay change writes `InitialKeyRepeat`**, and the record carries both values read back.
+#[test]
+fn a_key_repeat_delay_change_writes_initial_key_repeat() {
+    let (script, platform) = macos("2", "15", "0");
+    let log = Log::new();
+    set(
+        Some(&log),
+        &platform,
+        &Privilege::Root,
+        &set_args(
+            "key-repeat-delay",
+            "20",
+            "the delay before the repeat is too long",
+            "make it shorter",
+        ),
+        NOW,
+    )
+    .expect("the change lands");
+    assert!(
+        script
+            .ran()
+            .iter()
+            .any(|c| c == "defaults write -g InitialKeyRepeat -int 20"),
+        "the other key is written: {:?}",
+        script.ran()
+    );
+    assert!(
+        !script
+            .ran()
+            .iter()
+            .any(|c| c == "defaults write -g KeyRepeat -int 20"),
+        "and not `KeyRepeat`: {:?}",
+        script.ran()
+    );
+    let entries = log.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].change.before, "15");
+    assert_eq!(entries[0].change.after, "20");
+}
+
+/// **macOS's perf policy is `lowpowermode` in `pmset -g`** — the line and only the line, with the
+/// unit stated and the privilege said out loud.
+#[test]
+fn a_read_answers_macos_perf_policy() {
+    let (script, platform) = macos("2", "15", "1");
+    let said = read(
+        &platform,
+        &json!({"verb": "read", "setting": "perf-policy"}),
+    )
+    .expect("macOS 12 and later report lowpowermode");
+    assert!(said.contains("`perf-policy` = `1`"), "{said}");
+    assert!(said.contains("needs root to change"), "{said}");
+    assert!(
+        said.contains("`0` (no low-power restriction) or `1`"),
+        "{said}"
+    );
+    assert!(said.contains("`pmset -g`"), "how it was read: {said}");
+    assert_eq!(script.ran(), vec!["pmset -g"]);
+}
+
+/// **A macOS whose `pmset -g` has no `lowpowermode` line is refused by name**, with the version
+/// that arrived — not reported as an empty value, which would make a `before` out of nothing.
+#[test]
+fn a_macos_without_lowpowermode_is_refused_by_name() {
+    let script = Scripted::answering(vec![(
+        "pmset -g",
+        Ran::ok("System-wide power settings:\nCurrently in use:\n sleep         1\n"),
+    )]);
+    let platform = MacOs::new(script);
+    let said = refusal(read(
+        &platform,
+        &json!({"verb": "read", "setting": "perf-policy"}),
+    ));
+    assert!(said.contains("does not report `lowpowermode`"), "{said}");
+    assert!(
+        said.contains("macOS 12"),
+        "it says when the setting arrived: {said}"
+    );
+    assert!(
+        said.contains("nothing was changed"),
+        "and that nothing ran: {said}"
+    );
+}
+
+/// **A `pmset` that will not answer is a refusal, not an empty perf policy** — the same rule as
+/// the governor: a value nobody could read is not a value nobody set.
+#[test]
+fn a_pmset_that_will_not_answer_refuses_the_read() {
+    let script = Scripted::answering(vec![(
+        "pmset -g",
+        Ran::failed(1, "pmset: this must be run as root"),
+    )]);
+    let platform = MacOs::new(script);
+    let said = refusal(read(
+        &platform,
+        &json!({"verb": "read", "setting": "perf-policy"}),
+    ));
+    assert!(said.contains("`pmset -g` would not answer"), "{said}");
+    assert!(
+        said.contains("this must be run as root"),
+        "it quotes what pmset said: {said}"
+    );
+}
+
+/// **A perf-policy change runs `pmset -a lowpowermode` and records what the box reads back** —
+/// the macOS write arm, which nothing drove before.
+#[test]
+fn a_perf_policy_change_runs_pmset_and_records_both_values() {
+    let (script, platform) = macos("2", "15", "0");
+    let log = Log::new();
+    let said = set(
+        Some(&log),
+        &platform,
+        &Privilege::Root,
+        &set_args(
+            "perf-policy",
+            "1",
+            "the fans never stop in the test window",
+            "make it quiet, i don't care about the speed",
+        ),
+        NOW,
+    )
+    .expect("the change lands");
+    assert!(said.contains("`0` → `1`"), "{said}");
+    assert!(
+        script.ran().iter().any(|c| c == "pmset -a lowpowermode 1"),
+        "pmset wrote it: {:?}",
+        script.ran()
+    );
+    let entries = log.entries();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].change.what, "perf-policy");
+    assert_eq!(entries[0].change.before, "0");
+    assert_eq!(entries[0].change.after, "1");
+}
+
+/// **The same change with the helper is `sudo -A pmset …`** — the third argv shape the fixture
+/// scripts, and the one the real box takes, since `pmset` needs root.
+#[test]
+fn a_perf_policy_change_with_the_helper_runs_sudo_dash_a() {
+    let (script, platform) = macos("2", "15", "0");
+    let log = Log::new();
+    let (_held, socket) = a_socket();
+    let privilege = Privilege::Askpass {
+        helper: PathBuf::from("/run/user/1000/letibot/letibot-askpass"),
+        channel: Channel::new(socket.clone(), "s-1"),
+    };
+    let said = set(
+        Some(&log),
+        &platform,
+        &privilege,
+        &set_args(
+            "perf-policy",
+            "1",
+            "the fans never stop in the test window",
+            "make it quiet",
+        ),
+        NOW,
+    )
+    .expect("the change lands");
+    assert!(said.contains("`0` → `1`"), "{said}");
+    let asked = script.asked();
+    let applied = asked
+        .iter()
+        .find(|a| a.argv.iter().any(|w| w == "lowpowermode"))
+        .expect("pmset ran");
+    assert_eq!(
+        applied.argv,
+        vec!["sudo", "-A", "pmset", "-a", "lowpowermode", "1"]
+    );
+    assert_eq!(
+        applied.env,
+        vec![
+            (
+                "SUDO_ASKPASS".to_string(),
+                "/run/user/1000/letibot/letibot-askpass".to_string()
+            ),
+            ("LETIBOT_SOCKET".to_string(), socket.display().to_string()),
+            ("LETIBOT_SESSION".to_string(), "s-1".to_string()),
+            (
+                "LETIBOT_COMMAND".to_string(),
+                "pmset -a lowpowermode 1".to_string()
+            ),
+        ]
+    );
+}
+
+/// **`lowpowermode` takes `0` or `1` and nothing else**, refused before a single command runs —
+/// not even the read that would become the `before`.
+#[test]
+fn a_perf_policy_value_that_is_not_zero_or_one_is_refused_before_anything_runs() {
+    let (script, platform) = macos("2", "15", "0");
+    let log = Log::new();
+    let said = refusal(set(
+        Some(&log),
+        &platform,
+        &Privilege::Root,
+        &set_args("perf-policy", "2", "the fans are loud", "make it quiet"),
+        NOW,
+    ));
+    assert!(
+        said.contains("`2` is not a value `perf-policy` can take"),
+        "{said}"
+    );
+    assert!(
+        said.contains("`0` (no low-power restriction) or `1` (low power)"),
+        "it says what it takes: {said}"
+    );
+    assert!(script.ran().is_empty(), "nothing ran: {:?}", script.ran());
+    assert!(
+        !log.path().exists(),
+        "and no changelog was created for a change that never was"
+    );
 }
 
 /// **Linux's governor, read from the sysfs file the kernel keeps it in.**
@@ -554,13 +797,19 @@ fn a_root_setting_with_no_askpass_refuses_and_runs_nothing() {
     assert!(log.lines().is_empty(), "and nothing was recorded");
 }
 
-/// **With the helper, the command is `sudo -A` and the helper is in the command's environment** —
-/// the password goes head → daemon → sudo, and this tool never sees it.
+/// **With the helper, the command is `sudo -A`, and the helper AND the session it asks on are in
+/// the command's environment.** A helper with no `LETIBOT_SOCKET`/`LETIBOT_SESSION` prints *not
+/// inside a letibot session* and exits 1, so the channel is part of the privilege and not a detail
+/// of it — which is what this asserts, pair by pair.
 #[test]
 fn a_root_setting_with_the_helper_runs_sudo_dash_a() {
     let (script, platform) = linux("powersave", "performance powersave", 660, 25);
     let log = Log::new();
-    let privilege = Privilege::Askpass(PathBuf::from("/run/user/1000/letibot/letibot-askpass"));
+    let (_held, socket) = a_socket();
+    let privilege = Privilege::Askpass {
+        helper: PathBuf::from("/run/user/1000/letibot/letibot-askpass"),
+        channel: Channel::new(socket.clone(), "s-1"),
+    };
     let said = set(
         Some(&log),
         &platform,
@@ -593,11 +842,97 @@ fn a_root_setting_with_the_helper_runs_sudo_dash_a() {
     );
     assert_eq!(
         applied.env,
-        vec![(
-            "SUDO_ASKPASS".to_string(),
-            "/run/user/1000/letibot/letibot-askpass".to_string()
-        )]
+        vec![
+            (
+                "SUDO_ASKPASS".to_string(),
+                "/run/user/1000/letibot/letibot-askpass".to_string()
+            ),
+            ("LETIBOT_SOCKET".to_string(), socket.display().to_string()),
+            ("LETIBOT_SESSION".to_string(), "s-1".to_string()),
+            (
+                "LETIBOT_COMMAND".to_string(),
+                "cpupower frequency-set -g performance".to_string()
+            ),
+        ]
     );
+}
+
+/// **A helper is not a channel** — the reviewer's finding, pinned. `letibot-askpass` on this box
+/// with no session to ask on is a helper that would print *not inside a letibot session*, so the
+/// decision is a refusal naming what is missing, and the platform's own command never runs.
+#[test]
+fn a_helper_with_no_session_to_ask_on_is_a_refusal_by_name() {
+    let helper = PathBuf::from("/run/user/1000/letibot/letibot-askpass");
+    let decided = Privilege::of(Some(helper.clone()), None);
+    let Privilege::None(why) = &decided else {
+        panic!("a helper with no channel is not a way to ask: {decided:?}");
+    };
+    assert!(why.contains(&helper.display().to_string()), "{why}");
+    assert!(
+        why.contains("LETIBOT_SOCKET"),
+        "it names what is missing: {why}"
+    );
+    assert!(
+        why.contains("not inside a letibot session"),
+        "and what the helper would say: {why}"
+    );
+    assert!(
+        why.contains("Nothing was changed"),
+        "and that nothing ran: {why}"
+    );
+
+    let (script, platform) = linux("powersave", "performance powersave", 660, 25);
+    let log = Log::new();
+    let said = refusal(set(
+        Some(&log),
+        &platform,
+        &decided,
+        &set_args(
+            "cpu-governor",
+            "performance",
+            "the box is slow",
+            "make it fast",
+        ),
+        NOW,
+    ));
+    assert!(
+        said.contains("this setting needs root, and this session cannot ask for it"),
+        "{said}"
+    );
+    assert!(
+        !script.ran().iter().any(|c| c.contains("cpupower")),
+        "nothing was applied: {:?}",
+        script.ran()
+    );
+    assert!(log.lines().is_empty(), "and nothing was recorded");
+}
+
+/// **A socket nobody listens on is not a channel either** — the helper would attach to nothing and
+/// fail one layer deeper, inside `sudo`, where the sentence is sudo's rather than ours.
+#[test]
+fn a_channel_whose_socket_is_not_there_is_a_refusal_by_name() {
+    let dir = TempDir::new();
+    let missing = dir.path().join("gone.sock");
+    let channel = Channel::new(missing.clone(), "s-1");
+    let decided = Privilege::of(Some(PathBuf::from("/bin/true")), Some(&channel));
+    let Privilege::None(why) = &decided else {
+        panic!("a socket that is not there is not a channel: {decided:?}");
+    };
+    assert!(
+        why.contains(&missing.display().to_string()),
+        "it names the socket: {why}"
+    );
+    assert!(why.contains("is not there"), "{why}");
+}
+
+/// **Helper, socket and session together are the channel**, and that is what `as_root` is handed.
+#[test]
+fn a_helper_a_socket_and_a_session_are_a_channel() {
+    let (_held, socket) = a_socket();
+    let channel = Channel::new(socket, "s-1");
+    let helper = PathBuf::from("/run/user/1000/letibot/letibot-askpass");
+    let decided = Privilege::of(Some(helper.clone()), Some(&channel));
+    assert_eq!(decided, Privilege::Askpass { helper, channel });
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +1035,57 @@ fn a_write_the_box_did_not_take_is_recorded_as_the_box_reads() {
     assert_eq!(entries[0].change.after, "2", "the truth, not the ask");
 }
 
+/// **A read-back that fails is recorded as `unread`, never as the value that was asked for.** The
+/// reviewer's finding: the field's whole job is *what the machine says now*, so a `set` that could
+/// not measure it says so rather than promoting the ask into a measurement.
+#[test]
+fn a_read_back_that_fails_is_recorded_as_unread() {
+    let reads = std::sync::atomic::AtomicUsize::new(0);
+    let script = Scripted::new(move |asked| {
+        let joined = asked.argv.join(" ");
+        if joined.starts_with("defaults write") {
+            return Ok(Ran::ok(""));
+        }
+        if joined.contains("KeyRepeat") {
+            // The `before` reads, and the read-back after the write does not: cfprefsd gone, or a
+            // `defaults` that answers nothing at all.
+            let n = reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return if n == 0 {
+                Ok(Ran::ok("2\n"))
+            } else {
+                Ok(Ran::failed(1, "defaults: cfprefsd is not answering"))
+            };
+        }
+        Err(format!("nothing for `{joined}`"))
+    });
+    let platform = MacOs::new(script);
+    let log = Log::new();
+    let said = set(
+        Some(&log),
+        &platform,
+        &Privilege::Root,
+        &set_args("key-repeat", "4", "the keys are slow", "make them faster"),
+        NOW,
+    )
+    .expect("the change was applied");
+    assert!(
+        said.contains("the record says `unread`"),
+        "the reply says what the record says: {said}"
+    );
+    assert!(
+        !said.contains("the box now reads back `4`"),
+        "and claims no measurement it did not make: {said}"
+    );
+    assert!(
+        said.contains("macOS would not report `KeyRepeat`"),
+        "it names the read that failed: {said}"
+    );
+    let entries = log.entries();
+    assert_eq!(entries.len(), 1, "the change is recorded: {entries:?}");
+    assert_eq!(entries[0].change.before, "2", "the before is still a read");
+    assert_eq!(entries[0].change.after, UNREAD);
+}
+
 /// **A session with no changelog refuses a change before it runs anything** — a change no record
 /// would ever see is the state this tool exists to end.
 #[test]
@@ -717,7 +1103,8 @@ fn a_set_with_no_changelog_refuses_and_applies_nothing() {
 }
 
 /// **A changelog that cannot be written stops the change**, because the record is the half that
-/// must not be missing.
+/// must not be missing. The `before` read runs first — it changes nothing, and it is the cheaper
+/// refusal — so one read has happened by the time the door refuses, and no write has.
 #[test]
 fn a_changelog_that_cannot_be_written_stops_the_change() {
     let (script, platform) = macos("2", "15", "0");
@@ -752,8 +1139,16 @@ fn a_changelog_that_cannot_be_written_stops_the_change() {
         "{said}"
     );
     assert!(
-        script.ran().is_empty(),
-        "not one command ran: {:?}",
+        !script.ran().iter().any(|c| c.contains("write")),
+        "nothing was written to the box: {:?}",
+        script.ran()
+    );
+    assert!(
+        script
+            .ran()
+            .iter()
+            .any(|c| c == "defaults read -g KeyRepeat"),
+        "the read that would have been the `before` did run: {:?}",
         script.ran()
     );
 }
@@ -789,6 +1184,11 @@ fn a_before_that_cannot_be_read_stops_the_change() {
         "{said}"
     );
     assert!(log.lines().is_empty());
+    assert!(
+        !log.path().exists(),
+        "and the changelog was never created for a change that never was: {}",
+        log.path().display()
+    );
 }
 
 /// **A value the platform would not take costs no command at all** — not even the read that would

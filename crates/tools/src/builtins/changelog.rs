@@ -97,7 +97,8 @@ pub struct Change {
     pub what: String,
     /// What it was. Empty is a fact — *there was no such setting* — and not a gap.
     pub before: String,
-    /// What it is now.
+    /// What it is now — a measurement, or [`crate::builtins::host_config::UNREAD`] when the box did
+    /// not answer the read-back. Never the value that was asked for.
     pub after: String,
     /// The problem the change solved.
     pub why: String,

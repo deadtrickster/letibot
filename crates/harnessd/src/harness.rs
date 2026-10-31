@@ -4549,10 +4549,21 @@ impl Harness {
         // reason the two are one idea: a `set` here reads the current value, applies the platform's
         // own command and appends the changelog line, so the record's `before` is a measurement and
         // not a guess. Registered BEFORE `with_session_tools` for the same reason as the line above.
+        //
+        // **The channel is why this is here and not in `with_session_tools`**: a setting that needs
+        // root is changed through `sudo -A` and `letibot-askpass`, and the helper attaches to THIS
+        // daemon on THIS session — `$LETIBOT_SOCKET` and `$LETIBOT_SESSION`, which the daemon knows
+        // and does not export (`--socket` is an argv). Without them the helper would print *not
+        // inside a letibot session* and sudo would report that no password came, so the tool is
+        // handed both and refuses by name when it has neither.
         registry
             .register(Box::new(
                 letibot_tools::builtins::host_config::HostConfigTool::new(std::sync::Arc::new(
                     crate::changelog_scope::ConfigChangelog::new(cfg.session_id.clone()),
+                ))
+                .with_channel(letibot_tools::builtins::host_config::Channel::new(
+                    cfg.socket.clone(),
+                    cfg.session_id.clone(),
                 )),
             ))
             .map_err(|e| HarnessError::Setup(format!("registering the host config: {e}")))?;

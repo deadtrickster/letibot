@@ -52,20 +52,57 @@ that would be next.
 | `cpu-governor` (Linux) | **yes** — `cpupower frequency-set` |
 
 A daemon has **no terminal**, so a bare `sudo` is not a prompt, it is a hang. The box's answer is
-`letibot-askpass`: the daemon's `sudo` shim execs `sudo -A` with `SUDO_ASKPASS` pointing at the
-helper, and the password travels head → daemon → sudo's stdin and nowhere else. So the tool looks
-for a channel before it runs anything:
+`letibot-askpass`: `sudo -A` with `SUDO_ASKPASS` naming the helper, and the password travelling
+head → daemon → the helper's stdout → sudo, and nowhere else. It is not logged, not stored, not in
+the transcript, and never seen by the model.
 
-* this process is already root → run the command as it is;
-* `$SUDO_ASKPASS` names a file, or `letibot-askpass` is on `PATH` → `sudo -A <command>` with the
-  helper in the command's environment;
-* neither → **refuse**, before anything runs:
+**A helper on `PATH` is not a channel**, and that distinction is the whole of this section. The
+helper does not read a password from anywhere: it connects to the daemon that owns the session and
+asks the person in front of a head. So it needs `LETIBOT_SOCKET` and `LETIBOT_SESSION` as well, and
+neither is in the daemon's own environment — the launcher passes `--socket` as an argv and the
+session id is a field. With neither pair the helper prints *not inside a letibot session* and exits
+1, and `sudo` reports that no password was given.
+
+So the harness hands the tool the session's **channel** — its socket and id — when it builds the
+registry, and the tool puts all four pairs into the command's environment itself:
+
+```
+SUDO_ASKPASS     the helper `sudo` runs
+LETIBOT_SOCKET   the daemon's socket — what the helper connects to
+LETIBOT_SESSION  the session the helper attaches as, so the card reaches the right person
+LETIBOT_COMMAND  the command being elevated, so the card says what the password is for
+```
+
+A command is run as root only when one of these is true:
+
+* this process is already root → the command runs as it is, no helper and no question;
+* a helper is found — `$SUDO_ASKPASS` naming a file, else `letibot-askpass` beside the daemon
+  binary (where `harnessd`'s own `sudo::install` puts it), else on `PATH` — **and** the channel is
+  an address: a non-empty session id, and a socket that is really there;
+* otherwise → **refuse**, before anything runs, in a sentence naming which one is missing.
+
+  No helper:
 
   > this setting needs root, and this session cannot ask for it — this session is not root and has
-  > no way to ask for a password: `$SUDO_ASKPASS` names nothing and `letibot-askpass` is not on
-  > `PATH`. A daemon has no terminal, so a bare `sudo` here would wait for a prompt nobody can
-  > see. Start the daemon under `letibot` (which installs the helper), or run the command
-  > yourself in a shell you are sitting at.
+  > no way to ask for a password: `$SUDO_ASKPASS` names nothing, `letibot-askpass` is not beside
+  > this binary and it is not on `PATH`. A daemon has no terminal, so a bare `sudo` here would wait
+  > for a prompt nobody can see. Start the daemon under `letibot` (which installs the helper), or
+  > run the command yourself in a shell you are sitting at.
+
+  A helper with no session to ask on:
+
+  > this setting needs root, and this session cannot ask for it — `letibot-askpass` is here at
+  > `/…/letibot-askpass`, but this process was not given the session's socket and id, so the helper
+  > has nobody to ask: it attaches to the daemon that owns the session on `LETIBOT_SOCKET` and
+  > `LETIBOT_SESSION`, and with neither in its environment it prints *not inside a letibot session*
+  > and exits 1 while sudo reports that no password was given. Nothing was changed. …
+
+  The third case is the same shape and names the socket that is not there.
+
+What is *not* claimed: that a password will be typed. The helper waits two minutes for a head and
+answers `1` if nobody comes, and sudo's own refusal — quoted in the reply — is then the honest
+outcome. What the tool guarantees is that the question can be **asked**, or that the refusal says
+why it cannot.
 
 ## Every change goes into the record
 
@@ -75,15 +112,22 @@ for a channel before it runs anything:
    required, the value is checked against what the setting takes, and a platform that has not got
    the setting refuses by name. A change with no `why` is refused *here* — the only moment at
    which refusing costs nothing.
-2. **The record's door, proved open.** `changelog::writable` creates the config dir if it is not
-   there and opens the file for a line. A file that cannot be written stops the change, because a
-   change that lands with no line in the file is exactly the state the changelog exists to end.
-3. **The `before` is a read.** The platform is asked what the setting is *now*. A read that fails
+2. **The `before` is a read.** The platform is asked what the setting is *now*. A read that fails
    is a refusal, not an empty `before` — a governor that could not be read is not a governor that
    was not set, and a revert would have nothing to put back.
+3. **The record's door, proved open.** `changelog::writable` creates the config dir if it is not
+   there and opens the file for a line. A file that cannot be written stops the change, because a
+   change that lands with no line in the file is exactly the state the changelog exists to end.
+   This comes *after* the read on purpose: the read is the cheaper refusal, and proving the door
+   first would create an empty `host-changelog.jsonl` for a change that never happened — which
+   reads, a month later, as a changelog somebody emptied.
 4. **The apply.** Every refusal from here on leaves the box as it was and says so.
 5. **The `after` is a read too**, not the value that was asked for. A command that exits 0 and
    does not move the setting is reported as such, and the record carries what the machine says.
+   **A read-back that fails is recorded as `after: "unread"`** — the ask is not a measurement, and
+   this field's whole job is what the machine says now. No setting here can hold that word (the
+   keyboard ones are integers, `pmset` takes `0`/`1`, a governor is a word the kernel lists), so it
+   cannot be mistaken for a value; the reply says so in as many words.
 6. **The record** — the changelog's own `record` verb, so one function writes a line and the
    `before`, `after`, `why`, `words`, host and session are the changelog's own fields.
 
