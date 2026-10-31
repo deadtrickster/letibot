@@ -16,6 +16,7 @@
 //! | [`Manifest`] | `plugin.toml`: the name, the one-line purpose, the hooks it exports, the capabilities it asks for, the tools it offers the model, the contract it speaks |
 //! | [`Stack`] | the four scopes resolved into one order — session over project over user over built-in — and [`Stack::call`], the answer protocol |
 //! | [`Recorder`] | the last 32 inputs per hook, which is what a replay can be run over |
+//! | [`Trust`] | D17's ladder on disk: a built-in runs freely, a placed layer needs a pin, and a write of a layer's bytes is recorded where it happened |
 //! | [`gate`] | build, load, shadow, replay, report: the dry run every change takes before it answers |
 //!
 //! # This crate has no wasm engine in it, on purpose
@@ -66,6 +67,7 @@ mod gate;
 mod manifest;
 mod recorder;
 mod stack;
+mod trust;
 
 #[cfg(test)]
 mod testing;
@@ -73,7 +75,8 @@ mod testing;
 pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
 pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
-pub use stack::{Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
+pub use stack::{BrokenPin, Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
+pub use trust::{Pin, Standing, Trust, Written};
 
 /// One plugin module, as the stack sees it.
 ///

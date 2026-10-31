@@ -44,6 +44,7 @@ use serde_json::Value;
 
 use crate::Capability;
 use crate::manifest::{Manifest, Scope, ToolDecl};
+use crate::trust::{Pin, Trust};
 use crate::{Loader, MANIFEST, Module, WASM, sha256_file};
 
 /// How many module calls one resolution may make.
@@ -80,17 +81,53 @@ pub struct Layer {
     pub manifest: Manifest,
     /// The SHA-256 of `plugin.wasm` — or empty when there is no module to hash.
     pub sha256: String,
+    /// The SHA-256 of `plugin.toml`. A pin is a statement about BOTH files, so this is what
+    /// [`Layer::trusted`] is decided against beside `sha256`.
+    pub manifest_sha256: String,
     pub disabled: bool,
-    /// **Whether this layer is the operator's own** — DECISIONS.md D17: trust is *who wrote the
-    /// layer*, and a layer the operator wrote (or a built-in this binary carries, which they did
-    /// not write but did choose to ship) runs freely, while a layer a MODEL wrote goes through
-    /// `Gate::admit_unasked` and must be pinned by hash before it is trusted.
+    /// **Whether this layer may run freely** — DECISIONS.md D17, in the operator's words on
+    /// 2026-10-31: *"Only the builtins run freely; anything I place later needs a pin."*
     ///
-    /// **Nothing reads this yet.** It is here so that the package that builds D17 has the fact to
-    /// fill rather than a shape to invent: a built-in is `true` by definition (it is part of the
-    /// binary the operator runs), and every layer discovered from disk is `false` until that
-    /// package asks the store which of them the operator pinned.
+    /// `true` for a built-in (it is part of the binary the operator runs, and nobody placed it at
+    /// run time) and for a layer whose module AND manifest match a pin somebody recorded. `false`
+    /// for everything else a person or a model put on disk, whatever its scope and whoever wrote
+    /// it — where a file sits proves nothing, so the fact is the hash in [`crate::Trust`].
+    ///
+    /// An untrusted layer still answers; what changes is that **every call it makes is
+    /// adjudicated without a card** (`Gate::admit_unasked`) rather than run. Where that decision
+    /// is taken is the host's: `crates/harnessd/src/plugins/tool.rs` for a tool call and
+    /// `crates/harnessd/src/plugins/conditions.rs` for an `exec` look.
     pub trusted: bool,
+    /// The pin nearest to this layer: the one its bytes match, or — with `trusted` false — the one
+    /// they have broken. `None` for a layer nothing was ever pinned for, and for a built-in.
+    pub pin: Option<Pin>,
+}
+
+impl Layer {
+    /// **What a refusal of this layer says** — the layer by name, and both hashes when there is a
+    /// pin to compare against ([`crate::Standing::sentence`]).
+    pub fn untrusted_sentence(&self) -> String {
+        crate::Standing {
+            free: self.trusted,
+            pin: self.pin.clone(),
+        }
+        .sentence(&self.manifest.name, &self.sha256, &self.manifest_sha256)
+    }
+}
+
+/// **A pin whose bytes moved** — the layer, what was pinned, and what is on disk now.
+///
+/// Drained by the host, which says it once (`plugin_untrusted`): *this layer was pinned and is not
+/// any more* is news when it happens, and the alternative — a layer that quietly stopped being
+/// yours — is the state the ladder exists to make impossible to miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenPin {
+    pub layer: String,
+    pub scope: Scope,
+    pub name: String,
+    pub pin: Pin,
+    pub module: String,
+    pub manifest: String,
 }
 
 /// One layer's refusal to answer, and why. Rendered for the model and for the stack pane, so the
@@ -273,6 +310,11 @@ pub struct Stack {
     wired: BTreeMap<String, Wired>,
     loader: Arc<dyn Loader>,
     failures: Vec<Failure>,
+    /// **D17's book** — which layers' bytes a person has pinned. `None` on a stack nobody gave
+    /// one to, and then every placed layer is unpinned, which is the fail-closed direction.
+    trust: Option<Arc<Trust>>,
+    /// Pins already reported as broken, so a poll every two seconds does not say it every time.
+    said_pins: std::collections::BTreeSet<String>,
 }
 
 impl Stack {
@@ -300,6 +342,8 @@ impl Stack {
             wired: BTreeMap::new(),
             loader,
             failures: Vec::new(),
+            trust: None,
+            said_pins: std::collections::BTreeSet::new(),
         };
         if let Some(dir) = session_dir {
             stack.discover_scope(Scope::Session, dir);
@@ -311,6 +355,97 @@ impl Stack {
             stack.discover_scope(Scope::User, &root.join("plugins"));
         }
         stack
+    }
+
+    /// **Hand this stack D17's book**, and decide every placed layer against it.
+    ///
+    /// Called by the host right after discovery (the daemon's `PluginHost` and the head's), and
+    /// again whenever the book moves on disk: a pin a person takes in the head has to be in force
+    /// in the daemon's stack at its next poll, and a layer rebuilt after its pin has to stop being
+    /// free in the same place.
+    ///
+    /// A stack nobody gives a book to has every placed layer untrusted, which is the fail-closed
+    /// direction and the reason this is a setter rather than an argument to `discover`: a caller
+    /// that forgot it would otherwise be a caller that trusted everything.
+    pub fn set_trust(&mut self, trust: Arc<Trust>) {
+        self.trust = Some(trust);
+        self.refresh_trust();
+    }
+
+    /// The book this stack decides against, if it has one.
+    pub fn trust(&self) -> Option<&Arc<Trust>> {
+        self.trust.as_ref()
+    }
+
+    /// **Re-decide every placed layer's [`Layer::trusted`]** against the book, and answer the pins
+    /// whose bytes have moved since they were taken.
+    ///
+    /// Cheap enough for a two-second poll: a hash of each layer's `plugin.toml` (a couple of
+    /// hundred bytes) and the module's hash the stack already holds. A built-in is skipped — it is
+    /// free by definition and has no directory to read.
+    ///
+    /// The answer is what is NEW: a layer that was pinned and is not any more, said once. The
+    /// caller says it (`plugin_untrusted`), because a stack has nobody to talk to.
+    pub fn refresh_trust(&mut self) -> Vec<BrokenPin> {
+        let Some(trust) = self.trust.clone() else {
+            return Vec::new();
+        };
+        trust.refresh();
+        let mut news = Vec::new();
+        for layer in &mut self.layers {
+            if layer.scope == Scope::BuiltIn || layer.dir.as_os_str().is_empty() {
+                continue;
+            }
+            let manifest_sha256 =
+                sha256_file(&layer.dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
+            let standing = trust.standing(&layer.dir, &layer.sha256, &manifest_sha256);
+            let was = layer.trusted;
+            layer.trusted = standing.free;
+            layer.pin = standing.pin.clone();
+            layer.manifest_sha256 = manifest_sha256.clone();
+            // **A pin that was broken is news; a layer nobody pinned is the ordinary state.**
+            if let (false, Some(pin)) = (standing.free, standing.pin) {
+                let key = format!("{}\n{}\n{manifest_sha256}", layer.id, layer.sha256);
+                if was || !self.said_pins.contains(&key) {
+                    if self.said_pins.insert(key) {
+                        news.push(BrokenPin {
+                            layer: layer.id.clone(),
+                            scope: layer.scope,
+                            name: layer.manifest.name.clone(),
+                            pin,
+                            module: layer.sha256.clone(),
+                            manifest: manifest_sha256,
+                        });
+                    }
+                }
+            }
+        }
+        news
+    }
+
+    /// **The layer a person or a tool named** — by id (`p1`), by its manifest name, or by the
+    /// directory it sits in. `None` when nothing matches, and never a guess between two: a caller
+    /// that has to choose is a caller that should have named an id.
+    pub fn layer_named(&self, what: &str) -> Option<&Layer> {
+        let dir = Path::new(what);
+        self.layers
+            .iter()
+            .find(|l| l.id == what)
+            .or_else(|| self.layers.iter().find(|l| l.manifest.name == what))
+            .or_else(|| {
+                self.layers
+                    .iter()
+                    .find(|l| !l.dir.as_os_str().is_empty() && l.dir == dir)
+            })
+    }
+
+    /// **Every layer a person could pin**, in stack order — what `/plugin` lists when it is asked
+    /// with no name: the id, the name, whether it is free, and the two hashes.
+    pub fn placed(&self) -> Vec<&Layer> {
+        self.layers
+            .iter()
+            .filter(|l| l.scope != Scope::BuiltIn)
+            .collect()
     }
 
     /// **What the layers of these three scopes declare, without loading a single module.**
@@ -432,7 +567,10 @@ impl Stack {
     /// since compiling one is the expensive half of installing a built-in (1.97 s for this
     /// binary's tool layer in a debug host, MEASURED 2026-10-28), paying it once is the point.
     pub fn register_builtin_shared(&mut self, mut layer: Layer, module: Arc<dyn Module>) {
+        // **A built-in runs freely, by definition** — D17's first arm. It is the binary's own
+        // bytes: nobody placed them at run time, so there is nothing to pin.
         layer.trusted = true;
+        layer.pin = None;
         if layer.id.is_empty() {
             layer.id = format!("{}-{}", Scope::BuiltIn.prefix(), layer.manifest.name);
         }
@@ -509,8 +647,10 @@ impl Stack {
             dir: PathBuf::new(),
             manifest: parsed,
             sha256: crate::sha256_hex(wasm),
+            manifest_sha256: crate::sha256_hex(manifest.as_bytes()),
             disabled: false,
             trusted: true,
+            pin: None,
         };
         let id = layer.id.clone();
         let before = self.failures.len();
@@ -687,20 +827,34 @@ impl Stack {
                 let id = self.layers[i].id.clone();
                 self.layers[i].manifest = manifest;
                 self.layers[i].sha256 = seen.sha256;
+                // **A rebuild is a different layer to D17's book**: the pin was about the old
+                // bytes, so this one is decided again — and if it was pinned, the fact that the
+                // pin no longer holds is news the next `refresh_trust` says.
+                let manifest_sha256 =
+                    sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
+                let (trusted, pin) = self.standing_of(&dir, &self.layers[i].sha256, &manifest_sha256);
+                self.layers[i].manifest_sha256 = manifest_sha256;
+                self.layers[i].trusted = trusted;
+                self.layers[i].pin = pin;
                 self.wired.insert(id, wired);
             }
             None => {
                 let id = self.next_id(c.scope);
+                let manifest_sha256 =
+                    sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
+                let (trusted, pin) = self.standing_of(&dir, &seen.sha256, &manifest_sha256);
                 let layer = Layer {
                     id: id.clone(),
                     scope: c.scope,
                     dir,
                     manifest,
                     sha256: seen.sha256,
+                    manifest_sha256,
                     disabled: false,
-                    // A layer from disk is the operator's only once something says so; D17's
-                    // package fills this from what the store has pinned.
-                    trusted: false,
+                    // See `Layer::trusted`: a new directory is the operator's only once the book
+                    // says these bytes are theirs.
+                    trusted,
+                    pin,
                 };
                 let at = self.insertion_point(c.scope);
                 self.layers.insert(at, layer);
@@ -714,6 +868,20 @@ impl Stack {
         self.layers
             .iter()
             .position(|l| l.scope != Scope::BuiltIn && l.dir == dir)
+    }
+
+    /// **D17's second arm, in one place** — what the book says about a directory's bytes.
+    ///
+    /// `(false, None)` for a stack with no book: a caller that never handed one over gets every
+    /// placed layer adjudicated, which is the direction a mistake has to fail in.
+    fn standing_of(&self, dir: &Path, module: &str, manifest: &str) -> (bool, Option<Pin>) {
+        match self.trust.as_ref() {
+            Some(trust) => {
+                let standing = trust.standing(dir, module, manifest);
+                (standing.free, standing.pin)
+            }
+            None => (false, None),
+        }
     }
 
     /// The top of a scope: before the first layer that is this scope or a lower-precedence one.
@@ -803,16 +971,23 @@ impl Stack {
                     None => (seen, None, Vec::new()),
                 }
             };
+            let manifest_sha256 =
+                sha256_file(&path.join(MANIFEST)).unwrap_or_else(|_| String::new());
+            let (trusted, pin) = self.standing_of(&path, &seen.sha256, &manifest_sha256);
             self.layers.push(Layer {
                 id: id.clone(),
                 scope,
                 dir: path,
                 sha256: seen.sha256.clone(),
                 manifest,
+                // **A placed layer is not the operator's because of where it sits.** D17's
+                // second arm: the hashes in the book decide, and `set_trust` (or the poll) is
+                // what fills these in — a stack nobody gave a book to leaves every layer
+                // untrusted, which is the fail-closed direction.
+                manifest_sha256,
                 disabled: false,
-                // See `Layer::trusted`: a disk layer is the operator's only once D17's package
-                // has asked the store which layers they pinned.
-                trusted: false,
+                trusted,
+                pin,
             });
             self.wired.insert(
                 id,
@@ -1017,6 +1192,100 @@ mod tests {
         r.answer.clone().expect("an answer")
     }
 
+    // -----------------------------------------------------------------------------------------
+    // D17's ladder — a built-in is free, a placed layer needs a pin, and a pin is about bytes
+    // -----------------------------------------------------------------------------------------
+
+    #[test]
+    fn a_builtin_is_free_and_a_placed_layer_is_not_until_the_book_pins_its_bytes() {
+        let t = TempDir::new("trust-arms");
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "one",
+            &["pane_dashboard"],
+            Act::answer(json!({"from": "project"})),
+        );
+        let mut s = stack(&t);
+        s.register_builtin_bytes(
+            "builtin",
+            "name = \"builtin\"\npurpose = \"p\"\nhooks = [\"pane_builtin\"]\ncapabilities = []\ncontract = 1\n",
+            &script(&[("pane_builtin", Act::answer(json!({"from": "binary"})))]),
+        )
+        .expect("a built-in registers");
+        let book = Trust::in_memory();
+        s.set_trust(book.clone());
+
+        // Arm 1: the binary's own bytes, free without a pin.
+        assert!(s.layer("b-builtin").unwrap().trusted);
+        assert!(s.layer("b-builtin").unwrap().pin.is_none());
+        // Arm 2: a placed layer is not, and says so by name.
+        let placed = s.layer("p1").expect("the project layer");
+        assert!(!placed.trusted, "a placed layer needs a pin");
+        let said = placed.untrusted_sentence();
+        assert!(said.contains("`one`"), "{said}");
+        assert!(said.contains("not pinned"), "{said}");
+
+        // Arm 2, the other half: pinning the bytes it has now makes it free.
+        let pin = book.pin("one", &t.path().join("project/.letibot/plugins/one"))
+            .expect("a pin");
+        assert!(s.refresh_trust().is_empty(), "nothing was pinned before");
+        let placed = s.layer("p1").expect("the project layer");
+        assert!(placed.trusted, "a pinned layer runs freely");
+        assert_eq!(placed.pin.as_ref().map(|p| p.module.as_str()), Some(pin.module.as_str()));
+    }
+
+    #[test]
+    fn a_module_rebuilt_after_its_pin_un_pins_the_layer_and_the_stack_says_so_once() {
+        let t = TempDir::new("trust-broken");
+        let root = t.path().join("project/.letibot/plugins");
+        layer(&root, "one", &["pane_dashboard"], Act::answer(json!({"from": "v1"})));
+        let book = Trust::in_memory();
+        let mut s = stack(&t);
+        s.set_trust(book.clone());
+        let pin = book.pin("one", &root.join("one")).expect("a pin");
+        s.refresh_trust();
+        assert!(s.layer("p1").unwrap().trusted);
+
+        // The module is rebuilt — the shape this rule exists for.
+        write_wasm(
+            &root.join("one"),
+            &["pane_dashboard"],
+            Act::answer(json!({"from": "v2, rebuilt"})),
+        );
+        let pending = s.poll_changes().into_iter().next().expect("a candidate");
+        s.apply(pending).expect("the rebuilt layer applies");
+        let placed = s.layer("p1").unwrap();
+        assert!(!placed.trusted, "the pin was about the old bytes");
+        let said = placed.untrusted_sentence();
+        assert!(said.contains(&pin.module), "the pinned hash: {said}");
+        assert!(said.contains(&placed.sha256), "and what is there now: {said}");
+        let rebuilt = placed.sha256.clone();
+
+        // Said once, by name: the news a host turns into a `plugin_untrusted` warning.
+        let news = s.refresh_trust();
+        assert_eq!(news.len(), 1, "{news:?}");
+        assert_eq!(news[0].layer, "p1");
+        assert_eq!(news[0].pin.module, pin.module);
+        assert_eq!(news[0].module, rebuilt);
+        assert!(s.refresh_trust().is_empty(), "a poll every two seconds is not news twice");
+    }
+
+    #[test]
+    fn a_layer_named_by_its_name_is_the_layer_a_person_meant() {
+        let t = TempDir::new("trust-named");
+        layer(
+            &t.path().join("project/.letibot/plugins"),
+            "one",
+            &["pane_dashboard"],
+            Act::answer(json!({})),
+        );
+        let s = stack(&t);
+        assert_eq!(s.layer_named("one").map(|l| l.id.as_str()), Some("p1"));
+        assert_eq!(s.layer_named("p1").map(|l| l.id.as_str()), Some("p1"));
+        assert!(s.layer_named("nope").is_none());
+        assert_eq!(s.placed().len(), 1);
+    }
+
     /// A layer directory whose manifest declares one tool.
     fn tool_layer(root: &Path, name: &str, tool: &str, caps: &[&str]) {
         let dir = tool_manifest(root, name, tool, caps);
@@ -1158,8 +1427,10 @@ mod tests {
                     dir: PathBuf::new(),
                     manifest,
                     sha256: String::new(),
+                    manifest_sha256: String::new(),
                     disabled: false,
                     trusted: false,
+                    pin: None,
                 },
                 Box::new(Fake::one(
                     "pane_dashboard",
