@@ -10557,11 +10557,11 @@ impl Harness {
     /// of an unchanged plan, so every check after it came due at the base window — the metronome
     /// the ladder exists to prevent. The delivery doors record this instead of the text they send.
     ///
-    /// **The queue's census is NOT in here, and is recorded beside it** — `TodoNagClock::said`
-    /// compares the pair (this sentence, and whether the census rode with the notice), because the
-    /// census says a growing AGE and a text carrying it would be a new notice at every delivery.
-    /// `None` is therefore the right answer for a project with nothing on its board and eight rows
-    /// stuck in its queue.
+    /// **The queue's census is NOT in here** — it is a notice and not a turn, so it does not ride
+    /// this sentence at all (`Sessions::note_due_censuses` writes it through
+    /// `Harness::note_to_model`). What this returns is the plan's sentence, which is what the
+    /// ladder counts repeats of; `None` is the right answer for a project with nothing on its
+    /// board and eight rows stuck in its queue.
     pub fn nag_said_as(&self) -> Option<String> {
         let board = self.todos.snapshot();
         let children = self.child_sessions();
@@ -10626,24 +10626,11 @@ impl Harness {
         let stale = self
             .stale_untold()
             .map(|said| stale_notice_for_the_model(&said));
-        // **And the queue's census, when one is news** — the third thing this notice may have to
-        // say, and the only one that is not about the plan. A merge queue is not a plan: it is
-        // eight rows nobody is moving, and the operator's report was that every one of them was
-        // announced once as it happened and none of them was ever counted. The clock arms on this
-        // same reading (`Harness::queue_news`), so the sentence and the schedule cannot disagree.
-        let queue = self
-            .stuck_census()
-            .filter(|c| c.is_news(letibot_sessionlog::registry::now_ms()))
-            .map(|c| {
-                crate::mergequeue::notices::stuck_census(&c, letibot_sessionlog::registry::now_ms())
-            });
-        let mut parts: Vec<String> = Vec::new();
-        parts.extend(plan);
-        parts.extend(stale);
-        parts.extend(queue);
-        let text = match parts.len() {
-            0 => None,
-            _ => Some(parts.join("\n\n")),
+        let text = match (plan, stale) {
+            (None, None) => None,
+            (Some(plan), None) => Some(plan),
+            (None, Some(stale)) => Some(stale),
+            (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
         };
         text.map(|text| (text, named))
     }
@@ -11022,6 +11009,20 @@ impl Harness {
             says: census.is_news(now),
             matures_in: census.news_in_ms(now).map(std::time::Duration::from_millis),
         }
+    }
+
+    /// **The census as a sentence, when there is one to say** — `None` for a queue with nothing
+    /// stuck, or one whose oldest row is still too young to be news.
+    ///
+    /// Read by `Sessions::note_due_censuses`, which writes it through `note_to_model` — a
+    /// transcript row and no turn. It is composed from the store AT THE MOMENT IT IS SAID and not
+    /// held from the arming, so a row that recovered between the two is not announced as stuck.
+    pub fn stuck_census_text(&self) -> Option<String> {
+        let now = letibot_sessionlog::registry::now_ms();
+        let census = self.stuck_census()?;
+        census
+            .is_news(now)
+            .then(|| crate::mergequeue::notices::stuck_census(&census, now))
     }
 
     pub fn queue_notices(&mut self) -> Vec<String> {

@@ -322,18 +322,21 @@ pub fn parked(r: &ReviewRow) -> String {
     }
 }
 
-/// **`stuck_census`** — the count and the age, on the idle check's clock
-/// (`mergequeue::stuck`, `Harness::stuck_census`).
+/// **`stuck_census`** — the count and the age, on the daemon's idle pass
+/// (`mergequeue::stuck`, `Harness::stuck_census`, `Sessions::note_due_censuses`).
 ///
 /// Every other sentence in this file is about ONE row and says so when that row MOVES. This one is
 /// the only place a project is told how many rows are bad at once, and the only place any of them
 /// is given an age — which is what the operator's report was missing: eight rows sat for hours
 /// with every transition already said. The verbs are the same two the transitions name, because a
 /// count with no verb is a statistic.
+///
+/// It is a NOTICE and not a turn (`Harness::note_to_model`), so the rate that paces it is its own
+/// (`stuck::STUCK_REPEAT_MS`) and not the plan-check's.
 pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     format!(
-        "[queue stuck] {} row(s) of this project's queue are stuck and no pass will move them: \
-         {}. The oldest has been there {}. `/queue restart <id>` puts one back in line and \
+        "[queue stuck] {} row(s) of this project's merge queue are stuck and no pass will move \
+         them: {}. The oldest has been there {}. `/queue restart <id>` puts one back in line and \
          `/queue rm <id>` withdraws it; `queue` with `action: \"status\"` names them.",
         c.total,
         c.said(),

@@ -3,23 +3,24 @@
 //!
 //! The operator's report (2026-11-01): eight merge-queue rows sat stuck for hours, three `failed`
 //! and five `conflict`, and every one of those transitions *was* notified once as it happened.
-//! What nothing said was the TOTAL and the AGE. `mergequeue::stuck` counts them and the idle
-//! check says so — this is the seam, on a store, a real git repository and the daemon's own
-//! delivery pass.
+//! What nothing said was the TOTAL and the AGE. `mergequeue::stuck` counts them and
+//! `Sessions::note_due_censuses` says so — this is the seam, on a store, a real git repository and
+//! the daemon's own idle pass.
 //!
-//! # What this needs, and what it does not
+//! # What this needs, and what it does NOT need
 //!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not a model**: the
-//! endpoint is a port nothing listens on with no retries, so the nag's round fails at once. That
-//! is enough, because a nag turn appends its row BEFORE it runs a round (`Harness::nag_turn`) —
-//! the sentence reaches the transcript whether or not anything answers it.
+//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not a model**. The
+//! census is a notice and not a turn — `Harness::note_to_model` appends one transcript row and
+//! returns — so this file asserts the row arrives while `deliver_due_nags` (the only door that
+//! spends a model call) delivers nothing at all, and `turns()` below is the count of rounds the hub
+//! ever saw: zero.
 
 use std::time::Duration;
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Parts, Sessions};
-use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::registry::Registry;
+use letibot_sessionlog::{SessionEvent, hub::Hub};
 use letibot_tokencore::store::{
     Approval, MergePriority, MergeState, Move, NewReview, ReviewKind, ReviewState, SessionRecord,
     Store,
@@ -60,8 +61,8 @@ fn config(store: &std::path::Path, workspace: &std::path::Path, session_id: &str
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    // **Never this box's model server**, and no ladder: the round must fail at once, because the
-    // subject is the sentence that was appended before it.
+    // **Never this box's model server**, and no ladder: if anything here ever spends a turn, this
+    // file should fail loudly rather than hang. `turns()` is the assertion that it does not.
     cfg.endpoint = Endpoint::new("127.0.0.1", 1);
     cfg.http_retries = 0;
     cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
@@ -137,9 +138,9 @@ fn now_ms() -> u64 {
     letibot_sessionlog::registry::now_ms()
 }
 
-/// **Every nag turn this session was sent, as its text** — the `Speaker::Agent` prompt a delivered
-/// check IS, read off the hub the daemon publishes it on.
-fn nags(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
+/// **Every `Speaker::Agent` row on this session's log, as its text** — the shape a notice AND a nag
+/// turn both take. What tells them apart is `turns()`: only a turn starts a round.
+fn agent_rows(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
@@ -163,11 +164,19 @@ fn nags(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
         .collect()
 }
 
-fn censuses(hub: &letibot_sessionlog::hub::Hub) -> Vec<String> {
-    nags(hub)
+fn censuses(hub: &Hub) -> Vec<String> {
+    agent_rows(hub)
         .into_iter()
         .filter(|t| t.contains("[queue stuck]"))
         .collect()
+}
+
+/// **How many rounds this session ever started** — the count a model call would raise.
+fn turns(hub: &Hub) -> usize {
+    hub.retained()
+        .iter()
+        .filter(|e| matches!(e.event, SessionEvent::TurnStarted { .. }))
+        .count()
 }
 
 fn session_row(id: &str, workspace: &std::path::Path, parent: Option<&str>) -> SessionRecord {
@@ -197,13 +206,12 @@ fn opened<'a>(
     (sessions, registry)
 }
 
-/// **Eight rows, one census, and then silence** — the count and the age are said once, the passes
-/// inside the interval say nothing, and a queue that recovers stands the clock down in both
-/// directions.
+/// **Eight rows, one notice, a second one an interval later, and silence after** — the count and
+/// the age are said, no turn is spent saying them, the passes inside the interval say nothing, and
+/// a queue that recovers stands the clock down in both directions.
 ///
-/// FAILS before this change: `Harness::nag_notice` had no census in it, so a project whose plan
-/// was empty armed nothing at all and `next_nag_at` was `None` throughout — the eight rows would
-/// have sat there, as they did.
+/// FAILS before this change: nothing counted the rows, so no such row was ever written and no
+/// census deadline existed — the eight rows would have sat there, as they did.
 #[test]
 fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -216,7 +224,7 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
         .put_session(&session_row(&id, &repo, None))
         .expect("the session row");
     // **The operator's own eight**: three `failed` and five `conflict`, four hours old — past
-    // `STUCK_AFTER_MS`, so the census is news the first time the clock looks.
+    // `STUCK_AFTER_MS`, so the census is news the first time the daemon looks.
     let four_hours_ago = now_ms().saturating_sub(4 * 3_600_000);
     for i in 0..3 {
         a_landing(
@@ -241,16 +249,13 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
     let cfg = config(&path, &repo, &id);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let (mut sessions, registry) = opened(&parts, &cfg, &id);
-    // The window, shortened so the census would come due at once — and long enough that three
-    // passes fit inside the interval the first delivery arms (the doubled one).
-    sessions.set_nag_window(Duration::from_millis(300));
-    assert!(
-        sessions.next_nag_at().is_some(),
-        "the premise: a stuck queue arms the check, with no plan on the board"
-    );
+    // **The production windows, shortened** — the age gate is the fixture's (four hours); the two
+    // clocks are shortened only so a test can see them tick.
+    sessions.set_nag_window(Duration::from_secs(60));
+    sessions.set_stuck_repeat(Duration::from_millis(200));
 
-    std::thread::sleep(Duration::from_millis(400));
-    let _ = sessions.deliver_due_nags();
+    // **One delivery**, and the sentence is the count, the age and the verbs.
+    assert_eq!(sessions.note_due_censuses(), 1, "one session is told");
     let hub = registry.get(&id).expect("the session's hub");
     let said = censuses(&hub);
     assert_eq!(said.len(), 1, "one census: {said:#?}");
@@ -275,10 +280,15 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
         said[0]
     );
 
-    // **Three more passes inside the interval say nothing** — the ladder, not a metronome.
+    // **And it cost no model call.** The board is empty, so the plan check has nothing to say —
+    // and the round count is zero: `note_to_model` appended a row and returned.
+    assert_eq!(sessions.deliver_due_nags(), 0, "no nag turn was due");
+    assert_eq!(turns(&hub), 0, "and no round was ever started");
+
+    // **Three more passes inside the interval say nothing.**
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(20));
-        let _ = sessions.deliver_due_nags();
+        assert_eq!(sessions.note_due_censuses(), 0, "nothing is due yet");
     }
     assert_eq!(
         censuses(&registry.get(&id).unwrap()).len(),
@@ -286,8 +296,20 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
         "one notice, however many passes"
     );
 
-    // **And the rows recover.** The re-arm that follows finds nothing to say, and the clock stands
-    // down in both directions: no turn now, and nothing armed after it.
+    // **Past the interval, a second one** — the cadence the brief asked for. That the age it
+    // composes has grown is `mergequeue::stuck::tests`' (the sentence is a pure function of the
+    // census and the clock); what this asserts is that there ARE two deliveries, an interval apart.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(sessions.note_due_censuses(), 1, "the repeat came due");
+    assert_eq!(
+        censuses(&registry.get(&id).unwrap()).len(),
+        2,
+        "two notices, one interval apart"
+    );
+    assert_eq!(turns(&hub), 0, "still no model call");
+
+    // **And the rows recover.** The next arming finds nothing stuck, and the clock stands down in
+    // both directions: no notice now, and nothing armed after it.
     let store = Store::open(&path).expect("the store");
     for i in 0..3 {
         store
@@ -313,17 +335,23 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
     }
     drop(store);
 
-    // `set_nag_window` re-arms every session, which is the arming a turn's end would make — and
-    // with the rows gone it arms nothing at all, so the passes below find no clock to spend.
-    sessions.set_nag_window(Duration::from_millis(1));
+    sessions.set_stuck_repeat(Duration::from_millis(1));
     for _ in 0..2 {
         std::thread::sleep(Duration::from_millis(20));
-        let _ = sessions.deliver_due_nags();
+        assert_eq!(
+            sessions.note_due_censuses(),
+            0,
+            "nothing stuck, nothing said"
+        );
     }
     assert_eq!(
         censuses(&registry.get(&id).unwrap()).len(),
-        1,
+        2,
         "a tree that goes quiet stops nagging — not one notice per interval for ever"
+    );
+    assert!(
+        sessions.next_nag_at().is_none(),
+        "and nothing is armed for the next interval"
     );
 }
 
@@ -362,4 +390,5 @@ fn a_child_session_gets_no_census() {
         "a child is told nothing about its project's queue"
     );
     assert!(!h.queue_news().says);
+    assert!(h.stuck_census_text().is_none());
 }

@@ -75,7 +75,7 @@ fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
         .unwrap();
 }
 
-/// **A review row in `to`.**
+/// **A review row in `to`** — for the tests that prove what the census does NOT count.
 fn a_review(store: &Store, repo: &str, id: &str, to: ReviewState, at: u64) {
     store
         .enqueue_review(
@@ -117,9 +117,9 @@ fn store(tag: &str) -> (TempDir, Store) {
     (dir, store)
 }
 
-/// **The eight rows the operator reported, and the two that are still the queue's own business.**
-/// Three `failed` and five `conflict` are stuck; a `queued` landing and a `waiting` review are a
-/// pass's work and are not.
+/// **The eight rows the operator reported, and the ones that are still a pass's own business.**
+/// Three `failed` and five `conflict` are stuck; a `queued` landing, a `gating` one, one that
+/// landed and one whose branch moved are not.
 #[test]
 fn the_states_a_row_is_stuck_in_are_the_ones_no_pass_will_move() {
     let (_dir, s) = store("stuck-count");
@@ -143,21 +143,21 @@ fn the_states_a_row_is_stuck_in_are_the_ones_no_pass_will_move() {
         );
     }
     a_landing(&s, repo, "m-queued", MergeState::Queued, 1_000);
-    a_review(&s, repo, "r-waiting", ReviewState::Waiting, 1_000);
-    a_review(&s, repo, "r-rejected", ReviewState::Rejected, 1_000);
+    a_landing(&s, repo, "m-gating", MergeState::Gating, 1_000);
+    a_landing(&s, repo, "m-landed", MergeState::Landed, 1_000);
+    a_landing(&s, repo, "m-moved", MergeState::Moved, 1_000);
 
     let census = of(&s, &[repo.to_string()]).expect("the census");
-    assert_eq!(census.total, 9, "{census:?}");
+    assert_eq!(census.total, 8, "{census:?}");
     // `desk::FLOW`'s order, which is the order `status` prints.
     assert_eq!(
-        census.merges,
+        census.states,
         vec![("conflict", 5), ("failed", 3)],
         "{census:?}"
     );
-    assert_eq!(census.reviews, vec![("rejected", 1)], "{census:?}");
     assert_eq!(
         census.said(),
-        "1 rejected in review · 5 conflict · 3 failed",
+        "5 conflict · 3 failed",
         "the counts as one clause"
     );
 }
@@ -187,9 +187,8 @@ fn the_census_counts_the_rows_status_prints() {
             1_000,
         );
     }
+    a_landing(&s, repo, "m-timed-out", MergeState::TimedOut, 1_000);
     a_landing(&s, repo, "m-queued", MergeState::Queued, 1_000);
-    a_review(&s, repo, "r-cannot", ReviewState::CannotDecide, 1_000);
-    a_review(&s, repo, "r-waiting", ReviewState::Waiting, 1_000);
 
     let census = of(&s, &[repo.to_string()]).expect("the census");
     let printed = desk::status(&s, Some(repo)).expect("status");
@@ -206,29 +205,36 @@ fn the_census_counts_the_rows_status_prints() {
         let Some(word) = rest.trim_start().split_whitespace().next() else {
             continue;
         };
-        if matches!(
-            word,
-            "failed" | "timed_out" | "conflict" | "rejected" | "cannot_decide"
-        ) {
+        if matches!(word, "failed" | "timed_out" | "conflict") {
             match counted.iter_mut().find(|(w, _)| *w == word) {
                 Some(slot) => slot.1 += 1,
                 None => counted.push((word, 1)),
             }
         }
     }
-    let mut census_words: Vec<(&str, usize)> = census
-        .reviews
-        .iter()
-        .chain(census.merges.iter())
-        .copied()
-        .collect();
+    let mut census_words = census.states.clone();
     census_words.sort();
-    let mut counted = counted;
     counted.sort();
     assert_eq!(
         census_words, counted,
         "the census and `status` count one set of rows\n{printed}"
     );
+}
+
+/// **A review row nobody will move is NOT counted, and that is what keeps the sentence true.**
+/// `serve.rs` re-seats a `rejected` or `cannot_decide` review to `waiting` by itself when the
+/// branch moved past the verdict it gave — so *no pass will move them* would be false for it — and
+/// one lingering rejection would hold the alarm open over an otherwise clean queue.
+#[test]
+fn a_parked_review_is_not_a_stuck_landing() {
+    let (_dir, s) = store("stuck-reviews");
+    let repo = "/tmp/stuck-reviews";
+    a_review(&s, repo, "r-rejected", ReviewState::Rejected, 1_000);
+    a_review(&s, repo, "r-cannot", ReviewState::CannotDecide, 1_000);
+
+    let census = of(&s, &[repo.to_string()]).expect("the census");
+    assert!(census.is_empty(), "{census:?}");
+    assert!(!census.is_news(u64::MAX / 2));
 }
 
 /// **The age is the oldest row's own `state_ms`** — when it entered the state it is stuck in, which
@@ -239,7 +245,6 @@ fn the_oldest_row_is_the_oldest_state_change() {
     let repo = "/tmp/stuck-age";
     a_landing(&s, repo, "m-young", MergeState::Failed, 9_000_000);
     a_landing(&s, repo, "m-old", MergeState::Conflict, 1_000_000);
-    a_review(&s, repo, "r-middle", ReviewState::Rejected, 5_000_000);
 
     let census = of(&s, &[repo.to_string()]).expect("the census");
     assert_eq!(census.oldest_ms, 1_000_000, "{census:?}");
@@ -334,9 +339,96 @@ fn the_sentence_says_how_many_and_how_long_and_what_to_do() {
         crate::mergequeue::notices::stuck_census(&census, 1_000 + 4 * 3_600_000 + 12 * 60_000);
     assert_eq!(
         said,
-        "[queue stuck] 8 row(s) of this project's queue are stuck and no pass will move them: 5 \
-         conflict · 3 failed. The oldest has been there 4h 12m. `/queue restart <id>` puts one \
-         back in line and `/queue rm <id>` withdraws it; `queue` with `action: \"status\"` names \
-         them."
+        "[queue stuck] 8 row(s) of this project's merge queue are stuck and no pass will move \
+         them: 5 conflict · 3 failed. The oldest has been there 4h 12m. `/queue restart <id>` puts \
+         one back in line and `/queue rm <id>` withdraws it; `queue` with `action: \"status\"` \
+         names them."
     );
+}
+
+/// **And the age in that sentence GROWS with the clock** — the property the brief asked for by
+/// name, asserted where it can be asserted honestly: the sentence is a pure function of the census
+/// and the clock, so two deliveries two hours apart say two different ages about one unchanged
+/// queue. (An end-to-end test cannot show this without sleeping for an hour; the two deliveries it
+/// *does* drive are asserted in `crates/harnessd/tests/queue_census.rs`.)
+#[test]
+fn the_same_rows_said_later_name_a_bigger_age() {
+    let (_dir, s) = store("stuck-grown");
+    let repo = "/tmp/stuck-grown";
+    a_landing(&s, repo, "m-one", MergeState::Failed, 1_000);
+    let census = of(&s, &[repo.to_string()]).expect("the census");
+
+    let first = crate::mergequeue::notices::stuck_census(&census, 1_000 + STUCK_AFTER_MS);
+    let later =
+        crate::mergequeue::notices::stuck_census(&census, 1_000 + STUCK_AFTER_MS + 2 * 3_600_000);
+    assert!(first.contains("15 min"), "{first}");
+    assert!(later.contains("2h 15m"), "{later}");
+    assert_ne!(first, later, "the repeat is a new fact, not the same one");
+}
+
+/// **What this read costs on the door every turn ends at** — the measurement the review asked for
+/// before a new hot-path query lands, kept so the next reader can re-run it rather than argue.
+///
+/// `Harness::stuck_census` runs from `Sessions::rearm_todo_nag`, which every turn's end calls, so
+/// the question is not *is one query cheap* but *is one PROJECT's query cheap when the box holds
+/// twenty others*. Twenty other repositories of twenty rows each, and ours: 420 rows in all.
+///
+/// **The unscoped number is an UNDER-estimate**: these rows carry the short `evidence` the fixture
+/// writes, while a real rejected row's is up to 7 828 characters, and `merge_rows(None)`
+/// materialises every one of them. The scoped read is proportional to one project's rows and
+/// nothing else, which is the whole argument for it.
+///
+///     cargo test --release --offline -p letibot-harnessd --lib \
+///         mergequeue::stuck::tests::what_the_scoped_read_costs -- --ignored --nocapture
+#[test]
+#[ignore = "a measurement, not an assertion: run it with --ignored --nocapture"]
+fn what_the_scoped_read_costs() {
+    use std::time::Instant;
+
+    let (_dir, s) = store("stuck-cost");
+    let ours = "/tmp/stuck-cost/ours";
+    for r in 0..20 {
+        let repo = format!("/tmp/stuck-cost/other-{r}");
+        for i in 0..20 {
+            a_landing(&s, &repo, &format!("m-{r}-{i}"), MergeState::Failed, 1_000);
+        }
+    }
+    for i in 0..20 {
+        a_landing(
+            &s,
+            ours,
+            &format!("m-ours-{i}"),
+            MergeState::Conflict,
+            1_000,
+        );
+    }
+
+    let scoped = || of(&s, &[ours.to_string()]).expect("the census");
+    let unscoped = || {
+        let all: Vec<letibot_tokencore::store::MergeRow> = s.merge_rows(None).expect("every row");
+        all.iter().filter(|m| stuck_merge(m.state)).count()
+    };
+    // Warm both paths, so the number is not a first-touch page fault.
+    for _ in 0..20 {
+        scoped();
+        unscoped();
+    }
+    let n = 200;
+    let t = Instant::now();
+    for _ in 0..n {
+        scoped();
+    }
+    let each = t.elapsed() / n;
+    let t = Instant::now();
+    for _ in 0..n {
+        unscoped();
+    }
+    let every = t.elapsed() / n;
+    let census = scoped();
+    println!(
+        "stuck::of — 420 rows over 21 repositories: scoped {each:?} a call, unscoped {every:?} a \
+         call; this project is {} of them",
+        census.total
+    );
+    assert_eq!(census.total, 20, "and it counts only this project's rows");
 }

@@ -328,6 +328,18 @@ impl Daemon {
                         if ran > 0 {
                             eprintln!("  todo check -> {ran} session(s)");
                         }
+                        // **And the queue's stuck-row census, on the same idle arm and as a
+                        // NOTICE** — `Harness::note_to_model`, a transcript row and no turn, so
+                        // it costs no model call. The clock is the plan-check's own
+                        // (`TodoNagClock::census_due_at`), because the daemon's clock is the only
+                        // clock; what it says is `mergequeue::stuck`'s, and how often is
+                        // `STUCK_REPEAT_MS`. See `Sessions::note_due_censuses`.
+                        let pass = std::time::Instant::now();
+                        let noted = sessions.note_due_censuses();
+                        crate::instruments::worker_pass("queue-census", pass, noted);
+                        if noted > 0 {
+                            eprintln!("  queue census -> {noted} session(s)");
+                        }
                         // **And a reopened subagent idle past its window goes back to the store**
                         // (R68's idle-child policy, `Config::child_park_after`). On this pass for the
                         // sweep's reason: no round is running, so nothing it holds is mid-call.
