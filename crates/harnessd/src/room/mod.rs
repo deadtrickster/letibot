@@ -13,6 +13,11 @@
 //!   wake.
 //! * **[`wake`]** — the queue between the link's reader thread and `Harness::wake`, because the
 //!   thread that hears the bell is not the thread that runs the turn.
+//! * **[`remind`]** — the pass that turns the room's answer (*what do I hold, and what am I waiting
+//!   on*) into one row per item on the session's own board, so the idle check carries the reminder
+//!   and no model call is needed. It is the one of the four that runs on the daemon's idle tick
+//!   rather than on a thread of its own, because a board may only be written by the thread that
+//!   drives the harness.
 //!
 //! # The names are derived, and they must not move
 //!
@@ -32,6 +37,7 @@ use std::path::PathBuf;
 
 pub mod coordinator;
 pub mod link;
+pub mod remind;
 pub mod wake;
 
 /// **The environment variable that puts the room's socket somewhere else** — a test's door, and

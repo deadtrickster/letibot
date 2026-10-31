@@ -51,7 +51,8 @@ use letibot_tokencore::store::{Store, TodoBy, TodoItem, TodoStatus};
 use letibot_tools::builtins::todo::{
     ChildSessions, RunningChild, RunningJobs, queue_review_in_flight, unfinished_plan,
     waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
-    when_a_queue_reviewer_goes_quiet, when_a_young_child_grows_up, when_an_ending_is_digested,
+    waits_on_the_room, when_a_queue_reviewer_goes_quiet, when_a_young_child_grows_up,
+    when_an_ending_is_digested,
 };
 use std::sync::{Arc, Mutex};
 
@@ -275,6 +276,13 @@ pub(crate) fn the_check_may_ask_about(
         && !waits_on_an_undigested_ending(row, jobs)
         // R93.B3: a merge queue's row is not nagged while its review is in flight.
         && !queue_review_in_flight(row, children)
+        // **And a room row is not nagged while the ROOM is working on the item** — the fourth
+        // quiet, and the one whose fact is the row's own: the daemon's room pass puts a
+        // `TodoNeed::Room` edge on the row while the holder has told the room what it waits for and
+        // its beat is fresh, and takes it off in the pass that sees either end. So *does this row
+        // carry the edge* IS the fact, and there is no snapshot to hand in here — see
+        // `waits_on_the_room` for why that is the right side of the door to put it on.
+        && !waits_on_the_room(row)
 }
 
 /// **A status, as the STORE spells it** — the wire→store half of the one conversion the two copies
@@ -984,6 +992,15 @@ pub struct Sessions<'a> {
     /// serves it on its first idle pass rather than after a window, and spent by
     /// [`Sessions::reviews_due`]. See [`REVIEW_PASS_EVERY`] for why this is a clock at all.
     reviews_at: Option<Instant>,
+    /// **When to next ask the room what this session holds.** Armed at open to *now*, so a session
+    /// that comes up holding an item has its row on the first idle pass, and spent by
+    /// [`Sessions::room_due`]. See [`crate::room::remind::ROOM_PASS_EVERY`] for the interval.
+    ///
+    /// **Every `Sessions` keeps its own**, the daemon's and a court's alike, because the board it
+    /// writes is the one its own `open` holds: a court's harness is on the court's thread, so the
+    /// court is the only thread that may write that session's board. One clock per owner, one
+    /// writer per board.
+    room_at: Option<Instant>,
     /// **When to next ask whether this daemon has anything left to do** — the idle exit
     /// (`Config::idle_exit_after`). `None` when the daemon never exits on its own. See
     /// [`Sessions::idle_exit_due`].
@@ -1213,6 +1230,12 @@ fn court_main(
                 let pass = Instant::now();
                 let swept = s.sweep_abandoned_calls();
                 crate::instruments::worker_pass("sweep", pass, swept);
+                // **The room's rows first**, so the checks below read a board that is not one
+                // pass stale: a row for an item this session has just released would otherwise be
+                // asked about for a whole window.
+                let pass = Instant::now();
+                let held = s.fill_room_boards();
+                crate::instruments::worker_pass("room", pass, held);
                 let pass = Instant::now();
                 let ran = s.deliver_due_nags();
                 crate::instruments::worker_pass("todo-check", pass, ran);
@@ -1353,6 +1376,10 @@ impl<'a> Sessions<'a> {
             // Due at once: the first idle pass looks. A daemon that started between a review's
             // ask and its wake has the row and nothing else, and this is what finds it.
             reviews_at: Some(Instant::now()),
+            // Due at once, for the same reason one fact over: a session that comes up holding a
+            // room item has it in the room's memory and nowhere else, so the first pass is what
+            // puts the reminder on its board.
+            room_at: Some(Instant::now()),
             idle_exit_at: cfg.idle_exit_after.map(|w| Instant::now() + w),
             busy_seen: Instant::now(),
             bangs: HashMap::new(),
@@ -1586,6 +1613,9 @@ impl<'a> Sessions<'a> {
             // idle exit would be a second daemon deciding to leave — and the review pass reads
             // the queue, which is the daemon's.
             reviews_at: None,
+            // **A court keeps this clock**, unlike the review one: the board the room's rows go on
+            // is the harness's, and a court's harness is here. Due at once, like the daemon's.
+            room_at: Some(Instant::now()),
             idle_exit_at: None,
             busy_seen: Instant::now(),
             bangs: HashMap::new(),
@@ -3276,6 +3306,12 @@ impl<'a> Sessions<'a> {
         [
             self.next_nag_at(),
             self.reviews_at,
+            // **Only when some session here HAS a room.** The clock itself stays armed (spending
+            // it costs one comparison), but a box with no coordinator must not be woken every
+            // five seconds for a question that has no answer — and that is every box by default.
+            // A session that opens with a room makes this due at once, because the clock is
+            // already in the past.
+            self.has_a_room().then_some(self.room_at).flatten(),
             self.park_at,
             self.idle_exit_at,
             self.plugins_due_at(),
@@ -3283,6 +3319,52 @@ impl<'a> Sessions<'a> {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// **Whether any session this `Sessions` holds speaks in the box's room** — the one question
+    /// [`Sessions::next_idle_at`] asks before it makes the room clock a reason to wake.
+    ///
+    /// A court holds one harness, so this is exact there; the daemon holds the rest. It is `false`
+    /// on a box with no coordinator, and on every session of a subagent's seat.
+    pub fn has_a_room(&self) -> bool {
+        self.open.values().any(|h| h.has_room())
+    }
+
+    /// **Whether the room pass is due, spending the deadline when it is** —
+    /// [`Sessions::reviews_due`]'s shape and for its reason: the disarm is before the work, so a
+    /// pass that took longer than the interval does not fire again at once.
+    pub fn room_due(&mut self) -> bool {
+        let now = Instant::now();
+        if self.room_at.is_some_and(|at| at > now) {
+            return false;
+        }
+        self.room_at = Some(now + crate::room::remind::ROOM_PASS_EVERY);
+        true
+    }
+
+    /// **The room's reminders, onto every session this `Sessions` holds** — one row per item a
+    /// session holds, so the idle check carries the reminder and no model call is needed.
+    ///
+    /// It is `deliver_due_nags`'s sibling on the same idle arm, and it runs BEFORE the checks for
+    /// the same reason the board is read at the turn boundary: a check delivered against a board
+    /// that is one pass stale would ask about an item the session has just released.
+    ///
+    /// **It walks `open` and nothing else**, and that is the whole of the threading rule: a court's
+    /// harness is on the court's thread, so the court runs its own copy of this over its own one
+    /// session. The daemon never writes a board it does not hold — the same rule `plugin_tick`
+    /// keeps for the notices a layer owes.
+    ///
+    /// **A session with no room costs one `Option` test**, which is every session on a box with no
+    /// coordinator — and [`crate::room::remind`] says why a subagent is one of those.
+    pub fn fill_room_boards(&mut self) -> usize {
+        if !self.room_due() {
+            return 0;
+        }
+        let mut rows = 0;
+        for harness in self.open.values_mut() {
+            rows += harness.fill_room_board();
+        }
+        rows
     }
 
     /// **Whether the store read for owed reviews is due, spending the deadline when it is** —
@@ -4711,6 +4793,15 @@ impl<'a> Sessions<'a> {
                                 letibot_sessionlog::event::TodoNeed::Monitor { name } => {
                                     letibot_tokencore::store::TodoNeed::Monitor {
                                         name: name.clone(),
+                                    }
+                                }
+                                // **The room's item number crosses verbatim** — it is the name
+                                // `room`'s own verbs take, and a head that dropped it would hand
+                                // the daemon back a board with the reminder's edge missing.
+                                letibot_sessionlog::event::TodoNeed::Room { item, working } => {
+                                    letibot_tokencore::store::TodoNeed::Room {
+                                        item: *item,
+                                        working: *working,
                                     }
                                 }
                                 // **The operator's question, and their answer, cross whole** — the

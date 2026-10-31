@@ -134,6 +134,38 @@ impl SessionRoom {
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
         answer_sentence(&response, &self.session)
     }
+
+    /// **Every reminder the room owes, as data rather than as a sentence.**
+    ///
+    /// The `reminders` VERB answers a model in words (`answer_sentence`), and the daemon's pass
+    /// needs the same answer as values: one row per item a session holds, with the wait it declared
+    /// and whether its beat has gone quiet. A daemon that parsed the sentence back would be reading
+    /// its own formatting, so the request is sent here and the reply read as the struct it is.
+    ///
+    /// **It is the whole room's list, not this session's** — `reminders` is one read for the room —
+    /// so the caller filters by `Reminder::session`. That is deliberate rather than sloppy: the
+    /// coordinator answers in one frame, and a per-session read would be a second frame shape for a
+    /// question the room already answers.
+    pub fn reminders(&self) -> Result<Vec<letibot_room::Reminder>, String> {
+        let response = self.client.request(&Request::Reminders).map_err(|e| {
+            format!(
+                "the room at {} did not answer: {e}",
+                self.socket.display()
+            )
+        })?;
+        match response {
+            Response::Reminders { rows } => Ok(rows),
+            Response::Bye { why } => Err(format!("the room closed the connection: {why}")),
+            // **A frame that is not the answer to this read** — said as a fact rather than
+            // guessed at, because a daemon that invented a meaning here would put a wrong row on
+            // a board. A `Request::Reminders` carries no id, so there is nothing to correlate.
+            _ => Err(
+                "the room answered a frame that is not a `reminders` read — nothing was written on \
+                 the board"
+                    .to_string(),
+            ),
+        }
+    }
 }
 
 impl letibot_tools::builtins::room::RoomLink for SessionRoom {

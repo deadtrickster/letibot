@@ -11211,6 +11211,52 @@ impl Harness {
         served.started
     }
 
+    /// **Whether this session speaks in the box's room** — the daemon's own question, and the one
+    /// the room pass's clock asks before it makes itself a reason to wake.
+    pub fn has_room(&self) -> bool {
+        self.room.is_some()
+    }
+
+    /// **The room's reminders, onto this session's own board** — one row per item it holds, and
+    /// the row the idle check carries so a holder is reminded without a model call.
+    ///
+    /// The operator's ask is `docs/room.md`'s *Still owed* item 3: *"just like with todo top level
+    /// session get reminds (with ability to mark waits_on) so they dont occupy it for ever"*. The
+    /// room already answers the question (`room reminders`); this is the join.
+    ///
+    /// **A subagent returns 0 before anything else, and it is the second of two refusals rather
+    /// than the only one.** [`crate::room::link`] gives a session with a `parent_session_id` no
+    /// connection at all, so `self.room` is `None` for a subagent already — but the room's own rule
+    /// is *top-level sessions only*, and a daemon that answered it in one place would be one
+    /// refactor away from a subagent with a room row it does not hold.
+    ///
+    /// **A room that does not answer clears the rows.** The record of a claim is the room's, and a
+    /// room that has stopped answering has no record — a coordinator restart empties it, which is
+    /// the decision `docs/room.md` states (*"a restart begins with no items at all"*). Leaving a
+    /// `you hold …` row on a board after the room has gone would be the one reading that is false
+    /// and that nothing would ever correct.
+    ///
+    /// Returns how many rows the session holds now. It is called on the daemon's idle tick (see
+    /// [`crate::room::remind::ROOM_PASS_EVERY`]) and is a no-op that costs one socket frame when
+    /// the answer has not moved.
+    pub fn fill_room_board(&mut self) -> usize {
+        // **The room's rule, said here as well as at the door.** See this function's own doc.
+        if self.cfg.parent_session_id.is_some() {
+            return 0;
+        }
+        let Some(room) = self.room.clone() else {
+            return 0;
+        };
+        let me = self.hub.session_id();
+        let rows = match room.reminders() {
+            Ok(all) => crate::room::remind::rows(&me, &all),
+            Err(_) => Vec::new(),
+        };
+        let n = self.todos.set_room_rows(rows);
+        self.flush_todos_or_say("the room's reminders");
+        n
+    }
+
     /// Whether this harness is the review queue's own session — the one
     /// [`crate::sessions::gatekeeper::session`] names for this daemon's workspace, whose board is
     /// the queue.
@@ -16419,6 +16465,12 @@ impl Harness {
                     }
                     letibot_tokencore::store::TodoNeed::Monitor { name } => {
                         letibot_sessionlog::event::TodoNeed::Monitor { name }
+                    }
+                    // **The room's item number crosses verbatim**, the same rule the child's id and
+                    // the job handle keep: it is what `room`'s `done`, `beat` and `abandon` take,
+                    // and the head draws the edge so a person can see the row is quiet on purpose.
+                    letibot_tokencore::store::TodoNeed::Room { item, working } => {
+                        letibot_sessionlog::event::TodoNeed::Room { item, working }
                     }
                     // **An unknown kind stays unknown on the wire**, which is what lets a head
                     // that does not know one pass it back to a daemon that does rather than
