@@ -97,17 +97,50 @@ impl SessionRoom {
         supervisor: Option<Arc<dyn RoomSupervisor>>,
     ) -> Result<Arc<SessionRoom>, String> {
         let me = session.to_string();
+        // **This box's key, read once.** Both questions below are derivations from it, and
+        // `host_key` shells out to `uname -n`: two calls for one answer is a subprocess a session's
+        // open does not need to pay for twice.
+        let key = letibot_room::host_key();
         // **The arbiter is not woken by the queue's traffic.** The coordinator's own session is the
         // arbiter, so the server routes every event to it — that is how a question reaches it — but
         // a turn per `post` would be a turn per item somebody else made, on the one session whose
         // job is to answer questions. `Raised`, `Asked` and `Ruled` are its business; the rest it
         // reads when it looks (`room queue`, `room questions`).
-        let arbiter = session == super::session_id();
+        let arbiter = session == letibot_room::coordinator_session(&key);
+        // **A tag's agent hears its own tag, and a note is not a turn.** Two rules in one audience:
+        //
+        // * **its own tag only** — the server addresses an event to the sessions queued under that
+        //   tag and, since this slice, to the tag's agent; this check is the other half of that
+        //   one rule, and it is what makes *a tag's bell does not ring for another tag's item* a
+        //   property of the connection rather than of the router alone.
+        // * **a turn only for a dispute** — the operator's cost answer: a claim, a healthy beat and
+        //   a finished item are comparisons the room has already made, so they arrive as NOTES
+        //   (`wake::push`) that the agent reads when something does earn a turn. Only `Raised` and
+        //   `Asked` ring the bell. Under the other cost model — a turn per event — every claim on
+        //   this box would be one model call per tag, which is the bill this design exists to
+        //   refuse.
+        let tag = letibot_room::tag_of_session(&key, session);
         let wake: letibot_room::client::Wake = {
             let bell = Arc::clone(&bell);
             let me = me.clone();
             Arc::new(move |event: &letibot_room::Event| {
                 use letibot_room::Event;
+                if let Some(tag) = tag.as_deref() {
+                    // A `Ruled` carries no tag of its own (the room answers which item it was
+                    // about), so its arrival is the addressing: the server only sends one to the
+                    // sessions the item's tag reaches.
+                    let mine = event.tag() == tag || matches!(event, Event::Ruled { .. });
+                    if !mine {
+                        return;
+                    }
+                    if let Some(line) = wake::sentence(event) {
+                        wake::push(&me, line);
+                    }
+                    if matches!(event, Event::Raised { .. } | Event::Asked { .. }) {
+                        bell(&me);
+                    }
+                    return;
+                }
                 if arbiter
                     && matches!(
                         event,
@@ -193,12 +226,14 @@ impl SessionRoom {
                 connected,
                 items,
                 questions,
+                agents,
             }) => RoomSnapshot {
                 identity,
                 arbiter,
                 connected,
                 items,
                 questions,
+                agents,
                 unreadable: None,
                 ..base
             },
@@ -943,6 +978,130 @@ mod tests {
         assert_eq!(wake::waiting(&arbiter), 0);
         drop(host);
         drop(me);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A tag's agent hears its own tag, and only a dispute rings it.**
+    ///
+    /// The operator's cost answer, made structural and measured: *idle without a model call, and a
+    /// turn only when it must rule* — a claim, a healthy beat and a finished item are comparisons,
+    /// not judgements; only a dispute earns a turn. A claim and an abandonment reach this agent as
+    /// NOTES (so a turn started for another reason — a person talking to `host:ram` — reads them),
+    /// and the bell stays silent; the question rings it.
+    ///
+    /// And the other half: another tag's traffic does not reach it at all.
+    #[test]
+    fn a_tags_agent_is_note_woken_by_its_queue_and_rung_only_by_a_dispute() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-tag-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
+            .expect("a room to talk to");
+
+        let rung: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+            let rung = Arc::clone(&rung);
+            Arc::new(move |session: &str| rung.lock().unwrap().push(session.to_string()))
+        };
+        // **The tag's agent, by the derivation** — not a hand-written id, because the router
+        // addresses it by the same function and a test that spelled its own would prove nothing.
+        let key = letibot_room::host_key();
+        let agent = letibot_room::tag_session(&key, "ram").expect("an agent for ram");
+        let mine = SessionRoom::connect(&agent, &path, bell, None).expect("the tag's agent");
+        let other = Client::connect(
+            &path,
+            Speaker::top_level("s-b"),
+            Arc::new(|_: &letibot_room::Event| {}),
+        )
+        .expect("s-b connects");
+
+        // **A post, a claim, and an abandonment** — the queue moving, and none of it a judgement.
+        let posted = other
+            .request(&Request::Post {
+                id: "p1".into(),
+                tag: "ram".into(),
+                body: "8 GB".into(),
+            })
+            .expect("a post");
+        assert!(matches!(posted, Response::Posted { .. }), "{posted:?}");
+        let _ = other.request(&Request::Claim {
+            id: "c1".into(),
+            tag: "ram".into(),
+        });
+        let _ = other.request(&Request::Abandon {
+            id: "a1".into(),
+            item: 1,
+            why: "the suite blew up".into(),
+        });
+        // **And another tag's post**, which must not reach it at all.
+        let _ = other.request(&Request::Post {
+            id: "p2".into(),
+            tag: "disk".into(),
+            body: "2 TB".into(),
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && wake::waiting(&agent) < 3 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            rung.lock().unwrap().len(),
+            0,
+            "a claim and an abandonment are comparisons: no turn is opened for them"
+        );
+        let notes = wake::take(&agent);
+        assert!(
+            notes.iter().any(|n| n.contains("claimed #1")),
+            "the claim reaches it as a note: {notes:?}"
+        );
+        assert!(
+            notes.iter().any(|n| n.contains("lost its claimant")),
+            "and so does the stale beat: {notes:?}"
+        );
+        assert!(
+            !notes.iter().any(|n| n.contains("disk")),
+            "and nothing about another tag's item: {notes:?}"
+        );
+
+        // **A dispute rings it.** That is the one thing a tag's agent exists to rule on — and the
+        // disputing session must NOT be the holder (the room refuses `NotDisputed`), which is the
+        // case this models: `s-b` lost the item to a stale beat and comes back saying *I am still
+        // on it* after `s-c` has taken it.
+        let c = Client::connect(
+            &path,
+            Speaker::top_level("s-c"),
+            Arc::new(|_: &letibot_room::Event| {}),
+        )
+        .expect("s-c connects");
+        let _ = c.request(&Request::Claim {
+            id: "c2".into(),
+            tag: "ram".into(),
+        });
+        let asked = other
+            .request(&Request::Dispute {
+                id: "d1".into(),
+                item: 1,
+                says: "still on it".into(),
+            })
+            .expect("a dispute");
+        assert!(matches!(asked, Response::Question { .. }), "{asked:?}");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && rung.lock().unwrap().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(
+            rung.lock().unwrap().as_slice(),
+            std::slice::from_ref(&agent),
+            "exactly one ring, and it is this tag's agent"
+        );
+        let said = wake::take(&agent);
+        assert!(
+            said.iter().any(|s| s.contains("question")),
+            "the ring has the question behind it: {said:?}"
+        );
+        drop(mine);
+        drop(other);
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
