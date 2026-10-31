@@ -277,6 +277,39 @@ fn the_selected_row_shows_its_moves_and_enter_opens_it_whole() {
     assert!(a.is_open(Surface::Queue), "esc goes back to the queue");
 }
 
+/// **A row that is waiting says why, and it has no attempts to its name** (R92.34) — the pane drew
+/// a row's `failure` only under `attempts > 0`, so a row parked with the reviewer's tree's own
+/// words on it (a clone that failed, a VM slot wait) read as a row with no reason at all. The
+/// operator's whole use of this pane is *why is it not moving*.
+#[test]
+fn a_waiting_row_says_why_even_with_no_attempts_counted() {
+    let mut a = builtin();
+    a.session_id = "s1".into();
+    a.command("queue");
+    let mut row = queue_review_row("one", "waiting");
+    row.attempts = 0;
+    row.failure = "WAITING FOR THE REVIEWER'S TREE: the reviewer's tree could not be made, so \
+                   the review waits and is tried again — no attempt is spent on it: git clone: \
+                   could not open '.git/objects/pack/tmp_pack_cgbKfF'"
+        .into();
+    a.apply(queue_frame(queues(vec![row], Vec::new())));
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.queue_open.as_deref(), Some("one"));
+    let screen = a.screen(160, 60).join("\n");
+    assert!(
+        screen.contains("the reviewer's tree could not be made"),
+        "a waiting row with a reason on it must draw the reason: {screen}"
+    );
+    assert!(
+        screen.contains("tmp_pack_cgbKfF"),
+        "and the reason whole, not its first clause: {screen}"
+    );
+    assert!(
+        !screen.contains("attempts"),
+        "zero attempts is not a fact worth a field: {screen}"
+    );
+}
+
 /// **A merge row's gate steps draw in order, a timed-out step is its own outcome** (decision 9).
 #[test]
 fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {

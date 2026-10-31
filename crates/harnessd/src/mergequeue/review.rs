@@ -1141,6 +1141,18 @@ fn live_session_in_workspace(
 /// is the worktree's own; the target is the project's (decision 12); the head is read now. A
 /// child opened to fix a red target carries `fixes`, and only such a branch lands while the
 /// target is red.
+///
+/// **A branch with nothing on it is refused, not enqueued** (R92.11, and the half of R92.16 that
+/// reaches a person). The head used to be `branch_head(..).unwrap_or_default()`, so a branch this
+/// host does not have — or one still at the base it was cut from — became a row with an empty or
+/// base-equal `head_sha`. Nothing could act on it: the reviewer is handed a tree it cannot check
+/// out (`start_reviewer` proves the clone at `head_sha`, so the row went back to `waiting` for
+/// ever), and the parent was told *"`agent/x` is in the review queue"* about a branch with no
+/// change. The shapes are real: a child placed in a VM commits inside the VM's copy of the
+/// repository, so the branch here stays at its base; a child whose work is uncommitted leaves the
+/// same branch; and a `task_start` whose worktree was swept loses the ref entirely. Each of them
+/// is a fact the parent's model has to hear, which is what `Err` is: the caller turns it into
+/// `merge_not_queued` with this sentence in it.
 pub fn enqueue_finished(
     store: &Store,
     handle: &str,
@@ -1161,7 +1173,28 @@ pub fn enqueue_finished(
     })?;
     let settings = settings(&repo).unwrap_or_default();
     let target = super::settings::target_for(&repo, &settings).unwrap_or_default();
-    let head = git::branch_head(&repo, &placement.branch).unwrap_or_default();
+    let head = match git::branch_head(&repo, &placement.branch) {
+        Some(head) => head,
+        None => {
+            return Err(format!(
+                "the branch `{}` is not in {} — `git rev-parse refs/heads/{}` answered nothing, \
+                 so there is no head to review and nothing to land",
+                placement.branch,
+                repo.display(),
+                placement.branch
+            ));
+        }
+    };
+    if !placement.base_sha.is_empty() && head == placement.base_sha {
+        return Err(format!(
+            "the branch `{}` has no commit of its own: its head is `{head}`, the base it was cut \
+             from, so there is no change to review and nothing to land. A child placed in a VM \
+             commits inside the VM's copy of the repository and this branch stays at its base; a \
+             child whose work is not committed leaves the same branch. Commit on this host (or \
+             re-run the child here) and enqueue it again",
+            placement.branch
+        ));
+    }
     let fixes = store
         .review_rows(Some(&repo.display().to_string()))
         .map_err(|e| e.to_string())?

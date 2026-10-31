@@ -21864,9 +21864,9 @@ impl HarnessTaskRunner {
                     hub.publish(letibot_sessionlog::SessionEvent::Warning {
                         code: "merge_not_queued".into(),
                         detail: format!(
-                            "the branch of `{sub_id}` was NOT enqueued: {why} It is still on \
-                             its branch in its worktree, and nothing is lost — but nothing will \
-                             land it until it is enqueued."
+                            "the branch of `{sub_id}` was NOT enqueued: {why} Its worktree \
+                             and branch are untouched — nothing has been deleted — but nothing \
+                             will land it until it is enqueued."
                         ),
                         compaction: None,
                     });

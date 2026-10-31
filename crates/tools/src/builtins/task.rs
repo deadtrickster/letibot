@@ -1930,8 +1930,8 @@ impl Tool for TaskResultTool {
                     // its way to main when it is sitting on a branch in a worktree.
                     Err(why) => Invocation::ok(format!(
                         "{answer}\n\n[merge queue] the branch of `{label}` was NOT enqueued: \
-                         {why} It is still on its branch in its worktree, and nothing has been \
-                         lost — but nothing will land it until it is enqueued.{}",
+                         {why} Its worktree and branch are untouched — nothing has been deleted \
+                         — but nothing will land it until it is enqueued.{}",
                         now.unwrap_or_default()
                     )),
                 }

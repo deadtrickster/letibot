@@ -517,6 +517,117 @@ fn a_child_of_the_main_tree_leaves_no_entry() {
     assert!(warning(&fx.parent, "merge_not_queued").is_none());
 }
 
+/// **A branch with nothing on it is refused by name, and leaves no row** (R92.11, and the half of
+/// R92.16 that reaches a person).
+///
+/// `task_start` cuts `agent/<slug>` from the base and the child commits on it. Two shapes leave
+/// the branch where it started: a child placed in a VM commits inside the VM's copy of the
+/// repository, and a child whose work was never committed. The head was read with
+/// `unwrap_or_default()`, so either became a review row whose `head_sha` was the base — a row no
+/// reviewer could act on (`start_reviewer` proves its clone at `head_sha`, so it went back to
+/// `waiting` for ever), with the parent told its branch *"is in the review queue"*. A branch this
+/// host does not have at all (a swept worktree) is the same nothing.
+#[test]
+fn a_branch_with_no_commit_of_its_own_is_refused_by_name_and_leaves_no_row() {
+    let Some(fx) = Fixture::new("empty-branch") else {
+        return;
+    };
+    let (root, base_sha, _branches) = repo_with_children(fx.dir.path(), &[]);
+    // The worktree `task_start` would have made, on a branch that never got a commit.
+    let empty = root.join("worktrees").join(SLUG);
+    let empty_branch = format!("agent/{SLUG}");
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            empty.to_str().expect("a utf-8 temp path"),
+            "-b",
+            &empty_branch,
+            "main",
+        ],
+    );
+    // And a second child whose branch this host no longer has — the worktree swept away.
+    let gone = root.join("worktrees").join("gone");
+    let gone_branch = "agent/gone".to_string();
+    git(
+        &root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            gone.to_str().expect("a utf-8 temp path"),
+            "-b",
+            &gone_branch,
+            "main",
+        ],
+    );
+    std::fs::write(gone.join("a.txt"), "its own\n").expect("write");
+    git(&gone, &["add", "-A"]);
+    git(&gone, &["commit", "-qm", "the child's work"]);
+    git(
+        &root,
+        &["worktree", "remove", "--force", gone.to_str().unwrap()],
+    );
+    git(&root, &["branch", "-D", &gone_branch]);
+
+    let handle = "s-parent-sub-1";
+    let other = "s-parent-sub-2";
+    let at_base = WorktreePlacement {
+        path: empty.display().to_string(),
+        branch: empty_branch.clone(),
+        base_sha: base_sha.clone(),
+        main_tree: false,
+    };
+    let missing = WorktreePlacement {
+        path: empty.display().to_string(),
+        branch: gone_branch.clone(),
+        base_sha: base_sha.clone(),
+        main_tree: false,
+    };
+    let placed: Vec<PlacedChild> = [
+        PlacedChild::of(handle, "the ask", &at_base),
+        PlacedChild::of(other, "the other ask", &missing),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    assert_eq!(placed.len(), 2, "both children are worktree children");
+    let runner = fx.runner(placed);
+
+    let why = runner
+        .finished(handle)
+        .expect_err("a branch with no commit of its own is not queued");
+    assert!(
+        why.contains(&empty_branch) && why.contains("no commit of its own"),
+        "{why}"
+    );
+    let why = runner
+        .finished(other)
+        .expect_err("a branch this host does not have is not queued");
+    assert!(
+        why.contains(&gone_branch) && why.contains("is not in"),
+        "{why}"
+    );
+
+    runner.enqueue_finished(handle);
+    runner.enqueue_finished(other);
+    assert!(
+        fx.store().review_rows(None).expect("reads").is_empty(),
+        "a branch with nothing on it leaves no queue row"
+    );
+    assert!(!heard_about(&fx.parent, handle));
+    let said = warning(&fx.parent, "merge_not_queued").expect("said out loud");
+    assert!(said.contains("no commit of its own"), "{said}");
+    assert!(warning(&fx.parent, "merge_queued").is_none());
+    // Nothing was deleted on the way: the branch `task_start` made is still there, at its base.
+    assert!(git_ok(
+        &root,
+        &["rev-parse", "--verify", "--quiet", &empty_branch]
+    ));
+}
+
 /// **A second finish of one child is one row.**
 #[test]
 fn a_second_finish_of_one_child_is_one_row() {

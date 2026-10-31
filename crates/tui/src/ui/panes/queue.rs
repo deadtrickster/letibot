@@ -620,11 +620,16 @@ impl App {
             for reason in &r.reasons {
                 lines.extend(field("reason", reason));
             }
+            // **The failure is drawn whether or not an attempt was counted** (R92.34). A row that
+            // is WAITING — for the reviewer's tree, for a VM slot — carries the reason with
+            // `attempts` still 0 (`review::wait_for_tree` says so in as many words: *"waits with
+            // the clone's words on it, visible in the queue's own pane"*), and the pane drew it
+            // only under `attempts > 0`, so a person opening a parked row read no reason at all.
+            if !r.failure.is_empty() {
+                lines.extend(field("failure", &r.failure));
+            }
             if r.attempts > 0 {
-                lines.extend(field(
-                    "attempts",
-                    &format!("{} — {}", r.attempts, r.failure),
-                ));
+                lines.extend(field("attempts", &r.attempts.to_string()));
             }
             if let Some(f) = &r.fixes {
                 lines.extend(field("fixes", f));
