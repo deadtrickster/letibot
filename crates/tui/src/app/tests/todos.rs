@@ -1808,6 +1808,84 @@ fn a_seed_runs_once_per_project() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// **A starter-todo seed writes the retired set back, it does not write it away.**
+///
+/// `head.toml` is one file for every head on the box and it is where a dismissal is remembered
+/// (`App::dismissed`). Every write goes through `save_prefs`, which unions — except this one: the
+/// seed calls `prefs::save` with a whole `HeadPrefs`, and `prefs()` carries THIS head's list. A
+/// head that has dismissed nothing yet therefore wrote an empty list over another head's, and the
+/// notices that head had collapsed came back — on its next read of the file, and in full in any
+/// head that started afterwards. The operator: *"after certain evens all collapsed notifications
+/// reappear"*.
+///
+/// The seed already unions its own record (`merge_todo_seed`, one line up, for exactly this
+/// reason); this asserts the second half.
+#[test]
+fn a_seed_does_not_write_another_heads_dismissals_away() {
+    let dir = std::env::temp_dir().join(format!("letibot-seed-retired-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("todo-template.md"), "## Phase 0\n\n- [ ] only row\n").unwrap();
+    let path = dir.join("head.toml");
+    let key = "w|model_endpoint_retry|3000|deadbeefdeadbeef".to_string();
+
+    // **Two heads up at once, which is the arrangement the shared file exists for** (measured
+    // 2026-09-22: two `letibot-tui` processes against one `head.toml`). The second one is already
+    // running — it has read the file, and it dismissed nothing — when the first retires a notice.
+    let mut b = app();
+    b.prefs_path = Some(path.clone());
+    b.load_prefs();
+    assert!(b.dismissed.is_empty(), "the premise: it has retired nothing");
+
+    // One head retired a notice and saved it. The file is the record.
+    let mut a = app();
+    a.prefs_path = Some(path.clone());
+    a.load_prefs();
+    a.retire(vec![key.clone()]);
+    a.save_prefs(RetiredWrite::Union);
+    assert!(
+        crate::prefs::load(&path).0.retired.contains(&key),
+        "the premise: the dismissal is on disk"
+    );
+
+    // And the second head now attaches to a project it has never seeded — a write nobody asked
+    // for, carrying its own (empty) list into a file it shares.
+    b.todo_template = crate::prefs::TodoTemplate::Default;
+    b.apply(ServerFrame::Hello {
+        protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        session_id: "s2".into(),
+        head_id: "h2".into(),
+        dropped: 0,
+        snapshot: Some(Box::new(Hub::new("s2").snapshot())),
+        resumed_from: None,
+        scrubbed: Default::default(),
+        wiring: SessionWiring {
+            model: String::new(),
+            dialect: String::new(),
+            endpoint: String::new(),
+            workspace: "/home/dead/Projects/x".into(),
+        },
+        sessions: Vec::new(),
+    });
+    // The seed waits for the board: the head keeps no second list and must not send a half of one
+    // it has not read (`todo_seed_pending`).
+    b.apply(ServerFrame::Todos {
+        session_id: "s2".into(),
+        todos: Vec::new(),
+    });
+    assert!(
+        b.todo_seed
+            .contains(&todo_seed_key("/home/dead/Projects/x")),
+        "the premise: the seed ran"
+    );
+    assert!(
+        crate::prefs::load(&path).0.retired.contains(&key),
+        "the seed wrote the other head's dismissals out of the file: {:?}",
+        crate::prefs::load(&path).0.retired
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// **The refusals are notes.** A template with no items seeds nothing and is MARKED
 /// (the alternative re-reads it on every start); a missing template is said and NOT
 /// marked, so the file the operator was going to write still gets its chance.

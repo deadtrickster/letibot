@@ -892,6 +892,21 @@ impl App {
             let mut p = self.prefs();
             p.todo_seed = crate::prefs::merge_todo_seed(&path, &self.todo_seed);
             self.todo_seed = p.todo_seed.clone();
+            // **And the retired set, for the reason `merge_todo_seed` exists one line up.**
+            //
+            // `prefs()` carries THIS head's `dismissed` and `prefs::save` writes the whole file,
+            // so this write is a REPLACEMENT of the record that remembers which notices were
+            // collapsed — and a head that has dismissed nothing yet writes an empty list over
+            // another head's. The notes that head retired then come back: on its next read of the
+            // file (`refresh_retired`) and in full in any head that starts afterwards. A seed is a
+            // write nobody asked for, so it cannot be the one that forgets — the union is the same
+            // rule `save_prefs(RetiredWrite::Union)` follows, and this path is the only write in
+            // the head that does not go through it.
+            //
+            // **The merged set is written and NOT adopted.** Another head's dismissals are news
+            // to this one, and `refresh_retired` is where that news is taken — where the operator
+            // is looking or acting — not at a seed that runs on an attach.
+            p.retired = crate::prefs::merge_retired(&path, &self.dismissed);
             if let Err(e) = crate::prefs::save(&path, &p) {
                 self.say(&format!("seed not recorded: {e}"));
             }
