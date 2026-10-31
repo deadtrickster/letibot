@@ -74,6 +74,8 @@ use letibot_sessionlog::hub::{CommandKind, Hub, ShellSpill};
 use letibot_tools::ToolRuntime;
 use letibot_transcript::ToolCall;
 
+use crate::jobwatch::{JobWatchSink, JobWatchers};
+
 /// **Whether the operator's run for this session is in flight, and what waits behind it.**
 ///
 /// One operator run per session at a time is [`letibot_sessionlog::PromptDriver`]'s own rule
@@ -165,11 +167,14 @@ pub fn spawn_run(
     who: String,
     runtime: Arc<ToolRuntime>,
     hub: Arc<Hub>,
+    watch: Option<Arc<JobWatchers>>,
 ) -> Result<(), String> {
     let name = format!("bang-{call_id}");
     std::thread::Builder::new()
         .name(name.clone())
-        .spawn(move || run_and_hand_back(&session, call_id, call, line, who, runtime, hub))
+        .spawn(move || {
+            run_and_hand_back(&session, call_id, call, line, who, runtime, hub, watch)
+        })
         .map(|_| ())
         .map_err(|e| format!("the thread for the operator's run could not be started: {e}"))
 }
@@ -184,11 +189,20 @@ fn run_and_hand_back(
     who: String,
     runtime: Arc<ToolRuntime>,
     hub: Arc<Hub>,
+    watch: Option<Arc<JobWatchers>>,
 ) {
     // The runtime's own events go to a null sink, exactly as the synchronous path's
     // do: the transcript row is the durable record and every head draws *it*.
+    //
+    // **Null, and WATCHED** — the half that was missing, measured 2026-10-31. A `!` line
+    // moved to the background mid-flight (Ctrl+O) settles as `Backgrounded`, and the row
+    // the operator gets back says *its completion will be delivered to you on its own when
+    // it ends*. With a bare `NullToolSink` no watcher was ever armed for that handle, so
+    // nothing queued a settlement and nothing rang the bell: the promise was in the row and
+    // the delivery did not exist. `Harness::run_operator_shell` carries the same fix for
+    // the path that runs on the worker.
     let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut quiet = letibot_tools::events::NullToolSink;
+        let mut quiet = JobWatchSink::new(letibot_tools::events::NullToolSink, watch);
         // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
         // turn, and a head that saw a turn id would draw the row inside a turn that
         // did not propose it.

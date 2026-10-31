@@ -6956,7 +6956,12 @@ impl Harness {
         // record and every head draws *it*, so a second copy as an event would be §13.2b's
         // "one fact, two places". What the tool emits here is a `ToolStarted`/`ToolProgress`
         // pair for a call no head proposed.
-        let mut quiet = letibot_tools::events::NullToolSink;
+        //
+        // **Null, and WATCHED** — see [`Self::unprompted_sink`]. A call from this door can
+        // return `Backgrounded` (`task` above all, and any tool the door's list grows to hold),
+        // and an unwatched sink leaves that handle in nobody's table: the row promises a
+        // completion and no watcher exists to queue one.
+        let mut quiet = self.unprompted_sink();
         // `turn_id` is empty on purpose: this call belongs to no turn, and a head that saw a
         // turn id here would draw the row inside a turn that did not propose it.
         let result = self.runtime.invoke_operator("", &call, &mut quiet);
@@ -7043,7 +7048,11 @@ impl Harness {
         // transcript row is the durable record and every head draws *it*. What the
         // tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
         // proposed — and for a command the operator is watching the composer over.
-        let mut quiet = letibot_tools::events::NullToolSink;
+        //
+        // **And watched**, for the reason [`Self::unprompted_sink`] gives: a run moved to the
+        // background mid-flight (Ctrl+O) settles as `Backgrounded`, and the row it leaves says
+        // its completion will arrive on its own.
+        let mut quiet = self.unprompted_sink();
         // `turn_id` empty on purpose, as the door's runs are: this call belongs to no
         // turn, and a head that saw a turn id would draw the row inside a turn that
         // did not propose it.
@@ -8263,6 +8272,31 @@ impl Harness {
     /// clears, and proves the settlements land in the new conversation.
     pub fn job_watchers(&self) -> Option<Arc<JobWatchers>> {
         self.job_watch.clone()
+    }
+
+    /// **The sink for a call this session runs OUTSIDE a turn** — the operator's own call and
+    /// their `!` line, both of which run on a door rather than in a round.
+    ///
+    /// It is a [`JobWatchSink`] around [`letibot_tools::events::NullToolSink`], and both halves
+    /// are load-bearing:
+    ///
+    /// * **null**, because the transcript row is the durable record and every head draws *it* —
+    ///   what the tool emits here is a `ToolStarted`/`ToolProgress` pair for a call no head
+    ///   proposed, and a second copy as an event would be one fact in two places;
+    /// * **watched**, because a `Backgrounded` outcome from such a call is a promise the row
+    ///   makes in words — *its completion will be delivered to you on its own* — and nothing
+    ///   delivers it unless the watcher was armed where the handle was minted.
+    ///
+    /// MEASURED 2026-10-31: both doors invoked with a bare `NullToolSink`, so an operator's run
+    /// that was moved to the background (Ctrl+O mid-flight) or a `task` run from the console
+    /// queued no settlement and rang no bell. The row said the completion would arrive; it never
+    /// could. The same fix at `crate::bangrun`'s thread, which is where a `!` line between turns
+    /// actually runs.
+    fn unprompted_sink(&self) -> JobWatchSink<letibot_tools::events::NullToolSink> {
+        JobWatchSink::new(
+            letibot_tools::events::NullToolSink,
+            self.job_watch.clone(),
+        )
     }
 
     /// **The board's version — the one fact that says the board moved, and from whom.**

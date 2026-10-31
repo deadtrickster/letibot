@@ -4203,13 +4203,17 @@ impl<'a> Sessions<'a> {
             .registry
             .get(session_id)
             .ok_or_else(|| "no hub for this session".to_string())?;
-        let (call_id, call, runtime) = {
+        let (call_id, call, runtime, watch) = {
             let h = self
                 .open
                 .get_mut(session_id)
                 .ok_or_else(|| format!("session {session_id} is not open"))?;
             let (call_id, call) = h.prepare_operator_shell(line)?;
-            (call_id, call, h.runtime_handle())
+            // **The watcher travels with the run**, because the run is what mints the handle:
+            // a line the operator moves to the background mid-flight settles as
+            // `Backgrounded`, and a thread holding a bare null sink arms nothing for it — the
+            // row promises a completion that no watcher will ever queue.
+            (call_id, call, h.runtime_handle(), h.job_watchers())
         };
         state.start();
         if let Err(why) = crate::bangrun::spawn_run(
@@ -4220,6 +4224,7 @@ impl<'a> Sessions<'a> {
             who.to_string(),
             runtime,
             hub,
+            watch,
         ) {
             state.end();
             return Err(why);
