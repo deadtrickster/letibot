@@ -282,7 +282,11 @@ fn choose_stop(link: &mut Link, a: &mut App) {
         &[
             letibot_tui::app::Key::CtrlC,
             letibot_tui::app::Key::CtrlC,
+            // **The digit MARKS the row; Enter answers it** (R90.6, one rule for every numbered
+            // card): a `2` typed as a line's first character stopped the daemon with every job
+            // in it, so a digit is a move now and the answer is one deliberate Enter.
             letibot_tui::app::Key::Char('2'),
+            letibot_tui::app::Key::Enter,
         ],
         &[],
         &mut sink,

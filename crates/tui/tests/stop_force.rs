@@ -244,7 +244,9 @@ fn choose_stop(link: &mut Link, a: &mut App) {
     link.tick(
         a,
         (100, 30),
-        &[Key::CtrlC, Key::CtrlC, Key::Char('2')],
+        // **The digit MARKS the row; Enter answers it** (R90.6): a digit is a move now, and the
+        // answer is one deliberate Enter.
+        &[Key::CtrlC, Key::CtrlC, Key::Char('2'), Key::Enter],
         &[],
         &mut sink,
     );
