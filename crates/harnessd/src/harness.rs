@@ -11566,6 +11566,10 @@ impl Harness {
         let store = Store::open(&path).ok()?;
         let me = self.session_registry.instance().to_string();
         let back_ms = self.session_registry.started_ms();
+        // **When this session is being opened** — the clock the restore threshold is applied to
+        // (R91.8): the operator's rule is *"more than 1 hours after the stop"*, and a session
+        // opened hours after the daemon came back is exactly the case the threshold exists for.
+        let opened_ms = letibot_sessionlog::event::now_ms();
         let sid = self.cfg.session_id.clone();
 
         // **What a gone daemon left**, and which daemon that was. Read before anything is
@@ -11710,7 +11714,10 @@ impl Harness {
         }
 
         // **How long the daemon was down**: from the latest stop among the daemons these records
-        // came from, to this daemon's start.
+        // came from, to this daemon's start — the fact the notice's first line states. **The
+        // threshold is applied to a different interval** (R91.8): stop → this open
+        // (`restores(opened_ms, …)`), because a session opened hours after the daemon came back is
+        // the case the threshold is for.
         let mut instances: Vec<(String, u64)> = Vec::new();
         for (inst, at) in runs
             .iter()
@@ -11736,7 +11743,7 @@ impl Harness {
                 .iter()
                 .map(|(i, at)| crate::restart::stop_of(&store, i, *at)),
         );
-        let restore = stop.restores(back_ms, self.cfg.restore_within);
+        let restore = stop.restores(opened_ms, self.cfg.restore_within);
         // Whether anything WAS brought back — which decides the notice's first line and its code.
         let mut restored_any = false;
         let mode = if restore {
@@ -11873,7 +11880,7 @@ impl Harness {
             (false, _) => crate::restart::Outcome::Reminded,
         };
         let text = crate::restart::notice(
-            &crate::restart::header(&stop, back_ms, self.cfg.restore_within, outcome),
+            &crate::restart::header(&stop, back_ms, opened_ms, self.cfg.restore_within, outcome),
             &lines,
             outcome,
         );
@@ -11936,6 +11943,7 @@ impl Harness {
         let text = crate::restart::header(
             &stop,
             back_ms,
+            letibot_sessionlog::event::now_ms(),
             self.cfg.restore_within,
             crate::restart::Outcome::Nothing,
         );

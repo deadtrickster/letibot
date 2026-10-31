@@ -1090,7 +1090,9 @@ fn relics_alone_draw_no_reminder_and_are_closed_quietly() {
         "one line, and it is the row"
     );
     assert!(
-        user_rows(&d.hub()).iter().any(|r| r.contains("nothing was running")),
+        user_rows(&d.hub())
+            .iter()
+            .any(|r| r.contains("nothing was running")),
         "the row says it: {:?}",
         user_rows(&d.hub())
     );
@@ -1262,6 +1264,90 @@ fn past_the_threshold_a_child_is_only_reminded_and_task_resume_brings_it_back() 
         "{}",
         again.payload
     );
+    d.stop(None);
+}
+
+/// **The restore threshold is measured to the OPEN, not to the daemon's return** (R91.8).
+///
+/// The operator's rule is *"if some threshold passed - say more than 1 hours after the stop, we
+/// start to simply remind"*, and the harm it exists to prevent is a child resumed on a tree that
+/// moved while nobody was looking. The code measured the stop to the daemon's START, which is the
+/// same moment for a session the daemon opens as it starts and hours apart for one opened later
+/// (a head attaching, a `/resume`, a picker row) — and the later open is the case the threshold is
+/// for.
+///
+/// Staged in miniature: the previous daemon stopped at the instant this one started (its own
+/// downtime is nothing) and the session is opened a moment later, against a one-millisecond
+/// threshold. FAILS before R91.8: the child was resumed and the notice said the daemon's own
+/// *"down 0s"* was under the threshold.
+#[test]
+fn a_session_opened_late_is_measured_from_the_open_and_only_reminded() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-opened-late");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, ANSWER), 0);
+    let mut cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    cfg.restore_within = Duration::from_millis(1);
+    let store = Store::open(&dir.store()).unwrap();
+
+    // **The daemon first**, because the stop is written AT its start: the fixture's whole point
+    // is that the daemon's own downtime says nothing about how long the SESSION was away.
+    let mut d = a_daemon(&parts, &cfg);
+    let started = d.registry.started_ms();
+    store
+        .life_started(OLD, started.saturating_sub(60_000))
+        .unwrap();
+    store.life_stopped(OLD, started).unwrap();
+    let wt = dir.repo();
+    let spec = TaskSpec {
+        role: "coder".into(),
+        worktree: Some(WorktreePlacement {
+            path: wt.display().to_string(),
+            branch: "agent/paused".into(),
+            base_sha: "x".into(),
+            main_tree: false,
+        }),
+        ..TaskSpec::default()
+    };
+    store
+        .put_subagent_run(&run("s-restart-parent-sub-a", PARENT, "running", &spec))
+        .unwrap();
+    // The open is a moment after the stop, and past the one-millisecond threshold.
+    std::thread::sleep(Duration::from_millis(20));
+
+    let notice = d.parent.restore_after_restart().expect("a reminder");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    assert!(
+        notice.contains("NOTHING was restored automatically"),
+        "a session opened past the threshold is reminded, not resumed: {notice}"
+    );
+    assert!(
+        notice.contains(r#"call `task_resume {"task": "s-restart-parent-sub-a"}`"#),
+        "{notice}"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        d.registry.get("s-restart-parent-sub-a").is_none(),
+        "the child is not resumed: it is a tree nobody has looked at since the stop"
+    );
+    assert_eq!(
+        store
+            .subagent_run("s-restart-parent-sub-a")
+            .unwrap()
+            .unwrap()
+            .state,
+        "paused"
+    );
+    assert!(!warnings(&d.hub(), "restart_reminded").is_empty());
     d.stop(None);
 }
 

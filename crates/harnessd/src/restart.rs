@@ -26,6 +26,15 @@
 //! alive (it beats every [`BEAT`]), so the down time is an estimate that can be up to one beat too
 //! long, and the notice says so.
 //!
+//! **The threshold is applied to a different interval, and the difference is the point** (R91.8):
+//! from the STOP to the moment the session is OPENED ([`Stopped::restores`]). The two coincide for
+//! a session the daemon opens as it starts and are hours apart for one opened later — a head
+//! attaching, a `/resume`, a picker row — and the operator's rule is about the second: *"if some
+//! threshold passed - say more than 1 hours after the stop, we start to simply remind"*. Measuring
+//! to the daemon's start let a session opened four hours after the stop resume its children on the
+//! tree they were on four hours before. When the open is more than a minute after the daemon's
+//! return, the notice names both intervals.
+//!
 //! **With no life row at all the stop is UNKNOWN, and is said to be.** The operator, pasting the
 //! notice the first start on a new build wrote — *"the daemon was down for 0s (stopped at …,
 //! estimated from nothing (no record said when); back at …)"* — *"these gray walls are
@@ -216,9 +225,20 @@ impl Stopped {
 
     /// **Whether what it was running is restored** — under `threshold` when the down time is
     /// known; never when it is not (see the module docs).
-    pub fn restores(&self, back_ms: u64, threshold: Duration) -> bool {
+    ///
+    /// `opened_ms` is **when the session is being opened**, not when the daemon came up (R91.8).
+    /// The two are the same moment for a session the daemon opens as it starts, and they are
+    /// hours apart for one opened later — a head attaching to a session after a restart, a
+    /// `/resume`, a picker row — and it is the SECOND that the operator's rule is about: *"if
+    /// some threshold passed - say more than 1 hours after the stop, we start to simply remind"*.
+    /// Measuring stop → daemon start let a session opened four hours after the stop resume its
+    /// children, on the tree they were on four hours ago, and the notice said *"the daemon was
+    /// down for 5m — under the threshold, so restored"* about a session nobody had looked at
+    /// since. The harm the threshold exists to prevent is a stale tree, and that is measured
+    /// from the stop to the resume.
+    pub fn restores(&self, opened_ms: u64, threshold: Duration) -> bool {
         self.at_ms()
-            .is_some_and(|at| Duration::from_millis(back_ms.saturating_sub(at)) < threshold)
+            .is_some_and(|at| Duration::from_millis(opened_ms.saturating_sub(at)) < threshold)
     }
 
     /// **The stop of the daemon that went last, among several** — the latest known stop, unless
@@ -312,9 +332,25 @@ pub fn span(d: Duration) -> String {
     }
 }
 
+/// **A session opened this long after its daemon came back is told so** — the restart notice's
+/// clock is otherwise the daemon's, and a session nobody looked at for hours would read *"the
+/// daemon was down for 5m"* as if that were the whole of the gap.
+pub const OPENED_LATE_MS: u64 = 60_000;
+
 /// **The first line of every restart notice**: how long the daemon was down (or that nobody
 /// knows), against which threshold, and what that meant.
-pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, outcome: Outcome) -> String {
+///
+/// `back_ms` is when the daemon came back; `opened_ms` is when the session is being opened, which
+/// is what the threshold is applied to (R91.8 — see [`Stopped::restores`]). When the two are far
+/// enough apart to matter, the same sentence names both, so the clause *"under the … restore
+/// threshold"* can never be read as a claim about a session that was away for hours.
+pub fn header(
+    stop: &Stopped,
+    back_ms: u64,
+    opened_ms: u64,
+    threshold: Duration,
+    outcome: Outcome,
+) -> String {
     // **The empty restart is its own sentence**, not this one with an empty list: there is no
     // threshold clause to make, and the one thing it has to say is when the daemon came back.
     if outcome == Outcome::Nothing {
@@ -338,12 +374,20 @@ pub fn header(stop: &Stopped, back_ms: u64, threshold: Duration, outcome: Outcom
         }
     };
     let down = Duration::from_millis(back_ms.saturating_sub(at_ms));
+    let waited = Duration::from_millis(opened_ms.saturating_sub(at_ms));
     let estimate = match estimated_from {
         Some(from) => format!(", estimated from {from}"),
         None => String::new(),
     };
+    // **The open is the moment the threshold was measured at** (R91.8), so when it is later than
+    // the daemon's own return the sentence says both — the fact the person is living through
+    // (`opened`) and the fact the daemon's row holds (`back`).
+    let opened = match opened_ms.saturating_sub(back_ms) >= OPENED_LATE_MS {
+        true => format!("; this session is opened {} after the stop", span(waited)),
+        false => String::new(),
+    };
     let when = format!(
-        "stopped at {}{estimate}; back at {}",
+        "stopped at {}{estimate}; back at {}{opened}",
         crate::subagent_record::utc(at_ms),
         crate::subagent_record::utc(back_ms)
     );
@@ -879,7 +923,7 @@ mod tests {
         };
         let back = AT + 1_000;
         let text = notice(
-            &header(&stop, back, RESTORE_WITHIN, Outcome::Nothing),
+            &header(&stop, back, back, RESTORE_WITHIN, Outcome::Nothing),
             &[],
             Outcome::Nothing,
         );
@@ -900,7 +944,13 @@ mod tests {
             estimated_from: None,
         };
         let back = AT + 4_000;
-        let h = header(&stop, back, RESTORE_WITHIN, Outcome::NothingRestorable);
+        let h = header(
+            &stop,
+            back,
+            back,
+            RESTORE_WITHIN,
+            Outcome::NothingRestorable,
+        );
         assert!(
             h.starts_with("[restart] the daemon was down for 4s (stopped at "),
             "{h}"
@@ -922,7 +972,7 @@ mod tests {
         };
         let back = AT + 5 * 60_000;
         assert!(stop.restores(back, RESTORE_WITHIN));
-        let h = header(&stop, back, RESTORE_WITHIN, Outcome::Restored);
+        let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Restored);
         assert!(h.contains("down for 5m00s"), "{h}");
         assert!(h.contains("under the 1h00m restore threshold"), "{h}");
         let crash = Stopped::At {
@@ -931,10 +981,53 @@ mod tests {
         };
         let late = AT + 2 * 3_600_000;
         assert!(!crash.restores(late, RESTORE_WITHIN));
-        let h = header(&crash, late, RESTORE_WITHIN, Outcome::Reminded);
+        let h = header(&crash, late, late, RESTORE_WITHIN, Outcome::Reminded);
         assert!(h.contains("down for 2h00m"), "{h}");
         assert!(h.contains("estimated from its last heartbeat"), "{h}");
         assert!(h.contains("NOTHING was restored"), "{h}");
+    }
+
+    /// **The threshold is measured to the OPEN, not to the daemon's return** (R91.8) — the
+    /// operator's *"more than 1 hours after the stop"*, which is the session's gap and not the
+    /// daemon's. A daemon that came back five minutes after the stop and a session nobody opened
+    /// for four hours: under the hour by the daemon's clock, four hours late by the session's,
+    /// and the child on a tree nothing has touched since.
+    #[test]
+    fn a_session_opened_hours_after_the_stop_is_measured_from_the_open() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let back = AT + 5 * 60_000;
+        let opened = AT + 4 * 3_600_000;
+        assert!(
+            stop.restores(back, RESTORE_WITHIN),
+            "the daemon's own downtime"
+        );
+        assert!(
+            !stop.restores(opened, RESTORE_WITHIN),
+            "the session was opened four hours after the stop, so nothing is restored"
+        );
+        let h = header(&stop, back, opened, RESTORE_WITHIN, Outcome::Reminded);
+        assert!(h.contains("down for 5m00s"), "{h}");
+        assert!(
+            h.contains("; this session is opened 4h00m after the stop"),
+            "the sentence has to name the interval the threshold used: {h}"
+        );
+        assert!(h.contains("longer than the 1h00m restore threshold"), "{h}");
+        assert!(h.contains("NOTHING was restored"), "{h}");
+        // A late open still under the threshold says when it was, and still restores.
+        let soon = AT + 20 * 60_000;
+        assert!(stop.restores(soon, RESTORE_WITHIN));
+        let h = header(&stop, back, soon, RESTORE_WITHIN, Outcome::Restored);
+        assert!(
+            h.contains("this session is opened 20m00s after the stop"),
+            "{h}"
+        );
+        assert!(h.contains("under the 1h00m restore threshold"), "{h}");
+        // And the ordinary case — opened as the daemon starts — has no such clause at all.
+        let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Restored);
+        assert!(!h.contains("this session is opened"), "{h}");
     }
 
     /// **No record of the stop is said as no record** — the operator, of *"the daemon was down
@@ -948,7 +1041,7 @@ mod tests {
         assert!(!stop.restores(back, RESTORE_WITHIN));
         assert!(!stop.restores(back, Duration::from_secs(u64::MAX / 2_000)));
         assert_eq!(stop.at_ms(), None);
-        let h = header(&stop, back, RESTORE_WITHIN, Outcome::Reminded);
+        let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Reminded);
         assert!(
             h.starts_with("[restart] the daemon restarted at 2026-"),
             "{h}"
@@ -1009,6 +1102,7 @@ mod tests {
         };
         let h = header(
             &stop,
+            AT + 4_000,
             AT + 4_000,
             RESTORE_WITHIN,
             Outcome::NothingRestorable,

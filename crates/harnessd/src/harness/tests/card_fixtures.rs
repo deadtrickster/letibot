@@ -73,7 +73,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     let unknown = Stopped::Unknown { seen_ms: 0 };
     let lines = vec![job_line(&running("j46", ACCEPTANCE), None, None, None, &[])];
     let text = notice(
-        &header(&unknown, BACK, RESTORE_WITHIN, Outcome::Reminded),
+        &header(&unknown, BACK, BACK, RESTORE_WITHIN, Outcome::Reminded),
         &lines,
         Outcome::Reminded,
     );
@@ -110,7 +110,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         ),
     ];
     let text = notice(
-        &header(&stop, BACK, RESTORE_WITHIN, Outcome::Restored),
+        &header(&stop, BACK, BACK, RESTORE_WITHIN, Outcome::Restored),
         &lines,
         Outcome::Restored,
     );
@@ -144,7 +144,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         job_line(&running("j9", "cargo build"), None, Some("/w"), None, &[]),
     ];
     let text = notice(
-        &header(&crash, BACK, RESTORE_WITHIN, Outcome::Reminded),
+        &header(&crash, BACK, BACK, RESTORE_WITHIN, Outcome::Reminded),
         &lines,
         Outcome::Reminded,
     );
@@ -174,7 +174,13 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
         &[],
     )];
     let text = notice(
-        &header(&quick, BACK, RESTORE_WITHIN, Outcome::NothingRestorable),
+        &header(
+            &quick,
+            BACK,
+            BACK,
+            RESTORE_WITHIN,
+            Outcome::NothingRestorable,
+        ),
         &lines,
         Outcome::NothingRestorable,
     );
@@ -187,7 +193,7 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     // **A restart with nothing to restore** — the operator, 2026-10-30: *"mb always tell agent
     // about restart? with the current time lol"*. One sentence, no list, and its own code.
     let text = notice(
-        &header(&quick, BACK, RESTORE_WITHIN, Outcome::Nothing),
+        &header(&quick, BACK, BACK, RESTORE_WITHIN, Outcome::Nothing),
         &[],
         Outcome::Nothing,
     );
