@@ -22,8 +22,11 @@
 //! 1. a **real parent `Harness`** with the real `HarnessTaskRunner`, opened over a real store
 //!    and a registry, with a stub model at the endpoint;
 //! 2. a **real turn** (`Harness::submit`) in which the model calls `task` — so the call goes
-//!    through `Harness::tool_sink`, which is the ONE place in the tree a watcher is armed
-//!    from (`grep -n self.tool_sink` finds exactly that line);
+//!    through `Harness::tool_sink`, the round's own arm. It is not the only arm in the tree: a
+//!    `ToolEventSink` is a parameter of the invocation, so "is this handle watched?" is a
+//!    property of the CALL SITE, and the operator's doors arm the same watcher through
+//!    `Harness::unprompted_sink` (with `crate::bangrun`'s thread carrying it). Those are
+//!    `operator_task_wakes.rs`'s to measure; this file drives the round's;
 //! 3. the child's own thread opening its own harness and running its own turn, and settling;
 //! 4. **the parent's bell** — `Registry::next_work` answering `Work::Woken(parent)` with
 //!    nobody having called `task_result`, `job_list` or `task_wait`;
@@ -31,7 +34,7 @@
 //!    operator's ruling asks for, naming the child and carrying the first line of its answer.
 //!
 //! The second half is the state the first one cannot reach: **a settlement for a session the
-//! daemon is not holding**. See `a_wake_for_a_session_between_opens_is_not_dropped`.
+//! daemon is not holding**. See `a_settlement_for_a_session_between_opens_is_delivered_at_its_next_open`.
 //!
 //! # What this needs
 //!
@@ -530,8 +533,8 @@ fn a_plain_answer_turn(
     frames
 }
 
-/// A turn that calls `task` and ends — the call is what arms the watcher, so this is the only
-/// shape in which the production arming path runs.
+/// A turn that calls `task` and ends — the call is what arms the watcher, and this is the shape a
+/// ROUND takes (the operator's doors run the same call through `unprompted_sink` instead).
 fn a_task_call_turn(vocab: &letibot_tokencore::Vocab, prompt: &str, n_prompt: u64) -> Vec<Frame> {
     let call =
         format!("\n<function=task>\n<parameter=prompt>\n{prompt}\n</parameter>\n</function>\n");
@@ -699,9 +702,10 @@ fn a_childs_answer_wakes_its_parent_with_nobody_asking() {
     cfg.endpoint = stub.endpoint.clone();
     let registry = Registry::new();
     let mut parent = Parent::open(&parts, &cfg, registry).owning();
-    // **One real turn, whose first round calls `task`.** This is the only path in the tree
-    // where `Harness::tool_sink` sees the result, and the sink is the one place a watcher is
-    // armed from.
+    // **One real turn, whose first round calls `task`.** This is the round's path: the result
+    // passes through `Harness::tool_sink` and that sink arms the watcher. The operator's doors
+    // arm the same watcher through `Harness::unprompted_sink`; `operator_task_wakes.rs` drives
+    // those, and a test that is about the round should not pretend to be about both.
     let reply = parent
         .harness_mut()
         .submit(PROMPT)

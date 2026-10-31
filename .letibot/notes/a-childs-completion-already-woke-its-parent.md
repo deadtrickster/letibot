@@ -15,12 +15,16 @@ that emits a `task` tool call, a real child on its own thread, then
 `Harness::wake` → one `User { speaker: Agent }` row saying *a subagent you started has finished*,
 naming the child and carrying the first line of its answer. Green in 0.84 s on the first run.
 
-The arming is exactly one line in the tree: `grep -n self.tool_sink crates/harnessd/src/harness.rs`
-finds `self.runtime.invoke(&turn_id, call, &mut self.tool_sink)` and nothing else. A `task` call
-that does **not** go through a turn is not armed at all — `Parent::call` in
-`message_between_turns.rs`/`session_channel.rs` uses `NullToolSink`, and `Harness::run_operator_call`
-uses a `NullToolSink` too. So an operator-run `task` (the `!` door) would arm nothing. That is a
-second, narrower hole than the one the entry names.
+The arming is a property of the **call site**, not of the runtime: `JobWatchSink` is what calls
+`JobWatchers::watch`, and a `ToolEventSink` is a parameter of the invocation. Two places arm it
+and both are armed on this head — the round's own sink
+(`self.runtime.invoke(&turn_id, call, &mut self.tool_sink)`, `Harness::run_rounds`), and the
+operator's doors, which invoke through `self.unprompted_sink()` (`Harness::run_operator_call`,
+`Harness::run_operator_shell`) with `crate::bangrun`'s thread carrying the watcher across itself.
+That is `the-operator-door-arms-a-watcher` (`33db35cf`, `c128fb0e`), landed on `main` before this
+branch was rebased onto it, and its test is `crates/harnessd/tests/operator_task_wakes.rs`. The
+bare `NullToolSink`s that remain are test fixtures (`Parent::call` in
+`message_between_turns.rs`/`session_channel.rs`), not doors.
 
 ## What was actually missing: the row was never re-read
 
@@ -61,11 +65,15 @@ delivered at the next open.
   *"the settlement this daemon dropped is a turn at the next open"* — `wake()` answered `None`,
   i.e. the settlement never reached the model.
 
-## The door that is still not armed
+## Where the operator door is armed — corrected, and it was already done
 
-`Harness::run_operator_call` invokes the call with `letibot_tools::events::NullToolSink`
-(harness.rs ~6833), so a `task` the OPERATOR starts (a `!` line, a head's `/` verb) arms no
-watcher and produces no wake at all. Left open on purpose: it is the operator door, it is a
-different slice, and the brief's measurement was the model's path. The fix is one decorator at
-that door and the same `JobWatchers` — but it changes what an operator-run `task` does to the
-model's turn, which is a ruling rather than a repair.
+An earlier cut of this note said `Harness::run_operator_call` invoked with a bare
+`letibot_tools::events::NullToolSink`, so a `task` the OPERATOR starts (a `!` line, a head's `/`
+verb) armed no watcher and produced no wake. **That was false on the head this branch is rebased
+onto.** Both operator doors invoke through `self.unprompted_sink()` — a `JobWatchSink` over
+`NullToolSink` — and `crate::bangrun`'s thread carries the watcher across itself, so an
+operator-run `task` and a `!` line promoted mid-flight each queue a settlement and ring the
+session's bell. The measurement is `the-sink-is-the-door-and-two-doors-had-none.md` in this same
+notes directory; the test is `crates/harnessd/tests/operator_task_wakes.rs`
+(`a_task_the_operator_runs_rings_the_session_that_ran_it`). Nothing is left to arm here, and the
+next reader should not go looking.
