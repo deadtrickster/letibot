@@ -497,6 +497,77 @@ cannot trust.
 4. **The marker is not a log.** One file, overwritten, beside the lease — a restart's history is not
    kept, and the alternative (a journal) is the same answer the queue's own durability waits on.
 
+### Slice 5, as built — one agent per tag, and what a turn costs
+
+The operator, 2026-10-31: *"one subsession per tag, owned by the host … so a tag can be talked to
+about itself"*, and, on the cost: *"idle without a model call, and a turn only when it must rule — a
+claim, a healthy beat and a finished item are comparisons, not judgements; only a dispute earns a
+turn."*
+
+| what | where it is |
+|---|---|
+| **the name is derived, never invented** — `s-room-<host key>-<tag>`, and `--session host:ram` resolves to it the way `--session host` resolves to the box's owner | `crates/room/src/lease.rs` (`tag_session`, `tag_of_session`, `named_session`); `harnessd::room::session_named`; `cli`'s `--session` |
+| **one agent per tag, seated by the coordinator** — for every tag with a live item, and never a second one for one tag | `crates/harnessd/src/room/agents.rs` (`ensure_tag_agents`, `spawn`) |
+| **a bell per tag** — the server addresses an event to that tag's agent, and the connection keeps only its own tag | `crates/room/src/server.rs` (`route`), `crates/harnessd/src/room/link.rs` (`SessionRoom::connect`'s wake) |
+| **re-seating, counted** — a dead agent is seated again and the count is a fact about the tag | `letibot_room::AgentLedger`; drawn in `room_feed`'s per-tag `agent` block |
+| **the count reaches the pane** — the `Room` read carries the agents, so a pane in another daemon can draw them | `Response::Room { agents }` (protocol **3**), `RoomSnapshot.agents`, `plugins/builtin/room`'s `agent_cell` |
+
+**The name, and why it must be a function.** Two readers derive it — the coordinator's upkeep, which
+seats the session, and a person typing `--session host:ram` — and a name either of them guessed
+would be a session the other cannot find. The suffix is an **escape**, not a sanitisation: `a-z`,
+`0-9` and `-` are kept, `_` is written `__`, and every other character is `_` plus two hex digits per
+byte of its UTF-8. So `8 gb` and `8-gb` stay two tags with two agents, `RAM` and `ram` are one (the
+room's own normalisation, `normalise_tag`, is the one function both read), and `tag_of_session`
+inverts it exactly — including for a tag in Cyrillic. Two boxes cannot collide: the host key already
+carries a hash of the raw host name for the two machines that both answer `localhost`.
+
+**What a re-seat is.** The tag's agent is a session of the coordinator's own, so *dead* means *the
+registry no longer holds it* — the daemon restarted, the session was stopped, or its open failed. The
+upkeep reads `Registry::holds` (the same question the review queue asks before it re-seats a
+reviewer), and when the answer is no it seats the session again through `Registry::create_under`
+with the box's owner as the parent — which is what makes it a *subsession* the picker draws under
+`host`. **The count is `AgentLedger::reseat`'s**: a first seat is zero, and every return is one more.
+`seat` is separate from `reseat` on purpose — a caller that has not checked liveness cannot inflate
+the number — and a create that loses a race is `Exists`, which is a seat and not a return.
+
+**How the deterministic path avoids opening a turn.** Three structural facts, not a promise:
+
+1. `ensure_tag_agents` takes a ledger, a registry and a list of tags — **and no bell**. There is
+   nothing in its signature to ring with.
+2. A tag's agent hears its own tag and nothing else, and **only `Raised` and `Asked` ring its bell**
+   (`link.rs`). A post, a claim, an abandonment and a `done` arrive as *notes* in `wake`'s queue —
+   read by the next turn that is started for a reason — and cost nothing while it idles.
+3. A session that is seated and never woken runs no turn: `Harness::wake` with an empty notice list
+   answers `Ok(None)`, which is the same rule the coordinator's own arbiter lives by.
+
+**What would have opened a turn under the other cost model** — *a turn per event*, which is what a
+naive bell would give: every `post`, every `claim` and every `done` under a tag is one model call on
+that tag's agent. On this box a busy afternoon's traffic under one tag is dozens of claims, so the
+bill would be dozens of turns per tag per hour, each reading a queue the room had already compared
+for it. The dispute-only rule is the same saving the arbiter's own filter makes (`Posted`/`Claimed`/
+`Done` are not the arbiter's business), applied one level down — where the volume is higher.
+
+**What a tag's agent is not.** It is not a claimer: nothing in this slice has it take an item. It
+rules, it is reachable, and it reads its own queue when something wakes it — the *"a tag can be
+talked to about itself"* half of the operator's sentence. A slice that made it claim would be a
+different decision about who runs the work.
+
+**What slice 5 leaves open.**
+
+1. **Nothing closes a tag's agent.** A tag whose items are all done keeps its session, seated and
+   idle. That is cheap (a session, no turn) and it is not a leak a person can see, but a box with
+   hundreds of finished tags would keep hundreds of idle sessions. The remedy is a close on the same
+   upkeep pass, and it needs a decision about what a closed agent's count means.
+2. **A tag's agent does not rule its own disputes yet.** `Raised`/`Asked` reach it, and the box's
+   arbiter is still the one whose answer unfreezes an item. Wiring `rule` to whichever session holds
+   the tag is the next decision, and it changes who is allowed to answer.
+3. **The count is drawn, not raised.** A tag re-seated five times says so in the pane; nothing raises
+   a warning code for it, because a new code has to be classified in `sessionlog::warning` and that
+   is a register's decision rather than a pane's.
+4. **A tag's notes are unbounded.** A tag whose agent is never woken accumulates one note per event
+   until something rings it. The fix is a bounded digest (the shape
+   `.letibot/notes/a-wall-of-notices-becomes-a-count.md` describes), and it is not in this slice.
+
 ## What the state machine assumes
 
 * **One clock**, given as `now` in milliseconds by the caller. A clock that goes backwards is
