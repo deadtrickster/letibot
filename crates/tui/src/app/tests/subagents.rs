@@ -1616,3 +1616,84 @@ fn esc_out_of_a_subagent_lists_the_parent_before_the_switch_lands() {
     assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");
     assert_eq!(a.subagents[a.subagents_sel].session_id, "s-sub-1");
 }
+
+/// **Entering a subagent stops drawing the conversation it is LEAVING.**
+///
+/// The operator, on the build that already had the pending state: *"on this build I \"Entered\"
+/// sub agents and still see you — main session"*. `entering_a_subagent_says_that_a_switch_is_in
+/// _flight` was green over it, and the reason it could be is the fixture: it attaches to an
+/// EMPTY snapshot, so the cat is the whole body of the conversation and the test cannot tell
+/// *the wait replaces the conversation* from *the wait is appended under it*. With a real
+/// transcript the second is what the head did — `body_window` pushed the cat after every row
+/// of the session being left, so the pane the operator was looking at was the parent's
+/// conversation with a spinner squeezed under it.
+#[test]
+fn entering_a_subagent_stops_drawing_the_conversation_it_is_leaving() {
+    let mut a = app();
+    a.apply(hello("s", a_family(), Hub::new("s").snapshot()));
+    shell_row(&mut a, 1, "s.0", "user", operator_row("PARENT-QUESTION"));
+    shell_row(
+        &mut a,
+        3,
+        "s.1",
+        "assistant",
+        TranscriptItem::Assistant {
+            text: "PARENT-ANSWER".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    // The premise: the parent's conversation is what the pane is drawing.
+    let before = a.screen(100, 24).join("\n");
+    assert!(
+        before.contains("PARENT-QUESTION") && before.contains("PARENT-ANSWER"),
+        "the premise: the parent's conversation is on the screen\n{before}"
+    );
+
+    a.key(Key::CtrlG);
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
+
+    // **Nothing has answered yet.** The pane is the one the operator reported: a full screen
+    // of the session he asked to leave.
+    let during = a.screen(100, 24).join("\n");
+    assert!(
+        !during.contains("PARENT-ANSWER"),
+        "the conversation pane still draws the session being left:\n{during}"
+    );
+    assert!(
+        !during.contains("PARENT-QUESTION"),
+        "the conversation pane still draws the session being left:\n{during}"
+    );
+    // And what it draws instead says what is happening, in the place he is looking.
+    assert!(
+        during.contains("asking the daemon"),
+        "the pane shows neither the wait nor the conversation:\n{during}"
+    );
+    assert!(
+        during.contains("leaving parent for find the bug in the reader"),
+        "the pane does not say which session it left or which it is waiting for:\n{during}"
+    );
+    assert!(
+        during.contains("switching to find the bug in the reader"),
+        "nothing on the screen says where this head is going:\n{during}"
+    );
+
+    // The child's `Hello`: its conversation, and nothing of the parent's.
+    a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
+    shell_row(
+        &mut a,
+        1,
+        "s-sub-1.0",
+        "user",
+        operator_row("CHILD-QUESTION"),
+    );
+    let after = a.screen(100, 24).join("\n");
+    assert!(!a.attaching, "the Hello did not end the wait");
+    assert!(after.contains("CHILD-QUESTION"), "{after}");
+    assert!(!after.contains("PARENT-ANSWER"), "{after}");
+    assert!(
+        !after.contains("leaving parent"),
+        "the sentence outlived the switch it describes:\n{after}"
+    );
+}
+

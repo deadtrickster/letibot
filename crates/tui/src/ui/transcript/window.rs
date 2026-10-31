@@ -8,6 +8,66 @@ use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
 
 impl App {
+    /// **The conversation while a switch is in flight** — the wait, and nothing of the session
+    /// being left.
+    ///
+    /// `body_window` used to push the cat *after* every row of the session being left, which is
+    /// right for a first attach (there are no rows) and wrong for a switch: the operator pressed
+    /// Enter on a subagent's row and the pane he was looking at was the parent's conversation,
+    /// with a spinner under it — *"on this build I \"Entered\" sub agents and still see you —
+    /// main session"*. On this box a switch is seconds, so that is seconds of the wrong session
+    /// presented as though it were the answer.
+    ///
+    /// So the wait REPLACES the conversation rather than following it, and it says which two
+    /// sessions it is about: the one on the screen and the one asked for. What is drawn is
+    /// rano's `attaching` (the cat, the clock, and the way out once it is late) plus one system
+    /// row naming both.
+    ///
+    /// # The click maps go with the rows
+    ///
+    /// `file_rows`, `notice_rows` and the rest are *places on this frame*, recorded by the walk
+    /// over the rows it drew. Nothing here drew them, so a click must not open a file from a row
+    /// that is no longer on the glass.
+    fn switch_wait(&mut self, room: usize, cfg: &RenderConfig) -> Vec<String> {
+        self.file_rows.clear();
+        self.notice_rows.clear();
+        self.card_rows.clear();
+        self.picture_rows.clear();
+        self.payload_rows.clear();
+        self.marker_rows.clear();
+        self.picture_refs.clear();
+        self.view_top = 0;
+        self.view_room = room;
+        let elapsed = self.now_ms.saturating_sub(self.attach_started_ms);
+        let mut rows = row_strings(
+            &rano::agent::screens::attaching(elapsed, room, cfg.width),
+            cfg.palette(),
+        );
+        // **Named, because the whole defect was two sessions on one screen with nothing saying
+        // which was which.** The reader can check the name against the row he pressed Enter on.
+        let to = self.switching_to().unwrap_or_default();
+        let from = self.session_label(&self.session_id);
+        rows.extend(row_strings(
+            &rano::agent::screens::system_row(
+                "switch",
+                &format!("leaving {from} for {to} — waiting for the daemon to answer"),
+                // The body is drawn two columns in (the gutter), and `wrap` cuts at the width it
+                // is given: `cfg.width` would clip the last words rather than fold them.
+                cfg.width.saturating_sub(2),
+            ),
+            cfg.palette(),
+        ));
+        // **The frame keeps the tail, because the sentence is the point.** `attaching` pads
+        // itself to `room / 2` blanks above the cat, which is a centring that only holds while
+        // nothing follows it; `main_area` truncates what it is given to the body's height, so a
+        // body longer than the pane would lose the row that says which session this is. The
+        // padding goes instead.
+        let over = rows.len().saturating_sub(room);
+        rows.drain(..over);
+        self.body_len = rows.len();
+        rows
+    }
+
     /// The visible `room` lines of the body, and nothing else built.
     pub(crate) fn body_window(&mut self, room: usize) -> Vec<String> {
         let cfg = self.cfg.clone();
@@ -16,6 +76,14 @@ impl App {
         if self.hist_width != cfg.width {
             self.hist_width = cfg.width;
             self.invalidate_history();
+        }
+        // **A switch is a wait, and the rows this head holds belong to the session it is leaving.**
+        // The whole walk below renders THOSE rows, so while a switch is in flight none of it is
+        // the frame: what the operator is looking at is the wait, and it says so. See
+        // [`App::switch_wait`] for the report this answers and for why the click maps go with the
+        // rows.
+        if self.leaving() {
+            return self.switch_wait(room, &cfg);
         }
         // Rows and notes, interleaved in the order they happened. A note anchored
         // at row N renders between row N-1 and row N, which is where it was when it

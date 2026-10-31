@@ -1349,9 +1349,10 @@ impl App {
     /// state now, from the same field, because a second pending flag is a second behaviour that
     /// drifts (see [`Self::fetching`], and [`Self::switching_to`] for what is drawn from it).
     ///
-    /// The rows stay where they are — a switch cannot draw the session it is going to before the
-    /// daemon has sent it — and what changes is that the head now says so: the cat in the
-    /// conversation ([`Self::attaching`]) and `switching to …` in the status row.
+    /// The rows do not stay where they are, and that is the half this used to leave to the reader's
+    /// imagination: a switch cannot draw the session it is going to before the daemon has sent it,
+    /// and it must not go on drawing the one being left — so the conversation draws the wait alone
+    /// (`App::switch_wait`) while the status row says `switching to …`.
     pub(crate) fn switch_to(&mut self, id: String) -> Option<Action> {
         if id == self.session_id {
             self.close_surface(Surface::Picker);
@@ -1419,6 +1420,25 @@ impl App {
         }
     }
 
+    /// **Whether the conversation this head holds is one it is on its way OUT of** — the one
+    /// fact that decides what the conversation pane draws while a switch is in flight.
+    ///
+    /// [`Self::fetching`] is the session asked for, and a switch is a round trip: the daemon
+    /// answers it with a second `Hello` carrying the whole snapshot, so until that lands
+    /// `self.session_id` is still the session being left and every row in `items` is its. The
+    /// operator, on the build that already said *switching to …* in the status row: *"on this
+    /// build I \"Entered\" sub agents and still see you — main session"* — the pane was a full
+    /// screen of the conversation he had just asked to leave, with the wait squeezed under it.
+    ///
+    /// **It is not `attaching`.** A first attach is also a wait, and there the head holds no
+    /// rows at all; this is the narrower state *the rows it holds are the wrong session's*, which
+    /// is what [`crate::ui::transcript::window::body_window`] reads to draw the wait alone.
+    pub(crate) fn leaving(&self) -> bool {
+        self.fetching
+            .as_deref()
+            .is_some_and(|to| to != self.session_id)
+    }
+
     /// **The session this head is on its way to, as a person reads it** — `None` when it is not
     /// going anywhere.
     ///
@@ -1428,7 +1448,7 @@ impl App {
     /// sentence, and it is deliberately the same field rather than a second one.
     pub(crate) fn switching_to(&self) -> Option<String> {
         let id = self.fetching.as_deref()?;
-        (id != self.session_id).then(|| self.session_label(id))
+        self.leaving().then(|| self.session_label(id))
     }
 
     /// **Everything a seated head must ASK FOR, in one place — attach, re-attach, and the
