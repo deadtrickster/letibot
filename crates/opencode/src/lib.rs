@@ -353,12 +353,12 @@ impl Source {
         }
         let root_meta = metas
             .iter()
-            .find(|m| &m.id == root)
+            .find(|m| m.id == root)
             .cloned()
             .ok_or_else(|| ImportError::NoSuchSession {
                 id: root.to_string(),
             })?;
-        let children = metas.into_iter().filter(|m| &m.id != root).collect();
+        let children = metas.into_iter().filter(|m| m.id != root).collect();
         let parts = self.count_parts(&ids)?;
         Ok(Tree {
             root: root_meta,
@@ -531,19 +531,19 @@ fn parse_model(raw: Option<&str>) -> (Option<String>, Option<String>) {
     let Some(raw) = raw.filter(|s| !s.is_empty()) else {
         return (None, None);
     };
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw) {
-        if let Some(obj) = v.as_object() {
-            let provider = obj
-                .get("providerID")
-                .and_then(|x| x.as_str())
-                .map(str::to_string);
-            let model = obj
-                .get("modelID")
-                .or_else(|| obj.get("id"))
-                .and_then(|x| x.as_str())
-                .map(str::to_string);
-            return (provider, model);
-        }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(raw)
+        && let Some(obj) = v.as_object()
+    {
+        let provider = obj
+            .get("providerID")
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        let model = obj
+            .get("modelID")
+            .or_else(|| obj.get("id"))
+            .and_then(|x| x.as_str())
+            .map(str::to_string);
+        return (provider, model);
     }
     (None, Some(raw.to_string()))
 }

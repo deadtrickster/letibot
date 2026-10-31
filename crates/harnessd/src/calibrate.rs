@@ -546,7 +546,7 @@ fn req_intents(
         // by a directory that did not exist when the row was written.
         scratch: None,
         workspace: Some(workspace.into()),
-        home: std::env::var("HOME").ok().map(Into::into),
+        home: std::env::var("HOME").ok(),
         shell: letibot_tools::intent::ShellTrust::Pinned {
             how: "a replay measures the classifier as it is configured to run".into(),
         },
@@ -666,7 +666,11 @@ impl Report {
                 declined.len()
             );
             for r in declined {
-                let why = r.guard_said.splitn(2, ' ').nth(1).unwrap_or(&r.guard_said);
+                let why = r
+                    .guard_said
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or(&r.guard_said);
                 let why: String = why.chars().take(150).collect();
                 let _ = writeln!(o, "    {} — {}", r.tool, why.trim());
             }

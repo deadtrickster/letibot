@@ -649,7 +649,7 @@ impl App {
             for c in &mut self.note_cards {
                 c.at += shifted;
             }
-            fresh.extend(self.spans.drain(..));
+            fresh.append(&mut self.spans);
             self.spans = fresh;
             if let Some(f) = first {
                 self.hist_first_class = Some(f);
@@ -1435,9 +1435,11 @@ impl App {
                     ordinal: row,
                     into: 0,
                 });
-                self.say(&format!(
-                    "the row you were reading is one this rung hides — the view is holding the nearest row that still shows. `/verbosity` brings the working back, and `esc` follows the stream again"
-                ));
+                self.say(
+                    "the row you were reading is one this rung hides — the view is holding the \
+                     nearest row that still shows. `/verbosity` brings the working back, and `esc` \
+                     follows the stream again",
+                );
             }
             None => {
                 // Nothing survives to hold on to: a transcript with no conversation in it at

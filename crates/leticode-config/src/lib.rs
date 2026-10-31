@@ -822,16 +822,16 @@ impl LeticodeConfig {
         // it is the file disagreeing with itself about who guards, so it is
         // refused rather than resolved by whichever line the reader happened to
         // apply last.
-        if let (Some(g), Some(j)) = (&config.gatekeeper_model, &config.judge_model) {
-            if g != j {
-                return Err(format!(
-                    "{}: gatekeeper_model = \"{g}\" and judge_model = \"{j}\" name ONE seat — \
+        if let (Some(g), Some(j)) = (&config.gatekeeper_model, &config.judge_model)
+            && g != j
+        {
+            return Err(format!(
+                "{}: gatekeeper_model = \"{g}\" and judge_model = \"{j}\" name ONE seat — \
                      this build's guard and adjudicator are the single oracle at the \
                      `[gatekeeper]` endpoint — so the file may set either and may not set both \
                      to different models. Set one, or set both to the same model",
-                    path.display()
-                ));
-            }
+                path.display()
+            ));
         }
 
         Ok(config)
@@ -874,10 +874,10 @@ impl LeticodeConfig {
         if let Some(r) = self.roles.get(SUBAGENT_ROLE) {
             out = out.overridden_by(&r.sampling);
         }
-        if role != SUBAGENT_ROLE {
-            if let Some(r) = self.roles.get(role) {
-                out = out.overridden_by(&r.sampling);
-            }
+        if role != SUBAGENT_ROLE
+            && let Some(r) = self.roles.get(role)
+        {
+            out = out.overridden_by(&r.sampling);
         }
         out
     }

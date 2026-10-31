@@ -168,7 +168,7 @@ fn surroundings(workspace: &str) -> Surroundings {
         // directory to place a path in, and inventing one would classify a path
         // by a directory that did not exist when the row was written.
         scratch: None,
-        home: std::env::var("HOME").ok().map(Into::into),
+        home: std::env::var("HOME").ok(),
         workspace: Some(workspace.into()),
         shell: ShellTrust::Pinned {
             how: "the session this decision was taken in".into(),

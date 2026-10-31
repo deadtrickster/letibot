@@ -929,7 +929,7 @@ impl App {
                         // has the code.
                         crate::app::Burst::Single => {
                             let n = &notes[*note_upto].1;
-                            let lines = note_lines(&cfg, n);
+                            let lines = note_lines(cfg, n);
                             let popup = note_card(n).map(|(card, text, _)| {
                                 // R89: the session rows this card stands for, under its own
                                 // text — and the event said once
@@ -948,7 +948,7 @@ impl App {
                         }
                         crate::app::Burst::Counted(members) => {
                             let ns: Vec<&Note> = members.iter().map(|&j| &notes[j].1).collect();
-                            let lines = crate::ui::panes::notes::burst_lines(&cfg, &ns);
+                            let lines = crate::ui::panes::notes::burst_lines(cfg, &ns);
                             let popup =
                                 crate::ui::panes::notes::burst_card(&ns).map(|(card, text, _)| {
                                     // The rows a burst stands for are its members' own: the
@@ -1076,7 +1076,7 @@ impl App {
                     *visibility,
                     bound_prompts,
                     live,
-                    &cfg,
+                    cfg,
                     *hist_upto,
                     newest_run == Some(*hist_upto + 1),
                 );
@@ -1190,13 +1190,13 @@ impl App {
                         // See the backward walk's note: the run holding the turn's
                         // NEWEST row, which is the one the in-flight work continues.
                         let live_here = newest_run == Some(start)
-                            && run_carries_live(items, &turn_rows, start, end);
+                            && run_carries_live(items, turn_rows, start, end);
                         let marker = hidden_run_marker(
                             items,
                             start,
                             end,
                             *visibility,
-                            &cfg,
+                            cfg,
                             newest_run == Some(start),
                             MarkerFacts::of(live, newest_run),
                             live_here,
@@ -1210,7 +1210,7 @@ impl App {
                         // **Painted before it is measured or placed.** `visible_width`
                         // skips escapes, so the width check below sees the counts and not
                         // the register they are drawn in.
-                        let painted = marker.painted(&cfg);
+                        let painted = marker.painted(cfg);
                         let joined = if joinable && *hist_class == Some(RowClass::Speech) {
                             hist_lines
                                 .iter()

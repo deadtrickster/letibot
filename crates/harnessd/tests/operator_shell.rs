@@ -413,7 +413,7 @@ fn a_sudo_inside_a_bang_line_asks_the_head_for_the_password_and_gets_it() {
     // A test's `Parts` is exactly the thing a leak is for.
     let p: &'static Parts = Box::leak(Box::new(parts(&cfg)));
     let hub = Hub::new(&cfg.session_id);
-    let h = match Harness::open_with(&p, cfg.clone(), hub.clone(), None, None) {
+    let h = match Harness::open_with(p, cfg.clone(), hub.clone(), None, None) {
         Ok(h) => h,
         Err(e) => {
             eprintln!("bang-sudo: no exec host on this box: {e}");
@@ -526,18 +526,17 @@ sys.exit(1)
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(200)) else {
             continue;
         };
-        if let ServerFrame::Event(env) = inbound.frame() {
-            if let SessionEvent::SecretRequested {
+        if let ServerFrame::Event(env) = inbound.frame()
+            && let SessionEvent::SecretRequested {
                 req_id,
                 prompt,
                 command,
                 ..
             } = &env.event
-            {
-                assert!(prompt.contains("password for dead"), "{prompt}");
-                assert_eq!(command, "sudo true");
-                break req_id.clone();
-            }
+        {
+            assert!(prompt.contains("password for dead"), "{prompt}");
+            assert_eq!(command, "sudo true");
+            break req_id.clone();
         }
     };
     head.secret(&req_id, Some("hunter2".into()))

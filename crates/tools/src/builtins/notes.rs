@@ -314,9 +314,7 @@ pub(crate) fn refuse_a_path_into_the_notes_dir(
             // is the same file, and a path that climbs out of the directory it
             // starts from cannot be this one.
             ".." => {
-                if lead.pop().is_none() {
-                    return None;
-                }
+                lead.pop()?;
             }
             other => lead.push(other),
         }
@@ -1053,7 +1051,7 @@ impl NotesTool {
                             .map(|m| super::human(m.len()))
                             .unwrap_or_else(|| "?".into()),
                         meta.as_ref()
-                            .map(|m| age_of(m))
+                            .map(age_of)
                             .unwrap_or_else(|| "at an unknown time".into()),
                     ),
                 );

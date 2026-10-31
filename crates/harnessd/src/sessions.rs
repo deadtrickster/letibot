@@ -2996,10 +2996,10 @@ impl<'a> Sessions<'a> {
                 continue;
             };
             for notice in host.take_notices() {
-                if let Some(h) = self.open.get_mut(&id) {
-                    if let Err(e) = h.note_to_model(&notice) {
-                        eprintln!("  {id} · a plugin notice could not be written: {e}");
-                    }
+                if let Some(h) = self.open.get_mut(&id)
+                    && let Err(e) = h.note_to_model(&notice)
+                {
+                    eprintln!("  {id} · a plugin notice could not be written: {e}");
                 }
             }
             if let Some(hub) = self.registry.get(&id) {
@@ -5351,17 +5351,17 @@ impl<'a> Sessions<'a> {
                 // come through, and not never because this one's rows failed. One per settle:
                 // the one started here settles in its own turn, and drains the next.
                 let next = self.pop_queued_bang_line(session_id);
-                if let Some((next_line, next_who)) = next {
-                    if let Err(why) = self.start_operator_run(session_id, &next_line, &next_who) {
-                        self.said_on_the_worker(session_id, &next_line, &why);
-                        // Same fallback as the dispatch arm above, and for the same
-                        // reason: a queued line is not lost because a thread could not
-                        // be started. It runs here, between turns, where it would have
-                        // waited anyway.
-                        let ran = self.run_operator_shell_here(session_id, &next_line, &next_who);
-                        if let Outcome::Failed(e) = ran {
-                            return Outcome::Failed(e);
-                        }
+                if let Some((next_line, next_who)) = next
+                    && let Err(why) = self.start_operator_run(session_id, &next_line, &next_who)
+                {
+                    self.said_on_the_worker(session_id, &next_line, &why);
+                    // Same fallback as the dispatch arm above, and for the same
+                    // reason: a queued line is not lost because a thread could not
+                    // be started. It runs here, between turns, where it would have
+                    // waited anyway.
+                    let ran = self.run_operator_shell_here(session_id, &next_line, &next_who);
+                    if let Outcome::Failed(e) = ran {
+                        return Outcome::Failed(e);
                     }
                 }
                 if let Err(e) = settled {

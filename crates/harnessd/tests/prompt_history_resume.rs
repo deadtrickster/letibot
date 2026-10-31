@@ -146,7 +146,7 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
     {
         let _d = start(&home);
         let (mut head, _hello, _r) = HeadClient::attach(
-            &home.join("d.sock"),
+            home.join("d.sock"),
             "s-hist",
             0,
             "tui",
@@ -169,7 +169,7 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
         std::thread::sleep(Duration::from_millis(800));
         // **A head restarted against the live daemon** — the other "restart".
         let (_h2, hello2, mut r2) = HeadClient::attach(
-            &home.join("d.sock"),
+            home.join("d.sock"),
             "s-hist",
             0,
             "tui",
@@ -189,7 +189,7 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
     // **The restart**, over the same store and session id: a resume.
     let _d = start(&home);
     let (_head, hello, mut r) =
-        HeadClient::attach(&home.join("d.sock"), "s-hist", 0, "tui", "dead", caps)
+        HeadClient::attach(home.join("d.sock"), "s-hist", 0, "tui", "dead", caps)
             .expect("attach after restart");
     let carried = collect(hello, &mut r, &prompts);
     for p in prompts {

@@ -943,10 +943,10 @@ fn trailing_system_becomes_user(out: &mut [Value]) {
     if out.len() < 2 {
         return;
     }
-    if let Some(last) = out.last_mut() {
-        if last.get("role").and_then(Value::as_str) == Some("system") {
-            last["role"] = Value::String("user".into());
-        }
+    if let Some(last) = out.last_mut()
+        && last.get("role").and_then(Value::as_str) == Some("system")
+    {
+        last["role"] = Value::String("user".into());
     }
 }
 

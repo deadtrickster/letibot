@@ -3229,16 +3229,16 @@ mod tests {
                 | ClientFrame::Attach { .. }
                 | ClientFrame::CloseSession { .. }
                 | ClientFrame::CompactSession { .. }
-                | ClientFrame::Detach { .. }
+                | ClientFrame::Detach
                 | ClientFrame::Feedback { .. }
                 | ClientFrame::FetchDiagnostic { .. }
                 | ClientFrame::FetchRow { .. }
                 | ClientFrame::Interrupt { .. }
-                | ClientFrame::ListJobs { .. }
-                | ClientFrame::ListMergeQueue { .. }
-                | ClientFrame::ListNotes { .. }
-                | ClientFrame::ListSessions { .. }
-                | ClientFrame::ListTodos { .. }
+                | ClientFrame::ListJobs
+                | ClientFrame::ListMergeQueue
+                | ClientFrame::ListNotes
+                | ClientFrame::ListSessions
+                | ClientFrame::ListTodos
                 | ClientFrame::Mode { .. }
                 | ClientFrame::ModeConfirm { .. }
                 | ClientFrame::ModeConsent { .. }
@@ -3257,11 +3257,11 @@ mod tests {
                 | ClientFrame::RenameSession { .. }
                 | ClientFrame::ReseatSession { .. }
                 | ClientFrame::ResumeSession { .. }
-                | ClientFrame::Resync { .. }
+                | ClientFrame::Resync
                 | ClientFrame::Screen { .. }
                 | ClientFrame::Secret { .. }
                 | ClientFrame::SendLine { .. }
-                | ClientFrame::Settings { .. }
+                | ClientFrame::Settings
                 | ClientFrame::Slash { .. }
                 | ClientFrame::SuggestShell { .. }
                 | ClientFrame::Stop { .. }

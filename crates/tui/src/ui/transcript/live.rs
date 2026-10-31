@@ -84,11 +84,11 @@ pub(crate) fn push_turn_pane<'a>(
         // `reasoning_display_lines(raw)` and the rows are the render of `raw`, both at the width
         // [`reasoning_body_width`] gives. It used to be a count over the unlanded slice beside a
         // body of the whole buffer, which is how `[3 thinking lines]` came to sit over forty rows.
-        let rcfg = reasoning_cfg(&cfg);
-        reasoning_cache.set_decor(reasoning_decor(&cfg));
+        let rcfg = reasoning_cfg(cfg);
+        reasoning_cache.set_decor(reasoning_decor(cfg));
         segs.push(Seg::Owned(step_in(
             vec![thinking_header(
-                &cfg,
+                cfg,
                 reasoning.raw(),
                 think.is_open(),
                 running,
@@ -104,7 +104,7 @@ pub(crate) fn push_turn_pane<'a>(
         } else {
             // Folded, but a *running* turn still shows the last line, so
             // "it is thinking" and "it is stuck" do not look the same.
-            let d = reasoning_decor(&cfg);
+            let d = reasoning_decor(cfg);
             segs.push(Seg::Owned(vec![
                 d.apply(&last_line(reasoning.raw(), &rcfg)),
             ]));
@@ -168,13 +168,13 @@ pub(crate) fn push_turn_pane<'a>(
                 } else {
                     now_ms
                 };
-                owned.extend(step_in(call_card(c, &cfg, card_now, tool, diff_split), ind));
+                owned.extend(step_in(call_card(c, cfg, card_now, tool, diff_split), ind));
             }
             owned.push(String::new());
             segs.push(Seg::Owned(owned));
         }
         if !text.is_empty() {
-            let (stable, tail) = text_cache.split(text, &cfg, cfg.budget.body_lines);
+            let (stable, tail) = text_cache.split(text, cfg, cfg.budget.body_lines);
             segs.push(Seg::Borrowed(stable));
             segs.push(Seg::Borrowed(tail));
             // The same air the reasoning block and the call cards already
@@ -202,7 +202,7 @@ pub(crate) fn push_turn_pane<'a>(
                 marker_carries_live(live),
                 marker_room(cfg.width),
             )
-            .painted(&cfg);
+            .painted(cfg);
             if std::env::var("LETIBOT_MARKER_DEBUG").is_ok() {
                 eprintln!("MARKER pane draws: {painted}");
             }
@@ -234,15 +234,15 @@ pub(crate) fn push_turn_pane<'a>(
         // conveying and the only part of it a reader wanted.
         if *writing_call {
             segs.push(Seg::Owned(step_in(
-                vec![writing_call_line(&cfg, now_ms)],
+                vec![writing_call_line(cfg, now_ms)],
                 ind,
             )));
         }
         if raw && !raw_call.is_empty() {
-            segs.push(Seg::Owned(raw_call_lines(&cfg, raw_call)));
+            segs.push(Seg::Owned(raw_call_lines(cfg, raw_call)));
         }
     }
     if let Some(s) = state {
-        segs.push(Seg::Owned(turn_footer(&cfg, s)));
+        segs.push(Seg::Owned(turn_footer(cfg, s)));
     }
 }

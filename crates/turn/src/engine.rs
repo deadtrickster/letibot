@@ -1486,8 +1486,7 @@ impl TurnEngine {
                 // input, not output, and `absorb` already took them out of the source,
                 // so they go back rather than being appended.
                 pending.give_back(steering);
-                return Err(TurnFailure::Http(HttpError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                return Err(TurnFailure::Http(HttpError::Io(std::io::Error::other(
                     format!("provider unreachable: {m}"),
                 ))));
             }

@@ -256,7 +256,7 @@ pub fn build(
             env
         } else {
             own = Surroundings {
-                workspace: Some(row.cwd.clone().into()),
+                workspace: Some(row.cwd.clone()),
                 ..env.clone()
             };
             &own

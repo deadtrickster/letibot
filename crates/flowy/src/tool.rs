@@ -215,7 +215,7 @@ impl SeatView<'_> {
             );
         };
         if !on {
-            return if self.seat.unsubscribe(&self.cond, &sub) {
+            return if self.seat.unsubscribe(self.cond, &sub) {
                 Invocation::ok(format!("no longer watching {sub}"))
             } else {
                 Invocation::ok(format!(
@@ -223,7 +223,7 @@ impl SeatView<'_> {
                 ))
             };
         }
-        match self.seat.subscribe(&self.cond, sub.clone()) {
+        match self.seat.subscribe(self.cond, sub.clone()) {
             Ok(summary) => Invocation::ok(format!(
                 "{summary}.\nA change arrives as a firing of the `flowy` monitor, as an \
                  envelope — that something happened, with what the node said about it — and \

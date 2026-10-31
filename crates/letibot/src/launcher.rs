@@ -282,14 +282,12 @@ mod tests {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
             h.update(b"/home/dead/Projects/letibot\n");
-            format!(
-                "{}",
-                h.finalize()
-                    .iter()
-                    .take(6)
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-            )
+            h.finalize()
+                .iter()
+                .take(6)
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+                .to_string()
         };
         assert_ne!(
             key(p),
@@ -521,10 +519,10 @@ fn inode_of(socket: &Path) -> Option<String> {
             }
             path = Some(f);
         }
-        if let (Some(inode), Some(path)) = (inode, path) {
-            if path.as_bytes() == want {
-                return Some(inode);
-            }
+        if let (Some(inode), Some(path)) = (inode, path)
+            && path.as_bytes() == want
+        {
+            return Some(inode);
         }
     }
     None
@@ -2417,7 +2415,7 @@ mod target_tests {
         assert!(e.contains("no workspace field"), "{e}");
         // And the control that matters most: it is NOT the empty path's key, which is what
         // the shell would have used.
-        assert_ne!(e.contains(&key(Path::new(""))), true);
+        assert!(!e.contains(&key(Path::new(""))));
     }
 
     /// A file that is not JSON at all is not a record either.

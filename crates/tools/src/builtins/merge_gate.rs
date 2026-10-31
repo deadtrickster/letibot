@@ -195,7 +195,7 @@ impl Tool for MergeGate {
                 format!("{repo}/{f}")
             }
         };
-        let backend = &*ctx.backend;
+        let backend = ctx.backend;
         let read = |f: &str| -> Option<String> {
             backend
                 .read(&at(f))

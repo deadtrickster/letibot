@@ -359,7 +359,7 @@ impl Manifest {
         // about to fix the manifest needs.
         for tool in &self.tools {
             let hook = tool.hook();
-            if !self.hooks.iter().any(|h| *h == hook) {
+            if !self.hooks.contains(&hook) {
                 return Err(format!(
                     "tools: `{}` declares the tool `{}` and its answers come from the export \
                      `{hook}`, which `hooks` does not list — a tool the model is offered and \

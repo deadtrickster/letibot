@@ -1288,7 +1288,7 @@ mod tests {
         e.key(Key::Paste("x\n".repeat(9)), 0);
         let (lines, _) = e.render(60, Palette::Colour);
         assert!(
-            lines[0].contains(&Palette::Colour.sgr(Role::Attention)),
+            lines[0].contains(Palette::Colour.sgr(Role::Attention)),
             "{:?}",
             lines[0]
         );

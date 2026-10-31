@@ -535,9 +535,7 @@ impl App {
     /// Enter on the selected row.
     pub(crate) fn config_change(&mut self) -> Option<Action> {
         let rows = self.config_rows();
-        let Some(row) = rows.get(self.config_sel.min(rows.len().saturating_sub(1))) else {
-            return None;
-        };
+        let row = rows.get(self.config_sel.min(rows.len().saturating_sub(1)))?;
         self.redraw = true;
         match &row.edit {
             ConfigEdit::Head(which) => {

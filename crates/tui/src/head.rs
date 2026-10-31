@@ -229,11 +229,11 @@ pub fn run(args: &[String]) -> i32 {
     // `harnessd --latest-session`.
     match live(&args, cfg) {
         Ok(served) => {
-            if !args.no_tty {
-                if let Err(e) = print_exit_session(&mut std::io::stdout(), &served) {
-                    eprintln!("letibot-tui: {e}");
-                    return 1;
-                }
+            if !args.no_tty
+                && let Err(e) = print_exit_session(&mut std::io::stdout(), &served)
+            {
+                eprintln!("letibot-tui: {e}");
+                return 1;
             }
             0
         }

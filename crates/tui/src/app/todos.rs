@@ -1231,7 +1231,7 @@ impl App {
                     self.say("that subagent is still opening — nothing to read yet");
                     return None;
                 }
-                self.ask_peek(&id);
+                self.ask_peek(id);
                 Some(Action::Peek(id.clone()))
             }
         }

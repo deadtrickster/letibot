@@ -106,13 +106,13 @@ fn a_session_grant_covers_a_later_ask_no_larger_and_no_larger_than_what_is_free(
 fn a_once_grant_covers_nothing_after_it_and_a_mode_change_drops_the_session_grant() {
     let (mut g, asked) = gate("grant_memory");
     g.grant_memory(&ask(Some(16 * GIB), 60 * GIB));
-    g.grant_memory(&ask(Some(1 * GIB), 60 * GIB));
+    g.grant_memory(&ask(Some(GIB), 60 * GIB));
     assert_eq!(asked.load(Ordering::SeqCst), 2, "once is once");
 
     let (mut g, asked) = gate("grant_memory_session");
     g.grant_memory(&ask(Some(16 * GIB), 60 * GIB));
     g.set_mode(crate::mode::Mode::ALWAYS_ASK).expect("a mode");
-    g.grant_memory(&ask(Some(1 * GIB), 60 * GIB));
+    g.grant_memory(&ask(Some(GIB), 60 * GIB));
     assert_eq!(
         asked.load(Ordering::SeqCst),
         2,

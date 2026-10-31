@@ -636,7 +636,7 @@ impl App {
                 } else {
                     ("dismiss", verb_arg(cmd, "dismiss").unwrap_or(""))
                 };
-                return self.notes_command(verb, rest);
+                self.notes_command(verb, rest)
             }
             "help" | "h" | "?" => self.toggle_surface(Surface::Help),
             // Where the bottom border's telemetry went. See `App::stats`.
@@ -702,7 +702,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                return self.set_verbosity(&rest);
+                self.set_verbosity(&rest)
             }
             // **`/diff` — R38's new setting.** It was `slash_refused` until today, and that
             // refusal is the card R29 was filed from.
@@ -715,7 +715,7 @@ impl App {
                 self.close_surface(Surface::Config);
                 self.seed_pick();
                 self.redraw = true;
-                return None;
+                None
             }
             _ if verb_arg(cmd, "diff").is_some() => {
                 let rest = verb_arg(cmd, "diff").unwrap_or("").trim().to_string();
@@ -727,7 +727,7 @@ impl App {
                     self.redraw = true;
                     return None;
                 }
-                return self.set_diff(&rest);
+                self.set_diff(&rest)
             }
             // **`/v` keeps meaning *the next rung*.** It is an alias in `HEAD_COMMAND_ALIASES`
             // — deliberately not offered by tab, deliberately still taken — and one key's worth
@@ -735,7 +735,7 @@ impl App {
             // is having to CYCLE to find out what the values are, and the card is where they are
             // read. It goes through the same function as the card and the long spelling, so the
             // three cannot disagree.
-            "v" => return self.set_verbosity("v"),
+            "v" => self.set_verbosity("v"),
             // One list on the screen at a time, and the settings asked for on the way in — both
             // in `open_surface`'s arm for `Config`.
             "config" | "settings" => self.toggle_surface(Surface::Config),
@@ -810,14 +810,12 @@ impl App {
                 self.say("the queue pane is drawn by the `queue` layer again");
                 self.queue_drawing_again()
             }
-            _ if verb_arg(cmd, "queue") == Some("all") => {
-                return self.queue_in(QueueScope::All);
-            }
+            _ if verb_arg(cmd, "queue") == Some("all") => self.queue_in(QueueScope::All),
             _ if verb_arg(cmd, "queue")
                 .is_some_and(|a| a.starts_with('/') && !a.contains(char::is_whitespace)) =>
             {
                 let p = verb_arg(cmd, "queue").unwrap_or_default().to_string();
-                return self.queue_in(QueueScope::Path(p));
+                self.queue_in(QueueScope::Path(p))
             }
             // **`/standing` — the standing notes, and it is not `/notes`.**
             //
@@ -837,7 +835,7 @@ impl App {
             // function, so they cannot drift.
             "todos" => self.toggle_surface(Surface::Todos),
             _ if verb_arg(cmd, "todo").is_some() => {
-                return self.todo_command(verb_arg(cmd, "todo").unwrap_or(""));
+                self.todo_command(verb_arg(cmd, "todo").unwrap_or(""))
             }
             "subagents" => self.toggle_surface(Surface::Subagents),
             "promote" => self.promote(),

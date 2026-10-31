@@ -498,7 +498,7 @@ fn the_nested_layouts_own_command_is_inside_the_project() {
         "a verb was scoped as a target: {targets:?}"
     );
     assert!(
-        !targets.iter().any(|t| *t == "status"),
+        !targets.contains(&"status"),
         "a word from the NEXT stage was scoped by the line's union: {targets:?}"
     );
 }

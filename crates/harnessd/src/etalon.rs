@@ -147,30 +147,30 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
             env
         } else {
             own = Surroundings {
-                workspace: Some(row.cwd.clone().into()),
+                workspace: Some(row.cwd.clone()),
                 ..env.clone()
             };
             &own
         };
         let b = Baseline::of_command(cmd, env_for_row);
         let read = Read::of(&b);
-        if b.intents.contains(&letibot_tools::intent::Intent::Unknown) {
-            if let Some(n) = &b.command {
-                for st in &n.stages {
-                    if let letibot_code::shell::Word::Literal(p) = &st.program {
-                        let base = p.rsplit('/').next().unwrap_or(p).to_string();
-                        // Only the stages the table does not name: re-read THIS
-                        // stage's own text, so `git status` is judged as `git
-                        // status` and not as a bare `git`, which has no sub-verb
-                        // and would read as unknown for the wrong reason.
-                        let text = n.source.get(st.span.start..st.span.end).unwrap_or(&base);
-                        let probe = Baseline::of_command(text, env_for_row);
-                        if probe
-                            .intents
-                            .contains(&letibot_tools::intent::Intent::Unknown)
-                        {
-                            *r.unknown_heads.entry(base).or_default() += 1;
-                        }
+        if b.intents.contains(&letibot_tools::intent::Intent::Unknown)
+            && let Some(n) = &b.command
+        {
+            for st in &n.stages {
+                if let letibot_code::shell::Word::Literal(p) = &st.program {
+                    let base = p.rsplit('/').next().unwrap_or(p).to_string();
+                    // Only the stages the table does not name: re-read THIS
+                    // stage's own text, so `git status` is judged as `git
+                    // status` and not as a bare `git`, which has no sub-verb
+                    // and would read as unknown for the wrong reason.
+                    let text = n.source.get(st.span.start..st.span.end).unwrap_or(&base);
+                    let probe = Baseline::of_command(text, env_for_row);
+                    if probe
+                        .intents
+                        .contains(&letibot_tools::intent::Intent::Unknown)
+                    {
+                        *r.unknown_heads.entry(base).or_default() += 1;
                     }
                 }
             }

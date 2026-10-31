@@ -677,7 +677,7 @@ mod tests {
         // A branch with no upstream at all: no `branch.ab`, no `branch.upstream`, still a branch.
         let lonely = "# branch.oid abc1234\n# branch.head feature/thing\n";
         assert_eq!(
-            git_text(&git_parts(lonely, None).as_ref().unwrap()),
+            git_text(git_parts(lonely, None).as_ref().unwrap()),
             "feature/thing"
         );
     }

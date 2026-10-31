@@ -343,9 +343,7 @@ impl App {
         // are still the operator's.** A chip whose file has gone is not sent empty and not sent
         // without: the line goes back into the composer with a sentence, which is the rule every
         // other refusal here keeps (`app::attachments` has the argument).
-        let Some(attachments) = self.chips_to_send(&text) else {
-            return None;
-        };
+        let attachments = self.chips_to_send(&text)?;
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.

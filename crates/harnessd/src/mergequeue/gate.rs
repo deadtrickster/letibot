@@ -745,10 +745,10 @@ impl StepMemory {
                 "[gate memory: not measured — the step ran on `{host}`, where this daemon has no \
                  cgroup of its own]"
             ),
-            StepMemory::Unknown => match exit {
-                Some(e) => return Some(format!("[step: {}]", e.clause())),
-                None => return None,
-            },
+            StepMemory::Unknown => {
+                let e = exit?;
+                return Some(format!("[step: {}]", e.clause()));
+            }
         };
         if let Some(e) = exit {
             line.push_str(&format!("\n[step: {}]", e.clause()));
@@ -2004,13 +2004,13 @@ impl Drop for GateScratch {
     /// what it could not do. A scratch left behind is disk on the box, and the next run of that
     /// tree clears its own name before it starts.
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.0) {
-            if self.0.exists() {
-                eprintln!(
-                    "  merge queue: the gate's scratch {} could not be removed: {e}",
-                    self.0.display()
-                );
-            }
+        if let Err(e) = std::fs::remove_dir_all(&self.0)
+            && self.0.exists()
+        {
+            eprintln!(
+                "  merge queue: the gate's scratch {} could not be removed: {e}",
+                self.0.display()
+            );
         }
     }
 }

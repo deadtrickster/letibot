@@ -490,10 +490,10 @@ impl Catalogue {
                     // (`-0309-…`). Without this rung *newest wins* would hand a grok session
                     // `grok-4.20-0309-reasoning` instead of `grok-4.3`, and a deepseek one
                     // `deepseek-v4-flash-vision-exp` instead of the name the account offers.
-                    .then_with(|| model_version(&a.0).1.cmp(&model_version(&b.0).1))
+                    .then_with(|| model_version(a.0).1.cmp(&model_version(b.0).1))
                     // **And the newer model wins among the equally plain** — the rung the operator
                     // asked for by name, and the one that moves `glm-5.2` aside for `glm-5.3`.
-                    .then_with(|| model_version(&b.0).0.cmp(&model_version(&a.0).0))
+                    .then_with(|| model_version(b.0).0.cmp(&model_version(a.0).0))
                     // **Shortest name wins a tie.** A provider publishes the same
                     // model under a rolling alias and under dated snapshots —
                     // `grok-4.3` beside `grok-4.20-0309-non-reasoning`, identical

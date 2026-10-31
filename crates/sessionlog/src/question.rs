@@ -337,11 +337,10 @@ mod tests {
         // so every frame that existed before it did is byte-identical.
         let chose = serde_json::to_string(&QuestionAnswer::choosing(1)).unwrap();
         assert_eq!(chose, r#"{"option":1}"#, "{chose}");
-        assert_eq!(
-            serde_json::from_str::<QuestionAnswer>(&chose)
+        assert!(
+            !serde_json::from_str::<QuestionAnswer>(&chose)
                 .unwrap()
                 .abstain,
-            false,
             "an older head's frame parses as *not an abstention*"
         );
     }

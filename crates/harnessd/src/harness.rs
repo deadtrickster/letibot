@@ -3513,10 +3513,10 @@ impl Harness {
         // was an old `j7` to every reader that matches by handle. Seeded on every open, not only
         // the first, because `sessions.db` is shared by every daemon and a session can arrive here
         // from one that minted higher handles after this one started.
-        if let Some(s) = &store {
-            if let Ok(n) = s.max_job_number() {
-                letibot_tools::exec::JobId::seed_above(n);
-            }
+        if let Some(s) = &store
+            && let Ok(n) = s.max_job_number()
+        {
+            letibot_tools::exec::JobId::seed_above(n);
         }
         // As the table holds it, including every earlier run's rows.
         let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
@@ -3874,7 +3874,7 @@ impl Harness {
             HostBackend::new(&cfg.workspace)
                 .map_err(|e| HarnessError::Setup(format!("workspace {:?}: {e}", cfg.workspace)))?
         } else if cfg.unconfined {
-            let b = if cfg.allow_bash && may_exec {
+            if cfg.allow_bash && may_exec {
                 HostBackend::executable("/")
             } else if may_write {
                 HostBackend::writable("/")
@@ -3887,8 +3887,7 @@ impl Harness {
             .with_cwd(&cfg.workspace)
             .map_err(|e| {
                 HarnessError::Setup(format!("workspace {:?} as cwd: {e}", cfg.workspace))
-            })?;
-            b
+            })?
         } else if cfg.seat.needs_exec_backend() && may_exec {
             let built = HostBackend::confined_granting(
                 &cfg.workspace,
@@ -5395,7 +5394,7 @@ impl Harness {
         let bell = Some(Arc::clone(session_registry.bell()));
         let processes = backend.processes_arc();
         let job_watch = match &processes {
-            Some(h) => JobWatchers::new(&h, &hub, bell),
+            Some(h) => JobWatchers::new(h, &hub, bell),
             None => JobWatchers::watching_tasks(&hub, bell),
         };
         // **And the session's subagents settle through it too.** `task` returns the
@@ -8948,18 +8947,16 @@ impl Harness {
             generated_tokens: 0,
         };
         self.compacting = true;
-        let forked = (|| {
-            self.fork_to_summary(
-                &outcome,
-                Some(&next),
-                Some(&next_id),
-                ForkTail {
-                    items: &items,
-                    split: None,
-                    because: "",
-                },
-            )
-        })();
+        let forked = self.fork_to_summary(
+            &outcome,
+            Some(&next),
+            Some(&next_id),
+            ForkTail {
+                items: &items,
+                split: None,
+                because: "",
+            },
+        );
         self.compacting = false;
         let fork = forked?;
         self.adopt_reseat(Some((next, next_id)));
@@ -9643,18 +9640,16 @@ impl Harness {
             generated_tokens: 0,
         };
         self.compacting = true;
-        let forked = (|| {
-            self.fork_to_summary(
-                &outcome,
-                Some(&next),
-                Some(&next_id),
-                ForkTail {
-                    items: &items,
-                    split: None,
-                    because: "",
-                },
-            )
-        })();
+        let forked = self.fork_to_summary(
+            &outcome,
+            Some(&next),
+            Some(&next_id),
+            ForkTail {
+                items: &items,
+                split: None,
+                because: "",
+            },
+        );
         self.compacting = false;
         // The engine moved first, so a fork failure here would leave the session
         // rendering the own dialect over a foreign-rendered ledger — the
@@ -11851,14 +11846,13 @@ impl Harness {
             // submit would let a turn that failed to start silently eat the firing, and **a firing
             // nobody hears is the failure this whole mechanism exists to rule out**, where a firing
             // reported twice is merely dull. So the order here is the requirement and not tidiness.
-            .map(|out| {
+            .inspect(|_out| {
                 if !fired.is_empty() {
                     self.todos.consume_conditions(&fired);
                     // Unwritten, the condition is still pending in the store and fires again after
                     // a restart — which is why this is said on the hub and not only on stderr.
                     self.flush_todos_or_say("a fired condition");
                 }
-                out
             })
     }
 
@@ -15852,7 +15846,7 @@ impl Harness {
         // next restart.
         if let Err(e) = crate::modes::record(
             &self.mode_store,
-            &self.workspace().to_path_buf(),
+            self.workspace(),
             &self.cfg.session_id,
             mode,
             consented,
@@ -16101,7 +16095,7 @@ impl Harness {
             // **Once each, and never the model that just refused the round.** A name
             // already spent is skipped; a name that IS what is answering would be a
             // no-op switch and the same failure one attempt later.
-            if tried.iter().any(|t| *t == name) || name == here {
+            if tried.contains(&name) || name == here {
                 continue;
             }
             tried.push(name.clone());
@@ -17034,9 +17028,7 @@ impl Harness {
             .and_then(|s| s.provider_choice(&self.cfg.session_id).ok())
             .flatten()?;
         if stored == "local" {
-            if self.cfg.provider.is_none() {
-                return None;
-            }
+            self.cfg.provider.as_ref()?;
             return match self.set_provider(None) {
                 Ok(_) => Some("restored to the local server".into()),
                 Err(e) => Some(format!("could not restore the local server: {e}")),
@@ -21520,7 +21512,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         };
         let f = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
-            &format!(
+            format!(
                 "job_kill-{}",
                 letibot_sessionlog::registry::short_id(handle)
             ),
@@ -21692,7 +21684,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let running = hub.turn_in_flight();
         let f = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
-            &format!(
+            format!(
                 "task_message-{}",
                 letibot_sessionlog::registry::short_id(handle)
             ),
@@ -22439,15 +22431,12 @@ impl HarnessTaskRunner {
         // be"*. A plain `task` placed in a VM copies the session's workspace, and a session above
         // several repositories has no one tree to copy: the stroppy children copied the folder.
         // So the model names it (`repo`), and the copy is that repository or nothing.
-        let vm_copy = match vm_copy_for(
+        let vm_copy = vm_copy_for(
             placement == Placement::Firecode,
             spec.worktree.is_some(),
             spec.vm_source.as_deref(),
             &self.base.workspace,
-        ) {
-            Ok(c) => c,
-            Err(why) => return Err(why),
-        };
+        )?;
         // A subagent is a real session: mint its id and create its hub. **The id was already
         // minted by [`HarnessTaskRunner::start`]** — it is what that call returned — so what
         // arrives here is a handle, and it is unique because [`mint_sub_id`] made it so. The
@@ -23518,7 +23507,7 @@ fn dialect_for_target(
         .map(|served| {
             all.iter()
                 .copied()
-                .filter(|d| letibot_turn::serving::template_matches(&d.wiring(None).spec(), served))
+                .filter(|d| letibot_turn::serving::template_matches(d.wiring(None).spec(), served))
                 .collect()
         })
         .unwrap_or_default();

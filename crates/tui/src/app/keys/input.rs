@@ -514,7 +514,6 @@ mod tests {
         // It cannot be part of a character (it is below 0x20, so no UTF-8 sequence contains
         // it) and it cannot be the final byte of a CSI sequence (those are 0x40-0x7e), so a
         // raw scan for it is exact and not a guess about where a sequence ends.
-        assert!(0x1c < 0x20);
         assert!(!(0x40..=0x7e).contains(&0x1c));
     }
 

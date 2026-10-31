@@ -837,7 +837,7 @@ fn a_childs_completion_names_the_child_and_points_at_task_result() {
         detail: "two facts off a fixture".into(),
         memory: None,
     };
-    let text = subagent_notice(&[one.clone()], true);
+    let text = subagent_notice(std::slice::from_ref(&one), true);
     // The label, and it is what tells this row from a job's: one channel, two nouns.
     assert!(
         text.starts_with("[task]"),

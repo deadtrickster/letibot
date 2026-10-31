@@ -68,8 +68,8 @@ fn main() {
         );
     }
     println!(
-        "{:<44} {:>15}  {}",
-        "code", "ts", "key (as /notes dismiss would store it)"
+        "{:<44} {:>15}  key (as /notes dismiss would store it)",
+        "code", "ts"
     );
     let mut keys: Vec<String> = Vec::new();
     for w in &s.warnings {

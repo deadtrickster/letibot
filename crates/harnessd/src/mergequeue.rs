@@ -544,7 +544,7 @@ impl RegistryDoor {
             .unwrap_or_else(|| "the merge queue".to_string());
         let frame = hub.submit(
             letibot_sessionlog::hub::DAEMON_SUBMITTER,
-            &format!(
+            format!(
                 "queue-notice-{}",
                 letibot_sessionlog::registry::short_id(session_id)
             ),

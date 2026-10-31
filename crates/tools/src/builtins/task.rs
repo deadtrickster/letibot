@@ -1355,7 +1355,7 @@ impl Tool for TaskTool {
         };
         // **The name the runner gave it**, for every sentence below: `slug · handle`.
         let label = self.runner.label_of(&handle);
-        ctx.progress(&format!("subagent {label} started"));
+        ctx.progress(format!("subagent {label} started"));
         if let Some(w) = wake {
             ctx.want_completion(&handle, w);
         }
@@ -1695,7 +1695,7 @@ impl Tool for TaskStartTool {
             Err(e) => return Invocation::failed(e, "the subagent did not start."),
         };
         let label = self.runner.label_of(&handle.handle);
-        ctx.progress(&format!(
+        ctx.progress(format!(
             "subagent {label} started in {}",
             handle.placement.path
         ));

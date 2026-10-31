@@ -646,7 +646,7 @@ impl Visibility {
         for word in &words {
             let (name, level) = match word.split_once('=') {
                 Some((n, l)) => (n, Some(l)),
-                None if !whole => (word.as_ref(), None),
+                None if !whole => (*word, None),
                 None => {
                     return Err(format!(
                         "`{word}` names no level — a set is written `SWITCH=LEVEL …`"

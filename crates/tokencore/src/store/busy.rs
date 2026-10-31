@@ -87,7 +87,7 @@ pub(super) fn backoff(attempt: u32) -> Duration {
     let base = BUSY_RETRY_FIRST
         .saturating_mul(1u32 << attempt.min(16))
         .min(BUSY_RETRY_MAX_STEP);
-    let jitter = (std::process::id() as u64 ^ attempt as u64 * 7919) % 50;
+    let jitter = (std::process::id() as u64 ^ (attempt as u64 * 7919)) % 50;
     base + Duration::from_millis(jitter)
 }
 

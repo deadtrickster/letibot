@@ -411,17 +411,15 @@ impl Stack {
             // **A pin that was broken is news; a layer nobody pinned is the ordinary state.**
             if let (false, Some(pin)) = (standing.free, standing.pin) {
                 let key = format!("{}\n{}\n{manifest_sha256}", layer.id, layer.sha256);
-                if was || !self.said_pins.contains(&key) {
-                    if self.said_pins.insert(key) {
-                        news.push(BrokenPin {
-                            layer: layer.id.clone(),
-                            scope: layer.scope,
-                            name: layer.manifest.name.clone(),
-                            pin,
-                            module: layer.sha256.clone(),
-                            manifest: manifest_sha256,
-                        });
-                    }
+                if (was || !self.said_pins.contains(&key)) && self.said_pins.insert(key) {
+                    news.push(BrokenPin {
+                        layer: layer.id.clone(),
+                        scope: layer.scope,
+                        name: layer.manifest.name.clone(),
+                        pin,
+                        module: layer.sha256.clone(),
+                        manifest: manifest_sha256,
+                    });
                 }
             }
         }

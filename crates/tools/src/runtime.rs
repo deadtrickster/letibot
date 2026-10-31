@@ -2694,7 +2694,7 @@ impl ToolRuntime {
                     .and_then(|t| t.open_plan())
                     .unwrap_or(false),
                 one_shot: self.one_shot,
-                provenance: self.provenance.as_ref().map(|s| &**s),
+                provenance: self.provenance.as_deref(),
             };
             tool.invoke(&mut ctx, &args)
         };

@@ -99,7 +99,10 @@ fn chunked_server(chunks: Vec<Vec<u8>>) -> (letibot_http::Endpoint, std::thread:
         let _ = conn.write_all(b"0\r\n\r\n");
         let _ = conn.flush();
     });
-    (letibot_http::Endpoint::new("127.0.0.1", addr.port()), handle)
+    (
+        letibot_http::Endpoint::new("127.0.0.1", addr.port()),
+        handle,
+    )
 }
 
 // ---------------------------------------------------------------------------------------------

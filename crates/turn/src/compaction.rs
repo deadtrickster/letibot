@@ -1442,7 +1442,7 @@ mod overrun_planning {
 
     #[test]
     fn a_conversation_with_room_uses_the_ordinary_path() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(100).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 100).collect();
         assert_eq!(plan_overrun(&items, P, W), OverrunPlan::NotOverrun);
     }
 
@@ -1454,9 +1454,8 @@ mod overrun_planning {
     #[test]
     fn arriving_past_the_trigger_with_room_for_a_summary_is_not_an_overrun() {
         let resident = 247_301u64;
-        let items: Vec<u64> = std::iter::repeat(1_000)
-            .take(((resident - P) / 1_000) as usize)
-            .collect();
+        let items: Vec<u64> =
+            std::iter::repeat_n(1_000, ((resident - P) / 1_000) as usize).collect();
         assert_eq!(
             plan_overrun(&items, P, W),
             OverrunPlan::NotOverrun,
@@ -1469,9 +1468,8 @@ mod overrun_planning {
     #[test]
     fn the_case_that_truncated_a_summary_is_still_an_overrun() {
         let resident = 260_390u64;
-        let items: Vec<u64> = std::iter::repeat(1_000)
-            .take(((resident - P) / 1_000) as usize)
-            .collect();
+        let items: Vec<u64> =
+            std::iter::repeat_n(1_000, ((resident - P) / 1_000) as usize).collect();
         assert!(matches!(
             plan_overrun(&items, P, W),
             OverrunPlan::Cut { .. }
@@ -1482,7 +1480,7 @@ mod overrun_planning {
     /// summary has 1754 tokens to write in and cannot.
     #[test]
     fn a_conversation_that_arrived_over_the_budget_is_cut() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(255).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 255).collect();
         let OverrunPlan::Cut {
             cut,
             tail_from,
@@ -1531,7 +1529,7 @@ mod overrun_planning {
     /// half would no longer fit.
     #[test]
     fn the_cut_is_the_smallest_tail_that_makes_the_rest_fit() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(255).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 255).collect();
         let OverrunPlan::Cut { cut, .. } = plan_overrun(&items, P, W) else {
             panic!("overrun")
         };
@@ -1719,7 +1717,7 @@ impl EventSink for CompactionSink<'_> {
                 // queue away, so the ticks stop arriving. That failure is already
                 // measured here twice (see `FILLING_STRIDE`); a progress bar reads as a
                 // fraction, not as a count, so one tick per 32 costs the reader nothing.
-                if self.deltas == 1 || self.deltas % 32 == 0 {
+                if self.deltas == 1 || self.deltas.is_multiple_of(32) {
                     self.publish();
                 }
             }
@@ -1958,7 +1956,7 @@ mod folding {
 
     #[test]
     fn a_conversation_with_room_is_not_folded() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(100).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 100).collect();
         assert_eq!(plan_fold(&items, P, W, 0), None);
     }
 
@@ -1970,7 +1968,7 @@ mod folding {
     /// could have come back as half the conversation, verbatim.
     #[test]
     fn a_reserve_makes_a_conversation_at_the_wall_fold() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(200).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 200).collect();
         assert_eq!(
             plan_fold(&items, P, W, 0),
             None,
@@ -1983,7 +1981,7 @@ mod folding {
     /// The split is halfway BY TOKENS, and both halves are workable.
     #[test]
     fn the_split_is_halfway_by_tokens() {
-        let items: Vec<u64> = std::iter::repeat(1_000).take(255).collect();
+        let items: Vec<u64> = std::iter::repeat_n(1_000, 255).collect();
         let split = plan_fold(&items, P, W, 0).expect("255k of a 262k window folds");
         assert!((126..=129).contains(&split), "halfway, got {split}");
 
@@ -2004,7 +2002,7 @@ mod folding {
     #[test]
     fn one_huge_item_moves_the_split() {
         let mut items = vec![200_000u64];
-        items.extend(std::iter::repeat(1_000).take(55));
+        items.extend(std::iter::repeat_n(1_000, 55));
         // The first item alone is past half, so the split lands before it and the
         // first half would be empty -- there is no useful fold here.
         assert_eq!(plan_fold(&items, P, W, 0), None);
@@ -2207,7 +2205,7 @@ mod compaction_sink {
                 arguments: "{}".into(),
             });
             s.emit(TurnEvent::Warning {
-                code: "row_coverage_gap".into(),
+                code: "row_coverage_gap",
                 detail: "the scratch transcript is not the session's".into(),
             });
         }

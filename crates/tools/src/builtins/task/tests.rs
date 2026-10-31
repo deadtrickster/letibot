@@ -1037,7 +1037,7 @@ fn an_existing_path_is_refused_by_name_and_nothing_is_spawned() {
         &ToolCall {
             id: "c1".into(),
             name: "task_start".into(),
-            arguments: format!(r#"{{"prompt": "do the work", "slug": "{slug}"}}"#).into(),
+            arguments: format!(r#"{{"prompt": "do the work", "slug": "{slug}"}}"#),
         },
         &mut sink,
     );

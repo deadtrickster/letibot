@@ -423,10 +423,10 @@ impl Ctx<'_> {
                 }
             }
         }
-        if let Some(repo) = self.repo {
-            if let Some(name) = git_ref(repo, token) {
-                return Placement::Ref(name);
-            }
+        if let Some(repo) = self.repo
+            && let Some(name) = git_ref(repo, token)
+        {
+            return Placement::Ref(name);
         }
         match self.shorthand.and_then(|m| m.get(token)) {
             Some(Shorthand::One(rel)) => Placement::At(
@@ -597,10 +597,10 @@ impl Ctx<'_> {
 
 /// A path under `root`, with `~` and an absolute token meaning what they say.
 fn join(root: &Path, token: &str) -> PathBuf {
-    if let Some(rest) = token.strip_prefix("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(rest);
-        }
+    if let Some(rest) = token.strip_prefix("~/")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(home).join(rest);
     }
     if token.starts_with('/') {
         return PathBuf::from(token);
@@ -673,10 +673,10 @@ fn classify(token: &str) -> Option<(RefKind, String)> {
     if let Some(sha) = as_sha(token) {
         return Some((RefKind::Sha, sha));
     }
-    if let Some((head, _)) = split_range(token) {
-        if looks_like_a_path(head) {
-            return Some((RefKind::Lines, token.to_string()));
-        }
+    if let Some((head, _)) = split_range(token)
+        && looks_like_a_path(head)
+    {
+        return Some((RefKind::Lines, token.to_string()));
     }
     if looks_like_a_path(token) {
         return Some((RefKind::Path, token.to_string()));

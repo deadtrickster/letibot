@@ -3335,7 +3335,7 @@ impl Config {
             match wiring.corpus {
                 Some(c) => out.push(Disclosure::on(
                     "corpus",
-                    &format!(
+                    format!(
                         "every decision this gate makes is written to the session \
                          store, with the model's verdict and the operator's ruling in \
                          separate columns so a disagreement survives as a label. \

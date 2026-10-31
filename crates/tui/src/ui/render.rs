@@ -651,7 +651,7 @@ mod tests {
         }
         let streamed = last.join("\n");
         assert!(
-            streamed.contains(&keyword),
+            streamed.contains(keyword),
             "the streamed fence is plain:\n{streamed}"
         );
     }

@@ -567,11 +567,12 @@ fn describe_offers(req: &KeeperRequest) -> String {
 /// keeper is told not to guess.
 fn describe_nearest(nearest: &Nearest) -> String {
     match nearest {
-        Nearest::Unavailable => format!(
+        Nearest::Unavailable => {
             "**not consulted.** No similarity door is attached to this daemon — the arithmetic is \
              `agent/notes-offer`'s and it is not in this tree yet. You therefore have NO score, \
              and a `superseded` proposal without one is a guess: do not make one."
-        ),
+                .to_string()
+        }
         Nearest::NothingClose => format!(
             "no other note reached the {SUPERSEDED_FLOOR:.2} floor at which one note is called a \
              duplicate of another, so there is no `superseded` evidence here."

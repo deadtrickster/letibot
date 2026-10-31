@@ -1832,7 +1832,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
 /// globals that are flags. An unrecognised leading `-` is skipped as a flag rather
 /// than treated as the subcommand — an option this build has not heard of is still
 /// not a verb, and stopping there would classify the call by a dash.
-fn git_subcommand<'a>(argv: &'a [Word]) -> (&'a str, Vec<&'a str>) {
+fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {
     const TAKES_VALUE: &[&str] = &[
         "-C",
         "-c",
@@ -5662,13 +5662,9 @@ fn literal_stdin<'a>(n: &'a Normalised, stage: &'a Stage) -> Option<(String, &'s
     if !stage.pipe_in {
         return None;
     }
-    let feeder = n
-        .stages
-        .iter()
-        .filter(|s| {
-            s.index < stage.index && s.pipe_out && s.context.contains(&shell::Context::Pipeline)
-        })
-        .last()?;
+    let feeder = n.stages.iter().rfind(|s| {
+        s.index < stage.index && s.pipe_out && s.context.contains(&shell::Context::Pipeline)
+    })?;
     if let Some(found) = feeder.redirects.iter().find_map(|r| match &r.target {
         RedirectTarget::HereDoc { body, .. } => {
             Some((body.clone(), "the here-document piped into it"))
@@ -6165,7 +6161,7 @@ mod flag_coverage_survey {
             ("/usr/bin/shred -u secrets.txt", "overwrites then unlinks"),
             ("/bin/rm -rf /home/op/project/build", "the baseline case"),
         ];
-        println!("\n  {:<44} {:<10} {}", "command", "sees", "what it does");
+        println!("\n  {:<44} {:<10} what it does", "command", "sees");
         for (cmd, what) in cases {
             let b = Baseline::of_command(cmd, &sur);
             let d = b.intents.contains(&Intent::Destroy);
@@ -6393,7 +6389,7 @@ mod flag_rules {
         // ...and nobody refused it for being unlisted. An oracle may still find that
         // the operator asked for this, which is the whole point of layer B.
         assert!(
-            matches!(b.tier, Tier::MayApprove { .. }),
+            matches!(b.tier, Tier::MayApprove),
             "an unlisted program must stay adjudicable, got {}",
             b.tier.as_str()
         );

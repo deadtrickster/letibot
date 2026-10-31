@@ -890,7 +890,7 @@ fn walk(node: &Node, source: &str, ctx: &mut Vec<Context>, out: &mut Normalised)
             let last = members.len().saturating_sub(1);
             ctx.push(Context::Pipeline);
             for (i, m) in members.iter().enumerate() {
-                pipe_member(*m, source, ctx, out, i > 0, i < last);
+                pipe_member(m, source, ctx, out, i > 0, i < last);
             }
             ctx.pop();
         }
@@ -1254,7 +1254,7 @@ fn continuation(
         let last = members.len().saturating_sub(1);
         ctx.push(Context::Pipeline);
         for (i, m) in members.iter().enumerate() {
-            pipe_member(*m, source, ctx, out, i > 0 || leading, i < last);
+            pipe_member(m, source, ctx, out, i > 0 || leading, i < last);
         }
         ctx.pop();
         return;

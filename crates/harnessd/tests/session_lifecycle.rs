@@ -446,7 +446,7 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
     for n in 0..5 {
         child.submit(
             &head.head_id,
-            &format!("c{n}"),
+            format!("c{n}"),
             0,
             CommandKind::Prompt {
                 text: format!("question {n}"),

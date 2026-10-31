@@ -269,7 +269,7 @@ fn a_stale_socket_file_does_not_stop_a_start() {
     assert!(p.exists(), "the stale file is the premise");
 
     let h = start(&p).expect("a stale file is not a daemon");
-    assert!(Arc::strong_count(&h.registry()) >= 1);
+    assert!(Arc::strong_count(h.registry()) >= 1);
     h.shutdown();
     cleanup(&p);
 }

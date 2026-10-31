@@ -112,11 +112,10 @@ mod tests {
             began_ms: None,
         });
         let mut sink = ToolLogSink::new(hub.clone());
-        let h =
-            letibot_tools::testing::harness_with_spiller(letibot_tools::spill::Spiller::new(
-                Box::new(letibot_tools::spill::FixedBudget(1_000)),
-                Box::new(letibot_tools::spill::MemoryStore::new()),
-            ));
+        let h = letibot_tools::testing::harness_with_spiller(letibot_tools::spill::Spiller::new(
+            Box::new(letibot_tools::spill::FixedBudget(1_000)),
+            Box::new(letibot_tools::spill::MemoryStore::new()),
+        ));
         h.rt.invoke(
             "t1",
             &letibot_transcript::ToolCall {

@@ -645,10 +645,10 @@ fn say(entry: &Entry, now_ms: u64) -> String {
         quote(&c.words),
         c.who
     ));
-    if let Some(r) = &entry.reverted {
-        if !r.words.is_empty() {
-            out.push_str(&format!(" · revert asked on {}", quote(&r.words)));
-        }
+    if let Some(r) = &entry.reverted
+        && !r.words.is_empty()
+    {
+        out.push_str(&format!(" · revert asked on {}", quote(&r.words)));
     }
     out
 }

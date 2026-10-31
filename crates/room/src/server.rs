@@ -373,12 +373,12 @@ impl Server {
         }
         // A connection whose peer is gone is already closed; this wakes the ones still reading so
         // their threads end rather than waiting for a client that will never write again.
-        for (_, conn) in self
+        for conn in self
             .inner
             .conns
             .lock()
             .expect("the connections lock")
-            .iter()
+            .values()
         {
             let _ = conn
                 .writer

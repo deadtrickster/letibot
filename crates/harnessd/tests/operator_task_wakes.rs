@@ -254,7 +254,7 @@ fn child_hub(registry: &Registry, mine: &str) -> Arc<letibot_sessionlog::hub::Hu
         if let Some(hub) = registry
             .ids()
             .into_iter()
-            .find(|id| id != &mine)
+            .find(|id| id != mine)
             .and_then(|id| registry.get(&id))
         {
             return hub;

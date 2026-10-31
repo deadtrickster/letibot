@@ -104,7 +104,7 @@ mod tests {
             totals.2 += drawn;
         }
         let mut rows: Vec<_> = by.into_iter().collect();
-        rows.sort_by(|a, b| b.1.2.cmp(&a.1.2));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1.2));
         println!(
             "{:<40} {:>6} {:>6} {:>9} {:>6}",
             "notice", "rows", "walls", "screen", "max"

@@ -531,7 +531,7 @@ fn search(
             if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
                 break;
             }
-            if i > 0 && i % 500 == 0 {
+            if i > 0 && i.is_multiple_of(500) {
                 // §8.5: progress is liveness. A walk over a large tree must produce it.
                 ctx.progress(format!("scanned {i} of {} files", files.len()));
             }

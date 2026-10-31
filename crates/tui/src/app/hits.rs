@@ -258,7 +258,7 @@ impl App {
                 // **The strip's labels, over the pane they sit in** — only while the window shows
                 // the strip's row; a strip scrolled away is not a target.
                 if s == Surface::Queue
-                    && let Some(tabs) = self.queue_tabs.clone()
+                    && let Some(tabs) = self.queue_tabs
                     && let Some(d) = tabs.row.checked_sub(self.pane_scroll)
                     && d < room
                 {

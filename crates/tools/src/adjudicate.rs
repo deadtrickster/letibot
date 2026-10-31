@@ -2221,8 +2221,9 @@ impl AdjudicatedGate {
             let Some(class) = ActionClass::parse(&class) else {
                 continue;
             };
-            if !self.approved_shapes.contains_key(&shape) {
-                self.approved_shapes.insert(shape, class);
+            if let std::collections::hash_map::Entry::Vacant(e) = self.approved_shapes.entry(shape)
+            {
+                e.insert(class);
                 added += 1;
             }
         }

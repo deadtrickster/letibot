@@ -257,8 +257,8 @@ fn a_layer_in_force_seats_its_tool_and_no_layer_seats_none() {
         let p = parts(&cfg);
         let hub = Hub::new(&cfg.session_id);
         let h = Harness::open(&p, cfg, hub).expect("the session opens");
-        let w = h.wiring().clone();
-        w
+
+        h.wiring().clone()
     };
 
     // 1. No layer: the default set, exactly — which is what the test above asserts tool by tool.

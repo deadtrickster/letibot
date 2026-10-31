@@ -27,9 +27,9 @@ impl App {
         // was last stored for it.
         let live = self.input();
         let card = TodoCard {
-            title: draft.shown(&live, TodoField::Title),
-            detail: draft.shown(&live, TodoField::Detail),
-            when: draft.shown(&live, TodoField::When),
+            title: draft.shown(live, TodoField::Title),
+            detail: draft.shown(live, TodoField::Detail),
+            when: draft.shown(live, TodoField::When),
             focus: match draft.focus {
                 TodoField::Title => Field::Title,
                 TodoField::Detail => Field::Detail,

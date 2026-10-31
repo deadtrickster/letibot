@@ -58,7 +58,7 @@ fn descriptors_on(path: &Path) -> usize {
                     let target = target_of(*fd);
                     // `contains`, not `ends_with`: the `-wal` and `-shm` are the same store and do
                     // not end with the db's own name.
-                    target.contains(&name) && here.as_deref().map_or(true, |h| target.contains(h))
+                    target.contains(&name) && here.as_deref().is_none_or(|h| target.contains(h))
                 })
                 .count()
         })

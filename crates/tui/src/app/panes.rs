@@ -232,7 +232,7 @@ impl App {
         // (all the zeroes — a replay, a brief with no stamp) keep the order they arrived in rather
         // than being shuffled into an order that means nothing. A dated row still comes before an
         // undated one whatever the stability, because zero sorts last descending.
-        rows.sort_by(|a, b| b.spawned_ms.cmp(&a.spawned_ms));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.spawned_ms));
         self.subagents = rows;
         // **The child this head climbed up out of**, by id, once the rebuild has happened
         // — a stop index taken before it would point at whatever the new list has there.
@@ -250,17 +250,17 @@ impl App {
         // Enter on the group row writes `subagents_finished_open`**; see
         // `the_fold_survives_going_down_into_a_child_and_back_up`.
         let up_from = self.up_from.clone();
-        if let Some(from) = up_from {
-            if let Some(i) = self.subagents.iter().position(|r| r.session_id == from) {
-                let stops = self.subagent_stops();
-                self.subagents_sel = stops
-                    .iter()
-                    .position(|s| matches!(s, SubStop::Agent(j) if *j == i))
-                    // Folded away: the group row is the row that stands for it now.
-                    .or_else(|| stops.iter().position(|s| matches!(s, SubStop::Finished)))
-                    .unwrap_or(0);
-                self.up_from = None;
-            }
+        if let Some(from) = up_from
+            && let Some(i) = self.subagents.iter().position(|r| r.session_id == from)
+        {
+            let stops = self.subagent_stops();
+            self.subagents_sel = stops
+                .iter()
+                .position(|s| matches!(s, SubStop::Agent(j) if *j == i))
+                // Folded away: the group row is the row that stands for it now.
+                .or_else(|| stops.iter().position(|s| matches!(s, SubStop::Finished)))
+                .unwrap_or(0);
+            self.up_from = None;
         }
         self.subagents_sel = self
             .subagents_sel

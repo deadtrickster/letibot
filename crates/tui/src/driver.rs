@@ -746,14 +746,15 @@ impl Link {
 
         // 3. Ack — after the frame is out, and only when a frame was read. An idle
         //    tick has no seq and must not invent one.
-        if last_seq > 0 && !app.detached() {
-            if let Err(e) = self.client.ack(Ack {
+        if last_seq > 0
+            && !app.detached()
+            && let Err(e) = self.client.ack(Ack {
                 seq: last_seq,
                 rendered,
                 filtered,
-            }) {
-                app.link_down(&e.to_string());
-            }
+            })
+        {
+            app.link_down(&e.to_string());
         }
 
         for a in actions {
@@ -838,7 +839,12 @@ impl Link {
                     // disagree and the store is the truth (`ClientFrame::FetchRow`'s server arm
                     // falls through to `RowSource` for a row with no body). The answer arrives as
                     // `RowFetched` on the pump and fills the position the head named.
-                    Action::FetchRow { session, row, at, len } => {
+                    Action::FetchRow {
+                        session,
+                        row,
+                        at,
+                        len,
+                    } => {
                         self.client.fetch_row(&session, row, at, len)?;
                     }
                     // **The operator's half of the board, on its way to the daemon.** The head

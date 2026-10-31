@@ -497,10 +497,10 @@ impl App {
                 }
             }
             for it in self.items.iter().rev() {
-                if let Some(TranscriptItem::ToolResult { call_id, .. }) = &it.item {
-                    if let Some(d) = by_call.remove(call_id) {
-                        self.call_decisions.insert(it.item_id.clone(), d);
-                    }
+                if let Some(TranscriptItem::ToolResult { call_id, .. }) = &it.item
+                    && let Some(d) = by_call.remove(call_id)
+                {
+                    self.call_decisions.insert(it.item_id.clone(), d);
                 }
             }
         }

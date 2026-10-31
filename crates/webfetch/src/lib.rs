@@ -300,7 +300,7 @@ fn rewrite_note(asked: &UrlParts, first: &str) -> String {
     format!(
         "rewrote the github.com page to the raw file it names: {} → {first} \
          (the repo page is navigation chrome around this file)",
-        asked.to_string()
+        asked
     )
 }
 
@@ -416,29 +416,29 @@ impl Fetcher for CurlFetcher {
         // gh present but refusing (not authenticated says itself in gh's stderr)
         // still answers with the HTML page, and a note carries why gh did not —
         // never silently.
-        if let Some((argv, kind)) = gh_args(&url) {
-            if gh_present() {
-                match run_gh(&argv, self.cap) {
-                    Ok((body, truncated)) => {
-                        let body = String::from_utf8_lossy(&body).to_string();
-                        return Ok(FetchedPage {
-                            final_url: url.to_string(),
-                            status: 200,
-                            content_type: "text/markdown".into(),
-                            bytes: body.len(),
-                            body,
-                            truncated,
-                            notes: vec![format!(
-                                "answered by `gh {}` — the {kind}'s own view, without \
+        if let Some((argv, kind)) = gh_args(&url)
+            && gh_present()
+        {
+            match run_gh(&argv, self.cap) {
+                Ok((body, truncated)) => {
+                    let body = String::from_utf8_lossy(&body).to_string();
+                    return Ok(FetchedPage {
+                        final_url: url.to_string(),
+                        status: 200,
+                        content_type: "text/markdown".into(),
+                        bytes: body.len(),
+                        body,
+                        truncated,
+                        notes: vec![format!(
+                            "answered by `gh {}` — the {kind}'s own view, without \
                                  the page's navigation chrome",
-                                argv.join(" ")
-                            )],
-                        });
-                    }
-                    Err(why) => notes.push(format!(
-                        "gh was tried and refused ({why}); the HTML page follows"
-                    )),
+                            argv.join(" ")
+                        )],
+                    });
                 }
+                Err(why) => notes.push(format!(
+                    "gh was tried and refused ({why}); the HTML page follows"
+                )),
             }
         }
         // The README case carries two candidates; only a 404 tries the next, and
@@ -783,7 +783,7 @@ fn extract_and_convert(html: &str, final_url: &str, format: PageFormat) -> (Stri
                     format!(" (title: {title})")
                 }
             );
-            (convert(&article.content.to_string(), format), vec![note])
+            (convert(article.content.as_ref(), format), vec![note])
         }
         Err(_) => whole_document(html, format, total),
     }

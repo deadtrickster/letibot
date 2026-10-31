@@ -366,7 +366,7 @@ fn now_ns() -> u128 {
 /// **This box's name**, as `uname -n` answers it — `hostname`'s own value, which is what a person
 /// comparing two boxes would type.
 pub fn host_name() -> String {
-    let raw = std::process::Command::new("uname")
+    std::process::Command::new("uname")
         .arg("-n")
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -375,8 +375,7 @@ pub fn host_name() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
         .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "localhost".to_string());
-    raw
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 /// **The key a room is named by on this box** — the host's name, made safe for a filename, with a

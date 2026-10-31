@@ -292,14 +292,14 @@ impl App {
                 self.queue_tabs = None;
                 return row_strings(&out.lines, self.cfg.palette());
             }
-            Filter::Repo(r) => out.push(pane::faint(&trim_to(
+            Filter::Repo(r) => out.push(pane::faint(trim_to(
                 &format!(
                     "    {} — this session's repository · `/queue all` shows every repository",
                     repo_name(r)
                 ),
                 w,
             ))),
-            Filter::Repos(rs) => out.push(pane::faint(&trim_to(
+            Filter::Repos(rs) => out.push(pane::faint(trim_to(
                 &format!(
                     "    {} — this session's repositories, one project · `/queue all` shows every \
                      repository",
@@ -310,20 +310,18 @@ impl App {
                 ),
                 w,
             ))),
-            Filter::Path(p) => out.push(pane::faint(&trim_to(
+            Filter::Path(p) => out.push(pane::faint(trim_to(
                 &format!(
                     "    {} — named · `/queue` alone is this session's repository",
                     p.display()
                 ),
                 w,
             ))),
-            Filter::Every if self.queue_scope == QueueScope::All => {
-                out.push(pane::faint(&trim_to(
-                    "    every repository · `/queue` alone is this session's repository",
-                    w,
-                )))
-            }
-            Filter::Every => out.push(pane::faint(&trim_to(
+            Filter::Every if self.queue_scope == QueueScope::All => out.push(pane::faint(trim_to(
+                "    every repository · `/queue` alone is this session's repository",
+                w,
+            ))),
+            Filter::Every => out.push(pane::faint(trim_to(
                 "    every repository — this daemon does not say which repository this session \
                  is in",
                 w,

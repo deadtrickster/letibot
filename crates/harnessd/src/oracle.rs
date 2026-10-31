@@ -305,7 +305,7 @@ fn verdict_lines(answer: &str) -> (Option<&str>, Option<&str>) {
         .map(str::trim)
         .filter(|l| !l.is_empty());
     let first = lines.next();
-    let last = lines.last().or(first);
+    let last = lines.next_back().or(first);
     (first, last)
 }
 
@@ -633,8 +633,8 @@ impl HttpOracle {
     fn read(&self, brief: &mut ModelBrief, raw: &str, out_of_room: bool) -> OracleAnswer {
         let request_id = brief.request_id.clone();
         let (verdict, scored) = match self.question {
-            Question::Verdict => (parse(&raw), String::new()),
-            Question::TwoScores => match parse_scores(&raw) {
+            Question::Verdict => (parse(raw), String::new()),
+            Question::TwoScores => match parse_scores(raw) {
                 Some(sc) => {
                     let v = verdict_of(&sc);
                     let noted = format!(

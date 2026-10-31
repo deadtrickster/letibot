@@ -167,7 +167,7 @@ impl Tap {
                 .name(role.as_str())
                 .outcome(state.as_str())
                 .attr("child", subagent_id.as_str())
-                .attr_opt("model", (!model.is_empty()).then(|| model.as_str())),
+                .attr_opt("model", (!model.is_empty()).then_some(model.as_str())),
             SessionEvent::JobSettled {
                 job,
                 state,

@@ -446,8 +446,8 @@ impl App {
                 // on rows that drew no numbers: `16` typed as a free answer to "how many
                 // workers?" answered choice 1. The numbers are drawn now (`numbered`), and a
                 // digit is a move like ↑↓ — the answer is still one deliberate Enter.
-                _ if !typing && digit_row(&k, n).is_some() => {
-                    self.sel = digit_row(&k, n).unwrap();
+                _ if !typing && digit_row(k, n).is_some() => {
+                    self.sel = digit_row(k, n).unwrap();
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
@@ -484,8 +484,8 @@ impl App {
                 // card said *"1/2 or ↑↓ then enter"*. The digits are a move now, like ↑↓, and
                 // the answer stays one deliberate Enter — with the guard below for the line
                 // that was being typed when the card opened (R90.30).
-                _ if self.editor.text().is_empty() && digit_row(&k, 2).is_some() => {
-                    self.quit_sel = digit_row(&k, 2).expect("just checked");
+                _ if self.editor.text().is_empty() && digit_row(k, 2).is_some() => {
+                    self.quit_sel = digit_row(k, 2).expect("just checked");
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
@@ -566,8 +566,8 @@ impl App {
                     let name = choices[self.mode_sel.min(n - 1)].clone();
                     return ControlFlow::Break(self.take_pick(name));
                 }
-                _ if self.editor.text().is_empty() && digit_row(&k, n).is_some() => {
-                    let at = digit_row(&k, n).unwrap();
+                _ if self.editor.text().is_empty() && digit_row(k, n).is_some() => {
+                    let at = digit_row(k, n).unwrap();
                     self.mode_sel = at;
                     return ControlFlow::Break(self.take_pick(choices[at].clone()));
                 }

@@ -276,20 +276,17 @@ fn a_closed_connection_gives_its_claim_back_at_once_and_says_so() {
     let mut heard = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        match eb.recv_timeout(Duration::from_millis(200)) {
-            Ok(e) => {
-                heard.push(e.clone());
-                if matches!(
-                    &e,
-                    Event::Abandoned {
-                        why: letibot_room::Why::SessionGone { .. },
-                        ..
-                    }
-                ) {
-                    break;
+        if let Ok(e) = eb.recv_timeout(Duration::from_millis(200)) {
+            heard.push(e.clone());
+            if matches!(
+                &e,
+                Event::Abandoned {
+                    why: letibot_room::Why::SessionGone { .. },
+                    ..
                 }
+            ) {
+                break;
             }
-            Err(_) => {}
         }
     }
     let gone = heard
@@ -472,7 +469,7 @@ fn the_arbiter_hears_every_event_even_with_nothing_under_the_tag() {
             },
         },
     ) {
-        Response::Ruled { question, .. } => assert_eq!(question.answer.is_some(), true),
+        Response::Ruled { question, .. } => assert!(question.answer.is_some()),
         other => panic!("{other:?}"),
     }
     let items = server.items();

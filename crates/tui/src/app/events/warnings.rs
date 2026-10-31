@@ -167,7 +167,7 @@ impl App {
                 // only thing that distinguishes them, which is length.
                 if code == "slash" || code == "slash_refused" {
                     let (echo, body) = detail.split_once('\n').unwrap_or((&detail, ""));
-                    let lines: Vec<String> = body.lines().map(|l| without_control(l)).collect();
+                    let lines: Vec<String> = body.lines().map(without_control).collect();
                     if lines.len() > 3 {
                         self.slash_out = Some((echo.to_string(), lines));
                         self.push_surface(Surface::Listing);

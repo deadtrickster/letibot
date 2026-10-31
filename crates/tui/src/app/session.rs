@@ -553,9 +553,9 @@ impl App {
 
     /// Whether one of `id`'s children is on the chain to the current session.
     fn child_on_path(&self, id: &str, path: &[String]) -> bool {
-        self.sessions.iter().any(|s| {
-            s.parent_session_id.as_deref() == Some(id) && path.iter().any(|p| *p == s.session_id)
-        })
+        self.sessions
+            .iter()
+            .any(|s| s.parent_session_id.as_deref() == Some(id) && path.contains(&s.session_id))
     }
 
     /// **Whether a session has a child drawn in `branch`** — the fact the fold glyph is made of: a
@@ -791,7 +791,7 @@ impl App {
             if branch.is_some_and(|b| !b.holds(i)) {
                 continue;
             }
-            if !open && !path.iter().any(|p| *p == s.session_id) {
+            if !open && !path.contains(&s.session_id) {
                 continue;
             }
             self.push_session(out, i, depth, path, false, branch);

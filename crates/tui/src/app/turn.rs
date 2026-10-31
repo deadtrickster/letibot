@@ -267,10 +267,7 @@ impl TurnPane {
     ) -> bool {
         let mut rest = self.reasoning.raw();
         let mut cursor = self.reasoned_rows;
-        loop {
-            let Some(id) = self.appended.get(cursor) else {
-                break;
-            };
+        while let Some(id) = self.appended.get(cursor) {
             let Some(row) = items.iter().find(|r| &r.item_id == id) else {
                 // The row is not in the window at all (a snapshot replaced it). It says nothing
                 // about the text either way, so it is stepped over rather than stopping the walk.

@@ -299,7 +299,7 @@ impl App {
         match self.pick {
             // The daemon's two: a mode is a protocol command this head already has, a model
             // is a daemon verb.
-            Some(Pick::Mode) => return self.take_mode(name),
+            Some(Pick::Mode) => self.take_mode(name),
             Some(Pick::Model) => {
                 self.pick = None;
                 self.redraw = true;
@@ -341,20 +341,20 @@ impl App {
                 if !self.keyless_choices().iter().any(|k| k == &name) {
                     self.took_cloud_row(&name);
                 }
-                return Some(Action::Slash {
+                Some(Action::Slash {
                     line: format!("models {name}"),
-                });
+                })
             }
             // **The head's own two are local settings**, so taking one is a write to this
             // head's config and not a frame — the same act `/verbosity NAME` and `/diff NAME`
             // perform, through the same function, so a card and a typed word cannot disagree.
             Some(Pick::Verbosity) => {
                 self.pick = None;
-                return self.set_verbosity(&name);
+                self.set_verbosity(&name)
             }
             Some(Pick::Diff) => {
                 self.pick = None;
-                return self.set_diff(&name);
+                self.set_diff(&name)
             }
             Some(Pick::Repo) => {
                 self.pick = None;
@@ -370,7 +370,7 @@ impl App {
                     Some(r) => self.say(&format!("the header shows {}", repo_name(r))),
                     None => self.say("the header follows the work again"),
                 }
-                return None;
+                None
             }
             None => None,
         }

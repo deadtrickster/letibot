@@ -260,7 +260,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     // before `!send`, so what is printed is the state and not the aftermath.
     let during = std::fs::read_to_string(&log).unwrap_or_default();
     eprintln!("---- {log:?} while the run is still waiting ----");
-    for line in BufReader::new(during.as_str().as_bytes())
+    for line in BufReader::new(during.as_bytes())
         .lines()
         .map_while(Result::ok)
     {
@@ -292,7 +292,7 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     // ---- The capture, printed so it is in the evidence rather than only in the assertion.
     let said = std::fs::read_to_string(&log).unwrap_or_default();
     eprintln!("---- {log:?} (the daemon's stderr, after the run ended) ----");
-    for line in BufReader::new(said.as_str().as_bytes())
+    for line in BufReader::new(said.as_bytes())
         .lines()
         .map_while(Result::ok)
     {
@@ -485,8 +485,8 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
         let Ok(inbound) = rx.recv_timeout(Duration::from_millis(250)) else {
             continue;
         };
-        match inbound.frame() {
-            ServerFrame::Event(env) => match &env.event {
+        if let ServerFrame::Event(env) = inbound.frame() {
+            match &env.event {
                 SessionEvent::Warning { code, detail, .. } if code == "operator_run_unreadable" => {
                     sentence = Some(detail.clone());
                 }
@@ -500,8 +500,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
                         .expect("the card is answered");
                 }
                 _ => {}
-            },
-            _ => {}
+            }
         }
     }
     let said = std::fs::read_to_string(&log).unwrap_or_default();

@@ -61,8 +61,8 @@ fn main() {
         );
     } else {
         println!(
-            "\n{:<28} {:<12} {:>15}  {}",
-            "item id", "kind", "ts", "ledger head"
+            "\n{:<28} {:<12} {:>15}  ledger head",
+            "item id", "kind", "ts"
         );
         for i in unfilled {
             println!(

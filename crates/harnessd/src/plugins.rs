@@ -1572,17 +1572,16 @@ impl PluginHost {
                         out.push('\n');
                         // A pane that asks for a look is the frame that asks; say so, because an
                         // answer with no numbers in it otherwise reads as a broken dashboard.
-                        if hook.starts_with("pane_") {
-                            if let Ok(view) = validated(answer, &hook, &by, &declared) {
-                                if let Some(spec) = &view.look {
-                                    out.push_str(&format!(
-                                        "\nit asks the host for a look: {} — a head runs it and \
+                        if hook.starts_with("pane_")
+                            && let Ok(view) = validated(answer, &hook, &by, &declared)
+                            && let Some(spec) = &view.look
+                        {
+                            out.push_str(&format!(
+                                "\nit asks the host for a look: {} — a head runs it and \
                                          calls the pane again with the result, so this frame is \
                                          the one that asks.\n",
-                                        serde_json::to_string(spec).unwrap_or_default()
-                                    ));
-                                }
-                            }
+                                serde_json::to_string(spec).unwrap_or_default()
+                            ));
                         }
                     }
                     Err(why) => {
@@ -5839,12 +5838,11 @@ mod tests {
         host.open("s-plugins", &hub, "room/room", (80, 24));
         let published = views(&hub);
         let (_, view) = published.last().expect("a frame");
-        assert_eq!(
+        assert!(
             view["panels"][0]["unavailable"]["why"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("does not declare that action"),
-            true,
             "the pane says why instead of drawing the row: {view}"
         );
         assert!(
@@ -5940,8 +5938,7 @@ mod tests {
 
         let (pane, view) = views(&hub)
             .into_iter()
-            .filter(|(p, _)| p == "room/room")
-            .next_back()
+            .rfind(|(p, _)| p == "room/room")
             .expect("the pane answered");
         assert_eq!(pane, "room/room");
         let drawn = serde_json::to_string(&view).unwrap();

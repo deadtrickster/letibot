@@ -244,7 +244,7 @@ impl OutlineTool {
                 if !page.is_empty() && page_bytes + e.bytes > READ_PAGE_BYTES {
                     break;
                 }
-                if i > 0 && i % 200 == 0 {
+                if i > 0 && i.is_multiple_of(200) {
                     ctx.progress(format!("parsed {parsed} of {} files", files.len()));
                 }
                 let lang = match forced.map(Ok).unwrap_or_else(|| Language::of_path(&e.path)) {

@@ -1053,7 +1053,8 @@ fn a_postponed_row_round_trips_through_the_store_and_so_does_lifting_it() {
         }),
         needs: Vec::new(),
     };
-    s.put_todos("sess-1", &[set_aside.clone()]).unwrap();
+    s.put_todos("sess-1", std::slice::from_ref(&set_aside))
+        .unwrap();
     let back = s.todos("sess-1").unwrap();
     assert_eq!(
         back,
@@ -1080,7 +1081,8 @@ fn a_postponed_row_round_trips_through_the_store_and_so_does_lifting_it() {
         status: TodoStatus::Pending,
         ..s.todos("sess-1").unwrap().remove(0)
     };
-    s.put_todos("sess-1", &[lifted.clone()]).unwrap();
+    s.put_todos("sess-1", std::slice::from_ref(&lifted))
+        .unwrap();
     assert_eq!(s.todos("sess-1").unwrap(), vec![lifted]);
 }
 
@@ -1105,7 +1107,8 @@ fn a_cancelled_row_stays_on_the_board_and_the_store_keeps_it() {
         when: None,
         needs: Vec::new(),
     };
-    s.put_todos("sess-1", &[struck_off.clone()]).unwrap();
+    s.put_todos("sess-1", std::slice::from_ref(&struck_off))
+        .unwrap();
     assert_eq!(
         s.todos("sess-1").unwrap(),
         vec![struck_off],
@@ -1148,7 +1151,7 @@ fn a_parents_row_round_trips_with_the_authors_own_string() {
         when: None,
         needs: Vec::new(),
     };
-    s.put_todos("sess-1", &[told.clone()]).unwrap();
+    s.put_todos("sess-1", std::slice::from_ref(&told)).unwrap();
     assert_eq!(s.todos("sess-1").unwrap(), vec![told]);
 
     let raw: String = s

@@ -196,11 +196,11 @@ impl App {
         // to now, and this is the frame either of those takes effect on. Nothing here
         // counts frames, so the sentence's lifetime is the same on a head woken ten times a
         // second and on one that is quiet — see [`NOTICE_MS`].
-        if let Some(until) = self.notice_until {
-            if self.now_ms >= until {
-                self.notice = None;
-                self.notice_until = None;
-            }
+        if let Some(until) = self.notice_until
+            && self.now_ms >= until
+        {
+            self.notice = None;
+            self.notice_until = None;
         }
         // **A fleeting note's clock, read the same way** — `NOTICE_MS`'s sibling, one register
         // over, and here rather than in the walk for the same reason: the sentence's lifetime

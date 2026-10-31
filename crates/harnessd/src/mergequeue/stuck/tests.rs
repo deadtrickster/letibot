@@ -202,7 +202,7 @@ fn the_census_counts_the_rows_status_prints() {
         let Some((_, rest)) = rest.split_once('`') else {
             continue;
         };
-        let Some(word) = rest.trim_start().split_whitespace().next() else {
+        let Some(word) = rest.split_whitespace().next() else {
             continue;
         };
         if matches!(word, "failed" | "timed_out" | "conflict") {

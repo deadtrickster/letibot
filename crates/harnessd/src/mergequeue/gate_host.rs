@@ -355,14 +355,14 @@ pub fn run_on_host(name: &str, worktree: &Path, steps: &[String], ctl: &GateCont
     // evidence, because it is the sentence a person reads first: a step whose demand was taken off
     // it ran without the tests that need that apparatus, and a skipped apparatus test is announced
     // here or it is a pass nobody can see through.
-    if let Some(line) = apparatus.evidence(name, steps.len(), &dropped, wrapped) {
-        if let Some(first) = done.first_mut() {
-            first.judged.output = if first.judged.output.is_empty() {
-                line
-            } else {
-                format!("{line}\n{}", first.judged.output.trim_end())
-            };
-        }
+    if let Some(line) = apparatus.evidence(name, steps.len(), &dropped, wrapped)
+        && let Some(first) = done.first_mut()
+    {
+        first.judged.output = if first.judged.output.is_empty() {
+            line
+        } else {
+            format!("{line}\n{}", first.judged.output.trim_end())
+        };
     }
     // **Where the time went, on the first row of the log.** A first gate on a host pays for a
     // transport and a build cache that are nobody's code, and a reader looking at a row that says

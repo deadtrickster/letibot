@@ -217,7 +217,7 @@ impl Drop for FixtureDaemon {
 
 /// Start the fixture daemon and wait for its socket to answer.
 fn spawn_daemon(mode: &str, dir: &Path) -> (FixtureDaemon, PathBuf) {
-    let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
+    let socket = letibot_sessionlog::testing::socket_path(dir, "harnessd.sock");
     let child = Command::new(std::env::current_exe().expect("this test executable"))
         .args([
             "--exact",
