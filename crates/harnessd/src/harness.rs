@@ -4516,10 +4516,9 @@ impl Harness {
                 // (`cfg.restart_room` carries the whole reason). A box with no launcher gets
                 // `None`, and the pane then offers no restart key rather than a key that refuses.
                 let supervisor: Option<std::sync::Arc<dyn crate::room::supervise::RoomSupervisor>> =
-                    cfg.restart_room
-                        .then(crate::room::supervise::Launcher::found)
-                        .flatten()
-                        .map(|l| std::sync::Arc::new(l) as std::sync::Arc<dyn crate::room::supervise::RoomSupervisor>);
+                    crate::room::supervise::Launcher::found()
+                        .filter(|_| cfg.restart_room)
+                        .map(|l| std::sync::Arc::new(l) as _);
                 match crate::room::link::SessionRoom::connect(
                     &cfg.session_id,
                     &socket,

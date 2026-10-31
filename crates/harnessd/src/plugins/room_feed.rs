@@ -62,9 +62,11 @@ pub trait RoomFeed: Send + Sync {
     /// honest: a pane whose host cannot restart the room offers no key, and a key that arrives
     /// anyway is answered in words rather than in silence.
     fn restart(&self) -> Result<String, String> {
-        Err("this host was not given a supervisor for the box's room, so it cannot restart it \
+        Err(
+            "this host was not given a supervisor for the box's room, so it cannot restart it \
              — a coordinator is started by the launcher (`letibot --room`)"
-            .to_string())
+                .to_string(),
+        )
     }
 }
 
@@ -562,8 +564,7 @@ mod tests {
             (letibot_room::Cause::Crashed, "nobody asked"),
         ] {
             let mut snap = snapshot(Vec::new());
-            snap.restart.marker =
-                Some(letibot_room::Marker::new(NOW - 1_000, NOW - 2_000, cause));
+            snap.restart.marker = Some(letibot_room::Marker::new(NOW - 1_000, NOW - 2_000, cause));
             let value = room(&Fixed(snap), "s-a", NOW);
             let sentence = value["restart"]["marker"]["sentence"].as_str().unwrap();
             assert!(sentence.contains(wanted), "{cause:?}: {sentence}");

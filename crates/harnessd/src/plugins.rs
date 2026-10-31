@@ -1974,23 +1974,49 @@ impl PaneDriver for PluginHost {
             // and its refusal (`room_restart_refused`) are the two sentences, and both are said:
             // a control whose outcome nobody printed is a control a person cannot trust.
             if action == RESTART_VERB {
-                // **Two literal codes**, not one variable: `crates/sessionlog/tests/warning_codes.rs`
-                // scans this tree for `Warning { code: "…" }` literals, and a code that reaches the
-                // wire through a variable is a code the guard cannot see.
-                match room.restart() {
-                    Ok(said) => {
+                // **The act runs off this thread**, because this one is the head's own connection
+                // and a launcher that overran its minute would leave the person's prompts, keys
+                // and interrupts queued behind it. The outcome is the notice either way — a
+                // control whose result nobody printed is a control a person cannot trust.
+                match crate::room::supervise::InFlight::take() {
+                    None => {
                         let _ = hub.publish(SessionEvent::Warning {
-                            code: "room_restarted".into(),
-                            detail: said,
+                            code: "room_restart_refused".into(),
+                            detail: "the room was not restarted: a restart is already running \
+                                     here — a box has one room, and two stops and two starts is \
+                                     not a restart"
+                                .into(),
                             compaction: None,
                         });
                     }
-                    Err(why) => {
-                        let _ = hub.publish(SessionEvent::Warning {
-                            code: "room_restart_refused".into(),
-                            detail: format!("the room was not restarted: {why}"),
-                            compaction: None,
-                        });
+                    Some(running) => {
+                        let room = Arc::clone(room);
+                        let hub = Arc::clone(hub);
+                        let _ = std::thread::Builder::new()
+                            .name("room-restart".to_string())
+                            .spawn(move || {
+                                let _running = running;
+                                // **Two literal codes**, not one variable:
+                                // `crates/sessionlog/tests/warning_codes.rs` scans this tree for
+                                // `Warning { code: "…" }` literals, and a code that reaches the wire
+                                // through a variable is a code the guard cannot see.
+                                match room.restart() {
+                                    Ok(said) => {
+                                        let _ = hub.publish(SessionEvent::Warning {
+                                            code: "room_restarted".into(),
+                                            detail: said,
+                                            compaction: None,
+                                        });
+                                    }
+                                    Err(why) => {
+                                        let _ = hub.publish(SessionEvent::Warning {
+                                            code: "room_restart_refused".into(),
+                                            detail: format!("the room was not restarted: {why}"),
+                                            compaction: None,
+                                        });
+                                    }
+                                }
+                            });
                     }
                 }
             } else if let Err(why) = room.act(item, action) {
@@ -5690,8 +5716,25 @@ mod tests {
         .with_room(link);
         host.open("s-room-pane", &hub, "room/room", (80, 24));
 
-        // **The key reaches the supervisor**, and the frame says who pressed it and what it found.
+        // **The act runs off the connection's thread** (a launcher that overran its minute must not
+        // leave the person's own keys queued behind it), so the test waits for the frame rather
+        // than reading it a line later.
         host.action("s-room-pane", &hub, "room/room", "restart", "restart");
+        let until = |what: &str, f: &dyn Fn() -> bool| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while std::time::Instant::now() < deadline {
+                if f() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("{what} never happened");
+        };
+        until("the supervisor is asked", &|| {
+            !asked.0.lock().unwrap().is_empty()
+        });
+        // And a second press while one is running is refused rather than queued: one room, one
+        // restart.
         let frames = asked.0.lock().unwrap().clone();
         assert_eq!(frames.len(), 1, "one press, one frame");
         assert_eq!(frames[0].by, "s-room-pane");
@@ -5707,17 +5750,22 @@ mod tests {
 
         // **The outcome is said**, not swallowed: a key whose result nobody printed is a key a
         // person cannot trust.
-        assert!(
-            !warned(&hub, "room_restarted").is_empty(),
-            "the act's own outcome is a notice: {:?}",
-            warned(&hub, "room_restarted")
-        );
-        // **And the note is in the feed the next frame was drawn from** — when, and why.
+        until("the outcome is said", &|| {
+            !warned(&hub, "room_restarted").is_empty()
+        });
+        // **And the note is in the next frame the pane is drawn from** — when, and why. The pane's
+        // own clock (`every_s`) is what asks for it in production; the test asks, which is the same
+        // render on the same path.
+        host.open("s-room-pane", &hub, "room/room", (80, 24));
         let inputs = host.lock().rec.inputs("pane_room").to_vec();
         let feed = &inputs.last().expect("a render after the key")["feeds"]["room"];
         assert_eq!(feed["restart"]["available"], json!(true));
         let note = &feed["restart"]["marker"];
-        assert_eq!(note["cause"], json!("daemon"), "nothing was running: {note}");
+        assert_eq!(
+            note["cause"],
+            json!("daemon"),
+            "nothing was running: {note}"
+        );
         assert_eq!(note["by"], json!("s-room-pane"));
         assert!(
             note["sentence"]
@@ -5754,8 +5802,10 @@ mod tests {
         let hub = Hub::new("s-room-pane");
         host.open("s-room-pane", &hub, "room/room", (80, 24));
         host.action("s-room-pane", &hub, "room/room", "restart", "restart");
+        until("the refusal is said", &|| {
+            !warned(&hub, "room_restart_refused").is_empty()
+        });
         let refused = warned(&hub, "room_restart_refused");
-        assert!(!refused.is_empty(), "a refusal is never silence");
         assert!(
             refused.iter().any(|d| d.contains("no room on this box")),
             "{refused:?}"

@@ -189,7 +189,13 @@ impl Marker {
 /// the record, and a marker that cannot be read is worse than one that has lost a space.
 fn one_line(text: &str) -> String {
     text.chars()
-        .map(|c| if c == '\t' || c == '\n' || c == '\r' { ' ' } else { c })
+        .map(|c| {
+            if c == '\t' || c == '\n' || c == '\r' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string()
@@ -255,7 +261,8 @@ mod tests {
         use std::sync::atomic::{AtomicU64, Ordering};
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let n = NEXT.fetch_add(1, Ordering::SeqCst);
-        let p = std::env::temp_dir().join(format!("letibot-room-restart-{}-{n}", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("letibot-room-restart-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&p).expect("a scratch directory");
         p
     }
@@ -358,10 +365,8 @@ mod tests {
 
         // A lease held by a pid that is not running: the room is gone, and its start is still
         // readable — the two facts a restart marker is built from.
-        let lease = crate::lease::CoordinatorLease::owned_by(
-            socket.with_extension("lease"),
-            "box/1/1",
-        );
+        let lease =
+            crate::lease::CoordinatorLease::owned_by(socket.with_extension("lease"), "box/1/1");
         std::fs::write(lease.path(), "box/1/1\t999999\t5000\t7000\n").unwrap();
         assert_eq!(room_started_ms(&socket), Some(7000));
         assert!(!room_running(&socket), "pid 999999 is not running");

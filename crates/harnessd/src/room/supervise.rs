@@ -91,6 +91,37 @@ pub trait RoomSupervisor: Send + Sync {
     fn restart(&self, frame: &RestartFrame) -> Result<String, String>;
 }
 
+/// **One restart at a time in this process, and the act runs off the caller's thread.**
+///
+/// A box has one room, so two stops and two starts is not a restart — it is a race between two
+/// launchers, and the loser would report a failure that is really a collision. The scope is the
+/// process because the resource is the box's.
+///
+/// It is an RAII value and not a pair of calls: the act runs on a thread of its own (the caller is
+/// a head's connection, and a launcher that overran its minute would leave that person's prompts
+/// and keys queued behind it), and a guard that released on the way out of a `match` arm would be
+/// released before the thread had started.
+pub struct InFlight(());
+
+static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+impl InFlight {
+    /// **Take the right to restart**, or `None` when one is already running here.
+    pub fn take() -> Option<InFlight> {
+        use std::sync::atomic::Ordering;
+        IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| InFlight(()))
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        IN_FLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// **The box's launcher, asked with the two verbs a person would type.**
 pub struct Launcher {
     program: PathBuf,
@@ -162,11 +193,8 @@ impl RoomSupervisor for Launcher {
             frame.line().as_bytes(),
         );
         self.say("--room --stop", stop)?;
-        let start = letibot_tools::rpc::run_bounded(
-            &self.program,
-            &["--room".to_string()],
-            self.within,
-        );
+        let start =
+            letibot_tools::rpc::run_bounded(&self.program, &["--room".to_string()], self.within);
         self.say("--room", start)?;
         Ok(format!(
             "the room was stopped and started again by `{}`",
@@ -315,6 +343,21 @@ mod tests {
         assert!(why.contains("could not be run"), "{why}");
         assert!(why.contains("letibot --room"), "{why}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **One restart at a time per process**, and the right comes back when the act ends — a box
+    /// has one room, so two stops and two starts is a race rather than a restart.
+    #[test]
+    fn only_one_restart_runs_at_a_time_and_the_right_comes_back() {
+        let first = InFlight::take().expect("nothing is running");
+        assert!(
+            InFlight::take().is_none(),
+            "a second press while one runs is refused, not queued"
+        );
+        drop(first);
+        let again = InFlight::take().expect("the right comes back when the act ends");
+        drop(again);
+        assert!(InFlight::take().is_some());
     }
 
     /// **A supervisor is a door a test can stand in** — the trait's own reason for existing.

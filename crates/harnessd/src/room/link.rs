@@ -306,9 +306,7 @@ impl SessionRoom {
         }
         let says = format!(
             "the room this one replaced began {} ago",
-            letibot_room::duration(
-                letibot_room::server::now_ms().saturating_sub(instance)
-            )
+            letibot_room::duration(letibot_room::server::now_ms().saturating_sub(instance))
         );
         let _ = Marker::new(letibot_room::server::now_ms(), instance, Cause::Crashed)
             .saying(says)
@@ -1029,8 +1027,8 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
-            .expect("s-a connects");
+        let me =
+            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
 
         // Two items under one tag, posted by another session so `s-a` can claim the head.
         let other = Client::connect(&path, Speaker::top_level("s-b"), Arc::new(|_| {}))
@@ -1116,7 +1114,8 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         server.with_arbiter("s-arbiter");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("connects");
+        let me =
+            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("connects");
         me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
 
@@ -1180,14 +1179,19 @@ mod tests {
         assert_eq!(frames.len(), 1, "one act, one frame");
         assert_eq!(frames[0].by, "s-a");
         assert!(!frames[0].was_running, "there was nothing to stop");
-        assert!(frames[0].why.contains("pressed restart"), "{}", frames[0].why);
+        assert!(
+            frames[0].why.contains("pressed restart"),
+            "{}",
+            frames[0].why
+        );
         let note = letibot_room::read_marker(&path).expect("the note is written");
         assert_eq!(note.cause, Cause::Daemon);
         assert_eq!(note.by, "s-a");
         assert_eq!(note.room_started_ms, 0, "there is no lease to read");
 
         // **A live lease: this IS a restart**, and the note names the session and the room it made.
-        let lease = letibot_room::CoordinatorLease::owned_by(path.with_extension("lease"), "box/1/1");
+        let lease =
+            letibot_room::CoordinatorLease::owned_by(path.with_extension("lease"), "box/1/1");
         std::fs::write(
             lease.path(),
             format!("box/1/1\t{}\t5000\t7000\n", std::process::id()),
@@ -1222,18 +1226,14 @@ mod tests {
             }
         }
 
-        let dir = std::env::temp_dir().join(format!("letibot-room-norestart-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("letibot-room-norestart-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect(
-            "s-a",
-            &path,
-            Arc::new(|_: &str| {}),
-            Some(Arc::new(Refuse)),
-        )
-        .expect("s-a connects");
+        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), Some(Arc::new(Refuse)))
+            .expect("s-a connects");
 
         let why = me.restart().expect_err("the supervisor refused");
         assert!(why.contains("no room on this box"), "{why}");
@@ -1257,8 +1257,8 @@ mod tests {
         let path = dir.join("room.sock");
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
-            .expect("s-a connects");
+        let me =
+            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
         let why = me.restart().expect_err("no supervisor, no restart");
         assert!(why.contains("no supervisor"), "{why}");
         assert!(why.contains("letibot --room"), "{why}");
@@ -1279,13 +1279,21 @@ mod tests {
         let server = letibot_room::Server::serve(&path, letibot_room::Room::new())
             .expect("a room to talk to");
         let lease = path.with_extension("lease");
-        std::fs::write(&lease, format!("box/1/1\t{}\t5000\t7000\n", std::process::id())).unwrap();
-        let me = SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None)
-            .expect("s-a connects");
+        std::fs::write(
+            &lease,
+            format!("box/1/1\t{}\t5000\t7000\n", std::process::id()),
+        )
+        .unwrap();
+        let me =
+            SessionRoom::connect("s-a", &path, Arc::new(|_: &str| {}), None).expect("s-a connects");
         assert_eq!(letibot_room::read_marker(&path), None, "nothing yet");
 
         // The room is a new one: a different `started_ms`, and no note accounting for it.
-        std::fs::write(&lease, format!("box/1/1\t{}\t9000\t9001\n", std::process::id())).unwrap();
+        std::fs::write(
+            &lease,
+            format!("box/1/1\t{}\t9000\t9001\n", std::process::id()),
+        )
+        .unwrap();
         me.note_instance();
         let note = letibot_room::read_marker(&path).expect("the crash is written");
         assert_eq!(note.cause, Cause::Crashed);
