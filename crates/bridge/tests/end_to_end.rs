@@ -1033,6 +1033,103 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         "a failure names why: {failed}"
     );
 
+    // --- R103: a session whose DAEMON never started is exit 20, at once --
+    // **The reported shape**, measured 2026-10-27: a package's daemon failed at placement, so its
+    // session never ran a round; `leticode_status` said `idle` with zero rounds, `leticode_events`
+    // held one `daemon_start_failed` warning, and `wait --until attention` sat for an HOUR on each
+    // of two packages. The warning is a `Class::Failure` the daemon publishes on the session's hub
+    // before its hubs close (`cli::Boot::failed`) and replays to every head that attaches later,
+    // and it is the one fact the verb needed: no turn can start on a daemon whose session never
+    // opened, so there is nothing to wait for.
+    //
+    // Published from another thread, 300 ms in, because the subject is what a head does with it
+    // WHILE it is waiting: `wait` attaches a fresh head per call, and a fresh attach is handed a
+    // snapshot and no backlog (`Hub::attach`), so a warning published before the call is one the
+    // head never sees. The real sequence is the live one — the bridge's `ensure` returns as soon
+    // as the socket answers, which is before the session opens, so the head is already attached
+    // when the boot fails and the warning fans out to it.
+    let boot = world
+        .registry
+        .get(&session)
+        .unwrap_or_else(|| panic!("the daemon holds `{session}`"));
+    let said = "the daemon did not start: placing this session on lab2x1: handing the bundle to \
+                the remote repository";
+    let publisher = {
+        let boot = boot.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            boot.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "daemon_start_failed".into(),
+                detail: said.into(),
+                compaction: None,
+            });
+        })
+    };
+    let began = Instant::now();
+    let (code, out) = tools::wait(
+        &world.worktree.display().to_string(),
+        &session,
+        Instant::now() + Duration::from_secs(60),
+    );
+    publisher.join().expect("the publisher thread");
+    assert_eq!(
+        code, 20,
+        "a session whose daemon never started has FAILED, and waiting cannot change that: {out}"
+    );
+    assert!(
+        out.contains("handing the bundle") || out.contains("did not start"),
+        "and the reason is the daemon's own sentence, not a timeout's: {out}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(10),
+        "it answers when it attaches, not at the deadline ({:?}): the defect was an hour of \
+         waiting on a session that could never do anything",
+        began.elapsed()
+    );
+    assert_eq!(
+        bridge.status(&session).expect("status")["state"],
+        "failed",
+        "and `leticode_status` says the same word, instead of `idle` over a session that will \
+         never run"
+    );
+
+    // **And the shape the operator actually hit**: a session that has NEVER turned — a package's,
+    // which never ran a round — so `wait` has no grace window to fall out of and waits the whole
+    // deadline. The daemon's review-queue session is one that never turns here, and it is the
+    // one this box's report named (`leticode_status` said `idle`, zero rounds).
+    let queue = letibot_sessionlog::gatekeeper_session(&world.worktree);
+    let quiet = world
+        .registry
+        .get(&queue)
+        .unwrap_or_else(|| panic!("the daemon holds the review queue's `{queue}`"));
+    let publisher = {
+        let quiet = quiet.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            quiet.publish(letibot_sessionlog::SessionEvent::Warning {
+                code: "daemon_start_failed".into(),
+                detail: said.into(),
+                compaction: None,
+            });
+        })
+    };
+    let began = Instant::now();
+    let (code, out) = tools::wait(
+        &world.worktree.display().to_string(),
+        &queue,
+        Instant::now() + Duration::from_secs(10),
+    );
+    publisher.join().expect("the publisher thread");
+    assert_eq!(
+        code, 20,
+        "a session that never turned AND whose daemon failed is 20, not a timeout: {out}"
+    );
+    assert!(
+        began.elapsed() < Duration::from_secs(5),
+        "and it does not sit out its deadline ({:?}) — that is the hour two packages spent",
+        began.elapsed()
+    );
+
     // --- diff: the branch against its merge base ---------------------------
     let diff = bridge.diff(&session, false).expect("the diff");
     assert_eq!(diff["branch"], "bridge", "{diff}");

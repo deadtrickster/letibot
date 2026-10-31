@@ -161,6 +161,37 @@ open handle — a dev server left running would otherwise hold every `wait` for 
 keeps a merely-held settlement from slipping through is `Delivery`: the moment the result is queued
 the session is owed a turn, and that is the window a `wait` used to exit in.
 
+#### A daemon that never started is exit 20, not an hour of waiting (R103)
+
+MEASURED 2026-10-27: two packages' daemons failed at placement, so their sessions never ran a
+round; `leticode_status` said `idle` with zero rounds, `leticode_events` held one
+`daemon_start_failed` warning, and `wait --until attention` sat for **an hour** on each.
+
+The warning is a `Class::Failure` the daemon publishes on the session's hub before its hubs close
+(`cli::Boot::failed`) and then shuts down. The bridge's head is already attached by then —
+`daemon::ensure` returns as soon as the *socket* answers, which is before the session opens — so
+the warning fans out live to a head that was waiting, and `wait` did nothing with it: it looked at
+asks, at the round-level turn, and at the activity, and a session that never turned has no grace
+window to fall out of, so it waited its whole deadline. The socket then closed, and `wait` did not
+look at that either.
+
+Two facts, both terminal, both now read where the wait's own precedence lives:
+
+* a `daemon_start_failed` warning sets `State::boot_failed`, and `wait` answers `Attention::Failed`
+  with the daemon's own sentence — exit 20. It is deliberately NOT subject to the *a failure that
+  was already there does not count* rule: that rule is about a previous TURN's death, and a boot
+  failure means no turn can ever start;
+* a connection the daemon closed (`Bye`) ends the wait for the same reason — nothing else arrives
+  on it — instead of sitting on a dead socket to the deadline.
+
+`leticode_status` says `failed` for such a session rather than `idle`: `idle` is a word for a
+session between turns, and this one will never take one.
+
+`crates/bridge/tests/end_to_end.rs` pins both shapes — the session that had turned and the one
+that never did (the review queue's), each with the warning published 300 ms into the wait. Before
+the fix the first answers `0 — the turn ended` with the PREVIOUS turn's words, and the second sits
+out its deadline.
+
 ### Claude Code as the approver
 
 With the bridge attached, the session no longer needs allow-all: `writes-allowed` (approve a class

@@ -501,6 +501,20 @@ pub struct State {
     /// `Some(reason)` when the daemon closed the connection; every later send says so
     /// rather than failing on a dead socket two frames later.
     pub closed: Option<String>,
+    /// **The daemon's boot failed, and this session will never run anything** — R103.
+    ///
+    /// `daemon_start_failed` is a [`letibot_sessionlog::warning::Class::Failure`] warning the
+    /// daemon publishes on the session's hub before its hubs close (`cli::Boot::failed`): a
+    /// placement that could not be made, a vocabulary that would not load, a store that would
+    /// not open. It is replayed to every head that attaches afterwards, which is how a head
+    /// learns why a session is sitting there with no turn, no rounds and nothing running.
+    ///
+    /// **`wait` used to ignore it**, and the consequence is measured: on 2026-10-27 two packages
+    /// whose daemons failed at placement were each waited on for an hour — the verb sat on a
+    /// session that was never going to do anything, and the orchestrator's `wait --until
+    /// attention` had no way to learn the one fact the hub was holding. Quiet is not an answer
+    /// when the reason for the quiet is terminal.
+    pub boot_failed: Option<String>,
     /// The daemon's answer to the last mutating frame, when it refused one. A refusal is a
     /// real answer (`already stopped`, a stale option) and is worth saying back.
     pub rejection: Option<String>,
@@ -567,7 +581,10 @@ impl State {
     pub fn word(&self) -> &'static str {
         if !self.asks.is_empty() {
             "asking"
-        } else if matches!(self.turn, Turn::Failed(_)) {
+        } else if self.boot_failed.is_some() || matches!(self.turn, Turn::Failed(_)) {
+            // **A daemon whose boot failed is `failed`**, not `idle` (R103): the session has no
+            // turn and will never start one, so `idle` is a word for a session that is between
+            // turns and this one is not.
             "failed"
         } else if self.turn == Turn::Running
             || self
@@ -986,6 +1003,13 @@ impl State {
                 }
             }
             SessionEvent::Warning { code, detail, .. } => {
+                // **A boot that failed is terminal for the whole session**, not one turn: no
+                // turn can start on a daemon whose session never opened. Recorded here so
+                // `wait` can answer with it instead of timing out about a session that has
+                // nothing to report (R103).
+                if code == "daemon_start_failed" {
+                    self.boot_failed = Some(detail.clone());
+                }
                 self.events.push(
                     Entry::of("warning", "")
                         .coded(code)
@@ -1377,6 +1401,7 @@ impl Head {
             peek_error: None,
             mode_settled: Vec::new(),
             closed: g.closed.clone(),
+            boot_failed: g.boot_failed.clone(),
             rejection: g.rejection.clone(),
         }
     }
@@ -1718,6 +1743,23 @@ impl Head {
         loop {
             if let Some(a) = g.asks.first() {
                 return Attention::Ask(Box::new(a.clone()));
+            }
+            // **A daemon whose boot failed is not waited on** (R103). It is not a failure of
+            // THIS wait's turn — there is no turn — so the baseline rule below does not cover
+            // it, and the session can never produce the thing this loop is waiting for. The
+            // reason the daemon published is the answer.
+            if let Some(why) = &g.boot_failed {
+                return Attention::Failed { why: why.clone() };
+            }
+            // **And a connection the daemon closed is the end of the wait**, for the same
+            // reason: nothing else will ever arrive on it. The boot-failure path is exactly
+            // where this bit — the daemon publishes the reason, waits a moment for a head to
+            // read it, and shuts down — so a wait that ignored `closed` sat on a dead socket
+            // until its deadline, which is the *hour* two packages' orchestrator spent.
+            if let Some(why) = &g.closed {
+                return Attention::Failed {
+                    why: format!("the daemon closed this connection: {why}"),
+                };
             }
             if let Turn::Failed(why) = &g.turn
                 && baseline.as_deref() != Some(why.as_str())
