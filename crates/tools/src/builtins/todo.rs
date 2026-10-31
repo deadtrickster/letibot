@@ -4057,7 +4057,16 @@ fn render(todos: &[TodoItem]) -> String {
                 let named: Vec<String> = t
                     .needs
                     .iter()
-                    .filter(|need| !matches!(need, TodoNeed::Answered { .. }))
+                    // **A loud room edge is not a wait**, and the line below says *waiting on*: the
+                    // pass puts the edge on every room row so retirement can find it, and
+                    // `working: false` is the pass saying nothing is coming. Listing it here would
+                    // tell the model to wait for a thing it is being asked to finish.
+                    .filter(|need| {
+                        !matches!(
+                            need,
+                            TodoNeed::Answered { .. } | TodoNeed::Room { working: false, .. }
+                        )
+                    })
                     .map(|need| match need {
                         TodoNeed::Row { content } => format!("`{}`", content.trim()),
                         // **The child, by its id**, because that is what the model has to hand to
@@ -4071,16 +4080,7 @@ fn render(todos: &[TodoItem]) -> String {
                         // **The room's item, by the number `room`'s own verbs take** — the edge
                         // the daemon's room pass puts on a `you hold …` row while the room is
                         // working on it, so a model reading its list sees why the row is quiet.
-                        TodoNeed::Room { item, working } => {
-                            format!(
-                                "the room item `#{item}`{}",
-                                if *working {
-                                    " (the room is working on it)"
-                                } else {
-                                    ""
-                                }
-                            )
-                        }
+                        TodoNeed::Room { item, .. } => format!("the room item `#{item}`"),
                         // **The operator, by the question** — the words they were asked, so the
                         // model can see what it is waiting for and try to work it out itself.
                         TodoNeed::Operator { question, .. } => {

@@ -510,7 +510,7 @@ fn need_words(n: &TodoNeed) -> String {
             if *working {
                 " (the room is working on it)"
             } else {
-                ""
+                " (yours to finish)"
             }
         ),
         TodoNeed::Operator { question, options } => format!(
