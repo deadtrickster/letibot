@@ -118,6 +118,9 @@ fn every_frame_round_trips_through_json() {
             connected: vec!["s-a".to_string()],
             items: vec![item],
             questions: Vec::new(),
+            // **The room answers `[]` for the agents**: a tag's agent is a fact about the daemon
+            // that seats one, and `Server::answer_frame` is where it is filled.
+            agents: Vec::new(),
         },
         Response::Reminders { rows: Vec::new() },
         Response::Event {
@@ -425,6 +428,7 @@ fn the_rooms_read_answers_every_item_and_the_open_questions() {
             connected,
             items,
             questions,
+            agents,
         } => {
             assert_eq!(
                 items.iter().map(|i| i.id).collect::<Vec<_>>(),
@@ -439,6 +443,9 @@ fn the_rooms_read_answers_every_item_and_the_open_questions() {
             assert!(identity.is_empty(), "{identity}");
             assert_eq!(arbiter, None);
             assert!(connected.is_empty(), "{connected:?}");
+            // **And the agents too** — who owns a queue is a fact about the daemon that seats one,
+            // so a room driven on its own has none to name.
+            assert!(agents.is_empty(), "{agents:?}");
         }
         other => panic!("a room read answers a room: {other:?}"),
     }

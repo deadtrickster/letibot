@@ -74,6 +74,9 @@ struct Inner {
     /// **The session that hears everything** — the tie-breaker. `None` on a room whose arbiter is a
     /// person at a head, which is a room where every question waits.
     arbiter: Mutex<Option<String>>,
+    /// **Who owns each queue, and how many times it had to be brought back** — `None` on a room whose
+    /// daemon seats no tag agents, which answers `agents: []` rather than a column nobody fills.
+    agents: Mutex<Option<Arc<crate::agent::AgentLedger>>>,
     lease: Mutex<Option<CoordinatorLease>>,
     stop: AtomicBool,
     /// How many connections have been served since the start — the pane's *is anybody here*.
@@ -125,6 +128,7 @@ impl Server {
                 sweep_every_ms: sweep_every_ms.max(100),
                 name: Mutex::new(crate::lease::host_name()),
                 arbiter: Mutex::new(None),
+                agents: Mutex::new(None),
                 lease: Mutex::new(None),
                 stop: AtomicBool::new(false),
                 served: AtomicU64::new(0),
@@ -139,6 +143,37 @@ impl Server {
     pub fn with_arbiter(&self, session: impl Into<String>) -> &Self {
         *self.inner.arbiter.lock().expect("the arbiter lock") = Some(session.into());
         self
+    }
+
+    /// **Hand the server the ledger of tag agents** — who owns each queue and how many times it had
+    /// to be brought back.
+    ///
+    /// The writer is the daemon's upkeep thread ([`crate::agent::AgentLedger`]), and this is the one
+    /// reader that puts it on the wire. A room with no ledger answers `agents: []`, which is exactly
+    /// what a room whose daemon does not seat tag agents should say — *no tag has an agent here* —
+    /// rather than an empty column a pane would draw as *nothing to report*.
+    pub fn with_agents(&self, ledger: Arc<crate::agent::AgentLedger>) -> &Self {
+        *self.inner.agents.lock().expect("the agents lock") = Some(ledger);
+        self
+    }
+
+    /// **The tags that have a live item**, sorted and deduplicated — the list a daemon's upkeep asks
+    /// for to decide which agents it owes.
+    ///
+    /// Live is [`crate::Item::live`]: not finished and not dropped. A tag whose work is all done
+    /// needs no agent, and one whose items are all frozen still does — a frozen item is waiting for
+    /// a ruling, which is the one thing an agent is for.
+    pub fn live_tags(&self) -> Vec<String> {
+        let room = self.inner.room.lock().expect("the room lock");
+        let mut out: Vec<String> = room
+            .all()
+            .into_iter()
+            .filter(|i| i.live())
+            .map(|i| i.tag.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// **Name this room** — the box's name by default, and something else in a test that needs two
@@ -267,11 +302,23 @@ impl Server {
                 identity,
                 arbiter,
                 connected,
+                agents,
                 ..
             } => {
                 *identity = self.identity_at(now);
                 *arbiter = self.arbiter();
                 *connected = self.connected();
+                // **The ledger is the SERVER's, like the three fields above.** The room cannot say
+                // who owns a queue: an agent outlives every item under its tag, and it is the
+                // daemon's upkeep that seats one.
+                *agents = self
+                    .inner
+                    .agents
+                    .lock()
+                    .expect("the agents lock")
+                    .as_ref()
+                    .map(|l| l.all())
+                    .unwrap_or_default();
             }
             _ => {}
         }
@@ -536,6 +583,17 @@ impl Server {
                     None => Vec::new(),
                 };
                 who.extend(event.named().into_iter().map(str::to_string));
+                // **And the tag's own agent**, which is a member of every queue under that tag and
+                // of none other. It is not a poster and not a holder, so without this line the one
+                // session whose job is the tag would never hear about it — and *a claim, a stale
+                // beat, a dispute reach that tag's agent* would be a claim about a note nobody
+                // sent. Derived from the box's own key, so two boxes' agents cannot be confused.
+                if let Some(agent) = tag
+                    .as_deref()
+                    .and_then(|t| crate::tag_session(&crate::lease::host_key(), t))
+                {
+                    who.push(agent);
+                }
                 who
             };
             for conn in &conns {
@@ -771,14 +829,14 @@ mod tests {
     /// the point: a wire change that misses a pin is a quiet lie about what two binaries share, so
     /// the pin is a literal a reviewer sees in a diff and every other use is the symbol.
     #[test]
-    fn the_room_speaks_protocol_two() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 2);
+    fn the_room_speaks_protocol_three() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 3);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(1).expect("1 is not 2");
+        let old = crate::wire::protocol_refusal(2).expect("2 is not 3");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(3).expect("3 is not 2");
+        let new = crate::wire::protocol_refusal(4).expect("4 is not 3");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(2), None);
+        assert_eq!(crate::wire::protocol_refusal(3), None);
     }
 
     /// **The pane's read: the room's half from the room, the server's three from the server.**
@@ -801,6 +859,7 @@ mod tests {
             connected,
             items,
             questions,
+            agents,
         } = answer.response
         else {
             panic!("a room read answers a room: {:?}", answer.response);
@@ -812,6 +871,93 @@ mod tests {
         assert!(connected.is_empty(), "{connected:?}");
         assert!(items.is_empty());
         assert!(questions.is_empty());
+        // **A room whose daemon seats no tag agents says `[]`** — not an empty column a pane would
+        // draw as *nothing to report*, but the fact that no tag has an agent here.
+        assert!(agents.is_empty(), "{agents:?}");
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A tag's agent is on the pane's read, with its re-seat count** — the one fact only the
+    /// coordinator has, carried out on the frame a pane is drawn from.
+    #[test]
+    fn the_rooms_read_carries_the_tag_agents_and_their_counts() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-agents-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let ledger = crate::agent::AgentLedger::new();
+        ledger.seat("ram", "s-room-k-ram", 1_000);
+        ledger.reseat("ram", "s-room-k-ram", 2_000);
+        server.with_agents(Arc::clone(&ledger));
+        let answer = server.answer_frame(&Speaker::top_level("s-a"), &Request::Room, now_ms());
+        let Response::Room { agents, .. } = answer.response else {
+            panic!("a room read answers a room");
+        };
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].tag, "ram");
+        assert_eq!(agents[0].session, "s-room-k-ram");
+        assert_eq!(agents[0].reseats, 1);
+        assert_eq!(agents[0].since_ms, 2_000);
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The audience of a tag's event includes that tag's agent** — and no other tag's.
+    ///
+    /// This is the server's half of *a bell per tag*: an agent is neither a poster nor a holder, so
+    /// without it the one session whose job is the tag would never hear about its own queue.
+    #[test]
+    fn a_tags_events_reach_that_tags_agent_and_no_other() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let key = crate::lease::host_key();
+        let ram = crate::tag_session(&key, "ram").expect("a derivation");
+        let disk = crate::tag_session(&key, "disk").expect("a derivation");
+        let heard: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        // Kept alive for the whole test: a dropped client closes its socket, which is the
+        // coordinator's `note_gone` and would take the connection out of the audience.
+        let mut _clients = Vec::new();
+        for who in [ram.clone(), disk.clone()] {
+            let heard = Arc::clone(&heard);
+            let mine = who.clone();
+            let wake: crate::client::Wake = Arc::new(move |e: &crate::room::Event| {
+                heard
+                    .lock()
+                    .unwrap()
+                    .push((mine.clone(), e.tag().to_string()));
+            });
+            _clients.push(
+                crate::client::Client::connect(&path, Speaker::top_level(who), wake)
+                    .expect("a client"),
+            );
+        }
+        let poster = crate::client::Client::connect(
+            &path,
+            Speaker::top_level("s-b"),
+            Arc::new(|_: &crate::room::Event| {}),
+        )
+        .expect("the poster");
+        let _ = poster.request(&Request::Post {
+            id: "p1".into(),
+            tag: "ram".into(),
+            body: "8 GB".into(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && heard.lock().unwrap().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let rows = heard.lock().unwrap().clone();
+        assert!(
+            rows.iter().any(|(who, tag)| who == &ram && tag == "ram"),
+            "the ram agent hears its own queue: {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|(who, _)| who == &disk),
+            "and the disk agent hears nothing about ram: {rows:?}"
+        );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }

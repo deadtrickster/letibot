@@ -71,7 +71,17 @@ use crate::room::{
 /// [`Response::Welcome`] carries [`crate::Server::identity`] — *this is the room on this socket,
 /// started T ago* — as one field, so a client is told rather than left to infer. Both fields are
 /// added here, together, because a name without an identity is a name nobody can check.
-pub const ROOM_PROTOCOL_VERSION: u16 = 2;
+///
+/// # 3: the room says which tags have an AGENT
+///
+/// Version 2's `Room` read named every item and every question, and nothing about who owns a queue.
+/// A tag's agent is a session of the coordinator's own ([`crate::tag_session`]), and only the
+/// coordinator knows which ones it had to bring back — so the fact a person needs (*this tag has an
+/// agent, it has been re-seated twice, or it has none*) has to be on the wire or it cannot be
+/// drawn. [`Response::Room`] carries `agents`; a client that speaks 2 is refused by name rather
+/// than drawn without it, because a pane that silently omitted the column would say *no agent* for
+/// every tag on an older room.
+pub const ROOM_PROTOCOL_VERSION: u16 = 3;
 
 /// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
 ///
@@ -290,6 +300,11 @@ pub enum Response {
         items: Vec<Item>,
         /// The open questions, oldest first.
         questions: Vec<Question>,
+        /// **The tags that have an agent**, in tag order — who it is, how many times it had to be
+        /// re-seated, and when the one now seated began. A tag absent from this list has no agent,
+        /// which is a fact the pane says rather than a column it leaves blank.
+        #[serde(default)]
+        agents: Vec<crate::agent::TagAgent>,
     },
     /// **The bell** — an unsolicited event. A client that only ever answers a prompt cannot be
     /// woken by this; see `docs/room.md` § *The bell, and the client that cannot hear it*.
@@ -512,6 +527,7 @@ impl Room {
                 connected: Vec::new(),
                 items: self.all().into_iter().cloned().collect(),
                 questions: self.questions().to_vec(),
+                agents: Vec::new(),
             }),
         }
     }
