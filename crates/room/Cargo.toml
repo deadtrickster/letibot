@@ -18,6 +18,12 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+# **A project's key is the tree's own twelve hex characters** (`tree::project_key`) — the same rule
+# `letibot-sessionlog::workspace_key` and `scripts/letibot` use, so this crate cannot be the one that
+# names a folder differently from the gatekeeper's session id. It is written here rather than
+# imported because the room holds no store and no `tokencore`, and a test in `harnessd` pins the two
+# spellings to one table (`crates/harnessd/tests/room_tree.rs`).
+sha2 = "0.10"
 
 [dev-dependencies]
 serde_json.workspace = true
