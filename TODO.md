@@ -192,7 +192,7 @@ the target byte-identical. **Still open?** `grep -n "ssh-{short}.sock" crates/to
 
 ---
 
-## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **OPEN, filed 2026-10-28, operator's ask**
+## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **REFUSED BY NAME on branch `agent/the-placement-and-bridge-cluster`; the combination is still not built. Filed 2026-10-28, operator's ask**
 
 The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
 has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
@@ -210,11 +210,26 @@ inside a guest stays inside a boundary.
 
 **Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
 guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
-**Still open?** `leticode --help | grep -A2 -- '--host'` still says a remote session is not in a VM.
+
+**Landed (2026-10-31): the SILENT DROP is fixed; the combination is refused by name.**
+`--where` and `--host` wrote ONE field (`cfg.placement`), so the flag that came LAST won and the
+other ask was dropped without a word: `--host lab2x1 --where firecode` booted a VM **here** on a
+copy of this box's workspace, and `--where firecode --host lab2x1` ran on lab2x1 with no VM at all.
+Neither refused anything, so both looked healthy. The two asks are now recorded separately and
+resolved once after the whole line is read, by `cli::placement_from_flags`, which refuses the pair
+with the reason and says what each flag alone does; `--help` says the same. **What the pair SHOULD
+mean is a VM on `lab2x1`, whose copy source is the remote checkout** — and that is still not built,
+because `FirecodeBackend` runs a `firecode` binary on THIS box and holds THIS box's paths
+(`FirecodeSpec::bin`, `~/.cache/letibot/firecode`, a promoted job's scratch file, the `.git` it
+reads to decide a worktree is mounted). It needs a remote runner for the firecode backend, not a
+flag. `docs/subagents.md` §2 carries the decision. Tests:
+`crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and
+`cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_refused`.
+**Still open?** the combined placement itself — this entry stays open for it.
 
 ---
 
-## R101 — Three placements started together on one host: two failed the bundle hand-off, though R99 landed — **OPEN, filed 2026-10-28**
+## R101 — Three placements started together on one host: two failed the bundle hand-off, though R99 landed — **CLOSED on branch `agent/the-placement-and-bridge-cluster`, filed 2026-10-28**
 
 MEASURED 2026-10-27 ~20:05: R2, WJ and TF were started on lab2x1 within a minute, by daemons that
 already had R99 (one ssh master per daemon, streamed verified writes). All three failed with
@@ -223,11 +238,28 @@ repository`; R2 restarted alone placed fine. So R99's own **Done when** (six at 
 whatever the hand-off shares between daemons — the remote mirror repository, a lock, the
 `incoming.bundle` name — still collides. Find it with a forcing test (N concurrent placements of
 the same and of different worktrees), fix it, and only then close R99.
-**Still open?** start three packages on lab2x1 at once.
+**Landed (2026-10-31): two shared names in `SshBackend::place`.**
+(1) The mirror was guarded by `[ ! -d <mirror> ]` — a DIRECTORY is not a repository. MEASURED:
+`git init --bare` three at once on one path exits 128 for two of the three, in 30 of 30 rounds, and
+a loser has already made the directory — so every later placement's `[ ! -d ]` skipped the init and
+the NEXT step failed on a directory that is not a repository, which is the reported sentence. The
+step now loops until `<mirror>/objects` exists (bounded, ~5 s) and answers the directory, not
+`git init`'s exit status. (2) The bundle went over under the MIRROR's name —
+`{mirror}/incoming.bundle`, one name per mirror — so two placements of one repository on one host
+wrote and fetched through the same file. Nothing there fails loudly: `git fetch -f
+incoming.bundle +HEAD:refs/heads/letibot/<mine>` creates MY ref from WHATEVER bundle is there, so a
+placement that lost the race was handed a checkout of somebody else's commit and said nothing. It
+is now `incoming-<pid>-<counter>-<short>.bundle`, removed by the same call, and the fetch's own
+words reach the failure instead of *it said nothing*. Tests, both measured RED pre-fix:
+`a_mirror_that_is_only_a_directory_is_made_a_repository` and
+`two_placements_at_once_never_read_each_others_bundle` (the forcing test: the fake ssh holds one
+call, HEAD moves while it is held, a second placement runs, then the first is released) —
+`crates/tools/tests/remote_hosts.rs`.
+**Still open?** R99's own *Done when* — six at once — is still unrun on a real host.
 
 ---
 
-## R102 — `letibot --daemons` and `--stop` cannot see a daemon the bridge started — **OPEN, filed 2026-10-28**
+## R102 — `letibot --daemons` and `--stop` cannot see a daemon the bridge started — **CLOSED on branch `agent/the-placement-and-bridge-cluster`, filed 2026-10-28**
 
 MEASURED 2026-10-27 on the Mac: about forty `harnessd` processes were running (every one started by
 a `letibot-mcp` bridge, the operator's sessions' and the orchestrator's), and `letibot --daemons`
@@ -236,17 +268,40 @@ So the operator's own tools are blind to most of what runs, and the launcher's l
 (`every_live_daemon_agrees_with_the_boxs_socket_table`) has nothing to compare against and fails
 under `LETIBOT_REQUIRE_APPARATUS=1` — the one red of the 2026-10-27 Mac gate. The bridge should
 write the same record the launcher does (one writer for it, not a copy).
-**Still open?** start a session with `leticode_start`, then `letibot --daemons`.
+**Landed (2026-10-31): the bridge writes the record.** `daemon::ensure` writes
+`<rundir>/<key>.json` beside the socket after the socket answers, field for field the shell's
+(`workspace`, `socket`, `pid` as a NUMBER, `role`, `model`, `answers`, `dialect`, `bash`,
+`started`), through a temp name and a rename. Written after the daemon is up, so a failed start
+leaves no record claiming one; a record that cannot be written is said on stderr and is not fatal.
+**Why not a listing over sockets**: the socket is `<sha256(workspace)[..12]>.sock`, so a socket
+with no record names a hash and nothing else — forty lines of hex is not a listing, and `--stop N`
+needs the pid and the folder the record holds. Test: `crates/bridge/tests/daemon_record.rs` drives
+`daemon::ensure` against a fake `harnessd` that binds the socket, then runs the operator's REAL
+`scripts/letibot --daemons` and asserts the folder is listed `up (pid N)` — red pre-fix.
+**Still open?** `every_live_daemon_agrees_with_the_boxs_socket_table` under
+`LETIBOT_REQUIRE_APPARATUS=1` has not been re-run on the Mac since.
 
 ---
 
-## R103 — `letibot-mcp wait` on a session whose daemon never started does not return — **OPEN, filed 2026-10-28**
+## R103 — `letibot-mcp wait` on a session whose daemon never started does not return — **CLOSED on branch `agent/the-placement-and-bridge-cluster`, filed 2026-10-28**
 
 MEASURED 2026-10-27: WJ's and TF's daemons failed at placement (R101) and their sessions never ran
 a round, and `wait --until attention` on each sat for an hour instead of exiting 20 (*the session
 failed*). `leticode_status` said `idle`, zero rounds, and `leticode_events` held one
 `daemon_start_failed` warning — the fact `wait` should exit on.
-**Still open?** `wait` on a session whose only event is `daemon_start_failed`.
+**Landed (2026-10-31): two facts `wait` did not read.** `daemon_start_failed` is a `Class::Failure`
+warning the daemon publishes before its hubs close (`cli::Boot::failed`), and the bridge's head is
+already attached when it lands (`ensure` returns as soon as the SOCKET answers, before the session
+opens) — so it arrives live, and `State` kept it as a ring entry and nothing else. `State::boot_failed`
+now holds it and `wait` answers `Attention::Failed` with the daemon's own sentence (exit 20); it is
+deliberately NOT subject to the *a failure that was already there does not count* rule, which is
+about a previous TURN's death. And a connection the daemon closed (`Bye`) ends the wait too — that
+is what an hour of sitting on a dead socket was. `leticode_status` says `failed` instead of `idle`
+for such a session. Test: `crates/bridge/tests/end_to_end.rs` pins both shapes (a session that had
+turned, and the review queue's, which never did), each with the warning published 300 ms INTO the
+wait — a fresh attach is handed a snapshot and no backlog, so the live path is the real one.
+**Still open?** nothing measured here; the fixture publishes the warning rather than failing a real
+boot, because a real boot failure takes the daemon down with it.
 
 ---
 
