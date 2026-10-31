@@ -69,11 +69,11 @@ pub use lease::{
     Takeover, coordinator_session, host_key, host_name, lease_path, named_session, pid_alive,
     socket_path, tag_of_session, tag_session,
 };
+pub use restart::{Cause, Marker, marker_path, read_marker, room_running, room_started_ms};
 pub use room::{
     ABANDON_THRESHOLD, About, DEFAULT_BEAT_EVERY_MS, DEFAULT_LEASE_MS, Decision, Event, Facts,
     Holding, Outcome, Question, REPLAY_WINDOW, Refused, Reminder, Room, Ruling, Waiting,
     normalise_tag,
 };
-pub use restart::{Cause, Marker, marker_path, read_marker, room_running, room_started_ms};
 pub use server::Server;
 pub use wire::{Answer, ROOM_PROTOCOL_VERSION, Request, Response};

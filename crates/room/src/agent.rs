@@ -158,7 +158,11 @@ mod tests {
         ledger.reseat("ram", "s-room-k-ram", 2);
         ledger.seat("disk", "s-room-k-disk", 3);
         assert_eq!(
-            ledger.all().iter().map(|a| a.tag.as_str()).collect::<Vec<_>>(),
+            ledger
+                .all()
+                .iter()
+                .map(|a| a.tag.as_str())
+                .collect::<Vec<_>>(),
             vec!["disk", "ram"],
             "a pane reads them in one order"
         );

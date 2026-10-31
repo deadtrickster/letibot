@@ -892,7 +892,10 @@ mod tests {
             named_session(key, "host").as_deref(),
             Some("s-room-lab2x1-1a2b3c4d")
         );
-        assert_eq!(named_session(key, "HOST").as_deref(), Some("s-room-lab2x1-1a2b3c4d"));
+        assert_eq!(
+            named_session(key, "HOST").as_deref(),
+            Some("s-room-lab2x1-1a2b3c4d")
+        );
         assert_eq!(
             named_session(key, "host:ram").as_deref(),
             Some("s-room-lab2x1-1a2b3c4d-ram")

@@ -208,7 +208,10 @@ mod tests {
         // **It is a session, with the owner as its parent** — the *subsession* the operator asked
         // for, and the tree a picker draws.
         assert!(r.holds("s-room-box-1a2b3c4d-ram"));
-        assert_eq!(r.parent_of("s-room-box-1a2b3c4d-ram").as_deref(), Some(OWNER));
+        assert_eq!(
+            r.parent_of("s-room-box-1a2b3c4d-ram").as_deref(),
+            Some(OWNER)
+        );
     }
 
     #[test]
@@ -256,7 +259,11 @@ mod tests {
         assert!(r.holds("s-room-box-1a2b3c4d-ram"));
         assert!(r.holds("s-room-box-1a2b3c4d-disk"));
         assert_eq!(
-            ledger.all().iter().map(|a| a.tag.as_str()).collect::<Vec<_>>(),
+            ledger
+                .all()
+                .iter()
+                .map(|a| a.tag.as_str())
+                .collect::<Vec<_>>(),
             vec!["disk", "ram"],
             "`RAM` and `ram` are one queue, so they are one agent"
         );

@@ -4516,11 +4516,7 @@ impl Harness {
         //
         // A connection that cannot be made is said once and is not fatal: a session whose room is
         // unreachable is a session that works, and its `room` tool refuses by name.
-        let room = match (
-            cfg.room_link,
-            top_level,
-            crate::room::socket_path(),
-        ) {
+        let room = match (cfg.room_link, top_level, crate::room::socket_path()) {
             (true, true, Some(socket)) if socket.exists() => {
                 let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
                     let bell = std::sync::Arc::clone(session_registry.bell());
