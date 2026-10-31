@@ -436,23 +436,20 @@ impl PluginHost {
         }) {
             return;
         }
-        let Some(builtin) = letibot_builtins::table()
-            .iter()
-            .find(|b| {
-                Manifest::parse(b.manifest).is_ok_and(|m| {
-                    m.hooks
-                        .iter()
-                        .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
-                })
+        let Some(builtin) = letibot_builtins::table().iter().find(|b| {
+            Manifest::parse(b.manifest).is_ok_and(|m| {
+                m.hooks
+                    .iter()
+                    .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
             })
-        else {
+        }) else {
             return;
         };
-        if let Err(why) = self.lock().stack.register_builtin_bytes(
-            builtin.name,
-            builtin.manifest,
-            builtin.wasm,
-        ) {
+        if let Err(why) =
+            self.lock()
+                .stack
+                .register_builtin_bytes(builtin.name, builtin.manifest, builtin.wasm)
+        {
             eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
         }
     }
