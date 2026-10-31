@@ -10620,11 +10620,27 @@ impl Harness {
         let stale = self
             .stale_untold()
             .map(|said| stale_notice_for_the_model(&said));
-        let text = match (plan, stale) {
-            (None, None) => None,
-            (Some(plan), None) => Some(plan),
-            (None, Some(stale)) => Some(stale),
-            (Some(plan), Some(stale)) => Some(format!("{plan}\n\n{stale}")),
+        // **And the queue's census, when one is news** — the third thing this notice may have to
+        // say, and the only one that is not about the plan. A merge queue is not a plan: it is
+        // eight rows nobody is moving, and the operator's report was that every one of them was
+        // announced once as it happened and none of them was ever counted. The clock arms on this
+        // same reading (`Harness::queue_news`), so the sentence and the schedule cannot disagree.
+        let queue = self
+            .stuck_census()
+            .filter(|c| c.is_news(letibot_sessionlog::registry::now_ms()))
+            .map(|c| {
+                crate::mergequeue::notices::stuck_census(
+                    &c,
+                    letibot_sessionlog::registry::now_ms(),
+                )
+            });
+        let mut parts: Vec<String> = Vec::new();
+        parts.extend(plan);
+        parts.extend(stale);
+        parts.extend(queue);
+        let text = match parts.len() {
+            0 => None,
+            _ => Some(parts.join("\n\n")),
         };
         text.map(|text| (text, named))
     }
@@ -10955,6 +10971,54 @@ impl Harness {
     /// model's copy is withheld.
     fn queue_news_is_mine(&self) -> bool {
         self.cfg.serve_queues
+    }
+
+    /// **This project's stuck rows, as the idle check reads them** — the census
+    /// (`mergequeue::stuck`), or `None` when this session is not the project's, when the queue is
+    /// not this daemon's to speak about, or when nothing is stuck.
+    ///
+    /// **The project's, by the same test the emergency uses** — a root session of this workspace's
+    /// repositories and never the review queue's own — because a count of rows is news only to the
+    /// session that can act on them, and a subagent told *eight rows are stuck in `main`* has been
+    /// handed somebody else's work. `queue_news_is_mine` is the `--no-queue` flag's half: a daemon
+    /// that holds no lease composes no sentence about a lease.
+    ///
+    /// `repositories_of_workspace_cached` and not the uncached one: this is read on every turn's
+    /// end (the clock re-arms there), and the answer for one workspace does not change between two
+    /// of them. A session in NO repository answers `None` rather than the whole box's rows — the
+    /// same rule `desk::nowhere` states, and for the same reason.
+    pub fn stuck_census(&self) -> Option<crate::mergequeue::stuck::Stuck> {
+        if !self.queue_news_is_mine() || self.is_the_queue() {
+            return None;
+        }
+        let store = self.store.as_ref()?;
+        let me = self.hub.session_id();
+        if crate::mergequeue::root_session(store, &me) != me {
+            return None;
+        }
+        let mine = crate::mergequeue::repositories_of_workspace_cached(&self.cfg.workspace);
+        if mine.is_empty() {
+            return None;
+        }
+        let census = crate::mergequeue::stuck::of(store, &mine).ok()?;
+        (!census.is_empty()).then_some(census)
+    }
+
+    /// **What the idle check's clock needs to know about this project's queue** — one reading, and
+    /// the clock's arming, the sentence and the identity all take it from here, so a schedule
+    /// cannot arm for a census the sentence would not say.
+    ///
+    /// `says` is `Stuck::is_news` and not *there are bad rows*: a row that went bad a minute ago is
+    /// the transition notice's, and the census exists for the row that STAYED bad.
+    pub fn queue_news(&self) -> crate::sessions::QueueNews {
+        let Some(census) = self.stuck_census() else {
+            return crate::sessions::QueueNews::none();
+        };
+        let now = letibot_sessionlog::registry::now_ms();
+        crate::sessions::QueueNews {
+            says: census.is_news(now),
+            matures_in: census.news_in_ms(now).map(std::time::Duration::from_millis),
+        }
     }
 
     pub fn queue_notices(&mut self) -> Vec<String> {
@@ -19655,6 +19719,10 @@ impl ChildTurns {
         let moved = v != self.board_version;
         self.board_version = v;
         self.nag.hold(sub.nag_hold());
+        // **The queue's census too, read the same way and for the same reason** — and empty for a
+        // child, because a child is not the project of its repository (`Harness::stuck_census`),
+        // so a subagent's clock speaks about its plan and nothing else.
+        self.nag.queue(sub.queue_news());
         if turned || moved {
             let rows = sub.todo_list();
             let jobs = sub.running_jobs(&rows);
@@ -19714,6 +19782,7 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
         // answered must not come back every window, it is the same notice and the plan has not
         // moved. Recorded BEFORE the re-arm, which reads it.
         if let crate::turn_tail::Door::Nag(notice) = door {
+            self.nag.queue(h.queue_news());
             self.nag.said(notice.clone(), std::time::Instant::now());
         }
         self.rearm(h, true);

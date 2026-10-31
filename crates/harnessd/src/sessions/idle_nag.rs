@@ -1050,3 +1050,222 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
         "a resumed clock is armed again from now"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The queue's census — the clock's SECOND subject
+// ---------------------------------------------------------------------------
+//
+// The operator's report (2026-11-01): eight merge-queue rows sat stuck for hours, and every one
+// of those transitions was notified once as it happened. What no sentence anywhere gave was the
+// TOTAL and the AGE. `mergequeue::stuck` counts them; these tests are about when the idle clock
+// says so, and — the half that matters — when it stops.
+//
+// The mechanism is deliberately the plan-check's own: the same clock, the same window, the same
+// ladder, the same pause. `QueueNews` is what the clock is handed, exactly as `NagHold` is.
+
+/// **Rows stuck long enough to be news**, as the harness hands them in.
+fn news() -> super::QueueNews {
+    super::QueueNews {
+        says: true,
+        matures_in: None,
+    }
+}
+
+/// **One delivery of the census, as `deliver_due_nags` performs one**: the clock's copy set, the
+/// deadline spent, the notice recorded, the clock re-armed.
+fn deliver(clock: &mut super::TodoNagClock, plan: &[TodoItem], at: std::time::Instant) {
+    assert!(clock.due_now(at), "the clock was due at {at:?}");
+    clock.said(None, at);
+    clock.rearm(plan, at, &no_children(), &no_jobs());
+}
+
+/// **Two bad rows, three passes inside one interval, ONE notice** — and the second notice a
+/// doubled interval later, because the census's sentence carries a growing AGE and the ladder is
+/// what keeps that from being a metronome at the base window.
+///
+/// FAILS before this change: `nag_notice` had no census in it, so a project with no unfinished
+/// plan had nothing armed at all and `due_at` was `None` at every point below.
+#[test]
+fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(news());
+
+    // Armed at the base window, like a plan nobody has been told about.
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(60)));
+
+    // **The pass runs, and the clock is not due** — three passes inside the window say nothing,
+    // and none of them moves the deadline (`due_now` is what a pass calls; a pass runs no turn, so
+    // it owes no re-arm).
+    for at in [t0, t0 + Duration::from_secs(20), t0 + Duration::from_secs(59)] {
+        assert!(!clock.due_now(at), "nothing is due at {at:?}");
+        assert_eq!(
+            clock.due_at(),
+            Some(t0 + Duration::from_secs(60)),
+            "a pass that says nothing does not move the deadline"
+        );
+    }
+
+    // **One delivery**, and the ladder starts: the same census comes back at the doubled interval.
+    deliver(&mut clock, &none, t0 + Duration::from_secs(60));
+    assert_eq!(
+        clock.due_at(),
+        Some(t0 + Duration::from_secs(60 + 120)),
+        "the same census repeats at the doubled interval, measured from its delivery"
+    );
+    assert!(
+        !clock.due_now(t0 + Duration::from_secs(120)),
+        "and not one window later — that is the metronome"
+    );
+
+    // **The second delivery, with a bigger age** — the sentence moves, the identity does not, so
+    // the ladder doubles again rather than starting over.
+    deliver(&mut clock, &none, t0 + Duration::from_secs(180));
+    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
+}
+
+/// **And a row that recovers stops it in both directions** — no further notice, and the next
+/// interval silent rather than an empty nag.
+///
+/// FAILS before this change: there was no clock to stand down, and no `QueueNews` to withdraw.
+#[test]
+fn a_queue_that_goes_clean_stands_the_clock_down() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(news());
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    deliver(&mut clock, &none, t0 + Duration::from_secs(60));
+
+    // **The rows recover**: the owner hands in a census with nothing in it, and the delivery that
+    // follows records that the notice said nothing about a queue.
+    clock.queue(super::QueueNews::none());
+    assert!(clock.due_now(t0 + Duration::from_secs(180)));
+    clock.said(None, t0 + Duration::from_secs(180));
+    clock.rearm(&none, t0 + Duration::from_secs(180), &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        None,
+        "nothing stuck, nothing to say: no deadline at all"
+    );
+
+    // **And the next interval is silent too** — a pass later arms nothing, because there is still
+    // nothing stuck. A tree that goes quiet must stop nagging, or the next reader learns to
+    // ignore it.
+    clock.rearm(&none, t0 + Duration::from_secs(600), &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), None);
+    assert!(!clock.due_now(t0 + Duration::from_secs(9_000)));
+}
+
+/// **Nothing stuck is never a notice, from the first arming on.**
+#[test]
+fn nothing_stuck_never_arms_the_clock() {
+    use std::time::Instant;
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(std::time::Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(super::QueueNews::none());
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), None);
+}
+
+/// **A row that is stuck but too YOUNG arms the moment it becomes news**, and says nothing until
+/// then — the young child's rule one subject over. Without this arm the census would wait for a
+/// turn a quiet session may never take, and the silence would have no end.
+#[test]
+fn a_young_census_is_armed_for_the_moment_it_is_news() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(super::QueueNews {
+        says: false,
+        matures_in: Some(Duration::from_secs(9 * 60)),
+    });
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(t0 + Duration::from_secs(9 * 60)),
+        "armed for the crossing, not for the base window"
+    );
+    assert!(!clock.due_now(t0 + Duration::from_secs(60)));
+}
+
+/// **A census cannot be starved by the plan, and cannot starve it.** A plan that keeps moving
+/// keeps resetting the ladder — and a census that arrives in the middle of that is said at the
+/// base window rather than waiting for whatever rung the plan's notice had climbed to.
+#[test]
+fn a_census_arrives_at_the_base_window_even_when_the_plan_has_climbed_the_ladder() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let plan = [row("open", TodoStatus::Pending)];
+    let said = super::unfinished_plan(
+        &super::the_plan_as_checked(&plan, &no_children(), &no_jobs()),
+        &plan,
+        &no_children(),
+        &no_jobs(),
+    )
+    .expect("open work");
+
+    // The plan's own ladder, climbed twice: the next mention is four windows away.
+    clock.rearm(&plan, t0, &no_children(), &no_jobs());
+    assert!(clock.due_now(t0 + Duration::from_secs(60)));
+    clock.said(Some(said.clone()), t0 + Duration::from_secs(60));
+    clock.rearm(&plan, t0 + Duration::from_secs(60), &no_children(), &no_jobs());
+    assert!(clock.due_now(t0 + Duration::from_secs(180)));
+    clock.said(Some(said.clone()), t0 + Duration::from_secs(180));
+    clock.rearm(&plan, t0 + Duration::from_secs(180), &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
+
+    // **A row has now been stuck long enough to be news.** The clock is re-armed at the base
+    // window, not at the plan's rung — so the census is heard, and the plan rides along.
+    clock.queue(news());
+    clock.rearm(&plan, t0 + Duration::from_secs(200), &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(t0 + Duration::from_secs(260)),
+        "the census is a new thing to say, so it is said at the base window"
+    );
+
+    // **And the plan is not starved by it either**: the delivery carries both, and the ladder
+    // restarts from here rather than being reset by the census forever.
+    assert!(clock.due_now(t0 + Duration::from_secs(260)));
+    clock.said(Some(said.clone()), t0 + Duration::from_secs(260));
+    clock.rearm(&plan, t0 + Duration::from_secs(260), &no_children(), &no_jobs());
+    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(260 + 120)));
+}
+
+/// **The operator speaking earns the census back too** — a message may be them acting on exactly
+/// the rows the census named, so the next mention is due at the base rate and not at the rung the
+/// old one had climbed to.
+#[test]
+fn an_operators_message_earns_the_census_back() {
+    use std::time::{Duration, Instant};
+
+    let t0 = Instant::now();
+    let mut clock = super::TodoNagClock::with_window(Duration::from_secs(60));
+    let none: [TodoItem; 0] = [];
+    clock.queue(news());
+    clock.rearm(&none, t0, &no_children(), &no_jobs());
+    deliver(&mut clock, &none, t0 + Duration::from_secs(60));
+    deliver(&mut clock, &none, t0 + Duration::from_secs(180));
+    assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
+
+    clock.prompt_arrived();
+    clock.rearm(&none, t0 + Duration::from_secs(400), &no_children(), &no_jobs());
+    assert_eq!(
+        clock.due_at(),
+        Some(t0 + Duration::from_secs(460)),
+        "one base window after the message"
+    );
+}
