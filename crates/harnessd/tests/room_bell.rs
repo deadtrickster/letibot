@@ -138,8 +138,15 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         })
     };
     // The DAEMON's client — the one the `room` tool calls through, with the same ack in it.
-    let me = SessionRoom::connect("s-worker", &scratch.socket(), bell, None)
-        .expect("the session's connection to the room");
+    let me = SessionRoom::connect(
+        "s-worker",
+        &scratch.socket(),
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        bell,
+        None,
+    )
+    .expect("the session's connection to the room");
 
     let posted = me
         .call(
@@ -259,8 +266,15 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     let session = "s-gap-line";
 
     // ---- the session, and then its absence --------------------------------
-    let first = SessionRoom::connect(session, &scratch.socket(), Arc::clone(&bell), None)
-        .expect("the session's connection to the room");
+    let first = SessionRoom::connect(
+        session,
+        &scratch.socket(),
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        Arc::clone(&bell),
+        None,
+    )
+    .expect("the session's connection to the room");
     first
         .call(
             "post",
@@ -301,8 +315,15 @@ fn a_reconnect_is_told_what_it_missed_once_and_in_words() {
     let rung_before = rung.load(Ordering::SeqCst);
 
     // ---- the reconnect ----------------------------------------------------
-    let back = SessionRoom::connect(session, &scratch.socket(), Arc::clone(&bell), None)
-        .expect("the session comes back");
+    let back = SessionRoom::connect(
+        session,
+        &scratch.socket(),
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        Arc::clone(&bell),
+        None,
+    )
+    .expect("the session comes back");
     wait_until("the gap to be said", || wake::waiting(session) >= 1);
     let said = wake::take(session);
     assert_eq!(
@@ -362,8 +383,15 @@ fn a_turn_ending_rings_no_bell_and_a_message_under_the_tag_does() {
             rung.fetch_add(1, Ordering::SeqCst);
         })
     };
-    let me = SessionRoom::connect("s-turn-end", &scratch.socket(), Arc::clone(&bell), None)
-        .expect("the session's connection to the room");
+    let me = SessionRoom::connect(
+        "s-turn-end",
+        &scratch.socket(),
+        letibot_room::DEFAULT_PROJECT,
+        None,
+        Arc::clone(&bell),
+        None,
+    )
+    .expect("the session's connection to the room");
     me.call(
         "post",
         &serde_json::json!({"verb": "post", "tag": "ram", "body": "8 GB for the suite"}),

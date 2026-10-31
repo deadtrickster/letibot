@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use letibot_harnessd::room::link::SessionRoom;
 use letibot_harnessd::room::roster::RosterSource;
+use letibot_harnessd::room::wake;
 use letibot_room::{Group, Member, Server};
 use serde_json::json;
 
@@ -160,6 +161,132 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     );
     assert!(b_reminders.contains("2 GB"), "{b_reminders}");
     assert!(!b_reminders.contains("8 GB"), "{b_reminders}");
+    server.stop();
+}
+
+/// **The tree decides WHICH room an event is in; the bell decides WHO is told** — and the two rules
+/// meet in one assertion: a post under project one's `ram` rings project one's session and leaves
+/// project two's bell silent.
+///
+/// This is the seam the two halves of the room were built on: `Server::route` filters the
+/// connections by the project the event came out of, and a `SessionRoom`'s wake closure rings only
+/// for what its own connection was sent. So the isolation is asserted at both ends at once — the
+/// server's (a connection in another room is never written to) and the client's (a session that was
+/// sent nothing cannot ring). Before the room was a project's, both sessions shared one room and
+/// project two's bell rang for project one's work; before the bell, a session was only woken between
+/// turns, so the ring itself did not exist to be asserted.
+#[test]
+fn a_bell_in_one_projects_room_does_not_ring_in_another() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let dir = scratch("bells");
+    let socket = dir.join("room.sock");
+    let server = Server::serve(&socket, letibot_room::Room::new()).expect("a socket");
+    let one = letibot_room::project_key(&dir.join("one").display().to_string());
+    let two = letibot_room::project_key(&dir.join("two").display().to_string());
+
+    // One counter per session, so the assertion is about a bell that did or did not ring rather
+    // than about a shared total that two rooms could each have moved.
+    let rung_one = Arc::new(AtomicUsize::new(0));
+    let rung_two = Arc::new(AtomicUsize::new(0));
+    let bell = |n: &Arc<AtomicUsize>| -> Arc<dyn Fn(&str) + Send + Sync> {
+        let n = Arc::clone(n);
+        Arc::new(move |_: &str| {
+            n.fetch_add(1, Ordering::SeqCst);
+        })
+    };
+    // Session ids of this test's own: `crate::room::wake` is one queue per session for the whole
+    // process, and two tests sharing an id would read each other's notes.
+    let a = SessionRoom::connect("s-one-worker", &socket, &one, None, bell(&rung_one), None)
+        .expect("a session of project one");
+    let b = SessionRoom::connect("s-two-worker", &socket, &two, None, bell(&rung_two), None)
+        .expect("a session of project two");
+
+    // **Both projects have a queue under the same word**, and that is the whole point: before the
+    // room was a project's, `ram` was one lock and one queue, so project two's poster was in project
+    // one's audience and every claim on it rang the wrong session.
+    let posted = a
+        .call(
+            "post",
+            &json!({"tag": "ram", "body": "8 GB for project one"}),
+        )
+        .expect("a post in project one");
+    assert!(posted.contains("#1"), "{posted}");
+    let theirs = b
+        .call(
+            "post",
+            &json!({"tag": "ram", "body": "2 GB for project two"}),
+        )
+        .expect("a post in project two");
+    assert!(theirs.contains('#'), "{theirs}");
+
+    // Each session is rung for the item it made — the baseline this test measures against, because
+    // a poster hearing its own post is the room working, not a leak between rooms.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline
+        && (rung_one.load(Ordering::SeqCst) == 0 || rung_two.load(Ordering::SeqCst) == 0)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        rung_one.load(Ordering::SeqCst) >= 1 && rung_two.load(Ordering::SeqCst) >= 1,
+        "each session is rung for the item it made"
+    );
+    let before_one = rung_one.load(Ordering::SeqCst);
+    let before_two = rung_two.load(Ordering::SeqCst);
+    wake::take("s-one-worker");
+    wake::take("s-two-worker");
+
+    // **Project one's claim on its own `ram`** — an event about project one's item, and the event
+    // that would reach project two if the two shared one room.
+    let claimed = a
+        .call("claim", &json!({"tag": "ram"}))
+        .expect("a claim in project one");
+    assert!(claimed.contains("you hold #1"), "{claimed}");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && rung_one.load(Ordering::SeqCst) == before_one {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        rung_one.load(Ordering::SeqCst) > before_one,
+        "project one's own session is rung for the claim on its item"
+    );
+    assert!(
+        wake::waiting("s-one-worker") >= 1,
+        "and the sentence the ring is about is in its queue"
+    );
+
+    // **And the other project heard nothing** — not a bell, and not a note. A `missed` count would
+    // be wrong here too: the event was never addressed to this session, so there is no gap to report.
+    assert_eq!(
+        rung_two.load(Ordering::SeqCst),
+        before_two,
+        "project two's bell must not ring for project one's `ram`"
+    );
+    assert_eq!(
+        wake::waiting("s-two-worker"),
+        0,
+        "and nothing is waiting in project two's queue either"
+    );
+    // The room itself agrees: the two `ram`s are two queues, each holding only its own project's
+    // item — and each numbering its own from 1, which is why the count a `claim` answers with is a
+    // number and not a sentence about somebody else's queue.
+    let mine = a.call("queue", &json!({"tag": "ram"})).expect("a read");
+    assert!(
+        mine.contains("8 GB") && !mine.contains("2 GB"),
+        "project one's queue is its own: {mine}"
+    );
+    assert!(mine.contains("#1"), "and numbers its own from 1: {mine}");
+    let two_queue = b.call("queue", &json!({"tag": "ram"})).expect("a read");
+    assert!(
+        two_queue.contains("2 GB") && !two_queue.contains("8 GB"),
+        "and project two's is its own: {two_queue}"
+    );
+    assert!(
+        two_queue.contains("#1"),
+        "numbered from 1 in its own room: {two_queue}"
+    );
     server.stop();
 }
 
