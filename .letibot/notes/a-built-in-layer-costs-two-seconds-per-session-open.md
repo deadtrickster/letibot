@@ -1,4 +1,4 @@
-<!-- abstract: MEASURED 2026-10-28: compiling one built-in wasm layer costs 1.97 s of CPU in a debug host and every session open paid it, which is what made `no_spin` and the idle-exit test red; and `check-fmt.sh` cannot survive a `git mv` of a .rs file (it feeds `old -> new` to rustfmt). -->
+<!-- abstract: MEASURED 2026-10-28: compiling one built-in wasm layer costs 1.97 s of CPU in a debug host and every session open paid it, which is what made `no_spin` and the idle-exit test red; and `check-fmt.sh` cannot survive a `git mv` of a .rs file — plus, 2026-10-31, the one built-in the DAEMON answers (the room's pane) is installed at `attach`, not at open. -->
 
 # A built-in wasm layer costs ~2 s of CPU to compile, and the first cut paid it on every session open
 
@@ -48,3 +48,19 @@ rustfmt dies with `Unrecognized option: '>'` — reported as *"rustfmt failed an
 reads like a parse error in your code. Commit first (a committed rename goes through
 `git diff --name-only --diff-filter=ACMR`, which prints only the new path), or run `rustfmt --check
 --edition 2024 <the files>` by hand.
+
+## UPDATE 2026-10-31 — the one built-in the DAEMON answers is installed at `attach`
+
+The room's pane (`plugins/builtin/room`, `hooks = ["pane_room"]`) is the exception to "the built-in
+panes are the head's": its four controls are the HOST's verbs, so the daemon that holds the
+session's connection to the coordinator is the only host that can draw it. That made it the first
+built-in the daemon installs for a reason other than a declared tool — and the first thing this
+note's measurement had to be applied to again: its module is **218,712 bytes**, which is the same
+weight as `claude-transcript` (232,869 → 1.97 s), so installing it at every session open would have
+put two seconds on every `leticode` on a box with a coordinator.
+
+`PluginHost::ensure_the_room_pane` therefore runs at `PaneDriver::attach` (a head arriving is the
+first moment a pane is worth a compile) and at `open` (a head that asks without having been
+announced one), and only when this host has a room feed and no layer already answers the hook. A
+session nobody looks at compiles nothing, and the test asserts `panes()` is empty before the door
+and `["room/room"]` after it.
