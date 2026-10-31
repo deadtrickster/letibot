@@ -193,7 +193,115 @@ fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
         list.content.stop_rows.len(),
         "one stop per row that can be acted on"
     );
-    let plugins = crate::ui::render::row_strings(&list.content.lines, a.cfg.palette());
-    let own = crate::ui::render::row_strings(&a.session_list(100).content.lines, a.cfg.palette());
+    let (own, plugins) = both_lists(&a);
     assert_eq!(own, plugins, "the plugin's list is the head's list");
+}
+
+/// **A daemon whose head is standing in `here`** — the family view, and the state a head is in
+/// after Enter on a sub-session.
+fn standing_in(here: &str, sessions: Vec<SessionBrief>) -> App {
+    let mut a = app();
+    a.home = HOME.to_string();
+    a.apply(hello(here, sessions, Hub::new(here).snapshot()));
+    a.push_surface(Surface::Picker);
+    a
+}
+
+/// The two drawings of one daemon at one width: the head's own list, and the layer's.
+fn both_lists(a: &App) -> (Vec<String>, Vec<String>) {
+    let plugins = crate::ui::render::row_strings(
+        &a.sessions_list(100)
+            .expect("the built-in sessions layer answers in this process")
+            .content
+            .lines,
+        a.cfg.palette(),
+    );
+    let own = crate::ui::render::row_strings(&a.session_list(100).content.lines, a.cfg.palette());
+    (own, plugins)
+}
+
+/// **A family is drawn whatever group its members are in** — a review's parent is the gatekeeper
+/// (`system = "gatekeepers"`) and the review itself is a `reviewer`.
+///
+/// The layer walked the family in the PARENT's group, so its list was one row — the gatekeeper —
+/// with the session the head was standing in missing from it. The head's family walk has no
+/// branch at all, and the two lists are one list.
+#[test]
+fn the_family_of_a_review_is_drawn_by_both_lists() {
+    let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
+    let reviewer = format!("{queue}-sub-1791759365511364772");
+    let mut gatekeeper = brief(&queue, "the review queue", false);
+    gatekeeper.origin = SessionOrigin::Queue;
+    let mut review = brief(&reviewer, "You are the gatekeeper. review it", false);
+    review.parent_session_id = Some(queue.clone());
+    let a = standing_in(&reviewer, vec![gatekeeper, review]);
+    assert_eq!(
+        a.session_rows().len(),
+        2,
+        "the head's family is the parent and the row it is standing in: {:?}",
+        a.session_rows()
+            .iter()
+            .map(|r| r.idx.map(|i| a.sessions[i].title.clone()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        a.session_rows()[0].open,
+        Some(true),
+        "the gatekeeper holds a row that is on the list, so it says `-`"
+    );
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "the layer's family is the head's family");
+    let gatekeeper_line = own
+        .iter()
+        .find(|l| l.contains("the review queue"))
+        .unwrap_or_else(|| panic!("the gatekeeper's row is drawn: {own:?}"));
+    assert!(
+        gatekeeper_line.contains("- "),
+        "and its glyph is open over the row below it: {gatekeeper_line:?}"
+    );
+    assert!(
+        own.iter()
+            .any(|l| l.contains("You are the gatekeeper. review it")),
+        "the row the head is standing in is drawn: {own:?}"
+    );
+}
+
+/// **The same rule on the other pair the tree creates**: a notes keeper spawned as a `task` child
+/// of an ordinary conversation has a parent with no group at all, and it is that conversation's
+/// child on both lists.
+#[test]
+fn the_family_of_a_keeper_is_drawn_by_both_lists() {
+    let mut keeper = brief(
+        "s-keeper",
+        "You are the notes keeper. tidy the notes",
+        false,
+    );
+    keeper.parent_session_id = Some("s-habr".into());
+    let a = standing_in(
+        "s-keeper",
+        vec![brief("s-habr", "the habr article", false), keeper],
+    );
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "the layer's family is the head's family");
+    assert!(
+        own.iter().any(|l| l.contains("the notes keeper")),
+        "the keeper is drawn, and it is the row the head is standing in: {own:?}"
+    );
+}
+
+/// **A title and a workspace are somebody's text, and both lists draw it the same way** — the
+/// layer turned a control character into a space and the head did not, so one row was two
+/// pictures, and one of them carried an escape to the terminal.
+#[test]
+fn a_control_character_in_a_row_is_drawn_as_a_space_by_both_lists() {
+    let mut nasty = brief("s-nasty", "the\u{7}bell\u{1b}[31mred", false);
+    nasty.wiring.workspace = "/home/dead/Projects/letibot/letibot\u{7}".into();
+    let a = standing_in("s-nasty", vec![nasty]);
+    let (own, plugins) = both_lists(&a);
+    assert_eq!(own, plugins, "one row, one picture");
+    assert!(
+        !own.iter().any(|l| l.chars().any(char::is_control)),
+        "and no control character reaches the screen:\n{}",
+        own.join("\n")
+    );
 }

@@ -827,7 +827,10 @@ impl App {
                         depth: r.depth,
                         number: None,
                         open,
-                        cells: vec![TreeCell::role(r.node.title(), rano::style::Role::Strong)],
+                        cells: vec![TreeCell::role(
+                            clean(&r.node.title()),
+                            rano::style::Role::Strong,
+                        )],
                         facts: Vec::new(),
                         detail: vec![r.node.legend().to_string()],
                         detail_column: None,
@@ -864,6 +867,9 @@ impl App {
     /// **A session's name on its row** — its slug when it has one, `WAITING ON YOU` when it is
     /// waiting, and paused nags when they are. The layer's `name_of` is this same sentence, and
     /// the two are held together by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
+    ///
+    /// **A title is somebody's text, so its control characters are drawn as spaces** — see
+    /// [`clean`].
     fn row_name(&self, i: usize) -> String {
         let s = &self.sessions[i];
         let name = if s.title.is_empty() {
@@ -881,11 +887,12 @@ impl App {
             1 => format!("{name} · WAITING ON YOU"),
             n => format!("{name} · WAITING ON YOU ({n})"),
         };
-        if s.nags_paused.is_some() {
+        let name = if s.nags_paused.is_some() {
             format!("{name} · nags paused")
         } else {
             name
-        }
+        };
+        clean(&name)
     }
 
     /// The right-hand column of a session's row: what it IS, in one run of facts.
@@ -933,11 +940,12 @@ impl App {
     /// for a stored session the only thing on the row that says what the conversation was about.
     fn row_under(&self, i: usize) -> String {
         let s = &self.sessions[i];
-        if s.wiring.workspace.is_empty() {
+        let under = if s.wiring.workspace.is_empty() {
             s.session_id.clone()
         } else {
             format!("{}  {}", s.session_id, self.tilde_path(&s.wiring.workspace))
-        }
+        };
+        clean(&under)
     }
 
     /// **The width the list is measured at when it is not being drawn** — the frame's own, so a
@@ -1054,6 +1062,20 @@ fn enter_action(act: &RowAct, open: Option<Fold>) -> Option<TreeAction> {
         },
     };
     Some(TreeAction::new("enter", words))
+}
+
+/// **Control characters out of a row's words**: a title and a workspace are somebody's, and an
+/// escape in one would be measured one way and drawn another.
+///
+/// **This is the sessions layer's own rule, spelled twice on purpose.** The layer is a GUEST — a
+/// `cdylib` compiled for wasm with no dependency of the host's — so it cannot call this function,
+/// and the host cannot call its. Two spellings of one rule are what the equality test
+/// (`the_heads_list_and_the_plugins_list_draw_the_same_rows`) exists to keep in step: a title with
+/// an escape in it drew a space from one list and the raw byte from the other.
+fn clean(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn fold_of(f: pv::Fold) -> Fold {

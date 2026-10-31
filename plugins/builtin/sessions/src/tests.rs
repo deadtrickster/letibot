@@ -271,6 +271,84 @@ fn the_family_view_has_no_tree() {
     );
 }
 
+/// The review queue's own id, as a daemon's is: `s-gatekeeper-<12 hex>`.
+const GATEKEEPER: &str = "s-gatekeeper-0123456789ab";
+
+/// **A family is a family whatever group its members are drawn in** — a reviewer's parent is the
+/// gatekeeper (`gatekeepers`) and the reviewer itself is a `reviewer`, so a family walked in the
+/// PARENT's branch dropped every child and drew one row: the gatekeeper, with the session the head
+/// was standing in missing from the list.
+///
+/// The group is a fact about where a row is DRAWN, and it must not decide who is kin.
+#[test]
+fn a_family_is_drawn_across_the_groups_its_members_are_in() {
+    let reviewer = format!("{GATEKEEPER}-sub-1791759365511364772");
+    let mut gatekeeper = session(GATEKEEPER, "the review queue");
+    gatekeeper.system = Some("gatekeepers".into());
+    let mut review = session(&reviewer, "You are the gatekeeper. review it");
+    review.system = Some("reviewers".into());
+    review.parent = Some(GATEKEEPER.into());
+    let f = feed(vec![session("s-a", "a"), gatekeeper, review], &reviewer);
+    assert_eq!(
+        ids(&draw(&f, &[])),
+        vec![GATEKEEPER.to_string(), reviewer.clone()],
+        "the parent and the child, and no group's line between them"
+    );
+    let rows = draw(&f, &[]);
+    assert_eq!(
+        rows[0].open,
+        Some(Fold::Open),
+        "the parent holds a row that is on the list, so it says `-`"
+    );
+    assert_eq!(
+        rows[1].depth, 1,
+        "one step in, whatever group it is drawn in"
+    );
+    assert_eq!(
+        rows[1].number,
+        Some(2),
+        "and the numbers still run over the rows drawn"
+    );
+}
+
+/// **The same rule on the other pair the tree creates**: a notes keeper spawned as a `task` child
+/// of an ordinary conversation has a parent with no group at all, and it belongs in that family.
+#[test]
+fn a_keeper_child_of_a_conversation_is_in_its_family() {
+    let mut keeper = session("s-keeper", "You are the notes keeper. tidy the notes");
+    keeper.system = Some("keepers".into());
+    keeper.parent = Some("s-a".into());
+    let f = feed(vec![session("s-a", "the habr article"), keeper], "s-keeper");
+    assert_eq!(
+        ids(&draw(&f, &[])),
+        vec!["s-a", "s-keeper"],
+        "the keeper is the conversation's child, and the head is standing in it"
+    );
+}
+
+/// **A `-` over a row whose child is on the screen** — the person can fold the parent of the
+/// session they are standing in away, and the walk still draws that session: the chain to `here`
+/// is always on the list. The glyph read the person's fold first, so it drew `+` directly over the
+/// row below it. The head's rule is `children_open`, `expanded || child_on_path`, and the chain
+/// wins.
+#[test]
+fn a_row_whose_child_is_on_the_path_is_drawn_open_though_it_was_folded() {
+    let mut child = session("s-c", "read the repo");
+    child.parent = Some("s-a".into());
+    let f = feed(vec![session("s-a", "the parent"), child], "s-c");
+    let rows = draw(&f, &[("s-a", false)]);
+    assert_eq!(
+        ids(&rows),
+        vec!["s-a", "s-c"],
+        "the row the head is standing in cannot be hidden"
+    );
+    assert_eq!(
+        rows[0].open,
+        Some(Fold::Open),
+        "`-`, because the child it holds is drawn under it"
+    );
+}
+
 /// **A workspace under the head's home is drawn as `~/…`**, and the full id sits under every row.
 #[test]
 fn a_row_under_is_the_id_and_a_shortened_path() {

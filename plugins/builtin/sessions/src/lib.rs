@@ -64,6 +64,13 @@ const MAX_DEPTH: usize = 64;
 /// tree caps at the same number, so the two pictures are one.
 const MAX_INDENT: usize = 3;
 
+/// **The branch a walk is inside** — the project, and the `system` group when the walk is under
+/// `system`.
+///
+/// **`None` is the FAMILY view, and it holds every session**: kinship is not a display category,
+/// so a family is walked with no branch at all. See [`Ctx::in_branch`].
+type Branch<'a> = Option<(&'a str, Option<&'a str>)>;
+
 /// The feed, as this layer reads it.
 #[derive(Debug, Deserialize)]
 struct Feed {
@@ -198,7 +205,7 @@ impl Ctx<'_> {
             .parent
             .as_deref()
             .and_then(|p| self.at(p))
-            .is_some_and(|p| self.in_branch(p, project, system))
+            .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
 
     /// **The projects this feed holds, in the order it lists them** — the key and the name to draw.
@@ -214,7 +221,18 @@ impl Ctx<'_> {
 
     /// **Whether a session is drawn in this branch** — the project, and the `system` group when the
     /// walk is under `system`.
-    fn in_branch(&self, i: usize, project: &str, system: Option<&str>) -> bool {
+    ///
+    /// **`None` holds every session, and it is the family view's branch**: kinship is not a display
+    /// category. A reviewer's parent is the gatekeeper (`system = "gatekeepers"`) and the reviewer
+    /// itself is a `reviewer`; a notes keeper spawned as a `task` child of an ordinary conversation
+    /// has a parent with no group at all. Filtered by the parent's group, a family is the one row
+    /// you are standing NEXT TO and never the row you are standing IN — so the family walk passes no
+    /// branch, which is also what the head's own family walk does (`App::session_rows` walks it
+    /// with `branch: None`).
+    fn in_branch(&self, i: usize, branch: Branch<'_>) -> bool {
+        let Some((project, system)) = branch else {
+            return true;
+        };
         self.sessions
             .get(i)
             .is_some_and(|s| s.project == project && s.system.as_deref() == system)
@@ -222,31 +240,39 @@ impl Ctx<'_> {
 
     /// Whether session `i` is drawn under `parent` **in this branch** — the fold glyph is about the
     /// tree inside a row, so a child in another branch is not a reason for a `+`.
-    fn kids_in(&self, parent: &str, project: &str, system: Option<&str>) -> bool {
+    fn kids_in(&self, parent: &str, branch: Branch<'_>) -> bool {
         self.sessions
             .iter()
             .enumerate()
-            .any(|(i, s)| s.parent.as_deref() == Some(parent) && self.in_branch(i, project, system))
+            .any(|(i, s)| s.parent.as_deref() == Some(parent) && self.in_branch(i, branch))
     }
 
-    /// A session's fold state, folding taken from the person before the family rule and the default.
-    fn fold_state(&self, id: &str, depth: usize) -> Fold {
-        match self.opened(id) {
-            Some(false) => return Fold::Closed,
-            Some(true) => return Fold::Open,
-            None => {}
-        }
-        // The family view's first level is open by rule: a family whose members were folded away
-        // would be a list of one row.
-        if depth == 0
-            && self
-                .at(self.here)
-                .and_then(|i| self.sessions[i].parent.as_deref())
-                == Some(id)
-        {
+    /// Whether one of `id`'s children is on the chain to the session `here` — the second reason a
+    /// row's children are on the list at all (see [`children`]), and so a reason for a `-`.
+    fn child_on_path(&self, id: &str) -> bool {
+        self.sessions
+            .iter()
+            .any(|s| s.parent.as_deref() == Some(id) && self.path.iter().any(|p| *p == s.id))
+    }
+
+    /// A session's fold state — **the chain to `here` first**, then the person's answer.
+    ///
+    /// The two facts a row's children are drawn by are the person's fold and the chain to `here`
+    /// ([`children`]), and the glyph is those two and nothing else — the head's `children_open`,
+    /// `expanded || child_on_path`, in one line.
+    fn fold_state(&self, id: &str) -> Fold {
+        // **A `+` over a row whose child is on the screen** is the one thing this list must not
+        // say, and the chain is drawn whatever the person last said about the fold: a session the
+        // head is standing in cannot be hidden, so its parent says `-` even when it was folded
+        // away. That is also the whole of the family view's first level — the parent of the row
+        // you are in is a row whose child is on the chain — so there is no second rule here.
+        if self.child_on_path(id) {
             return Fold::Open;
         }
-        Fold::Closed
+        match self.opened(id) {
+            Some(true) => Fold::Open,
+            _ => Fold::Closed,
+        }
     }
 }
 
@@ -258,26 +284,20 @@ impl Ctx<'_> {
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
     // **A head standing in a sub-session draws its FAMILY**: the parent and its children, and no
     // tree at all — a list of two or three rows around the one the person is in.
+    //
+    // **The family is walked with NO BRANCH**, because kinship is not a display category: the
+    // parent's `system` group is a fact about where a row is DRAWN, and a reviewer's parent is a
+    // gatekeeper while the reviewer is a `reviewer` — filtered by the parent's group, this walk
+    // dropped every child and drew the one row the head was standing beside (see `in_branch`).
     if let Some(parent) = ctx
         .at(ctx.here)
         .and_then(|i| ctx.sessions[i].parent.clone())
         && let Some(p) = ctx.at(&parent)
     {
-        let project = ctx.sessions[p].project.clone();
-        let system = ctx.sessions[p].system.clone();
-        let fold = has_fold(ctx, p, 0, &project, system.as_deref());
+        let fold = has_fold(ctx, p, None);
         let mut out = vec![session_row(ctx, p, 0, 1, fold)];
         let mut number = 1;
-        children(
-            ctx,
-            &mut out,
-            &parent,
-            1,
-            &mut number,
-            true,
-            &project,
-            system.as_deref(),
-        );
+        children(ctx, &mut out, &parent, 1, &mut number, true, None);
         return out;
     }
     let mut out = Vec::new();
@@ -304,7 +324,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                 continue;
             }
             number += 1;
-            let fold = has_fold(ctx, i, 1, project, None);
+            let fold = has_fold(ctx, i, Some((project, None)));
             out.push(session_row(ctx, i, 1, number, fold));
             children(
                 ctx,
@@ -313,8 +333,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                 2,
                 &mut number,
                 false,
-                project,
-                None,
+                Some((project, None)),
             );
         }
         // **The `system` branch**, when this project has one — and no line at all when it has not.
@@ -366,7 +385,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                     continue;
                 }
                 number += 1;
-                let fold = has_fold(ctx, i, 3, project, Some(group));
+                let fold = has_fold(ctx, i, Some((project, Some(group))));
                 out.push(session_row(ctx, i, 3, number, fold));
                 children(
                     ctx,
@@ -375,8 +394,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                     4,
                     &mut number,
                     false,
-                    project,
-                    Some(group),
+                    Some((project, Some(group))),
                 );
             }
         }
@@ -390,7 +408,8 @@ fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) 
         id: key,
         depth: depth.min(MAX_INDENT),
         number: None,
-        cells: vec![Cell::role(title, Role::Strong)],
+        // **A project's line is a PATH**, which is somebody's too — the same rule as a row's words.
+        cells: vec![Cell::role(clean(&title), Role::Strong)],
         facts: Vec::new(),
         under: vec![legend.to_string()],
         open: Some(if open { Fold::Open } else { Fold::Closed }),
@@ -422,19 +441,15 @@ fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Opti
 
 /// **Whether this row has a fold, and which way** — about the tree *inside the branch it is drawn
 /// in*: a `-` over a row would promise rows this list does not hold.
-fn has_fold(
-    ctx: &Ctx<'_>,
-    at: usize,
-    depth: usize,
-    project: &str,
-    system: Option<&str>,
-) -> Option<Fold> {
+fn has_fold(ctx: &Ctx<'_>, at: usize, branch: Branch<'_>) -> Option<Fold> {
     let id = ctx.sessions[at].id.as_str();
-    ctx.kids_in(id, project, system)
-        .then(|| ctx.fold_state(id, depth))
+    ctx.kids_in(id, branch).then(|| ctx.fold_state(id))
 }
 
 /// A session's children, one step deeper — the recursive half of [`rows`].
+///
+/// `branch` is the row's place in the tree, and `None` is the family view's own walk — see
+/// [`Ctx::in_branch`] for why a family passes none.
 #[allow(clippy::too_many_arguments)]
 fn children(
     ctx: &Ctx<'_>,
@@ -443,8 +458,7 @@ fn children(
     depth: usize,
     number: &mut usize,
     force: bool,
-    project: &str,
-    system: Option<&str>,
+    branch: Branch<'_>,
 ) {
     // **A row's children are drawn when it is OPENED, and not before** — the head's own rule:
     // a collapsed default is what keeps thirty subagents from burying four conversations, and
@@ -456,7 +470,7 @@ fn children(
             continue;
         }
         // A row belongs to exactly one branch, so a child of another branch is not drawn under it.
-        if !ctx.in_branch(i, project, system) {
+        if !ctx.in_branch(i, branch) {
             continue;
         }
         if !open && !ctx.path.iter().any(|p| *p == s.id) {
@@ -466,9 +480,9 @@ fn children(
         // numbered itself would hand two rows the same number.
         *number += 1;
         let n = *number;
-        let fold = has_fold(ctx, i, depth, project, system);
+        let fold = has_fold(ctx, i, branch);
         out.push(session_row(ctx, i, depth, n, fold));
-        children(ctx, out, &s.id, depth + 1, number, false, project, system);
+        children(ctx, out, &s.id, depth + 1, number, false, branch);
     }
 }
 
@@ -493,11 +507,15 @@ fn name_of(s: &Session) -> String {
         1 => format!("{name} · WAITING ON YOU"),
         n => format!("{name} · WAITING ON YOU ({n})"),
     };
-    if s.nags_paused {
+    let name = if s.nags_paused {
         format!("{name} · nags paused")
     } else {
         name
-    }
+    };
+    // **A title is somebody's, and a control character in it would be measured one way and drawn
+    // another** — the same rule the under line is drawn with, and the head's `row_name` is the
+    // same sentence.
+    clean(&name)
 }
 
 /// The right-hand column: what the row IS, in one run of facts.
