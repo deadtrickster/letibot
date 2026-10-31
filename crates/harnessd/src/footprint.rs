@@ -76,8 +76,13 @@ pub const fn trail_ceiling() -> usize {
 /// The floor under a computed ceiling. A session whose window is small still holds its stable
 /// prefix: the region alone is 216 KiB for a 54 000-token prompt (a byte vocabulary's message
 /// zero, `Vocab::bytes`), and the rows a turn appends sit on top of it — so the floor is a
-/// megabyte, and every ordinary session is expected to sit well under it.
-pub const MIN_CEILING: usize = 1 << 20;
+/// megabyte, and every ordinary session sat well under it — until a session that ran eighteen
+/// hours at a 1 000 000-token window measured 22 MiB against the ~15 MiB the per-token arithmetic
+/// gave it (a long session's rows carry tool-call metadata and reasoning the 16-bytes-per-token
+/// estimate does not see). 64 MiB is the floor the no-wall tripwire already uses, so a session
+/// with a wall now has at least the headroom of one without (operator: "15mb is on a small side?
+/// bump it to 64").
+pub const MIN_CEILING: usize = 64 << 20;
 
 /// **A session with no wall has no compaction, so nothing bounds its transcript.** This is a
 /// tripwire and it says so: a session past it is one that will grow until it is closed.
@@ -189,18 +194,20 @@ mod tests {
     /// its region are each bounded by the window, and the floor is what a small window gets.
     #[test]
     fn the_ceiling_is_the_windows_arithmetic_with_a_floor_under_it() {
-        // 32 768 tokens: 512 KiB of text-and-region arithmetic + 144 KiB of trail, under the
-        // floor, so the floor wins.
+        // 32 768 tokens: 512 KiB of text-and-region arithmetic + 144 KiB of trail, far under the
+        // 64 MiB floor, so the floor wins.
         assert_eq!(ceiling_for(Some(32_768)), MIN_CEILING);
-        // 200 000 tokens: 200 000 × 16 = 3 200 000 + 144 000 = 3 344 000, over the floor.
-        assert_eq!(ceiling_for(Some(200_000)), 3_344_000);
-        // The window at which the arithmetic overtakes the floor: (1 MiB − 144 KiB) / 16 ≈ 56 536
-        // tokens, so a 56 000-token window is still the floor and a 57 000-token one is not.
-        assert_eq!(ceiling_for(Some(56_000)), MIN_CEILING);
-        assert_eq!(ceiling_for(Some(57_000)), 57_000 * 16 + 144_000);
-        // A session with no wall gets the tripwire, and it is the larger number.
+        // 200 000 tokens: 3 344 000 — still under the 64 MiB floor, so the floor wins. A long
+        // session at this window measured 22 MiB against the 15 MiB the old arithmetic gave it,
+        // which is why the floor is 64 MiB now.
+        assert_eq!(ceiling_for(Some(200_000)), MIN_CEILING);
+        // The crossover: (64 MiB − 144 KiB) / 16 ≈ 4 172 588 tokens, so a 4 100 000-token
+        // window is still the floor and a 4 300 000-token one is not.
+        assert_eq!(ceiling_for(Some(4_100_000)), MIN_CEILING);
+        assert!(ceiling_for(Some(4_300_000)) > MIN_CEILING);
+        // A session with no wall gets the tripwire, and the floor no longer exceeds it.
         assert_eq!(ceiling_for(None), NO_WALL_CEILING);
-        assert!(NO_WALL_CEILING > MIN_CEILING);
+        assert_eq!(NO_WALL_CEILING, MIN_CEILING);
     }
 
     /// The trail's ceiling is the product of the two caps `trail()` already read, so a session
