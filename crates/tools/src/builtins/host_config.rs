@@ -211,6 +211,13 @@ impl Runner for System {
 // Privilege
 // ---------------------------------------------------------------------------
 
+/// **A command as root runs it**: the argv to exec, and the environment that carries the helper.
+///
+/// A pair rather than a struct because both halves go to [`Runner::run`] and nothing else reads
+/// them — the helper's path never leaves this tuple, which is what keeps a password channel out
+/// of the model's reach.
+pub type Elevated = (Vec<String>, Vec<(String, String)>);
+
 /// **How a setting that needs root can be asked for**, decided before anything runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Privilege {
@@ -237,23 +244,21 @@ impl Privilege {
         if let Some(p) = which("letibot-askpass") {
             return Privilege::Askpass(p);
         }
-        Privilege::None(format!(
+        Privilege::None(
             "this session is not root and has no way to ask for a password: `$SUDO_ASKPASS` \
              names nothing and `letibot-askpass` is not on `PATH`. A daemon has no terminal, so \
              a bare `sudo` here would wait for a prompt nobody can see. Start the daemon under \
              `letibot` (which installs the helper), or run the command yourself in a shell you \
              are sitting at."
-        ))
+                .to_string(),
+        )
     }
 
     /// The argv to run `argv` as root, and the environment that carries the helper.
     ///
     /// Public because a [`Platform`] is what builds a command and this is where the *how* lives:
     /// a platform that re-implemented it would be a second answer to *can this session ask?*.
-    pub fn as_root(
-        &self,
-        argv: &[String],
-    ) -> Result<(Vec<String>, Vec<(String, String)>), Refusal> {
+    pub fn as_root(&self, argv: &[String]) -> Result<Elevated, Refusal> {
         match self {
             Privilege::Root => Ok((argv.to_vec(), Vec::new())),
             Privilege::Askpass(helper) => {
@@ -1120,12 +1125,12 @@ fn settings(platform: &dyn Platform) -> Result<String, Invocation> {
             s.note
         ));
     }
-    out.push_str(&format!(
+    out.push_str(
         "A setting this platform has not got is refused by name rather than mapped: macOS's perf \
          knob is `perf-policy`, Linux's is `cpu-governor`. `set` records every change in the host \
          changelog (`host_changelog list`), and `host_changelog revert N` hands back the value to \
-         put back."
-    ));
+         put back.",
+    );
     Ok(out)
 }
 

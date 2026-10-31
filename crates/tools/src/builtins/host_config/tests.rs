@@ -21,10 +21,13 @@ struct Asked {
     env: Vec<(String, String)>,
 }
 
+/// **What a scripted command answers**: a closure over the argv it was asked for.
+type Answer = Box<dyn Fn(&Asked) -> Result<Ran, String> + Send + Sync>;
+
 /// A runner that runs nothing: it records what was asked and answers from a closure.
 struct Scripted {
     asked: Mutex<Vec<Asked>>,
-    answer: Box<dyn Fn(&Asked) -> Result<Ran, String> + Send + Sync>,
+    answer: Answer,
 }
 
 impl Scripted {
