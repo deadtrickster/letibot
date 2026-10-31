@@ -147,12 +147,10 @@ impl SessionRoom {
     /// coordinator answers in one frame, and a per-session read would be a second frame shape for a
     /// question the room already answers.
     pub fn reminders(&self) -> Result<Vec<letibot_room::Reminder>, String> {
-        let response = self.client.request(&Request::Reminders).map_err(|e| {
-            format!(
-                "the room at {} did not answer: {e}",
-                self.socket.display()
-            )
-        })?;
+        let response = self
+            .client
+            .request(&Request::Reminders)
+            .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
         match response {
             Response::Reminders { rows } => Ok(rows),
             Response::Bye { why } => Err(format!("the room closed the connection: {why}")),

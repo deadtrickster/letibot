@@ -507,7 +507,11 @@ fn need_words(n: &TodoNeed) -> String {
         // purpose and a person can see why.
         TodoNeed::Room { item, working } => format!(
             "room item #{item}{}",
-            if *working { " (the room is working on it)" } else { "" }
+            if *working {
+                " (the room is working on it)"
+            } else {
+                ""
+            }
         ),
         TodoNeed::Operator { question, options } => format!(
             "YOU — \"{}\" ({}) — enter on the row answers it",

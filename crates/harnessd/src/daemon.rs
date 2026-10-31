@@ -312,6 +312,16 @@ impl Daemon {
                         if swept > 0 {
                             eprintln!("  swept {swept} abandoned tool call(s)");
                         }
+                        // **And the room's reminders, onto the boards this daemon holds.** Before
+                        // the plan check, because that check reads the board and a row for an item
+                        // this session has just released would otherwise be asked about for a
+                        // whole window. A session on its own thread runs its own copy
+                        // (`court_main`), because its board is on that thread; this is the
+                        // daemon's half, and it is the only caller a fixture that drives
+                        // `Sessions` by hand gets. See `crate::room::remind`.
+                        let pass = std::time::Instant::now();
+                        let held = sessions.fill_room_boards();
+                        crate::instruments::worker_pass("room", pass, held);
                         let pass = std::time::Instant::now();
                         let ran = sessions.deliver_due_nags();
                         crate::instruments::worker_pass("todo-check", pass, ran);

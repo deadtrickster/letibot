@@ -84,7 +84,10 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     let me = cfg.session_id.clone();
     let parts = Parts::load(&cfg).expect("the byte vocabulary needs no model file");
     let mut h = Harness::open(&parts, cfg, Hub::new(&me)).expect("the session opens");
-    assert!(h.has_room(), "a top-level session with a socket must have the room");
+    assert!(
+        h.has_room(),
+        "a top-level session with a socket must have the room"
+    );
 
     // -----------------------------------------------------------------------------------------
     // The hold. `post` then `claim` is the whole of it, and the reply names the item.
@@ -99,7 +102,11 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
     // -----------------------------------------------------------------------------------------
     // 1 + 5. One row, the session's own, and its words carry no clock.
     // -----------------------------------------------------------------------------------------
-    assert_eq!(h.fill_room_board(), 1, "the pass writes one row for one claim");
+    assert_eq!(
+        h.fill_room_board(),
+        1,
+        "the pass writes one row for one claim"
+    );
     let rows = h.todo_list();
     let mine: Vec<_> = rows
         .iter()
@@ -129,12 +136,17 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
 
     // **And the existing nag carries it, with no model call.** This is the whole deliverable: the
     // sentence the idle check composes names the row, so a holder that never asks is still told.
-    let nag = h.nag_notice().expect("an unfinished plan must be nagged about");
+    let nag = h
+        .nag_notice()
+        .expect("an unfinished plan must be nagged about");
     assert!(
         nag.contains("you hold `ram` #1 — 8 GB, ~10 min"),
         "the check must name the row: {nag}"
     );
-    assert!(nag.contains("yours"), "and it must be the session's own: {nag}");
+    assert!(
+        nag.contains("yours"),
+        "and it must be the session's own: {nag}"
+    );
 
     // -----------------------------------------------------------------------------------------
     // 1 again. A SECOND pass is not a second row — the nag machine this design exists to avoid.
@@ -200,7 +212,8 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
         "the wait ended, so the holder is the one who must act"
     );
     assert!(
-        h.nag_notice().is_some_and(|nag| nag.contains("you hold `ram` #1")),
+        h.nag_notice()
+            .is_some_and(|nag| nag.contains("you hold `ram` #1")),
         "and the check names it again"
     );
 
@@ -264,9 +277,7 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
         "somebody else's claim is not this session's reminder"
     );
     assert!(
-        h.todo_list()
-            .iter()
-            .all(|r| !r.content.contains("`cpu`")),
+        h.todo_list().iter().all(|r| !r.content.contains("`cpu`")),
         "{:?}",
         h.todo_list()
     );
@@ -283,8 +294,8 @@ fn a_holder_is_reminded_by_its_own_row_and_the_idle_check_carries_it() {
         c
     };
     let child_id = child_cfg.session_id.clone();
-    let mut child = Harness::open(&parts, child_cfg, Hub::new(&child_id))
-        .expect("a subagent's session opens");
+    let mut child =
+        Harness::open(&parts, child_cfg, Hub::new(&child_id)).expect("a subagent's session opens");
     assert!(
         !child.has_room(),
         "a subagent speaks through its parent: `Harness::open` gives it no link at all"

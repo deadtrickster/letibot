@@ -4074,7 +4074,11 @@ fn render(todos: &[TodoItem]) -> String {
                         TodoNeed::Room { item, working } => {
                             format!(
                                 "the room item `#{item}`{}",
-                                if *working { " (the room is working on it)" } else { "" }
+                                if *working {
+                                    " (the room is working on it)"
+                                } else {
+                                    ""
+                                }
                             )
                         }
                         // **The operator, by the question** — the words they were asked, so the

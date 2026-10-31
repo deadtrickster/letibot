@@ -56,8 +56,8 @@
 //! row it did not hold"*. The second half is [`rows`]' filter — a reminder about somebody else's
 //! claim is not this session's row, and `reminders` is one read for the whole room.
 
-use letibot_tokencore::store::{TODO_TITLE_MAX, TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_room::Reminder;
+use letibot_tokencore::store::{TODO_TITLE_MAX, TodoBy, TodoItem, TodoNeed, TodoStatus};
 
 /// **How often the daemon asks the room what this session holds.** Five seconds, the room's own
 /// sweep interval (`Server`'s clock) and a third of the default beat: a claim, a wait and a
@@ -212,29 +212,56 @@ mod tests {
             said.chars().count()
         );
         assert!(said.ends_with('…'), "{said}");
-        assert_eq!(content("ram", 7, "two\nlines  here"), "you hold `ram` #7 — two lines here");
-        assert_eq!(content("ram", 7, "   "), "you hold `ram` #7 — held in the room");
+        assert_eq!(
+            content("ram", 7, "two\nlines  here"),
+            "you hold `ram` #7 — two lines here"
+        );
+        assert_eq!(
+            content("ram", 7, "   "),
+            "you hold `ram` #7 — held in the room"
+        );
     }
 
-    /// **Quiet while the room works, loud when the holder must act** — the four cases, and the two
-    /// that make it loud are different facts.
+    /// **Quiet while the room works, loud when the holder must act** — the three cases, and the two
+    /// that make it loud are different facts. The edge is on every row; `working` is the whole of
+    /// the difference, and it is what the idle check reads.
     #[test]
-    fn the_edge_is_on_the_row_exactly_while_the_room_is_working() {
+    fn the_edge_says_whether_the_room_is_working_on_the_item() {
         let quiet = rows("s-me", &[reminder("s-me", 3, Some("the suite"), false)]);
         assert_eq!(quiet.len(), 1);
         assert_eq!(
             quiet[0].1.needs,
-            vec![TodoNeed::Room { item: 3 }],
+            vec![TodoNeed::Room {
+                item: 3,
+                working: true
+            }],
             "a declared wait on a fresh beat is the room working on it"
+        );
+        assert!(
+            letibot_tools::builtins::todo::waits_on_the_room(&quiet[0].1),
+            "and that is the row the idle check stays silent about"
         );
 
         // No declared wait: nothing outside moves it, so it is the holder's own work.
         let loud = rows("s-me", &[reminder("s-me", 3, None, false)]);
-        assert!(loud[0].1.needs.is_empty(), "{:?}", loud[0].1.needs);
+        assert_eq!(
+            loud[0].1.needs,
+            vec![TodoNeed::Room {
+                item: 3,
+                working: false
+            }],
+            "the edge is still there — retirement needs it — and it says nothing is coming"
+        );
+        assert!(!letibot_tools::builtins::todo::waits_on_the_room(
+            &loud[0].1
+        ));
 
         // A stopped beat: the room takes it back at the next sweep, so say so now.
         let stale = rows("s-me", &[reminder("s-me", 3, Some("the suite"), true)]);
-        assert!(stale[0].1.needs.is_empty(), "{:?}", stale[0].1.needs);
+        assert!(
+            !letibot_tools::builtins::todo::waits_on_the_room(&stale[0].1),
+            "a beat that stopped is the holder's to rescue, whatever it was waiting for"
+        );
     }
 
     /// **The row is the session's own** — `by: yours`, in progress, with no `when` — so the nag
@@ -276,9 +303,6 @@ mod tests {
                 reminder("s-me", 4, None, false),
             ],
         );
-        assert_eq!(
-            mine.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
-            vec![4, 9]
-        );
+        assert_eq!(mine.iter().map(|(i, _)| *i).collect::<Vec<_>>(), vec![4, 9]);
     }
 }

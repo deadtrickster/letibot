@@ -145,7 +145,10 @@ fn retiring_by_the_edge_survives_a_board_rebuilt_from_a_store() {
     b.set_room_rows(vec![(1, room_row(1, false))]);
     // The model restates the row in its own words: a new row, by this board's one rule.
     let mut model = b.snapshot();
-    model.push(item("hold `ram` #1 while the suite runs", TodoStatus::Pending));
+    model.push(item(
+        "hold `ram` #1 while the suite runs",
+        TodoStatus::Pending,
+    ));
     // **A NEW board** — the restart. It remembers nothing about having written anything.
     let b = TodoBoard::new(model);
     assert_eq!(b.snapshot().len(), 2);
@@ -181,7 +184,10 @@ fn a_rebuilt_board_keeps_the_rows_the_pass_is_about_to_write_again() {
 fn the_room_edge_is_what_makes_the_row_quiet() {
     assert!(waits_on_the_room(&room_row(1, true)));
     assert!(!waits_on_the_room(&room_row(1, false)));
-    assert!(!waits_on_the_room(&item("wire the pane", TodoStatus::Pending)));
+    assert!(!waits_on_the_room(&item(
+        "wire the pane",
+        TodoStatus::Pending
+    )));
 }
 
 /// **A quiet row is not asked about and is not listed as blocked either** — the operator's own
@@ -196,9 +202,13 @@ fn a_quiet_row_is_not_nagged_about() {
     );
     // …and the same row with the edge off is named, with what the holder has to do about it.
     let loud = room_row(1, false);
-    let said = nag_for(std::slice::from_ref(&loud)).expect("a row with nothing coming is asked about");
+    let said =
+        nag_for(std::slice::from_ref(&loud)).expect("a row with nothing coming is asked about");
     assert!(said.contains("you hold `ram` #1 — 8 GB"), "{said}");
-    assert!(said.contains("yours"), "the row is the session's own: {said}");
+    assert!(
+        said.contains("yours"),
+        "the row is the session's own: {said}"
+    );
 }
 
 /// **A plan blocked only by the room is not a plan to fix.** The ready set is empty and every
@@ -221,5 +231,8 @@ fn a_plan_that_only_waits_on_the_room_is_silent() {
         &ChildSessions::none(),
         &no_jobs(),
     );
-    assert!(said.is_none(), "and the narrowed reading is silent too: {said:?}");
+    assert!(
+        said.is_none(),
+        "and the narrowed reading is silent too: {said:?}"
+    );
 }
