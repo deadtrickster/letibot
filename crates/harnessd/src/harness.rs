@@ -7248,6 +7248,14 @@ impl Harness {
     /// command. One exec host per session is a fact — `job_list`, a promotion and the
     /// run ender at shutdown all name jobs in this one — so the run goes through THIS
     /// runtime rather than a second one, and the clone is the whole of the handover.
+    ///
+    /// **The sink is the caller's, and it decides whether a `Backgrounded` outcome is
+    /// watched.** A runtime does not know what a watcher is, so a handle used with a bare
+    /// `NullToolSink` mints a job or subagent handle in nobody's table: the settlement is
+    /// queued for no session and no bell rings. Whoever invokes through this must pass
+    /// [`JobWatchSink::new`] over [`Harness::job_watchers`] — which is what
+    /// [`Harness::unprompted_sink`] is for the two doors that live here, and what
+    /// `crate::bangrun` carries across its thread.
     pub fn runtime_handle(&self) -> std::sync::Arc<ToolRuntime> {
         self.runtime.clone()
     }
