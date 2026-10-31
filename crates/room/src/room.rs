@@ -331,6 +331,13 @@ pub enum Refused {
     NotDisputed {
         item: u64,
     },
+    /// **A room that no derivation would have written.** A project key is twelve hex characters
+    /// ([`crate::is_project_key`]), so a frame naming anything else is naming a room that cannot
+    /// exist — refused rather than created, because a room made for a string nobody derived has no
+    /// membership and can never be reached again.
+    UnknownRoom {
+        project: String,
+    },
 }
 
 impl fmt::Display for Refused {
@@ -405,6 +412,12 @@ impl fmt::Display for Refused {
             Refused::NotDisputed { item } => {
                 write!(f, "you hold #{item} yourself — there is nothing to rule on")
             }
+            Refused::UnknownRoom { project } => write!(
+                f,
+                "`{project}` is not a project key — a room is named by twelve hex characters \
+                 derived from a project's path, and a room made for anything else could never be \
+                 found again"
+            ),
         }
     }
 }

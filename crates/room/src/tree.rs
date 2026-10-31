@@ -103,10 +103,17 @@ pub fn room_of_name(host_key: &str, name: &str) -> Option<String> {
     // whose project part is anything else was written by hand, and a hand-written name that merely
     // starts with the box's key (`…/../etc`) must not become a room — the round trip and the shape
     // are two halves of the same check.
-    let shaped = project.len() == PROJECT_KEY_LEN && project.bytes().all(|b| b.is_ascii_hexdigit());
-    (shaped || project.is_empty())
+    (is_project_key(&project) || project.is_empty())
         .then_some(project)
         .filter(|p| room_name(host, p) == name)
+}
+
+/// **Is this a project key?** — twelve hex characters, or empty for the box's own room.
+///
+/// One function because two doors ask it: [`room_of_name`], which reads a key back out of a room's
+/// name, and `Server::answer_frame`, which must not create a room for a key nobody derived.
+pub fn is_project_key(key: &str) -> bool {
+    key.len() == PROJECT_KEY_LEN && key.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// **Where a member sits in the tree** — the four kinds of row the operator's sentence names, plus

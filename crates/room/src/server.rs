@@ -384,8 +384,26 @@ impl Server {
         let ruling_in = match frame {
             Request::Rule {
                 project: Some(named),
+                id,
                 ..
-            } if !named.trim().is_empty() => named.trim().to_string(),
+            } if !named.trim().is_empty() => {
+                let named = named.trim();
+                // **A room is only created for a key somebody derived.** A ruling that names a
+                // string this tree would never write would otherwise make a room with no
+                // membership, no name and no meaning — a room that can never be reached again.
+                if !crate::is_project_key(named) {
+                    return Answer {
+                        response: Response::Refused {
+                            id: Some(id.clone()),
+                            why: crate::Refused::UnknownRoom {
+                                project: named.to_string(),
+                            },
+                        },
+                        events: Vec::new(),
+                    };
+                }
+                named.to_string()
+            }
             Request::Rule { question, .. } => self
                 .room_holding(*question)
                 .unwrap_or_else(|| project.to_string()),
@@ -1122,6 +1140,40 @@ mod tests {
         assert!(
             server.items_in(crate::DEFAULT_PROJECT).is_empty(),
             "nothing landed in the room the arbiter is in"
+        );
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A ruling that names a room nobody derived is refused**, not obeyed — a room created for a
+    /// string the tree would never write has no membership and can never be reached again.
+    #[test]
+    fn a_ruling_that_names_a_room_nobody_derived_is_refused() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-badkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let answer = server.answer_frame(
+            crate::DEFAULT_PROJECT,
+            &Speaker::top_level("s-a"),
+            &Request::Rule {
+                id: "r1".into(),
+                question: 1,
+                decision: crate::Decision::Retry,
+                project: Some("../../etc".into()),
+            },
+            now_ms(),
+        );
+        match answer.response {
+            Response::Refused { why, .. } => {
+                assert!(matches!(why, crate::Refused::UnknownRoom { .. }), "{why}");
+            }
+            other => panic!("a key nobody derived is refused by name: {other:?}"),
+        }
+        assert_eq!(
+            server.projects(),
+            vec![crate::DEFAULT_PROJECT.to_string()],
+            "and no room was made for it"
         );
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
