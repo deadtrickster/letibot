@@ -66,6 +66,11 @@ struct Inner {
     path: PathBuf,
     started_ms: u64,
     sweep_every_ms: u64,
+    /// **Which room this is** — the box's name (`crate::host_name`), or whatever
+    /// [`Server::with_name`] was given. A `Hello` that names another room is refused with both
+    /// names in the sentence: a room is per box, and obeying a client that dialled the wrong one
+    /// would put its post in somebody else's queue.
+    name: Mutex<String>,
     /// **The session that hears everything** — the tie-breaker. `None` on a room whose arbiter is a
     /// person at a head, which is a room where every question waits.
     arbiter: Mutex<Option<String>>,
@@ -118,6 +123,7 @@ impl Server {
                 path: path.to_path_buf(),
                 started_ms: now_ms(),
                 sweep_every_ms: sweep_every_ms.max(100),
+                name: Mutex::new(crate::lease::host_name()),
                 arbiter: Mutex::new(None),
                 lease: Mutex::new(None),
                 stop: AtomicBool::new(false),
@@ -135,6 +141,18 @@ impl Server {
         self
     }
 
+    /// **Name this room** — the box's name by default, and something else in a test that needs two
+    /// rooms on one box.
+    pub fn with_name(&self, name: impl Into<String>) -> &Self {
+        *self.inner.name.lock().expect("the name lock") = name.into();
+        self
+    }
+
+    /// **Which room this is** — what a `Hello` is held to, and what the pane prints.
+    pub fn name(&self) -> String {
+        self.inner.name.lock().expect("the name lock").clone()
+    }
+
     /// **Beat a lease from the server's own clock.** One process, one clock: the lease's beat and
     /// the room's sweep are the same thread's two duties, so they cannot drift apart.
     pub fn with_lease(&self, lease: CoordinatorLease) -> &Self {
@@ -150,18 +168,114 @@ impl Server {
         self.inner.started_ms
     }
 
+    /// **The session that hears everything** — the tie-breaker, or `None` on a room whose arbiter
+    /// is a person at a head.
+    pub fn arbiter(&self) -> Option<String> {
+        self.inner.arbiter.lock().expect("the arbiter lock").clone()
+    }
+
+    /// **Every session connected right now**, sorted — the pane's *who is up*, and the list a
+    /// `hand` names. The socket is the daemon's liveness, so this is not the same fact as a beat:
+    /// a session whose turn ended is here and not beating.
+    pub fn connected(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .inner
+            .conns
+            .lock()
+            .expect("the connections lock")
+            .values()
+            .map(|c| c.who.session.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// **What this coordinator is, in the words a pane prints** — and the sentence that makes
     /// *restarted clean* and *restarted empty* two different readings.
     pub fn identity(&self) -> String {
+        self.identity_at(now_ms())
+    }
+
+    /// [`Server::identity`] at a given clock, so a test can pin the age rather than wait for one.
+    ///
+    /// **The age and the count are both in the sentence, and neither is decoration.** An in-memory
+    /// room holds nothing at every start, so *no items* is the same reading for a room that has been
+    /// up for an hour and one that has just restarted — unless the sentence says how long it has
+    /// been up and how much has happened since.
+    pub fn identity_at(&self, now: u64) -> String {
         let n = self.inner.served.load(Ordering::SeqCst);
-        let up = now_ms().saturating_sub(self.inner.started_ms);
+        let items = self.items().len();
+        let up = now.saturating_sub(self.inner.started_ms);
         format!(
-            "the room on {} — started {} ago and holding what has happened since; the room keeps \
+            "the room on {} — started {} ago and holding {items} item(s) since then; the room keeps \
              no store, so a restart begins with no items at all ({n} connection(s) served since it \
              started)",
             self.inner.path.display(),
             crate::item::duration(up),
         )
+    }
+
+    /// **One frame, answered** — the room's dispatch with this server's own facts filled in, and
+    /// with the two refusals that need a fact the state machine has not got: the version, and which
+    /// room this is.
+    ///
+    /// Every other frame is the room's. [`Request::Room`] is the pane's read, and three of its
+    /// fields are facts about this PROCESS rather than about the state machine, so the room answers
+    /// its half and this fills the rest — here, once, so that a pane and a client cannot be told two
+    /// different things about who arbitrates or who is up.
+    fn answer_frame(&self, who: &Speaker, frame: &Request, now: u64) -> Answer {
+        // **The door, and it is answered before the room sees the frame.** A skew or a wrong room
+        // must not be half-obeyed: the room would vouch for a session that is not going to be
+        // spoken to again, and a `post` after a `Bye` is a post in a queue nobody reads.
+        if let Request::Hello { protocol, room, .. } = frame {
+            if let Some(why) = crate::wire::protocol_refusal(*protocol) {
+                return Answer {
+                    response: Response::Bye { why },
+                    events: Vec::new(),
+                };
+            }
+            let asked = room.trim();
+            let mine = self.name();
+            if !asked.is_empty() && asked != mine {
+                return Answer {
+                    response: Response::Bye {
+                        why: format!(
+                            "this is the room of `{mine}` and `{asked}` was asked for — a room is \
+                             per box, so obeying this connection would put its items in another \
+                             machine's queues. Nothing was done: check the socket you dialled \
+                             ({}), or the room name the client sends.",
+                            self.inner.path.display()
+                        ),
+                    },
+                    events: Vec::new(),
+                };
+            }
+        }
+        // **The room lock is released before anything else is read.** `identity_at` reads the items
+        // and the connections, and the room's mutex is not reentrant: filling the answer inside the
+        // guard is a deadlock that reads as a room that stopped answering.
+        let mut answer = self
+            .inner
+            .room
+            .lock()
+            .expect("the room lock")
+            .answer_traced(who, frame, now);
+        match &mut answer.response {
+            Response::Welcome { identity, .. } => *identity = self.identity_at(now),
+            Response::Room {
+                identity,
+                arbiter,
+                connected,
+                ..
+            } => {
+                *identity = self.identity_at(now);
+                *arbiter = self.arbiter();
+                *connected = self.connected();
+            }
+            _ => {}
+        }
+        answer
     }
 
     /// **How many sessions are connected now** — the pane's *is anybody here*, and the number a
@@ -283,11 +397,7 @@ impl Server {
                     Request::Hello { speaker, .. } => speaker.clone(),
                     _ => return,
                 };
-                let answer = me.inner.room.lock().expect("the room lock").answer_traced(
-                    &speaker,
-                    &hello,
-                    now_ms(),
-                );
+                let answer = me.answer_frame(&speaker, &hello, now_ms());
                 let mut w = writer;
                 if write_frame(&mut w, &answer.response).is_err() {
                     return;
@@ -323,12 +433,7 @@ impl Server {
                         Ok(Some(f)) => f,
                         _ => break,
                     };
-                    let answer: Answer = me
-                        .inner
-                        .room
-                        .lock()
-                        .expect("the room lock")
-                        .answer_traced(&speaker, &frame, now_ms());
+                    let answer: Answer = me.answer_frame(&speaker, &frame, now_ms());
                     if write_to(&conn, &answer.response).is_err() {
                         break;
                     }
@@ -527,6 +632,7 @@ mod tests {
         let hello = serde_json::to_string(&Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: Speaker::top_level("s-a"),
+            room: server.name(),
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -542,5 +648,165 @@ mod tests {
         let mut line = String::new();
         r.read_line(&mut line).unwrap();
         line
+    }
+
+    /// **A room that has been up for a while and holds nothing is not a room that has just
+    /// restarted**, and the only thing that says so is the age.
+    ///
+    /// An in-memory room holds nothing at every start (`docs/room.md` § *What the state machine
+    /// assumes*), so *no items* is the same reading for both — which is exactly why the sentence
+    /// carries how long it has been up and how much has happened since.
+    #[test]
+    fn the_identity_tells_a_long_up_empty_room_from_a_just_restarted_one() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-ident-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let started = server.started_ms();
+        let fresh = server.identity_at(started + 4_000);
+        let settled = server.identity_at(started + 3_600_000);
+        assert!(fresh.contains("started 4s ago"), "{fresh}");
+        assert!(settled.contains("started 1h ago"), "{settled}");
+        assert_ne!(fresh, settled, "two histories, two sentences");
+        // Both are empty, and both say so — and both say that emptiness is what a start IS.
+        for said in [&fresh, &settled] {
+            assert!(said.contains("holding 0 item(s)"), "{said}");
+            assert!(said.contains("no store"), "{said}");
+            assert!(said.contains("a restart begins with no items at all"), "{said}");
+        }
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **A client that reached the wrong coordinator is TOLD, with both names in the sentence.**
+    ///
+    /// A room is per box, and two boxes can both call themselves `localhost`. Before the name was on
+    /// the wire, a session that dialled the wrong socket was obeyed: its post landed in another
+    /// machine's queue and its claim locked a tag nobody there was waiting for.
+    #[test]
+    fn a_hello_that_names_another_room_is_refused_with_both_names() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-name-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        server.with_name("lab2x1");
+        let me = Speaker::top_level("s-a");
+        let answer = server.answer_frame(
+            &me,
+            &Request::Hello {
+                protocol: ROOM_PROTOCOL_VERSION,
+                speaker: me.clone(),
+                room: "the-other-box".to_string(),
+            },
+            now_ms(),
+        );
+        match answer.response {
+            Response::Bye { why } => {
+                assert!(why.contains("lab2x1"), "the room's own name: {why}");
+                assert!(why.contains("the-other-box"), "and the one asked for: {why}");
+                assert!(why.contains("Nothing was done"), "{why}");
+            }
+            other => panic!("a wrong room is a clean Bye: {other:?}"),
+        }
+        // **And a session that names no room is let in** — that is a protocol-1 client, which the
+        // version check refuses by name instead of pretending it said something it did not.
+        let quiet = server.answer_frame(
+            &me,
+            &Request::Hello {
+                protocol: ROOM_PROTOCOL_VERSION,
+                speaker: me.clone(),
+                room: String::new(),
+            },
+            now_ms(),
+        );
+        assert!(
+            matches!(quiet.response, Response::Welcome { .. }),
+            "{:?}",
+            quiet.response
+        );
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The welcome carries the identity verbatim** — the same sentence `Server::identity` prints,
+    /// so a client is told what it connected to rather than inferring it from a socket path it chose
+    /// itself.
+    #[test]
+    fn a_welcome_carries_the_identity_verbatim() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-hi-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        let me = Speaker::top_level("s-a");
+        let now = now_ms();
+        let answer = server.answer_frame(
+            &me,
+            &Request::Hello {
+                protocol: ROOM_PROTOCOL_VERSION,
+                speaker: me.clone(),
+                room: String::new(),
+            },
+            now,
+        );
+        match answer.response {
+            Response::Welcome { identity, .. } => {
+                assert_eq!(identity, server.identity_at(now), "verbatim, not reworded");
+                assert!(identity.contains("no store"), "{identity}");
+            }
+            other => panic!("a hello is answered with a welcome: {other:?}"),
+        }
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **The protocol number is pinned once**, here, as a literal.
+    ///
+    /// It is the only place in the tree that spells the number rather than the constant, and that is
+    /// the point: a wire change that misses a pin is a quiet lie about what two binaries share, so
+    /// the pin is a literal a reviewer sees in a diff and every other use is the symbol.
+    #[test]
+    fn the_room_speaks_protocol_two() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 2);
+        // And the refusal names which side is older, in both directions.
+        let old = crate::wire::protocol_refusal(1).expect("1 is not 2");
+        assert!(old.contains("the client is the older"), "{old}");
+        let new = crate::wire::protocol_refusal(3).expect("3 is not 2");
+        assert!(new.contains("this room is the older"), "{new}");
+        assert_eq!(crate::wire::protocol_refusal(2), None);
+    }
+
+    /// **The pane's read: the room's half from the room, the server's three from the server.**
+    /// This is the frame a pane is drawn from, and it is the only one whose answer the server
+    /// completes — so what is asserted here is that the completion happens at all, that it is the
+    /// server's own answer (`identity`, the arbiter, who is connected) and that a second caller
+    /// gets the same three.
+    #[test]
+    fn the_rooms_read_carries_the_servers_own_three_facts() {
+        let dir = std::env::temp_dir().join(format!("letibot-room-read-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("room.sock");
+        let server = Server::serve(&path, Room::new()).expect("a socket");
+        server.with_arbiter("s-arbiter");
+        let me = Speaker::top_level("s-a");
+        let answer = server.answer_frame(&me, &Request::Room, now_ms());
+        let Response::Room {
+            identity,
+            arbiter,
+            connected,
+            items,
+            questions,
+        } = answer.response
+        else {
+            panic!("a room read answers a room: {:?}", answer.response);
+        };
+        assert!(identity.contains("started"), "{identity}");
+        assert_eq!(arbiter.as_deref(), Some("s-arbiter"));
+        // Nobody is connected through a socket here, so the list is empty and says so — the pane
+        // draws *the arbiter is not up* from exactly this.
+        assert!(connected.is_empty(), "{connected:?}");
+        assert!(items.is_empty());
+        assert!(questions.is_empty());
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

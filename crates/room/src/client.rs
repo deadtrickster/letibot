@@ -59,12 +59,18 @@ impl std::fmt::Display for ClientError {
 
 impl std::error::Error for ClientError {}
 
-/// What the room said when the connection opened — the numbers a client must not guess.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the room said when the connection opened — the numbers a client must not guess, and
+/// **what the room said it is**.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Welcome {
     pub lease_ms: u64,
     pub beat_every_ms: u64,
     pub threshold: u32,
+    /// **`Server::identity()`, verbatim** — the room's own sentence about itself (*started T ago and
+    /// holding N item(s)*), kept so a caller can print what it connected to. It is the sentence as
+    /// of the connect: a reader that wants the age now asks [`Request::Room`], which carries the
+    /// same sentence taken at the moment of the read.
+    pub identity: String,
 }
 
 impl Default for Welcome {
@@ -73,6 +79,7 @@ impl Default for Welcome {
             lease_ms: crate::room::DEFAULT_LEASE_MS,
             beat_every_ms: crate::room::DEFAULT_BEAT_EVERY_MS,
             threshold: crate::room::ABANDON_THRESHOLD,
+            identity: String::new(),
         }
     }
 }
@@ -87,6 +94,10 @@ struct Live {
 struct Shared {
     path: PathBuf,
     speaker: Speaker,
+    /// **The room this client believes it is reaching** — the box's name, or whatever
+    /// [`Client::connect_named`] was given. It rides on every `Hello`, including a reconnect's: a
+    /// session that was moved to another box must not keep talking to the one it was opened on.
+    room: String,
     wake: Wake,
     live: Mutex<Option<Live>>,
     /// One round trip at a time: the reply channel below is a single slot, and two calls in flight
@@ -139,10 +150,23 @@ impl Client {
         speaker: Speaker,
         wake: Wake,
     ) -> Result<Client, ClientError> {
+        Self::connect_named(path, speaker, crate::lease::host_name(), wake)
+    }
+
+    /// **Connect to a room by NAME**, saying which one it means. A room is per box, and the server
+    /// refuses a `Hello` that names another one with both names in the sentence — so a test (or a
+    /// client moved between boxes) can say the wrong name on purpose and be told.
+    pub fn connect_named(
+        path: impl Into<PathBuf>,
+        speaker: Speaker,
+        room: impl Into<String>,
+        wake: Wake,
+    ) -> Result<Client, ClientError> {
         let client = Client {
             inner: Arc::new(Shared {
                 path: path.into(),
                 speaker,
+                room: room.into(),
                 wake,
                 live: Mutex::new(None),
                 call: Mutex::new(()),
@@ -164,7 +188,7 @@ impl Client {
     }
 
     pub fn welcome(&self) -> Welcome {
-        *self.inner.welcome.lock().expect("the welcome lock")
+        self.inner.welcome.lock().expect("the welcome lock").clone()
     }
 
     /// **Is the connection up right now?** A `false` here is not an error — the next call reconnects.
@@ -280,6 +304,7 @@ impl Client {
         let hello = Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: self.inner.speaker.clone(),
+            room: self.inner.room.clone(),
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)
@@ -295,12 +320,14 @@ impl Client {
                 lease_ms,
                 beat_every_ms,
                 threshold,
+                identity,
                 ..
             } => {
                 *self.inner.welcome.lock().expect("the welcome lock") = Welcome {
                     lease_ms,
                     beat_every_ms,
                     threshold,
+                    identity,
                 };
             }
             Response::Refused { why, .. } => {

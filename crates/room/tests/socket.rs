@@ -104,6 +104,44 @@ fn until(what: &str, mut f: impl FnMut() -> bool) {
 }
 
 #[test]
+fn a_client_that_named_another_room_is_refused_with_both_names() {
+    let scratch = Scratch::new("name");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a room to talk to");
+    server.with_name("lab2x1");
+    let wake = Arc::new(|_: &Event| {});
+    // **The sentence reaches the CALLER**, not only the frame: a client that dialled the wrong
+    // coordinator must be able to say which two machines it confused.
+    let refused = Client::connect_named(
+        server.path(),
+        Speaker::top_level("s-a"),
+        "the-other-box",
+        wake.clone(),
+    )
+    .expect_err("a wrong room is refused");
+    let said = refused.to_string();
+    assert!(said.contains("lab2x1"), "the room's own name: {said}");
+    assert!(said.contains("the-other-box"), "and the one asked for: {said}");
+
+    // **And the room's own name is let in** — the same client, naming the right room, connects.
+    // (`Client::connect` sends `host_name()`, which is what a server's default name IS; every other
+    // test in this file leans on that.)
+    let good = Client::connect_named(
+        server.path(),
+        Speaker::top_level("s-a"),
+        "lab2x1",
+        wake,
+    )
+    .expect("the right room is reached");
+    assert!(
+        good.welcome().identity.contains("no store"),
+        "the welcome carries the room's own sentence: {}",
+        good.welcome().identity
+    );
+    drop(good);
+    server.stop();
+}
+
+#[test]
 fn a_frame_is_answered_over_the_socket_and_a_subagent_is_refused_at_the_door() {
     let scratch = Scratch::new("hello");
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");

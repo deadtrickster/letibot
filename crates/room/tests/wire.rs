@@ -23,6 +23,7 @@ fn every_frame_round_trips_through_json() {
         Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: speaker.clone(),
+            room: "lab2x1".to_string(),
         },
         Request::Post {
             id: "r1".to_string(),
@@ -73,6 +74,7 @@ fn every_frame_round_trips_through_json() {
         Request::Holding { session: None },
         Request::Reminders,
         Request::Questions,
+        Request::Room,
     ];
     for frame in frames {
         let json = serde_json::to_string(&frame).expect("a frame serialises");
@@ -96,6 +98,7 @@ fn every_frame_round_trips_through_json() {
             lease_ms: 90_000,
             beat_every_ms: 5_000,
             threshold: 3,
+            identity: "the room on /tmp/room.sock — started 4s ago".to_string(),
         },
         Response::Posted {
             id: "r1".to_string(),
@@ -107,7 +110,14 @@ fn every_frame_round_trips_through_json() {
         },
         Response::Queue {
             tag: "ram".to_string(),
-            rows: vec![item],
+            rows: vec![item.clone()],
+        },
+        Response::Room {
+            identity: "the room on /tmp/room.sock — started 4s ago".to_string(),
+            arbiter: Some("s-arbiter".to_string()),
+            connected: vec!["s-a".to_string()],
+            items: vec![item],
+            questions: Vec::new(),
         },
         Response::Reminders { rows: Vec::new() },
         Response::Event {
@@ -136,6 +146,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
         &Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: a.clone(),
+            room: String::new(),
         },
         1_000,
     );
@@ -145,6 +156,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             lease_ms,
             threshold,
             beat_every_ms,
+            ..
         } => {
             assert_eq!(protocol, ROOM_PROTOCOL_VERSION);
             assert_eq!(lease_ms, room.lease_ms());
@@ -163,6 +175,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
         &Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION,
             speaker: child.clone(),
+            room: String::new(),
         },
         1_001,
     ) {
@@ -178,6 +191,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
         &Request::Hello {
             protocol: ROOM_PROTOCOL_VERSION + 1,
             speaker: a.clone(),
+            room: String::new(),
         },
         1_002,
     ) {
@@ -389,5 +403,43 @@ fn a_dispute_and_its_ruling_cross_the_wire() {
     match room.answer(&b, &Request::Questions, 100_003) {
         Response::Questions { rows } => assert!(rows.is_empty(), "it was answered"),
         other => panic!("the open questions: {other:?}"),
+    }
+}
+
+/// **The pane's read is a read**: every item (the finished ones too — a row that vanished is a row
+/// a person cannot account for), every open question, and the three fields the ROOM cannot answer
+/// left empty for the server to fill.
+#[test]
+fn the_rooms_read_answers_every_item_and_the_open_questions() {
+    let (mut room, a, b) = a_room();
+    room.post(&a, "p1", "ram", "8 GB", 1_000).expect("a post");
+    room.post(&b, "p2", "ram", "2 GB", 1_001).expect("a post");
+    room.post(&a, "p3", "disk", "40 GB", 1_002).expect("a post");
+    room.claim(&a, "c1", "ram", 1_003).expect("a claim");
+    room.done(&a, "d1", 1, 1_004).expect("finished");
+
+    match room.answer(&a, &Request::Room, 1_005) {
+        Response::Room {
+            identity,
+            arbiter,
+            connected,
+            items,
+            questions,
+        } => {
+            assert_eq!(
+                items.iter().map(|i| i.id).collect::<Vec<_>>(),
+                vec![1, 2, 3],
+                "oldest first, and the finished one is still here"
+            );
+            assert_eq!(items[0].state_name(), "done");
+            assert_eq!(items[1].holder(), None, "`s-b` has not claimed anything");
+            assert!(questions.is_empty());
+            // **The three the state machine cannot answer** — the SERVER fills them, and a room
+            // that invented them would be a second answer to *is the arbiter up*.
+            assert!(identity.is_empty(), "{identity}");
+            assert_eq!(arbiter, None);
+            assert!(connected.is_empty(), "{connected:?}");
+        }
+        other => panic!("a room read answers a room: {other:?}"),
     }
 }

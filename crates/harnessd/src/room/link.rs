@@ -374,6 +374,25 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             "the room is open to `{me}` (protocol {})",
             letibot_room::ROOM_PROTOCOL_VERSION
         ),
+        // **The pane's read, in a sentence** — a model never asks it (the tool's verbs have no
+        // `room` read), so this is the honest summary rather than a drawing: what the room is, how
+        // much is in it, and how many questions are open.
+        Response::Room {
+            identity,
+            items,
+            questions,
+            ..
+        } => {
+            let mut tags: Vec<&str> = items.iter().map(|i| i.tag.as_str()).collect();
+            tags.sort_unstable();
+            tags.dedup();
+            format!(
+                "{identity}\n{} item(s) under {} tag(s), {} question(s) open",
+                items.len(),
+                tags.len(),
+                questions.len()
+            )
+        }
         Response::Event { event } => format!("the room said: {event:?}"),
     })
 }

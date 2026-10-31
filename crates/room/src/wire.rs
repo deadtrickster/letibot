@@ -59,14 +59,67 @@ use crate::room::{
 };
 
 /// **The room's protocol version**, and the room's alone — see the module header.
-pub const ROOM_PROTOCOL_VERSION: u16 = 1;
+///
+/// # 2: the room says WHICH room it is
+///
+/// Version 1 had a `Hello` that named a session and a protocol number and nothing about the
+/// COORDINATOR, so a session that dialled the wrong socket was obeyed: its post landed in another
+/// box's queue and its claim locked a tag nobody there was waiting for. A room is per box and two
+/// boxes can both call themselves `localhost`, so the name is the only thing that tells them apart.
+///
+/// So: [`Request::Hello`] carries the room's name the client believes it reached, and
+/// [`Response::Welcome`] carries [`crate::Server::identity`] — *this is the room on this socket,
+/// started T ago* — as one field, so a client is told rather than left to infer. Both fields are
+/// added here, together, because a name without an identity is a name nobody can check.
+pub const ROOM_PROTOCOL_VERSION: u16 = 2;
+
+/// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
+///
+/// One function because two doors refuse it — a [`crate::Server`]'s, which knows the version before
+/// it answers anything, and [`crate::Room::answer_traced`]'s, which a test drives directly — and two
+/// sentences about one skew would drift.
+///
+/// **It says which side is older.** A reader handed two numbers and told *upgrade one of them* has
+/// to work out which, and gets it wrong about half the time; a reader told *the client is the older
+/// of the two* knows which binary to restart.
+pub fn protocol_refusal(theirs: u16) -> Option<String> {
+    if theirs == ROOM_PROTOCOL_VERSION {
+        return None;
+    }
+    let older = if theirs < ROOM_PROTOCOL_VERSION {
+        "the client"
+    } else {
+        "this room"
+    };
+    Some(format!(
+        "this room speaks protocol {ROOM_PROTOCOL_VERSION} and the client speaks {theirs} — {older} \
+         is the older of the two, so a frame one of them does not know would be obeyed wrongly and \
+         nothing was done: upgrade {older}"
+    ))
+}
 
 /// **What a client sends.**
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    /// The first frame on every connection: who is speaking, and in which protocol.
-    Hello { protocol: u16, speaker: Speaker },
+    /// The first frame on every connection: who is speaking, in which protocol, and **which room
+    /// the client believes it reached**.
+    ///
+    /// `room` is the box's name (`crate::host_name`) — the name a person would type to tell two
+    /// machines apart, and the only thing that distinguishes two coordinators that both call
+    /// themselves `localhost`. A room that is asked for by another name refuses the connection with
+    /// both names in the sentence (`docs/room.md` § *Still owed* 2: *a session that connected to the
+    /// wrong coordinator is told rather than obeyed*).
+    ///
+    /// **Empty is *I do not say*** — what a protocol-1 client sends, since the field did not exist.
+    /// An empty name is not checked, so an old client still reaches the room it dialled and is told
+    /// about the version instead; a client that names a room is held to it.
+    Hello {
+        protocol: u16,
+        speaker: Speaker,
+        #[serde(default)]
+        room: String,
+    },
     /// Post a need under a tag. `body` is the need, in the poster's words.
     Post {
         id: String,
@@ -103,6 +156,16 @@ pub enum Request {
     Reminders,
     /// The open questions, oldest first — what the tie-breaker is asked.
     Questions,
+    /// **The whole room in one read** — what a PANE is drawn from.
+    ///
+    /// [`Request::Queue`] answers one tag, and a pane that draws *the queues per tag* would have to
+    /// ask for a tag whose name it does not know: the tags are the room's, and nothing outside it
+    /// can enumerate them. So this is one frame with every item and every open question in it, plus
+    /// the facts a reader needs to interpret an empty list — see [`Response::Room`].
+    ///
+    /// **A read, and it adds no state.** The pane it serves is a view of the same in-memory room
+    /// the verbs above move; there is nothing here that is not already in it.
+    Room,
 }
 
 impl Request {
@@ -114,7 +177,8 @@ impl Request {
             | Request::Queue { .. }
             | Request::Holding { .. }
             | Request::Reminders
-            | Request::Questions => None,
+            | Request::Questions
+            | Request::Room => None,
             Request::Post { id, .. }
             | Request::Claim { id, .. }
             | Request::ClaimItem { id, .. }
@@ -139,6 +203,15 @@ pub enum Response {
         lease_ms: u64,
         beat_every_ms: u64,
         threshold: u32,
+        /// **`Server::identity()`, verbatim** — *the room on this socket, started T ago and holding
+        /// N item(s)* — so that the client is TOLD what it connected to instead of inferring it
+        /// from a socket path it chose itself.
+        ///
+        /// It is the sentence as of this moment. A reader that wants the age NOW asks
+        /// [`Request::Room`], whose own `identity` is the same function taken at the moment of the
+        /// read: an age read once at connect is a wrong age for ever after.
+        #[serde(default)]
+        identity: String,
     },
     Refused {
         /// The frame's id, when it had one.
@@ -191,6 +264,32 @@ pub enum Response {
     },
     Questions {
         rows: Vec<Question>,
+    },
+    /// **The room, as a pane reads it** — the answer to [`Request::Room`].
+    ///
+    /// The first three fields are the SERVER's, not the room's: the state machine cannot say what a
+    /// process is, who arbitrates it or who is connected to it. [`crate::Room::answer_traced`]
+    /// answers the last two and leaves the first three empty; [`crate::Server`]'s own dispatch fills
+    /// them, in one place, so that a pane and a client cannot get two answers to *is the arbiter
+    /// up*.
+    Room {
+        /// `Server::identity()` — *started T ago and holding N item(s)*, and the sentence saying
+        /// that the room keeps no store. **This is the field that makes *restarted clean* and
+        /// *restarted empty* two readings**: an in-memory room is empty at every start, so only the
+        /// age tells a reader whether the queues in front of them are the ones that were posted or
+        /// the ones that are left after a restart.
+        identity: String,
+        /// The session that arbitrates this room, when one is named.
+        arbiter: Option<String>,
+        /// **Every session connected to this room now**, sorted. The socket is the DAEMON's
+        /// liveness (`docs/room.md` § *The wire*), so this is who is up rather than who is beating
+        /// — and an `arbiter` absent from it is a room whose questions wait.
+        connected: Vec<String>,
+        /// Every item, oldest first, finished and dropped included: a pane shows the history, and a
+        /// row that vanished would be a row a person cannot account for.
+        items: Vec<Item>,
+        /// The open questions, oldest first.
+        questions: Vec<Question>,
     },
     /// **The bell** — an unsolicited event. A client that only ever answers a prompt cannot be
     /// woken by this; see `docs/room.md` § *The bell, and the client that cannot hear it*.
@@ -265,14 +364,13 @@ impl Room {
     /// **[`Room::answer`], with the events the frame produced.**
     pub fn answer_traced(&mut self, who: &Speaker, request: &Request, now: u64) -> Answer {
         match request {
-            Request::Hello { protocol, speaker } => {
-                if *protocol != ROOM_PROTOCOL_VERSION {
-                    return Answer::quiet(Response::Bye {
-                        why: format!(
-                            "this room speaks protocol {ROOM_PROTOCOL_VERSION} and the client \
-                             speaks {protocol} — upgrade one of them"
-                        ),
-                    });
+            Request::Hello {
+                protocol,
+                speaker,
+                room: _,
+            } => {
+                if let Some(why) = protocol_refusal(*protocol) {
+                    return Answer::quiet(Response::Bye { why });
                 }
                 if let Err(why) = speaker.may_speak() {
                     return Answer::quiet(Response::Refused { id: None, why });
@@ -285,6 +383,11 @@ impl Room {
                     lease_ms: self.lease_ms(),
                     beat_every_ms: DEFAULT_BEAT_EVERY_MS,
                     threshold: ABANDON_THRESHOLD,
+                    // **The identity is the SERVER's**, and this dispatch has none — the same
+                    // reason `Response::Room`'s three server fields are filled by
+                    // `Server::answer_frame`. A `Room` driven directly by a test gets the empty
+                    // string, and a client never does.
+                    identity: String::new(),
                 })
             }
             Request::Post { id, tag, body } => {
@@ -394,6 +497,21 @@ impl Room {
             }),
             Request::Questions => Answer::quiet(Response::Questions {
                 rows: self.open_questions().into_iter().cloned().collect(),
+            }),
+            // **The pane's read, and the only frame with fields the room cannot fill.**
+            //
+            // What this coordinator IS, who arbitrates it and who is connected to it are facts
+            // about a process, and this type is a state machine: it has no clock, no socket and no
+            // idea that a server exists. So it answers the half it owns — every item and every open
+            // question — and leaves the three empty, and `Server::answer_frame` fills them at the
+            // one place a frame is answered on a connection. Two dispatches would be two answers to
+            // *is the arbiter up*, and a pane drawn from one of them would be wrong half the time.
+            Request::Room => Answer::quiet(Response::Room {
+                identity: String::new(),
+                arbiter: None,
+                connected: Vec::new(),
+                items: self.all().into_iter().cloned().collect(),
+                questions: self.questions().to_vec(),
             }),
         }
     }
