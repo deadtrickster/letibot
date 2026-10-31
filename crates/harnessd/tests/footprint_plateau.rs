@@ -84,6 +84,12 @@ const TURN_BYTES: usize = 64 * 1024;
 /// a per-turn copy of the conversation would be 12× the rows by the last turn.
 const SLACK_PER_SESSION: f64 = 1.75;
 
+/// **One test at a time.** Both tests here point `XDG_CONFIG_HOME` at their own providers file,
+/// and the environment is the process's: two of them in parallel would have one session open on
+/// the other's model URL. `--include-ignored` is the only way to run both, and this is what makes
+/// that safe rather than flaky.
+static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The hub's own bounds in this file, small on purpose: a hub's log and view are ALREADY bounded
 /// (16 MiB and 8 MiB by default) and are not what this file is measuring, so they are cut down
 /// until the harness's footprint is the largest term in the heap.
@@ -289,6 +295,7 @@ fn walked(h: &Harness) -> (usize, usize) {
 
 #[test]
 fn the_heap_plateaus_at_what_the_sessions_hold() {
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let url = a_model_that_says_ok();
     let dir = TempDir::new("harnessd-r66-footprint");
 
@@ -412,18 +419,31 @@ fn the_heap_plateaus_at_what_the_sessions_hold() {
     );
     // **And the token regions are real memory, just not heap**: `RssShmem` grew with them, and by
     // less than the mapping — a doubling's tail is capacity nobody has written yet.
+    //
+    // **On a box with no `/proc` this half says nothing rather than failing.** `rss()` answers
+    // zeroes on Darwin, and "this kernel cannot report it" is not "the regions took no memory":
+    // the same rule `apparatus::present` follows. The heap half above is portable and is the one
+    // the bound rests on.
     let shmem_grew = shmem_end.saturating_sub(shmem0);
     let region_total = (footprint_total - held_total) as u64;
-    assert!(
-        shmem_grew > 0,
-        "the token regions took no resident memory at all, which a memfd mapping cannot do"
-    );
-    assert!(
-        shmem_grew <= region_total,
-        "the regions are mapped at {} but took {} resident — more written than exists",
-        mb(region_total as f64),
-        mb(shmem_grew as f64)
-    );
+    if shmem_end == 0 {
+        println!(
+            "no /proc/self/status on this box: the shmem check is skipped — the regions are \
+             mapped at {} and this kernel cannot say what of it is resident",
+            mb(region_total as f64)
+        );
+    } else {
+        assert!(
+            shmem_grew > 0,
+            "the token regions took no resident memory at all, which a memfd mapping cannot do"
+        );
+        assert!(
+            shmem_grew <= region_total,
+            "the regions are mapped at {} but took {} resident — more written than exists",
+            mb(region_total as f64),
+            mb(shmem_grew as f64)
+        );
+    }
     assert!(
         grew <= allowed,
         "{SESSIONS} sessions × {TURNS} turns of {} grew the heap by {} — more than the {} the \
@@ -571,6 +591,7 @@ fn the_full_probe() {
             .and_then(|v| v.parse().ok())
             .unwrap_or(default)
     };
+    let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let sessions = env_usize("R66_SESSIONS", 50);
     let turns = env_usize("R66_TURNS", 200);
     let row = env_usize("R66_TURN_BYTES", 1 << 20);
@@ -699,7 +720,9 @@ fn the_full_probe() {
     println!(
         "VERDICT 1b — the regions are the doubling the footprint claims ({bytes_per_token:.2} \
          bytes a token, 4 at capacity and 8 just after a doubling) and they are RESIDENT: {}",
-        if bytes_per_token <= 8.0 && shmem_end > shmem0 {
+        if shmem_end == 0 {
+            "cannot say — this box has no /proc/self/status to read RssShmem from"
+        } else if bytes_per_token <= 8.0 && shmem_end > shmem0 {
             "yes"
         } else {
             "NO — either the capacity arithmetic is wrong or the region is never written"
