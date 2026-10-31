@@ -136,6 +136,30 @@ fn two_projects_are_two_rooms_and_a_tag_is_not_shared_between_them() {
     assert_eq!(server.items_in(&one).len(), 1);
     assert_eq!(server.items_in(&two).len(), 1);
     assert_eq!(server.projects().len(), 3, "the box's own room, plus two");
+
+    // **And the reads that name no tag at all reach the session's own room**: `holding` is what a
+    // session asks about itself, and each one is answered from the room its daemon put it in.
+    let a_holds = a.call("holding", &json!({})).expect("a read");
+    let b_holds = b.call("holding", &json!({})).expect("a read");
+    assert!(b_holds.contains("2 GB"), "b holds its own `ram`: {b_holds}");
+    assert!(
+        !b_holds.contains("8 GB"),
+        "and nothing of project one's: {b_holds}"
+    );
+    assert!(
+        a_holds.contains("holds nothing"),
+        "project one's room has nothing claimed: {a_holds}"
+    );
+    // `reminders` is the whole ROOM's, and a session reads its own: b's row is in b's room and
+    // nowhere else, which is the same isolation the queue showed, read from the other side.
+    let a_reminders = a.call("reminders", &json!({})).expect("a read");
+    let b_reminders = b.call("reminders", &json!({})).expect("a read");
+    assert!(
+        !a_reminders.contains("2 GB") && !a_reminders.contains("8 GB"),
+        "project one's room reminds nobody: {a_reminders}"
+    );
+    assert!(b_reminders.contains("2 GB"), "{b_reminders}");
+    assert!(!b_reminders.contains("8 GB"), "{b_reminders}");
     server.stop();
 }
 
