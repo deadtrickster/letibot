@@ -132,6 +132,12 @@ fn sha_or_dash(sha: &str) -> String {
 struct Book {
     pins: Vec<Pin>,
     writes: Vec<Written>,
+    /// **The pins THIS process took back.** Not serialised, and it is what makes a merge with the
+    /// file safe: two processes write this book (the daemon's write records, the head's pins), and
+    /// a whole-file rewrite from a stale copy would drop the other's news — while a merge that
+    /// simply kept everything on disk would resurrect a pin the operator had just revoked. A
+    /// revocation is a statement, so it is carried as one.
+    revoked: Vec<String>,
 }
 
 impl Book {
@@ -309,6 +315,36 @@ impl Trust {
         let Some(file) = self.file.as_deref() else {
             return;
         };
+        // **Merge with the file before writing it.** The daemon records a write and the head takes
+        // a pin, in two processes over one file; a rewrite from a stale copy would lose whichever
+        // arrived second. Mine wins per ENTRY, and a pin this process revoked is dropped rather
+        // than kept from the copy on disk.
+        let merged = {
+            let mine = self.lock().clone();
+            let on_disk = std::fs::read_to_string(file)
+                .map(|text| Book::parse(&text))
+                .unwrap_or_default();
+            let mut out = Book::default();
+            for pin in on_disk.pins.iter().chain(mine.pins.iter()) {
+                if mine.revoked.contains(&pin.dir) {
+                    continue;
+                }
+                if let Some(at) = out.pins.iter().position(|p| p.dir == pin.dir) {
+                    out.pins[at] = pin.clone();
+                } else {
+                    out.pins.push(pin.clone());
+                }
+            }
+            for written in on_disk.writes.iter().chain(mine.writes.iter()) {
+                if let Some(at) = out.writes.iter().position(|w| w.path == written.path) {
+                    out.writes[at] = written.clone();
+                } else {
+                    out.writes.push(written.clone());
+                }
+            }
+            out
+        };
+        *self.lock() = merged;
         let text = self.lock().to_json();
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -379,7 +415,9 @@ impl Trust {
                 .pins
                 .iter()
                 .position(|p| p.dir == key || p.name == what)?;
-            book.pins.remove(at)
+            let taken = book.pins.remove(at);
+            book.revoked.push(taken.dir.clone());
+            taken
         };
         self.save();
         Some(taken)
@@ -634,6 +672,30 @@ mod tests {
                 .note_write(&root.join("README.md"), b"# x", "s-1")
                 .is_none()
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_pin_taken_in_one_process_and_a_write_recorded_in_another_both_survive() {
+        let root = tempdir("merge");
+        let dir = layer(&root, "one", b"module v1");
+        let file = root.join("plugin-trust.json");
+        // Two books over one file: the head takes pins, the daemon records writes, and each holds
+        // its own copy until its next poll.
+        let head = Trust::open(&file);
+        let daemon = Trust::open(&file);
+        let pin = head.pin("one", &dir).expect("a pin");
+        daemon.note_write(&dir.join(MANIFEST), b"a manifest", "s-1");
+        // Neither rewrite lost the other's news.
+        let seen = Trust::open(&file);
+        assert_eq!(seen.pins(), vec![pin.clone()], "the pin survived");
+        assert_eq!(seen.writes().len(), 1, "and so did the write record");
+
+        // **And a revocation is a statement, not an absence**: a merge must not resurrect the pin
+        // from a copy on disk that still has it.
+        daemon.unpin("one").expect("the pin, revoked");
+        let seen = Trust::open(&file);
+        assert!(seen.pins().is_empty(), "a revoked pin stays revoked");
         let _ = std::fs::remove_dir_all(&root);
     }
 
