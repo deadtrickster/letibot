@@ -897,6 +897,13 @@ mod tests {
     /// harness's own wake is where every notice source meets).
     #[test]
     fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
+        // **Ids of this test's own, because `wake` is process-wide and keyed by session id.** The
+        // daemon it serves has one session per id, so the module is right to be; a test binary does
+        // not, and four other tests in this module connect a room as `s-a` and post or claim through
+        // it. Their sentences landed in THIS test's queue and it failed on *the sentence names who
+        // did it* — MEASURED 2026-10-31, three of six copies of this binary at once.
+        let me_id = "s-a-wake";
+        let other_id = "s-b-wake";
         let dir = std::env::temp_dir().join(format!("letibot-room-link-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("room.sock");
@@ -910,15 +917,15 @@ mod tests {
                 rung.lock().unwrap().push(session.to_string());
             })
         };
-        let me = SessionRoom::connect("s-a", &path, bell.clone(), None).expect("s-a connects");
+        let me = SessionRoom::connect(me_id, &path, bell.clone(), None).expect("s-a connects");
         let other = Client::connect(
             &path,
-            Speaker::top_level("s-b"),
+            Speaker::top_level(other_id),
             Arc::new(|_: &letibot_room::Event| {}),
         )
         .expect("s-b connects");
 
-        // `s-a` posts, so it is a MEMBER of `ram` — a reader is not.
+        // `s-a-wake` posts, so it is a MEMBER of `ram` — a reader is not.
         me.call("post", &serde_json::json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
         let _ = other.request(&Request::Post {
@@ -926,7 +933,7 @@ mod tests {
             tag: "ram".into(),
             body: "2 GB".into(),
         });
-        // And somebody else's claim under that tag is news `s-a` must be woken by.
+        // And somebody else's claim under that tag is news this session must be woken by.
         let claimed = other
             .request(&Request::Claim {
                 id: "c1".into(),
@@ -935,23 +942,35 @@ mod tests {
             .expect("a claim");
         assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && wake::waiting("s-a") == 0 {
+        // **Drained until the sentence this test is about arrives, not until the queue is not
+        // empty.** The first sentence `me` is woken by is its OWN post (a poster is a member of its
+        // tag), and the claim is a second event that lands a moment later — so `waiting() > 0` was
+        // satisfied by the first and the assertion then read a queue the claim had not reached.
+        // MEASURED 2026-10-31, two of five copies of this binary on a disk-backed `TMPDIR`.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let mut said: Vec<String> = Vec::new();
+        while std::time::Instant::now() < deadline {
+            said.extend(wake::take(me_id));
+            if said
+                .iter()
+                .any(|s| s.contains("[room]") && s.contains(other_id))
+            {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(
-            rung.lock().unwrap().iter().any(|s| s == "s-a"),
+            rung.lock().unwrap().iter().any(|s| s == me_id),
             "the bell must ring for the session the event is about: {:?}",
             rung.lock().unwrap()
         );
-        let said = wake::take("s-a");
         assert!(
             !said.is_empty(),
             "a ring with nothing behind it is not a wake"
         );
         assert!(
             said.iter()
-                .any(|s| s.contains("[room]") && s.contains("s-b")),
+                .any(|s| s.contains("[room]") && s.contains(other_id)),
             "the sentence names who did it: {said:?}"
         );
 
