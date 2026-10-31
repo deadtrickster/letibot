@@ -462,7 +462,9 @@ fn a_plan_the_store_refuses_is_said_on_the_hub() {
     let hub = Hub::new(&cfg.session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
 
-    let other = Store::open(&path).expect("a second connection");
+    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `Store::open` would hand back the very connection `h` writes through.
+    let other = Store::open_private(&path).expect("a connection of its own");
     other
         .connection()
         .execute_batch("ALTER TABLE todo RENAME TO todo_away")

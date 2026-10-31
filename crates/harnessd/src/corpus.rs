@@ -12,13 +12,13 @@
 //! This is the write-through. One row per decision at the moment it is made; one
 //! update when the operator rules, which is a different event and often a later turn.
 //!
-//! # Its own connection, on purpose
+//! # One handle onto the process's connection
 //!
-//! [`letibot_tokencore::store::Store`] holds a `rusqlite::Connection`, which is `Send`
-//! but not `Sync`, and a [`CorpusSink`] is shared across the gate's lifetime. So this
-//! opens a second connection to the same file behind a `Mutex`. That is the store's
-//! declared design — WAL, a 5 s busy timeout, and the comment in `from_connection`
-//! naming two connections as expected — not a workaround.
+//! This used to open a **second** connection to the session store, because a
+//! [`letibot_tokencore::store::Store`] held a `rusqlite::Connection` — `Send` but not
+//! `Sync` — and a [`CorpusSink`] is shared across the gate's lifetime. Since the store
+//! became one connection per store file per process, this holds a handle onto that one
+//! connection — the same one the sessions write through — and opens nothing of its own.
 //!
 //! # A lost example is never a refused call
 //!
@@ -45,7 +45,7 @@ pub struct StoreCorpus {
 }
 
 impl StoreCorpus {
-    /// Open a second connection to the session store.
+    /// Take the session store's handle, for the gate's lifetime.
     pub fn open(path: &std::path::Path) -> Result<Self, letibot_tokencore::store::StoreError> {
         Ok(StoreCorpus {
             store: Mutex::new(Store::open(path)?),

@@ -1399,10 +1399,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // naming the fix rather than a session that fails to open halfway through a boot. See
     // `store_floor` for what each of the three answers means.
     //
-    // **The store is opened for this and then dropped**, which is one more connection among the
-    // several a daemon already holds (the session store, the corpus, the queues): the fact is
-    // settled once per process and the connection has no second use, so paying for it here is
-    // cheaper than threading it to every opener that would otherwise have to keep it.
+    // **The store is opened for this and then dropped**, and with one connection per store file
+    // per process (`Store::open`) that is not one connection among several: a daemon holds ONE,
+    // and nothing else has opened this file yet, so the drop below closes it and gives its
+    // descriptor back. The sessions' first open makes it again.
     // **Asked with `?`, so a store this build may not serve is a startup error**: the sentence it
     // carries already names the command that fixes it, and a daemon that went on would be
     // building sessions on a file it cannot read.
@@ -1541,7 +1541,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     // **The review queue and the merge queue (R61), before the worker loop takes this thread.**
     // Their own threads — a supervisor that claims each repository's lease and a worker per
-    // lease held — never a session's worker, with their own connections to the store. The
+    // lease held — never a session's worker, and the process's one connection to the store. The
     // reviewers are `task` children of the review queue's session (`Sessions::serve_reviews`);
     // the threads ring it, and every move is announced on every hub (`Registry::broadcast`),
     // because the queues are daemon-level and a pane may be open on any session.
@@ -2070,10 +2070,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
     // **The VM reaper, from the start** — a VM whose owner is finished, or whose owner's daemon
     // is gone, is brought down rather than left holding a slot every review then waits on
-    // (`crate::vm_reap`). Its own thread and its own connection: a reap can take minutes.
+    // (`crate::vm_reap`). Its own thread, so a reap that takes minutes is not the worker's; the
+    // store it writes to is the process's one connection, as everywhere else.
     crate::vm_reap::spawn(cfg.store.clone(), registry.clone());
-    // **The process supervisor, from the start** — RH7. Its own thread and its own connection, and
-    // its FIRST tick is the recovery: it reads every record the last daemon left open, checks each
+    // **The process supervisor, from the start** — RH7. Its own thread, and its FIRST tick is the
+    // recovery: it reads every record the last daemon left open, checks each
     // host once, and writes down which processes are still the ones recorded. Started here rather
     // than with the first session because a job is not a session's: one whose session has not been
     // reopened yet still has to be checked, and a host that has gone quiet is `lost` either way.

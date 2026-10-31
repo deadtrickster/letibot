@@ -2373,7 +2373,9 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         idle: Duration::from_millis(50),
     });
     let q = RepoQueue::new(
-        Store::open(&db).expect("the queue's own connection"),
+        // The process's ONE connection, the same one `s` above holds: a daemon's queue shares its
+        // store with its sessions, and `Store::open` is what makes that one descriptor.
+        Store::open(&db).expect("the store opens"),
         repo.clone(),
         env,
     );

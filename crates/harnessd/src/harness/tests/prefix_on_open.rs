@@ -161,7 +161,10 @@ fn an_empty_transcript_is_reseated_onto_the_prompt_this_daemon_composes() {
     let old = seed(&dir, "s-reseat", "s-reseat#t0", &parts, &[]);
     let mut h = Harness::open(&parts, cfg, Hub::new("s-reseat")).expect("the session opens");
 
-    let store = Store::open(&dir.0.join("sessions.db")).expect("a second connection");
+    // **The store's own view of what the open above wrote** — and it is the process's ONE
+    // connection (`Store::open`), not a second opener: this is a read, and the sharing that makes
+    // it one is pinned by `tests/store_handles.rs` and `tokencore/tests/connection_fds.rs`.
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
     let now = store
         .transcript_prefix_id("s-reseat#t0")
         .expect("reading the transcript")
@@ -234,7 +237,7 @@ fn an_empty_transcript_on_this_prompt_is_not_reseated_or_reported() {
     drop(first);
 
     let second = Harness::open(&parts, cfg, Hub::new("s-untouched")).expect("the second open");
-    let store = Store::open(&dir.0.join("sessions.db")).expect("a second connection");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
     assert_eq!(
         store
             .transcript_prefix_id("s-untouched#t0")
@@ -301,7 +304,7 @@ fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_f
         2,
         "every row of the conversation came across"
     );
-    let store = Store::open(&dir.0.join("sessions.db")).expect("a second connection");
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
     let moved = store
         .load_transcript("s-repair#t1")
         .expect("the fork loads");

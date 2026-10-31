@@ -61,7 +61,9 @@ fn a_todo_write_the_store_refused_is_made_by_the_next_flush() {
         needs: Vec::new(),
     }]);
 
-    let other = Store::open(&path).expect("a second connection");
+    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `Store::open` would hand back the very connection `h` writes through.
+    let other = Store::open_private(&path).expect("a connection of its own");
     other
         .connection()
         .execute_batch("ALTER TABLE todo RENAME TO todo_away")

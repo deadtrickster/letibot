@@ -145,9 +145,11 @@ fn a_stale_session(parts: &Parts, seated: &Config, rows: usize) {
     .expect("the seed fork lands");
 }
 
+/// The count, read through the store's own connection — this is what the file holds, not a
+/// second opener.
 fn count(store: &std::path::Path, sql: &str) -> i64 {
     Store::open(store)
-        .expect("a second connection")
+        .expect("the store")
         .connection()
         .query_row(sql, [], |r| r.get(0))
         .expect("the count")
@@ -215,7 +217,9 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
             .expect("the session reopens");
     let old = h.transcript_id().to_string();
 
-    let other = Store::open(&store).expect("a second connection");
+    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `Store::open` would hand back the very connection `h` writes through.
+    let other = Store::open_private(&store).expect("a connection of its own");
     other
         .connection()
         .execute_batch("ALTER TABLE transcript_item RENAME TO transcript_item_away")

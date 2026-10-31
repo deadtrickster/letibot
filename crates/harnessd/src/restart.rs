@@ -1259,8 +1259,13 @@ mod tests {
                 [letibot_tokencore::store::SCHEMA_VERSION + 1],
             )
             .unwrap();
+        // **`open_private`, because a fresh open has to be a fresh CONNECTION.** `Store::open`
+        // hands back the connection this process already holds on the file — the one `reader`
+        // above is writing through — and a shared handle never runs `migrate`, so the floor is
+        // never consulted and the refusal this test stands for is never reached. What a daemon
+        // that starts on this store gets is the constructor below it.
         assert!(
-            Store::open(&dir.store()).is_err(),
+            Store::open_private(&dir.store()).is_err(),
             "a fresh open refuses a store whose floor is past this build — the stop must not \
              depend on one"
         );

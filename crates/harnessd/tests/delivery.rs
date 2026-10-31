@@ -437,7 +437,9 @@ fn a_wake_whose_turn_never_opened_keeps_its_results_held() {
     w.hold(vec![settled(&cfg.session_id, "j41", "exited 0")]);
     w.turn_ended();
 
-    let other = Store::open(&store).expect("a second connection");
+    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `Store::open` would hand back the very connection `h` writes through.
+    let other = Store::open_private(&store).expect("a connection of its own");
     other
         .connection()
         .execute_batch("ALTER TABLE transcript_item RENAME TO transcript_item_away")

@@ -51,3 +51,28 @@ forms and the view calls those on the connection it already holds.
 The busy ladder is unchanged and **the lock is taken per attempt** (`retry_sql(|| self.conn()…`,
 `write_tx`'s closure locks inside itself), so a wait on another process's write lock sleeps with
 the lock released — the one property that keeps "one connection" from wedging a whole daemon.
+
+## The trap the sharing sets for the tests written before it
+
+**A test whose point was a SECOND connection now has one connection and measures nothing** — and it
+is not always red, so the gate does not catch it. Two shapes, found by the queue's reviewer on this
+branch and fixed in the commit after it:
+
+* **Red**: `restart.rs`'s `the_stop_is_recorded_after_a_newer_build_migrated_the_store` raised the
+  version and the reader floor through the store it held and asserted `Store::open(...).is_err()`.
+  `open_sharing` returns the live `Arc<Shared>` for a path whose inode has not moved and **never
+  calls `migrate`**, so the second open was `Ok` and the floor refusal was never reached. The
+  behaviour is real in production (a process's first open of the file does run it); only the test
+  broke. `Store::open_private` is the fix, and it is what "a fresh open" means.
+* **Green and hollow**: four tests made the store refuse a write by renaming a table away "through a
+  second connection" (`todos.rs`, `delivery.rs`, `reseat_writes_after_success.rs`,
+  `harness/tests/store_writes.rs`). Through the shared handle the rename is the harness renaming its
+  own table — still a refused write, but the schema-invalidation-across-connections property they
+  were written for had stopped being measured. `open_private` at those four sites restores it.
+
+The rule: **if a test's body needs another connection, it must say `open_private`**, because
+`Store::open` now means "whatever connection this process already has". A test that only wants the
+store's own view of what it wrote should keep `open` and stop calling it "a second connection".
+`Store::open` twice in one function is still fine when the first handle is DROPPED before the
+second — the `Weak` is dead and a new connection is made — which is why the floor tests in
+`store/tests.rs` and `leases.rs`'s `a_second_connection_sees_the_block_as_held` were already right.

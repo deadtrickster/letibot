@@ -5936,12 +5936,10 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
 
 /// The store, as somewhere a registry can find sessions it is not holding.
 ///
-/// Its **own** connection, behind a `Mutex`. Not the `Harness`'s: `rusqlite`'s
-/// `Connection` is `Send` and not `Sync`, the registry is shared across every
-/// connection thread, and a head listing sessions must not be able to block a turn
-/// that is writing rows. SQLite in WAL mode is built for exactly this — one writer,
-/// many readers — so a second connection is the cheap answer rather than a
-/// compromise.
+/// A **handle** onto the process's one connection to the store file (`Store::open`), behind a
+/// `Mutex` — not a connection of its own. It was one, while a `Store` held a
+/// `rusqlite::Connection` that is `Send` and not `Sync`; the store now serialises its own
+/// accesses, so a head listing sessions shares the connection a turn writes through.
 pub struct StoreSessions {
     store: Mutex<Store>,
     wiring: SessionWiring,

@@ -241,8 +241,10 @@ fn an_approval_binds_the_reviewed_head_and_creates_the_merge_row_once() {
 #[test]
 fn the_lease_is_held_by_one_daemon_and_taken_over_only_when_its_heartbeat_expires() {
     let d = TempDir::new("lease");
-    let a = Store::open(&d.db()).unwrap();
-    let b = Store::open(&d.db()).unwrap();
+    // **Two daemons are two CONNECTIONS** — `Store::open` would hand `b` the connection `a` is
+    // holding, and the compare-and-swap would be one daemon talking to itself.
+    let a = Store::open_private(&d.db()).unwrap();
+    let b = Store::open_private(&d.db()).unwrap();
     let ttl = 60_000;
     assert_eq!(
         a.acquire_queue_lease("/repo", &claim("A"), 1_000, ttl)
