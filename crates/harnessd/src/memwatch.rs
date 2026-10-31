@@ -531,6 +531,56 @@ mod tests {
         LIVE.fetch_sub(1000, Ordering::Relaxed);
     }
 
+    /// **The census a person reads names the session AND the part that grew** — R66's whole
+    /// ask. A total is not actionable; `transcript 2 MiB · region 3 MiB · trail 1 KiB` says which
+    /// of the three to look at, and the second block orders the sessions by it because the hub
+    /// with the longest log is not the session that grew.
+    #[test]
+    fn the_census_names_the_session_and_the_part_that_grew() {
+        let c = HubCensus {
+            session_id: "s-the-one-that-grew".into(),
+            footprint: letibot_sessionlog::hub::Footprint {
+                items: 7,
+                items_text_bytes: 2 << 20,
+                ledger_region_bytes: 3 << 20,
+                ledger_tokens: 786_432,
+                trail_bytes: 1024,
+                trail_utterances: 2,
+                ceiling_bytes: 8 << 20,
+            },
+            ..Default::default()
+        };
+        let out = full_census(4 << 30, 1 << 30, 2 << 30, &[(c, 0)], &BTreeMap::new());
+        for want in [
+            "s-the-one-that-grew",
+            "harness 5 MiB",
+            "transcript 2 MiB",
+            "region 3 MiB",
+            "trail 1 KiB",
+            "sessions whose harness holds most",
+        ] {
+            assert!(out.contains(want), "the census must say {want}:\n{out}");
+        }
+        // And a daemon whose hubs have no footprint prints no empty block.
+        let bare = full_census(
+            4 << 30,
+            1 << 30,
+            2 << 30,
+            &[(
+                HubCensus {
+                    session_id: "s-plain".into(),
+                    ..Default::default()
+                },
+                0,
+            )],
+            &BTreeMap::new(),
+        );
+        assert!(
+            !bare.contains("sessions whose harness holds most"),
+            "{bare}"
+        );
+    }
+
     /// **The term R66 could not name** — a session's harness past the ceiling it states for
     /// itself is reported, and the sentence says which part grew. Three shapes, because the
     /// three have to be told apart: a hub with NO footprint registered states no ceiling and is
