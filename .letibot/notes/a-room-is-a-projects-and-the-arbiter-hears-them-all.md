@@ -58,3 +58,20 @@ speak*.
 `room_of_name` accepted `…/../etc` because the round trip alone passes for any suffix; the shape
 (twelve hex, or empty for the box's own room) is the second half. `a_name_that_does_not_derive_back`
 now pins both.
+
+## A folder that is no repository is NO project — and that is forced, not tidy
+
+`Roster::project_of` answers `""` (the box's room) for a workspace outside any repository, and the
+first cut answered the workspace itself. The reason it must be empty: the sessions that HAVE no
+project — a one-shot, a fixture, the coordinator's own arbiter, and the tag agents it seats with
+`Registry::create_under` — are opened from a scratch/data directory. Minting a project per temp dir
+put the arbiter and every tag agent in a room of their own, where `Server::live_tags` (the box's
+room's tags) and `route`'s `tag_session` audience (also the box's) could not reach them. So the
+default project is not a fallback: it is where the sessions with no tree belong, and the box's
+tag-agent machinery lives there.
+
+## A room is only made for a key somebody derived
+
+`with_room` creates a room on demand, so `Request::Rule { project: Some("../../etc") }` used to
+create a room with no membership and no name that could ever be reached again. `tree::is_project_key`
+(twelve hex, or empty) is now checked at that door and `Refused::UnknownRoom` is the sentence.
