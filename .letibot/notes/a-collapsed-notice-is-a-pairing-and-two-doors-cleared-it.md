@@ -55,3 +55,18 @@ cannot be done by keeping it unconditionally.
 * **The file-side bug needs two heads up at once**: a head that starts *after* the dismissal loads
   it from the file and keeps it. The fixture must create head B, load its prefs, *then* have head A
   dismiss.
+
+## The fourth door, NOT closed — a fork (a compaction, a `/reseat`)
+
+MEASURED with a real fork in the fixture: after `TranscriptForked`, `rows_replaced` sets
+`kept = items.position(first row of the OLD transcript)` — which is 0 when the head holds nothing
+of the new transcript yet — and demotes every seam `> kept` to `Placed::Before`. A `Before` note is
+not drawn, and (by the rule above) does not collapse its rows, so **a fork un-collapses every
+notice and takes every card off the screen**: `(row, card, notice)` went `(0,1,0)` → `(0,0,2)`.
+
+That is deliberate on both counts — the seam names a place in a transcript that is gone (pg-noop,
+2026-10-16: a stale seam drew nothing over the operator's next message), and the wire does not say
+where a carried row landed. An `item_id` is `{transcript}.{n}`, so a carried row is a NEW id and the
+pairing cannot cross by identity. Closing it needs the fork to name where the rows it carried went;
+nothing in the head can guess it, and a content match is not safe (`same_event` answers *true* for
+any `[reseat]`/`[restart]` row — there is nothing in the text to compare).

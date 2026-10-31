@@ -38,6 +38,17 @@
 //! **The pairing is a fact about the ROW, not about where it sits**: it is keyed by `item_id`, so a
 //! snapshot that hands back the same rows keeps it (`App::load` and `App::rows_replaced` prune it
 //! to the rows that survive, instead of clearing it).
+//!
+//! # The one door this does not close, said rather than left to be found
+//!
+//! **A fork** (a compaction, a `/reseat`) still un-collapses: its rows arrive under a new
+//! transcript's ids, so there is no identity for the pairing to cross on, and
+//! `App::rows_replaced` turns every seam in the rows that went into `Placed::Before` — a note
+//! whose card is not drawn does not collapse its row (see below), so the row comes back. That is
+//! deliberate on both counts: the seam names a place in a transcript that is gone (pg-noop's
+//! defect, 2026-10-16: a stale seam drew nothing over the operator's next message), and the wire
+//! does not say where a carried row landed. Closing it needs the fork to name where the rows it
+//! carried went; nothing here can guess it.
 
 use super::*;
 use crate::ui::transcript::{job_card, red_card, stale_card};
