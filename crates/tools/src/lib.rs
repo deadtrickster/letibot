@@ -417,10 +417,7 @@ mod tests {
         // and it resolves here because `with_session_tools` registers a `NoRoom` behind it — the
         // rule this whole test is about: a role that names a tool must resolve on any registry
         // this function builds, and the tool then says what is not behind it.
-        // **Nine since the host changelog.** `host_changelog` is the default seat's too, because
-        // *why is the governor `performance`* is a question a person asks the default session —
-        // and its `list` verb narrows to `Read`, so the read-only seat can answer it.
-        assert_eq!(seated.len(), 9, "{:?}", seated.names());
+        assert_eq!(seated.len(), 8, "{:?}", seated.names());
         assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }
 

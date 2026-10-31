@@ -1464,8 +1464,8 @@ pub mod roles {
         // **Thirty-seven since `host_changelog`**, which took its own seat for the reason the ones
         // before it did: a host config change with no record of why it was made is the state the
         // operator reported, and a seat that can `bash` the change but not write it down is the
-        // seat that leaves it. `list` narrows to a read, so the read-only default seat pays nothing
-        // for the entry it can already use.
+        // seat that leaves it. It is `Write`, so it rides this seat's writable backend and asks
+        // for nothing new — the orchestrator seat, which opens read-only, deliberately has it not.
         r.max_tools = 37;
         r
     }
@@ -1495,6 +1495,15 @@ pub mod roles {
     /// [`leticode`]. A subagent never does — its words go through the session that spawned it,
     /// which is the operator's rule, flowy's and the room's own door — and neither does
     /// [`gatekeeper`], whose sessions are reviewers and review children.
+    ///
+    /// **`host_changelog` is deliberately NOT seated here, and the reason is a measurement.** It
+    /// is a `Write` tool, and `Mode::requires_given` asks for a writable backend for any seat that
+    /// has one — so seating it here made twelve harnessd fixtures refuse to open with *"the
+    /// `always-ask` mode needs 2 prerequisites … missing: writable backend"*, and it would do the
+    /// same to `letibot --read-only` (this seat, no adjudicator, a read-only backend) and to the
+    /// room's own coordinator session. A seat that is by construction the read-only one does not
+    /// get a write tool; the record is written from [`leticode`], which is the seat a change is
+    /// actually made on and always opens with a writable backend.
     pub fn m1_orchestrator() -> Role {
         Role::new(
             "orchestrator",
@@ -1507,12 +1516,6 @@ pub mod roles {
                 "read_spill",
                 "todo_write",
                 "room",
-                // **`host_changelog`: what this machine's settings were, what they are, and on
-                // whose words.** Seated here because the question it answers — *why is the
-                // governor `performance`* — is asked of the DEFAULT seat, and its `list` verb
-                // narrows to a read, so the read-only default session can read the record even
-                // though it cannot write one.
-                "host_changelog",
             ],
         )
     }
@@ -3492,8 +3495,10 @@ mod tests {
         // and is nothing a seat without them can do. **Thirty-four since RH8's `fanout` and
         // `scenario`**, which took their own seats for the same reason `hosts` did. **Thirty-five
         // since `room`**, the host's tagged queues, which a top-level session needs and a subagent
-        // must not have.
-        assert_eq!(seat.tools.len(), 35, "{:?}", seat.tools);
+        // must not have. **Thirty-six since `host_changelog`**, the record of what a host setting
+        // was, what it is now, why and on whose words — seated here and not on the orchestrator,
+        // because it is a `Write` tool and that seat is the read-only one.
+        assert_eq!(seat.tools.len(), 36, "{:?}", seat.tools);
         assert!(
             seat.tools.len() <= seat.max_tools,
             "the seat is over its own ceiling: {} > {}",

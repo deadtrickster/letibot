@@ -434,7 +434,7 @@ fn an_empty_changelog_says_so_and_names_the_path() {
 }
 
 /// The schema is the seat's contract: a name, a clean description, and `list` narrowing to a read
-/// so the read-only default seat can still read the record.
+/// so a read-only backend is not asked a question about a fact.
 #[test]
 fn the_schema_is_clean_and_list_narrows_to_a_read() {
     let tool = HostChangelogTool::nowhere();
