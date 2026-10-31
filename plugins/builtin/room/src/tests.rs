@@ -478,13 +478,15 @@ fn the_restart_control_is_a_declared_row_and_is_not_offered_without_a_supervisor
     );
 }
 
-/// **A room that could not be read draws one panel saying why**, not an empty queue.
+/// **A room that could not be read draws one panel saying why**, not an empty queue — and the
+/// restart stays on the pane, because a room nobody can read is the one most likely to be dead.
 #[test]
 fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
-    let mut broken = feed_of(json!({"identity": "the room on /tmp/room.sock"}));
+    let mut broken = feed(json!([]), json!([]));
+    broken.identity = "the room on /tmp/room.sock".to_string();
     broken.unreadable = Some("the room at /tmp/room.sock did not answer in 10s".to_string());
     let view = view(&broken);
-    assert_eq!(view["panels"].as_array().unwrap().len(), 1);
+    assert_eq!(view["panels"].as_array().unwrap().len(), 2);
     assert_eq!(
         view["panels"][0]["unavailable"]["why"],
         json!("the room at /tmp/room.sock did not answer in 10s")
@@ -495,6 +497,14 @@ fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
             .unwrap()
             .contains("harnessd --room"),
         true
+    );
+    // **The control is still there**, on the panel that needs nothing from the room: an unreadable
+    // room is the one a person restarts.
+    assert_eq!(view["panels"][1]["id"], json!("server"));
+    assert_eq!(
+        row_with(&view, "restart")["enter"],
+        json!({"verb": "restart", "id": "restart"}),
+        "the restart survives the room being unreadable"
     );
 }
 

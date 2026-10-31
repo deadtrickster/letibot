@@ -272,23 +272,31 @@ fn view(feed: &Feed) -> Value {
     // **A room that could not be read says so instead of drawing an empty queue.** *Nothing is
     // queued* and *nobody answered* are two facts, and a screen that shows one for the other is a
     // screen a person cannot act on.
+    //
+    // **And the restart stays on it.** An unreadable room is the one most likely to be dead, and
+    // that is exactly when a person wants the key: the panel below is the supervisor's, it needs
+    // nothing from the room, and a pane that hid the control at the moment it was needed would be
+    // the control's own argument against itself.
     if let Some(why) = &feed.unreadable {
         return json!({
             "title": "the room",
-            "panels": [{
-                "id": "room",
-                "title": "the room",
-                "summary": [{"lines": [{
-                    "label": "unreadable",
-                    "value": why,
-                    "role": "failure",
-                }]}],
-                "unavailable": {
-                    "why": why,
-                    "fix": "the room is a daemon of its own (`harnessd --room`); a session whose \
-                            coordinator is not running has no queue to draw",
+            "panels": [
+                {
+                    "id": "room",
+                    "title": "the room",
+                    "summary": [{"lines": [{
+                        "label": "unreadable",
+                        "value": why,
+                        "role": "failure",
+                    }]}],
+                    "unavailable": {
+                        "why": why,
+                        "fix": "the room is a daemon of its own (`harnessd --room`); a session whose \
+                                coordinator is not running has no queue to draw",
+                    },
                 },
-            }],
+                server(feed),
+            ],
         });
     }
     let mut panels = vec![header(feed)];
