@@ -95,13 +95,22 @@ const TRAIL_UTTERANCES: usize = 12;
 /// How far back the walk goes. A session with 400 turns has an authorisation
 /// somewhere in the last handful, and scanning all of it to find twelve is work
 /// done inside the tool path.
-const TRAIL_SCAN: usize = 60;
+///
+/// **It is also how many utterances the trail HOLDS** — see [`TrailMirror::say`].
+/// Keeping more than this was pure waste and an unbounded per-session term: the
+/// only reader takes the last `TRAIL_SCAN`, so everything older than the sixtieth
+/// was held for the life of the session and never read once.
+pub(crate) const TRAIL_SCAN: usize = 60;
 
 /// The longest an utterance travels verbatim, matching
 /// [`letibot_tools::authorise::Utterance::operator`]'s own rule. A truncated
 /// authorisation that reads as complete is worse than a missing one, so a clipped
 /// one says it was clipped.
-const UTTERANCE_CHARS: usize = 600;
+///
+/// **And it is how much of an utterance is STORED** — see [`TrailMirror::say`]. What
+/// travels was always clipped to this; holding the rest cost the daemon memory no reader
+/// ever looked at.
+pub(crate) const UTTERANCE_CHARS: usize = 600;
 
 /// Everything the engine borrows for the life of the daemon.
 ///
@@ -545,7 +554,12 @@ fn reconcile_rows(
 /// moment it was appended.
 struct Said {
     speaker: Speaker,
+    /// **At most [`UTTERANCE_CHARS`] characters** — see [`TrailMirror::say`].
     text: String,
+    /// It was longer than that when it was said, and says so — the flag is what
+    /// `Utterance::clipped` reports, and it is recorded here rather than recomputed
+    /// because the text this struct holds is already the clipped one.
+    clipped: bool,
     /// Which turn of this session it belongs to.
     turn: u32,
     /// When it was said. `None` for a row rebuilt from the store — see
@@ -631,18 +645,53 @@ impl TrailMirror {
 
     /// Record one thing that was said, with the provenance the caller knows and
     /// nobody else can recover.
+    ///
+    /// **Two caps, and both were already the only values anything read.** The trail
+    /// holds at most [`TRAIL_SCAN`] utterances and at most [`UTTERANCE_CHARS`]
+    /// characters of each: `trail()` takes the last sixty and clips each to six
+    /// hundred, so everything this drops was memory no reader could reach. It is a
+    /// memory bound and not a behaviour change — and it is what makes
+    /// `crate::footprint`'s trail ceiling a bound the code holds rather than a wish.
     fn say(&self, speaker: Speaker, text: &str, at: Option<Instant>) {
         if text.trim().is_empty() {
             return;
         }
+        let clipped = text.chars().count() > UTTERANCE_CHARS;
+        let stored: String = if clipped {
+            text.chars().take(UTTERANCE_CHARS).collect()
+        } else {
+            text.to_string()
+        };
         let mut g = self.lock();
         let turn = g.turn;
         g.said.push(Said {
             speaker,
-            text: text.to_string(),
+            text: stored,
+            clipped,
             turn,
             at,
         });
+        Self::keep_the_last_scan(&mut g.said);
+    }
+
+    /// Drop everything past the [`TRAIL_SCAN`] the walk can reach.
+    ///
+    /// One statement, in one place, because the two writers (`say` and `seed`) must not
+    /// disagree about how long the trail is: a seeded trail that kept 500 rows and a live
+    /// one that kept 60 would be two bounds over one buffer.
+    fn keep_the_last_scan(said: &mut Vec<Said>) {
+        if said.len() > TRAIL_SCAN {
+            let drop = said.len() - TRAIL_SCAN;
+            said.drain(..drop);
+        }
+    }
+
+    /// **What the trail holds**, in bytes of text and in utterances — the third term of a
+    /// hub's [`Footprint`](letibot_sessionlog::hub::Footprint), read live because this is
+    /// already shared behind its own lock.
+    pub(crate) fn held(&self) -> (usize, usize) {
+        let g = self.lock();
+        (g.said.iter().map(|s| s.text.len()).sum(), g.said.len())
     }
 
     /// Seed from a transcript rebuilt out of the store.
@@ -685,6 +734,15 @@ impl TrailMirror {
                 if text.trim().is_empty() {
                     continue;
                 }
+                // The same two caps a live utterance gets — see `say`. A resumed session's
+                // rows are the same text by the same rule, so a seeded trail and a live one
+                // are one bound.
+                let clipped = text.chars().count() > UTTERANCE_CHARS;
+                let text: String = if clipped {
+                    text.chars().take(UTTERANCE_CHARS).collect()
+                } else {
+                    text
+                };
                 g.said.push(Said {
                     // **The two `Speaker` enums meet here and nowhere else**: the
                     // row's (`letibot_transcript`, two variants) and the trail's
@@ -696,11 +754,13 @@ impl TrailMirror {
                         letibot_transcript::Speaker::Agent => Speaker::Agent,
                     },
                     text,
+                    clipped,
                     // Item index as a stand-in turn: the ordering is right and the
                     // distances are monotone, which is what `turns_ago` is read for.
                     turn: i as u32,
                     at: None,
                 });
+                Self::keep_the_last_scan(&mut g.said);
             }
         }
         g.turn = items.len() as u32;
@@ -733,7 +793,10 @@ impl TrailMirror {
             if utterances.len() >= TRAIL_UTTERANCES {
                 break;
             }
-            let clipped = said.text.chars().count() > UTTERANCE_CHARS;
+            // The text is stored already clipped, so `clipped` comes off the record and the
+            // comparison is kept as the belt to that pair of braces: a row this struct did not
+            // write (there is none today) would still read correctly.
+            let clipped = said.clipped || said.text.chars().count() > UTTERANCE_CHARS;
             utterances.push(Utterance {
                 speaker: said.speaker,
                 text: if clipped {
@@ -2308,6 +2371,11 @@ pub struct Harness {
     /// Who said what, so the gate's adjudicator can see what authorised an action.
     /// Fed at every append, because the provenance is only knowable there.
     trail: Arc<TrailMirror>,
+    /// **What this session's harness HOLDS, restated at every append** — R66's other half, see
+    /// [`crate::footprint`]. The hub's census reads these through the source registered at open,
+    /// and they are atomics because the reader is the memory watchdog's thread and the writer is
+    /// this one: a lock here would be a lock a turn holds, taken from the census.
+    footprint_gauges: Arc<crate::footprint::Gauges>,
     /// **The last question this session asked a person, and the answer it got** — filled by
     /// the session's own [`crate::answers::HeadQuestioner`] and read back by the round loop,
     /// which is the one place a tool result is appended. See [`Harness::settle_asked`] for
@@ -4995,6 +5063,11 @@ impl Harness {
         }
 
         let trail = Arc::new(TrailMirror::default());
+        // **What this session will hold, and the ceiling it states for itself** — see
+        // `crate::footprint` for the arithmetic. Built here, before the struct literal, because
+        // the ceiling is the CONFIG's window and the literal is a list of values.
+        let footprint_gauges =
+            crate::footprint::Gauges::new(crate::footprint::ceiling_for(cfg.context_window));
         let injected: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
         let monitor_cursor = Arc::new(AtomicUsize::new(0));
         // **Where this session's questions and their answers are recorded.** Created here,
@@ -6337,6 +6410,7 @@ impl Harness {
             // then is unreachable in a daemon, and harmless in a bare-harness test.
             bang: None,
             trail,
+            footprint_gauges,
             asked,
             gate_admissions,
             todos: todo_board,
@@ -6420,6 +6494,14 @@ impl Harness {
             h.prompt_in_flight.clone(),
         ));
         h.publish_activity();
+        // **And what this session's harness HOLDS** (R66) — the half of a session's memory that is
+        // not on the hub at all. Registered here, where the harness, its transcript, its ledger
+        // and its trail all exist, and read by the memory watchdog's census.
+        h.restate_footprint();
+        h.hub.set_footprint(crate::footprint::source(
+            h.footprint_gauges.clone(),
+            h.trail.clone(),
+        ));
         // **And the notes source, which is read rather than pushed** — a head's `ListNotes`
         // is answered from it, so it has to be installed before a head can attach. See
         // `Harness::install_notes_source`.
@@ -8114,6 +8196,32 @@ impl Harness {
 
     pub fn items(&self) -> &[TranscriptItem] {
         &self.session.items
+    }
+
+    /// **What this session's harness holds, now** — the same answer the hub's census gets.
+    ///
+    /// Read by a test that wants to compare the census against the transcript it describes, and
+    /// by nothing in a daemon (the daemon reads it through the hub, on the watchdog's thread).
+    /// The transcript's half is the gauges, which [`restate_footprint`](Self::restate_footprint)
+    /// keeps exact; the trail's is read live.
+    pub fn footprint(&self) -> letibot_sessionlog::hub::Footprint {
+        crate::footprint::of(&self.footprint_gauges, &self.trail)
+    }
+
+    /// **Restate the hub's footprint from what this harness holds** — see [`crate::footprint`].
+    ///
+    /// Called at open and from [`Harness::reconcile`], which every append goes through. Each
+    /// call walks the rows: an increment would be cheaper and would under-report for ever after
+    /// one missed site, and a transcript is a few hundred rows of a few strings each.
+    fn restate_footprint(&self) {
+        self.footprint_gauges
+            .set_ceiling(crate::footprint::ceiling_for(self.cfg.context_window));
+        self.footprint_gauges.restate(
+            self.session.items.len(),
+            self.session.items.iter().map(|i| i.bytes()).sum(),
+            self.session.ledger.region().bytes(),
+            self.session.ledger.len(),
+        );
     }
 
     /// The session's todo list as the model last wrote it — the board's
@@ -16005,6 +16113,11 @@ impl Harness {
     /// module header. A count mismatch is a bug in the pairing, not something to
     /// paper over, so it is announced as a warning on the same log the head reads.
     fn reconcile(&self, sink: &mut CapturingSink, items: &[TranscriptItem]) {
+        // **What this session now holds** (R66). Restated here because this is the one function
+        // every append goes through — the six `append_items` call sites and the compaction
+        // fork's swap — so the census's number is a walk of the transcript as it is, and not a
+        // counter that can drift from it. See [`crate::footprint`].
+        self.restate_footprint();
         // The trail's denominator, counted where every appended batch passes.
         // `messages_scanned` has to be what was **looked at**, and this is the one
         // place that knows how much there is.
