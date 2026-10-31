@@ -509,6 +509,69 @@ pub struct HubCensus {
     pub operator_calls: usize,
     pub secrets: usize,
     pub screens: usize,
+    /// **What this session's HARNESS holds** — the half of a session's cost that is not on the
+    /// hub at all. See [`Footprint`]; all zeroes for a hub nobody registered one on.
+    pub footprint: Footprint,
+}
+
+/// **What one session's harness holds in memory** — R66.
+///
+/// A hub can account for itself (`HubCensus`): its log, its view, its heads' queues. But the
+/// biggest per-session structures in a daemon are on the other side of the wire — the harness's
+/// in-memory transcript, the ledger's token region, the authorisation trail — and a census that
+/// cannot see them answers the question R66 asked with a `rss` line and no name on it.
+///
+/// # What is counted, and what is deliberately not
+///
+/// | field | counts | does **not** count |
+/// |---|---|---|
+/// | `items` | rows in the in-memory transcript | the rows the store holds, or the hub's view's |
+/// | `items_text_bytes` | `TranscriptItem::bytes` summed over those rows — one definition, the same one the view's byte bound uses | ids, enums, struct overhead, the `Vec`'s spare capacity |
+/// | `ledger_region_bytes` | the token region's MAPPED bytes (`TokenRegion::bytes`) | the pages not yet written; the ledger's rows and their hashes |
+/// | `ledger_tokens` | tokens appended, the prefix included | — |
+/// | `trail_bytes` | bytes of text the authorisation trail holds | the `Said` structs around them |
+/// | `trail_utterances` | utterances held | the items it has scanned, which is a count and not a body |
+///
+/// So `total()` is a **floor** on what the session costs and a fair reading of which of the
+/// three grew. It is not a heap measurement: `memwatch`'s `Counting` allocator is, and the
+/// difference between the two is the honest answer to *how much of the daemon is this session*.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Footprint {
+    /// Rows the in-memory transcript holds.
+    pub items: usize,
+    /// Bytes of TEXT those rows carry — [`letibot_transcript::TranscriptItem::bytes`].
+    pub items_text_bytes: usize,
+    /// Bytes the ledger's token region is mapped at, capacity and not occupancy.
+    pub ledger_region_bytes: usize,
+    /// Tokens appended to the ledger, the stable prefix included.
+    pub ledger_tokens: usize,
+    /// Bytes of text the authorisation trail holds.
+    pub trail_bytes: usize,
+    /// Utterances the authorisation trail holds.
+    pub trail_utterances: usize,
+    /// **The ceiling this session's harness states for [`total`](Self::total)** — the window's
+    /// arithmetic, or a flat tripwire for a session with no wall. See
+    /// `letibot_harnessd::footprint` for the numbers and what justifies each.
+    ///
+    /// Zero means *no ceiling was stated*, which is not the same fact as *inside it*: a hub
+    /// nobody registered a footprint on has nothing to be over.
+    pub ceiling_bytes: usize,
+}
+
+impl Footprint {
+    /// The three byte terms, summed. See the type's table for what each one counts.
+    pub fn total(&self) -> usize {
+        self.items_text_bytes + self.ledger_region_bytes + self.trail_bytes
+    }
+
+    /// **Has this session grown past the ceiling its harness states for itself?**
+    ///
+    /// The ceiling is the harness's own claim, so this is a bound CHECKED rather than a tripwire
+    /// chosen here. A hub nobody registered a footprint on states no ceiling, and `0` therefore
+    /// answers `false` — *nothing was claimed* is not *a bound held*.
+    pub fn over_ceiling(&self) -> bool {
+        self.ceiling_bytes > 0 && self.total() > self.ceiling_bytes
+    }
 }
 
 struct Head {
@@ -633,6 +696,29 @@ struct Inner {
 /// take that thread's lock here.
 pub type ActivitySource = Arc<dyn Fn(&Hub) -> crate::activity::Activity + Send + Sync>;
 
+/// **How the daemon above a hub says what this session's HARNESS holds** — see [`Footprint`].
+///
+/// A closure, like [`ActivitySource`], and for the same reason: the structures are on the
+/// harness, which `letibot-sessionlog` has no idea exists, so the half that owns them registers
+/// how to ask and the hub owns where the answer goes.
+///
+/// # Why it takes no `&Hub`, unlike the activity's source
+///
+/// The activity's source is handed its hub so it cannot answer about a different session. This
+/// one cannot get that wrong: it reads one harness's own fields, and a harness belongs to one
+/// session by construction. It is called from [`Hub::census`] — **after the hub's lock is
+/// dropped**, because the trail it reads is a lock the harness takes on every turn, and holding
+/// the hub's while taking that one is the cycle [`ActivitySource`] documents.
+///
+/// # What a source may not do
+///
+/// **It may not take a lock a turn holds, and it may not do work that grows with the
+/// transcript.** It is read once a minute by the memory watchdog and, in a test, on demand. So
+/// the harness does not walk its items here: the numbers are restated by the thread that owns
+/// them at every point they change (`Harness::reconcile`), and this reads them out of atomics
+/// plus one short-lived lock on the trail.
+pub type FootprintSource = Arc<dyn Fn() -> Footprint + Send + Sync>;
+
 /// What a session looks like from outside it: enough for a picker, and cheap
 /// enough to compute for every session on every list.
 ///
@@ -741,6 +827,9 @@ pub struct Hub {
     /// Registered once by whoever owns the session (`letibot_harnessd`'s `activity` module), and
     /// given the hub it is about so the two cannot disagree about which session they mean.
     activity_source: Mutex<Option<ActivitySource>>,
+    /// **How the daemon above this hub says what the HARNESS holds** — see [`Footprint`] and
+    /// [`FootprintSource`]. Registered once, by the session's own harness at open.
+    footprint_source: Mutex<Option<FootprintSource>>,
 }
 
 impl Hub {
@@ -780,6 +869,7 @@ impl Hub {
             promote: Arc::new(Mutex::new(None)),
             activity: Mutex::new(crate::activity::Activity::Quiet),
             activity_source: Mutex::new(None),
+            footprint_source: Mutex::new(None),
         })
     }
 
@@ -1430,23 +1520,45 @@ impl Hub {
         }
     }
 
-    /// What a head has read, rendered and filtered. `None` if it is not attached.
-    pub fn mark(&self, head_id: &str) -> Option<ReadMark> {
-        self.lock()
-            .heads
-            .iter()
-            .find(|h| h.id == head_id)
-            .map(|h| h.mark)
+    /// **Install what this session's harness holds** — see [`FootprintSource`]. Called once, by
+    /// the harness at open, and never removed: a session this hub belongs to lives for the
+    /// daemon's life.
+    ///
+    /// A second registration replaces the first. Nothing depends on that, and it is the honest
+    /// reading — the later registration is the harness that is now serving the session.
+    pub fn set_footprint(&self, source: FootprintSource) {
+        *self
+            .footprint_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(source);
     }
 
-    /// Detach. Announced, and **nothing else happens**: no turn is cancelled, no
-    /// work is reaped. Idle is quiet, not unwatched.
+    /// **What this session's harness holds, now** — all zeroes for a hub nobody registered a
+    /// footprint on (every hub built below a harness: a test's, a head's).
+    ///
+    /// Cheap by construction: the harness restates the transcript and the region into atomics at
+    /// every point they change, and this reads them and takes the trail's lock for the length of
+    /// a `Vec` walk over at most [`Footprint`]'s trail cap.
+    pub fn footprint(&self) -> Footprint {
+        let source = self
+            .footprint_source
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        source.map(|s| s()).unwrap_or_default()
+    }
+
     /// See [`HubCensus`]. Takes the hub's lock for the count and nothing else.
+    ///
+    /// **The footprint is read after that lock is dropped.** Its source takes the harness's
+    /// trail lock, which a turn holds for the length of a write — so reading it under this one
+    /// would put a lock a turn takes inside the hub's, which is the cycle [`ActivitySource`]
+    /// documents at length.
     pub fn census(&self) -> HubCensus {
         let g = self.lock();
         let (log_events, log_bytes) = g.log.held();
         let bounds = g.log.bounds();
-        HubCensus {
+        let out = HubCensus {
             session_id: g.log.session_id().to_string(),
             log_events,
             log_bytes,
@@ -1460,9 +1572,26 @@ impl Hub {
             operator_calls: g.operator_calls.len(),
             secrets: g.secrets.len(),
             screens: g.screens.len(),
+            footprint: Footprint::default(),
+        };
+        drop(g);
+        HubCensus {
+            footprint: self.footprint(),
+            ..out
         }
     }
 
+    /// What a head has read, rendered and filtered. `None` if it is not attached.
+    pub fn mark(&self, head_id: &str) -> Option<ReadMark> {
+        self.lock()
+            .heads
+            .iter()
+            .find(|h| h.id == head_id)
+            .map(|h| h.mark)
+    }
+
+    /// Detach. Announced, and **nothing else happens**: no turn is cancelled, no
+    /// work is reaped. Idle is quiet, not unwatched.
     pub fn detach(&self, head_id: &str) {
         let ev = {
             let mut g = self.lock();
@@ -2553,6 +2682,52 @@ mod tests {
             },
             0,
         )
+    }
+
+    /// **The footprint is the harness's to answer and the hub's to carry** — R66. Three shapes
+    /// that have to be told apart: a hub nobody registered one on (every hub below a harness — a
+    /// test's, a head's) answers zeroes and states no ceiling; a registered one answers what the
+    /// source says; and it is asked EVERY time, so a session that grows is seen growing rather
+    /// than frozen at the value it had when it was registered.
+    #[test]
+    fn a_hubs_census_carries_what_its_harness_holds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let hub = Hub::new("s-footprint");
+        assert_eq!(hub.census().footprint, Footprint::default());
+        assert!(
+            !hub.footprint().over_ceiling(),
+            "no ceiling was stated, which is not the same fact as inside one"
+        );
+
+        let text = std::sync::Arc::new(AtomicUsize::new(1000));
+        let read = text.clone();
+        hub.set_footprint(std::sync::Arc::new(move || Footprint {
+            items: 3,
+            items_text_bytes: read.load(Ordering::Relaxed),
+            ledger_region_bytes: 4096,
+            ledger_tokens: 1024,
+            trail_bytes: 10,
+            trail_utterances: 1,
+            ceiling_bytes: 4 << 20,
+        }));
+        let c = hub.census();
+        assert_eq!(c.footprint.items, 3);
+        assert_eq!(c.footprint.items_text_bytes, 1000);
+        assert_eq!(c.footprint.ledger_tokens, 1024);
+        assert_eq!(c.footprint.trail_utterances, 1);
+        assert_eq!(c.footprint.total(), 1000 + 4096 + 10);
+        assert!(!c.footprint.over_ceiling());
+
+        text.store(8 << 20, Ordering::Relaxed);
+        let grown = hub.census().footprint;
+        assert_eq!(grown.items_text_bytes, 8 << 20);
+        assert!(
+            grown.over_ceiling(),
+            "a harness past its own ceiling must say so"
+        );
+        // And the rest of the census is unaffected by it: the hub's own numbers are the hub's.
+        assert_eq!(grown.ceiling_bytes, 4 << 20);
     }
 
     /// **A head that attaches, reconnects or resyncs is told the held counts as they stand**
