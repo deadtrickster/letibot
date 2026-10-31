@@ -167,17 +167,33 @@ fn the_notes_keeper_is_a_keeper_and_a_brief_is_a_reviewer() {
     assert_eq!(group("s-review-1"), Group::Reviewer);
 }
 
-/// **A workspace in no repository is its own project**, and the empty project is the box's own room
-/// — so a session the daemon could not place is not silently put in somebody's project.
+/// **A folder that is no repository is no project**, and the empty project is the box's own room —
+/// so the sessions that have none (a one-shot, a fixture, the coordinator's own arbiter and its tag
+/// agents) land there rather than in a project minted per temp directory.
 #[test]
-fn a_workspace_outside_a_repository_is_its_own_project() {
-    let rows = vec![row("s-a", "here", None)];
-    // The mapping the daemon's own `Roster::project_of` makes for a non-repository folder: the
-    // folder itself. This test pins the RULE, and `crates/harnessd/tests/room_tree.rs` pins that
-    // the real one answers it.
-    let project_of = |w: &str| w.trim_end_matches('/').to_string();
-    assert_eq!(members_of(&rows, PROJECT, project_of).len(), 1);
-    assert!(members_of(&rows, "/somewhere/else", project_of).is_empty());
-    // The default project is *no project at all*, and no row is in it by accident.
-    assert!(members_of(&rows, "", |_| PROJECT.to_string()).is_empty());
+fn a_workspace_outside_a_repository_is_no_project_at_all() {
+    let dir = std::env::temp_dir().join(format!("letibot-roster-norepo-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("a temp dir");
+    let roster = Roster::new(letibot_sessionlog::registry::Registry::new());
+    assert_eq!(
+        roster.project_of(&dir.display().to_string()),
+        "",
+        "a scratch folder is not a project"
+    );
+    assert_eq!(roster.project_of(""), "");
+
+    // And the filter says the same: a row whose workspace is no repository is in the box's room and
+    // in nobody else's.
+    let at = dir.display().to_string();
+    let rows = vec![Row {
+        session: "s-a",
+        title: "here",
+        parent: None,
+        workspace: &at,
+        origin: letibot_sessionlog::SessionOrigin::Operator,
+        live: true,
+    }];
+    let project_of = |w: &str| roster.project_of(w);
+    assert_eq!(members_of(&rows, "", project_of).len(), 1);
+    assert!(members_of(&rows, PROJECT, project_of).is_empty());
 }

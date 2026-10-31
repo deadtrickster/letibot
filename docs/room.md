@@ -597,7 +597,10 @@ same twelve characters the room is keyed by.
 **The default project is a project.** `DEFAULT_PROJECT` is the empty key, its room is the bare host
 key, and it is where a one-shot, a fixture, the arbiter and any session the daemon could not place
 live — so a box with no projects is not a box with no room, and `Client::connect`'s old spelling of
-the box's name still reaches one.
+the box's name still reaches one. **A folder that is no repository is no project**
+(`room::roster::Roster::project_of` answers empty): a scratch directory has no identity to hang a
+tree from, and the sessions that have no project are exactly the ones that must land here — which is
+also the room `Server::live_tags` and the tag-agent derivation are about.
 
 **What a membership is, and what it is not.** It is a list of sessions, each with the group the tree
 draws it in, its depth under the project, its parent, and whether the daemon holds it live or only

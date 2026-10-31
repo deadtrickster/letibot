@@ -61,8 +61,14 @@ impl Roster {
     }
 
     /// **The project root `workspace` belongs to** — the repository's own folder, so a session in a
-    /// worktree or a review clone hangs under the project it was cut from. A workspace in no
-    /// repository is its own project; an empty workspace has none.
+    /// worktree or a review clone hangs under the project it was cut from.
+    ///
+    /// **A folder outside any repository is no project, and answers empty** — the box's own room
+    /// ([`letibot_room::DEFAULT_PROJECT`]). That is the honest answer rather than minting a project
+    /// per temp directory: a scratch folder has no identity to hang a tree from, and it is exactly
+    /// where the sessions that *have* no project live — a one-shot, a fixture, the coordinator's
+    /// own arbiter and the tag agents it seats. Those must land in the box's room, because that is
+    /// the room `Server::live_tags` and the tag-agent derivation are about.
     pub fn project_of(&self, workspace: &str) -> String {
         if workspace.trim().is_empty() {
             return String::new();
@@ -73,11 +79,6 @@ impl Roster {
             return found.clone();
         }
         let found = crate::plugins::feed::repository_of(std::path::Path::new(workspace));
-        let found = if found.is_empty() {
-            workspace.trim_end_matches('/').to_string()
-        } else {
-            found
-        };
         if let Ok(mut cache) = self.projects.lock() {
             cache.insert(workspace.to_string(), found.clone());
         }
