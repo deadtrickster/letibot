@@ -1,4 +1,4 @@
-<!-- abstract: MEASURED 2026-10-31 on lab2x1: sqlite3 keeps a descriptor per inode in the PROCESS and releases it only when the last connection to that file closes — sequential opens leave theirs behind too (6 → 39), so the count grows with every connection ever made. `Store` is now one connection per file per process (a handle onto an `Arc<Shared>`), and holding a `Conn` guard forbids calling another `Store` method. -->
+<!-- abstract: MEASURED 2026-10-31 on lab2x1: sqlite3 keeps a descriptor per inode in the PROCESS and releases it only when the last connection to that file closes — so a closed connection's descriptor is kept while another lives, and a sequential open takes the one the last close left (3 → 4). The count is the high-water mark of CONCURRENT connections, so a pool bounds it at its size: `Store` is one connection per file per process, the pool of size one. -->
 
 # A closed connection keeps its descriptor until the process's last one goes
 
@@ -9,23 +9,50 @@ MEASURED 2026-10-31, branch `agent/a-closed-session-gives-its-fds-back`, on lab2
 ## The mechanism, which decides the shape of any fix
 
 `sqlite3`'s unix VFS keeps the descriptor it opened for a file in the inode's own record, and it is
-released when the process's **last** connection to that file closes. Measured through `rusqlite`
-on this box:
+released when the process's **last** connection to that file closes — not when the connection that
+opened it does. Measured through `rusqlite` on this box:
 
 | what was done | descriptors on the file after |
 |---|---|
-| one keeper connection | 6 (db, `-wal`, `-shm` and their companions) |
-| 20 more opened ONE AT A TIME, each closed | **39** — sequential opens leave theirs behind too |
-| 20 more opened at once, then all closed | 43 open, **23** after closing them |
+| one keeper connection | 3 — the db, `-wal` and `-shm` |
+| 20 more opened ONE AT A TIME, each closed | **4** — each open takes the descriptor the last close left |
+| 20 more opened at once, then all closed | 43 while open, **23** after closing them |
 | the keeper closed | 0 |
 
-So the count grows with **every connection the process has ever made**, not with how many are open
-at once — which is exactly the operator's daemon (105 connections, two live sessions, over an
-hour). *Closing a session's connection returns nothing*; only making fewer connections helps, and a
-pool that reuses returned connections buys nothing over what SQLite already does.
+So the count is the **high-water mark of concurrent connections**, not a debt per connection ever
+made: a daemon that opens and closes one at a time does not grow, and a daemon that holds N at once
+holds N connections' worth until it exits. The operator's daemon held 210 descriptors on
+`sessions.db` because it had **105 connections alive at once** — four per session (`Harness::open`
+opened the store four times per session) across twenty-six sessions, none of them closed — not
+because it had ever opened 105.
 
-(A python `sqlite3` probe on the same box kept the count flat across sequential opens — a different
-build's behaviour, and not the one this tree links. Do not carry that result over.)
+This note first said the opposite, and the number it said it with was a mis-measurement: a census
+that matched the file's NAME alone counted a sibling test's twenty connections as this one's and
+read **39 where the truth was 4** (commit `2bf28f56`, the commit that added this note, says so in
+its own message; `sequential_open_and_close_reuses_the_descriptor` asserts `after <= base + 1`). A
+census must match the directory *and* the name — every fixture in that binary opens a
+`sessions.db`.
+
+## What a pool would buy, and what it would not
+
+Because a descriptor goes back only when the process's last connection to the file closes, a pool
+of N connections to one file bounds the process at N connections' worth — three descriptors each
+for a WAL store — however many sessions borrow one and hand it back. That is exactly the property
+`Store::open`'s single shared connection has with **N = 1**: three descriptors, whatever the session
+count.
+
+So what a pool buys is **concurrency, not fewer descriptors**:
+
+* several threads could read at once, so a search that takes a second would not hold the lock a
+  turn needs to append its next row — the property `transcript_source`'s doc says the four
+  connections existed for, and the one thing one connection gives up;
+* a write waiting on another process's lock would not have to block this process's readers — which
+  the retry-closure fix below already gives back without a pool.
+
+What it does not buy: a smaller count (3N against 3), a descriptor returned on close (a pooled
+connection is kept open on purpose, and that is what makes the bound a bound), or anything at all
+about how many store FILES the process opens. One connection is the pool of size one — the same
+mechanism at the smallest bound, and the only one that costs nothing to hold.
 
 Before the fix, 20 sessions opened and closed through `Sessions` left **92** descriptors on
 `sessions.db` (172 while open), because `Harness::open` opened the store four times per session.
@@ -48,9 +75,21 @@ method call** — that is a self-deadlock, and the compiler will not say so. `Li
 one while calling `load_transcript`, so `load_transcript`/`get_stable_prefix` grew `_on(conn, …)`
 forms and the view calls those on the connection it already holds.
 
-The busy ladder is unchanged and **the lock is taken per attempt** (`retry_sql(|| self.conn()…`,
-`write_tx`'s closure locks inside itself), so a wait on another process's write lock sleeps with
-the lock released — the one property that keeps "one connection" from wedging a whole daemon.
+**The busy ladder is unchanged, and every wait now happens with the process lock RELEASED** —
+which is a property this note claimed before the code had it. `write_tx` takes the connection
+*inside* the retry closure, so a `BEGIN IMMEDIATE` that comes back busy drops the guard before the
+backoff sleep. The queue's own write transactions did not: `acquire_queue_lease`,
+`enqueue_review`, `approve_review`, `cas`/`move_review`, `release_queue_lease`,
+`release_stale_lease`, `set_target_health`, `allocate_lease` and `release_session_leases` each did
+`let conn = self.conn(); let tx = Self::immediate(&conn)?`, so the whole ladder — up to
+`BUSY_RETRY_TOTAL` plus one 30 s `busy_timeout` — ran with the process's **only** connection held.
+Those are exactly the paths whose lock spans processes (*"two daemons on this box share one
+`sessions.db`"*, `leases.rs`'s own words), so a reader in the daemon waited out another daemon's
+commit and WAL's one-writer-many-readers was gone when it was needed. They all go through
+`write_tx` now, and `busy/tests.rs`'s
+`a_queue_write_waiting_on_another_process_leaves_the_store_readable` measures it: with another
+connection holding the write lock for 700 ms, a read in this process must not wait 350 ms — it
+waited **1.05 s** before the change.
 
 ## The trap the sharing sets for the tests written before it
 

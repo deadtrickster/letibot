@@ -188,6 +188,91 @@ fn an_append_outlasts_a_lock_held_past_the_busy_timeout() {
     holder.join().unwrap();
 }
 
+/// **A queue write waiting on another process's lock does not hold this process's connection.**
+///
+/// `acquire_queue_lease` took the store's one connection and *then* began retrying
+/// `BEGIN IMMEDIATE` inside it, so every wait in the ladder — the busy timeout of each attempt
+/// and the backoff between them — happened with the whole process locked out. A read in this
+/// daemon then waited out another daemon's commit, and WAL's one-writer-many-readers was gone
+/// exactly when the contention that needs it arrived. The transaction is begun inside the retry
+/// closure now, so a wait holds nothing.
+///
+/// The read is repeated for as long as the claim is outstanding, because the measurement is the
+/// WORST wait, not the first: the claim takes the connection at some point after its thread
+/// starts, and the loop is what makes the test indifferent to when.
+#[test]
+fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
+    let db = TempDb::new("queue-wait");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    s.connection()
+        .busy_timeout(Duration::from_millis(50))
+        .unwrap();
+    let (release, holder) = hold_write_lock(&db.0);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        release.send(()).unwrap();
+    });
+
+    let (done, is_done) = mpsc::channel::<()>();
+    let mut finished = false;
+    let mut worst = Duration::ZERO;
+    let mut reads = 0usize;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let out = s.acquire_queue_lease(
+                "/w",
+                &LeaseClaim {
+                    owner: "test-daemon".into(),
+                    pid: std::process::id(),
+                    host: "this box".into(),
+                    build: "test".into(),
+                },
+                1_000,
+                60_000,
+            );
+            assert!(
+                matches!(out, Ok(LeaseOutcome::Held { .. })),
+                "the claim waits out another process's commit: {out:?}"
+            );
+            done.send(()).unwrap();
+        });
+        while !finished && Instant::now() < deadline {
+            match is_done.try_recv() {
+                Ok(()) => {
+                    finished = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            let t = Instant::now();
+            let read = s.title("sess-busy");
+            worst = worst.max(t.elapsed());
+            reads += 1;
+            assert!(
+                read.is_ok(),
+                "a read while another process writes: {read:?}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    releaser.join().unwrap();
+    holder.join().unwrap();
+    assert!(finished, "the claim finished inside ten seconds");
+    assert!(reads > 0, "the read loop ran");
+    eprintln!(
+        "queue write: {reads} reads while the claim waited on another process, worst {worst:?}"
+    );
+    assert!(
+        worst < Duration::from_millis(350),
+        "a read in this daemon waited {worst:?} for another process's write lock, over {reads} \
+         reads: the queue's write held the process's one connection while it waited, so every \
+         reader in the daemon waited with it"
+    );
+}
+
 /// **The ladder**: a busy failure is taken again, anything else is returned at once, and a
 /// failure that stays busy is returned once the budget is spent.
 #[test]

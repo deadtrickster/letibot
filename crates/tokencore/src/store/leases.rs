@@ -262,68 +262,67 @@ impl Store {
     /// taken *before* it — a probe over ssh inside the write lock would hold every other session's
     /// lease for up to a round trip.
     pub fn allocate_lease(&self, ask: &Ask<'_>) -> Result<Lease> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let mut held: Vec<(u16, u16)> = Vec::new();
-        let mut held_text: Vec<String> = Vec::new();
-        {
-            let mut st = tx.prepare(
-                "SELECT port_first, port_last FROM host_lease
+        self.write_tx(|tx| {
+            let mut held: Vec<(u16, u16)> = Vec::new();
+            let mut held_text: Vec<String> = Vec::new();
+            {
+                let mut st = tx.prepare(
+                    "SELECT port_first, port_last FROM host_lease
                   WHERE released_ms IS NULL AND host IS ?1",
-            )?;
-            let rows = st.query_map(params![ask.host], |r| {
-                Ok((r.get::<_, i64>(0)? as u16, r.get::<_, i64>(1)? as u16))
-            })?;
-            for r in rows {
-                let (a, b) = r?;
-                held.push((a, b));
-                held_text.push(format!("{a}-{b}"));
+                )?;
+                let rows = st.query_map(params![ask.host], |r| {
+                    Ok((r.get::<_, i64>(0)? as u16, r.get::<_, i64>(1)? as u16))
+                })?;
+                for r in rows {
+                    let (a, b) = r?;
+                    held.push((a, b));
+                    held_text.push(format!("{a}-{b}"));
+                }
             }
-        }
-        let Some((first, last)) = pick(&held, ask.busy, ask.ephemeral, ask.ports) else {
-            return Err(StoreError::Refused(format!(
-                "there is no free block of {} port(s) on {} left outside its ephemeral range \
+            let Some((first, last)) = pick(&held, ask.busy, ask.ephemeral, ask.ports) else {
+                return Err(StoreError::Refused(format!(
+                    "there is no free block of {} port(s) on {} left outside its ephemeral range \
                  {}-{}, and this build does not hand out ports inside that range — the kernel \
                  gives those away to anybody's outgoing connection. Already held there: {}. \
                  Release a lease (`hosts` shows them) or ask for fewer ports.",
-                ask.ports.max(1),
-                ask.host.unwrap_or("this box"),
-                ask.ephemeral.0,
-                ask.ephemeral.1,
-                if held_text.is_empty() {
-                    "nothing".to_string()
-                } else {
-                    held_text.join(", ")
-                }
-            )));
-        };
-        tx.execute(
-            "INSERT INTO host_lease
+                    ask.ports.max(1),
+                    ask.host.unwrap_or("this box"),
+                    ask.ephemeral.0,
+                    ask.ephemeral.1,
+                    if held_text.is_empty() {
+                        "nothing".to_string()
+                    } else {
+                        held_text.join(", ")
+                    }
+                )));
+            };
+            tx.execute(
+                "INSERT INTO host_lease
                (host, session_id, prefix, port_first, port_last, ephemeral, taken_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                ask.host,
-                ask.session,
-                ask.prefix,
-                first as i64,
-                last as i64,
-                format!("{}-{}", ask.ephemeral.0, ask.ephemeral.1),
-                ask.now_ms,
-            ],
-        )?;
-        let id = tx.last_insert_rowid();
-        tx.commit()?;
-        Ok(Lease {
-            id,
-            host: ask.host.map(str::to_string),
-            session: ask.session.to_string(),
-            prefix: ask.prefix.to_string(),
-            port_first: first,
-            port_last: last,
-            ephemeral: ask.ephemeral,
-            taken_ms: ask.now_ms,
-            released_ms: None,
-            released_by: None,
+                params![
+                    ask.host,
+                    ask.session,
+                    ask.prefix,
+                    first as i64,
+                    last as i64,
+                    format!("{}-{}", ask.ephemeral.0, ask.ephemeral.1),
+                    ask.now_ms,
+                ],
+            )?;
+            let id = tx.last_insert_rowid();
+            Ok(Lease {
+                id,
+                host: ask.host.map(str::to_string),
+                session: ask.session.to_string(),
+                prefix: ask.prefix.to_string(),
+                port_first: first,
+                port_last: last,
+                ephemeral: ask.ephemeral,
+                taken_ms: ask.now_ms,
+                released_ms: None,
+                released_by: None,
+            })
         })
     }
 
@@ -388,27 +387,26 @@ impl Store {
         by: &str,
         now_ms: i64,
     ) -> Result<Vec<Lease>> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let mut out = Vec::new();
-        {
-            let mut st = tx.prepare(&format!(
-                "SELECT {COLUMNS} FROM host_lease
+        self.write_tx(|tx| {
+            let mut out = Vec::new();
+            {
+                let mut st = tx.prepare(&format!(
+                    "SELECT {COLUMNS} FROM host_lease
                   WHERE session_id = ?1 AND released_ms IS NULL ORDER BY id"
-            ))?;
-            let rows = st.query_map(params![session], row)?;
-            for r in rows {
-                out.push(r?);
+                ))?;
+                let rows = st.query_map(params![session], row)?;
+                for r in rows {
+                    out.push(r?);
+                }
             }
-        }
-        for lease in &out {
-            tx.execute(
-                "UPDATE host_lease SET released_ms = ?2, released_by = ?3 WHERE id = ?1",
-                params![lease.id, now_ms, by],
-            )?;
-        }
-        tx.commit()?;
-        Ok(out)
+            for lease in &out {
+                tx.execute(
+                    "UPDATE host_lease SET released_ms = ?2, released_by = ?3 WHERE id = ?1",
+                    params![lease.id, now_ms, by],
+                )?;
+            }
+            Ok(out)
+        })
     }
 
     /// The clock this module stamps with — one spelling, so a release and a take dated by two

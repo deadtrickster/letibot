@@ -2069,14 +2069,18 @@ impl Store {
         Conn(self.shared.conn())
     }
 
-    /// **How many `Store`s are open in this process right now** — the census a test measures a
-    /// session's lifetime by, because a descriptor count is a proxy and this is the thing.
+    /// **How many connections to store files this process holds open right now** — the census a
+    /// test measures a session's lifetime by, because a descriptor count is a proxy and this is
+    /// the thing.
     ///
-    /// Each open `Store` is one `rusqlite::Connection` to the file, and a WAL connection holds
-    /// the db (and its `-wal` while a transaction is open): **two descriptors apiece** on the
-    /// box this was written for. So *does a session's store outlive the session?* is a question
-    /// about this number, and *how many descriptors does the daemon hold?* is this number times
-    /// two plus whatever else it has open.
+    /// A `Store` is a handle onto the process's one connection per FILE (see [`Store::open`]), so
+    /// this counts CONNECTIONS, and one store file contributes one however many sessions hold a
+    /// handle on it: two `Store`s for one path are `live() == 1`. A WAL connection holds **three
+    /// descriptors** on its file — the db, the `-wal` and the `-shm` — so *how many descriptors
+    /// does the daemon hold?* is three for each store file it has opened, whatever its session
+    /// count, plus whatever else it has open. A test that asserts this number is asserting that a
+    /// session's store did not outlive the session; it is not asserting that a descriptor was
+    /// given back, which only the process's last connection to the file does.
     ///
     /// A count and not a registry of paths: the caller that needs to know *which* store is a
     /// leak already knows which path it passed, and a table of live paths would be a lock in the
@@ -4685,6 +4689,16 @@ impl Store {
     ///
     /// The body is run again from the top on a busy failure, so it must be a pure function of
     /// the store (it is: it is given only the transaction).
+    ///
+    /// **The connection is taken inside the closure**, which is what makes the retry a wait and
+    /// not a wedge: a `BEGIN IMMEDIATE` that comes back busy drops the process's store lock before
+    /// the backoff sleep, so another process holding the write lock costs this one nothing but the
+    /// statement it was making. Taking the guard first and retrying the `BEGIN` inside it would
+    /// hold the lock across every sleep of the ladder — for up to [`BUSY_RETRY_TOTAL`] plus one
+    /// [`Store::BUSY_TIMEOUT`] — and every reader in the daemon would wait with it. That is why
+    /// the queue's write transactions ([`Store::acquire_queue_lease`], `enqueue_review`,
+    /// `approve_review`, `cas`, the lease's releases, `set_target_health`, `allocate_lease`) go
+    /// through here rather than beginning their own.
     pub fn write_tx<T>(
         &self,
         mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,

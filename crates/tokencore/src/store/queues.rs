@@ -39,7 +39,7 @@
 //! one `sessions.db`, all on deleted binaries of different builds.
 
 use rusqlite::types::Value;
-use rusqlite::{OptionalExtension, TransactionBehavior, params};
+use rusqlite::{OptionalExtension, params};
 
 use super::{MergeGateStep, MergePriority, Result, SCHEMA_VERSION, Store, StoreError};
 
@@ -785,25 +785,12 @@ impl Store {
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))?)
     }
 
-    /// **`BEGIN IMMEDIATE`, taken again while the store is busy.** Only the BEGIN is retried,
-    /// and that is enough: once it returns, this connection holds the write lock, and nothing
-    /// the transaction does after it can come back busy. A BEGIN that failed began nothing.
-    /// See `store/busy.rs` for the night this was for: `! merge_queue_store_error — the queues
-    /// could not read or write their store while serving the queues: sqlite: database is
-    /// locked`.
-    pub(crate) fn immediate(conn: &rusqlite::Connection) -> Result<rusqlite::Transaction<'_>> {
-        Ok(super::busy::retry_sql(|| {
-            rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
-        })?)
-    }
-
     // ===== The review queue =====
 
     /// **Put a branch up for review.** `false` when a row with this id is already there (the
     /// same child enqueued twice is one row), and nothing is written then.
     pub fn enqueue_review(&self, new: &NewReview, by: &str, now_ms: u64) -> Result<bool> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
+        self.write_tx(|tx| {
         let n = tx.execute(
             "INSERT OR IGNORE INTO review_queue
                (id, repository, target, kind, session_id, branch, worktree, base_sha, head_sha,
@@ -828,7 +815,7 @@ impl Store {
         )?;
         if n == 1 {
             record(
-                &tx,
+                tx,
                 "review",
                 &new.id,
                 &new.repository,
@@ -839,8 +826,8 @@ impl Store {
                 &new.evidence,
             )?;
         }
-        tx.commit()?;
-        Ok(n == 1)
+            Ok(n == 1)
+        })
     }
 
     /// Every review row, every state — or one repository's. A row this build cannot read is an
@@ -903,88 +890,87 @@ impl Store {
     /// row is an approval nobody acts on, and a merge row with no verdict is a landing nobody
     /// approved.
     pub fn approve_review(&self, id: &str, a: &Approval, now_ms: u64) -> Result<bool> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let Some(row) = tx
-            .query_row(
-                &format!("SELECT {REVIEW_COLUMNS} FROM review_queue WHERE id = ?1"),
-                params![id],
-                review_from_row,
-            )
-            .optional()?
-            .transpose()?
-        else {
-            return Ok(false);
-        };
-        if row.state != a.expect || a.expect_owner.as_deref().is_some_and(|o| o != row.owner) {
-            return Ok(false);
-        }
-        let n = tx.execute(
-            "UPDATE review_queue SET state = 'approved', verdict = 'accept', verdict_by = ?3,
+        self.write_tx(|tx| {
+            let Some(row) = tx
+                .query_row(
+                    &format!("SELECT {REVIEW_COLUMNS} FROM review_queue WHERE id = ?1"),
+                    params![id],
+                    review_from_row,
+                )
+                .optional()?
+                .transpose()?
+            else {
+                return Ok(false);
+            };
+            if row.state != a.expect || a.expect_owner.as_deref().is_some_and(|o| o != row.owner) {
+                return Ok(false);
+            }
+            let n = tx.execute(
+                "UPDATE review_queue SET state = 'approved', verdict = 'accept', verdict_by = ?3,
                  reviewed_sha = ?4, reasons_json = ?5, files_json = ?6, commands_json = ?7,
                  owner = '', deadline_ms = NULL, failure = '', evidence = ?8,
                  state_ms = ?9, updated_ms = ?9
               WHERE id = ?1 AND state = ?2",
-            params![
+                params![
+                    id,
+                    a.expect.as_str(),
+                    a.by,
+                    a.reviewed_sha,
+                    serde_json::to_string(&a.reasons)?,
+                    serde_json::to_string(&a.files)?,
+                    serde_json::to_string(&a.commands)?,
+                    a.why,
+                    now_ms as i64,
+                ],
+            )?;
+            if n != 1 {
+                return Ok(false);
+            }
+            record(
+                tx,
+                "review",
                 id,
-                a.expect.as_str(),
-                a.by,
-                a.reviewed_sha,
-                serde_json::to_string(&a.reasons)?,
-                serde_json::to_string(&a.files)?,
-                serde_json::to_string(&a.commands)?,
-                a.why,
-                now_ms as i64,
-            ],
-        )?;
-        if n != 1 {
-            return Ok(false);
-        }
-        record(
-            &tx,
-            "review",
-            id,
-            &row.repository,
-            Some(a.expect.as_str()),
-            ReviewState::Approved.as_str(),
-            now_ms,
-            &a.by,
-            &a.why,
-        )?;
-        let born = format!("approved at {} by {}", a.reviewed_sha, a.by);
-        tx.execute(
-            "INSERT INTO merge_queue
+                &row.repository,
+                Some(a.expect.as_str()),
+                ReviewState::Approved.as_str(),
+                now_ms,
+                &a.by,
+                &a.why,
+            )?;
+            let born = format!("approved at {} by {}", a.reviewed_sha, a.by);
+            tx.execute(
+                "INSERT INTO merge_queue
                (id, review_id, repository, target, branch, worktree, approved_sha, approved_by,
                 priority, fixes, state, owner, evidence, created_ms, state_ms, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'queued', '', ?11, ?12, ?12, ?12)",
-            params![
-                a.merge_id,
-                id,
-                row.repository,
-                row.target,
-                row.branch,
-                row.worktree,
-                a.reviewed_sha,
-                a.by,
-                row.priority.as_str(),
-                row.fixes,
-                born,
-                now_ms as i64,
-            ],
-        )?;
-        record(
-            &tx,
-            "merge",
-            &a.merge_id,
-            &row.repository,
-            None,
-            MergeState::Queued.as_str(),
-            now_ms,
-            &a.by,
-            &born,
-        )?;
-        tx.commit()?;
-        Ok(true)
+                params![
+                    a.merge_id,
+                    id,
+                    row.repository,
+                    row.target,
+                    row.branch,
+                    row.worktree,
+                    a.reviewed_sha,
+                    a.by,
+                    row.priority.as_str(),
+                    row.fixes,
+                    born,
+                    now_ms as i64,
+                ],
+            )?;
+            record(
+                tx,
+                "merge",
+                &a.merge_id,
+                &row.repository,
+                None,
+                MergeState::Queued.as_str(),
+                now_ms,
+                &a.by,
+                &born,
+            )?;
+            Ok(true)
+        })
     }
 
     // ===== The merge queue =====
@@ -1051,61 +1037,60 @@ impl Store {
         why: &str,
         now_ms: u64,
     ) -> Result<bool> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let Some(m) = tx
-            .query_row(
-                &format!("SELECT {MERGE_COLUMNS} FROM merge_queue WHERE id = ?1"),
-                params![merge_id],
-                merge_from_row,
-            )
-            .optional()?
-            .transpose()?
-        else {
-            return Ok(false);
-        };
-        let n = tx.execute(
-            "UPDATE merge_queue SET state = 'moved', owner = '', evidence = ?3, state_ms = ?4,
+        self.write_tx(|tx| {
+            let Some(m) = tx
+                .query_row(
+                    &format!("SELECT {MERGE_COLUMNS} FROM merge_queue WHERE id = ?1"),
+                    params![merge_id],
+                    merge_from_row,
+                )
+                .optional()?
+                .transpose()?
+            else {
+                return Ok(false);
+            };
+            let n = tx.execute(
+                "UPDATE merge_queue SET state = 'moved', owner = '', evidence = ?3, state_ms = ?4,
                  updated_ms = ?4
               WHERE id = ?1 AND state = 'gating' AND owner = ?2",
-            params![merge_id, owner, why, now_ms as i64],
-        )?;
-        if n != 1 {
-            return Ok(false);
-        }
-        record(
-            &tx,
-            "merge",
-            merge_id,
-            &m.repository,
-            Some("gating"),
-            "moved",
-            now_ms,
-            by,
-            why,
-        )?;
-        let r = tx.execute(
-            "UPDATE review_queue SET state = 'waiting', head_sha = ?2, verdict = NULL,
-                 verdict_by = NULL, reviewed_sha = NULL, reviewer = NULL, attempts = 0,
-                 failure = '', evidence = ?3, state_ms = ?4, updated_ms = ?4
-              WHERE id = ?1 AND state = 'approved'",
-            params![m.review_id, new_head, why, now_ms as i64],
-        )?;
-        if r == 1 {
+                params![merge_id, owner, why, now_ms as i64],
+            )?;
+            if n != 1 {
+                return Ok(false);
+            }
             record(
-                &tx,
-                "review",
-                &m.review_id,
+                tx,
+                "merge",
+                merge_id,
                 &m.repository,
-                Some("approved"),
-                "waiting",
+                Some("gating"),
+                "moved",
                 now_ms,
                 by,
                 why,
             )?;
-        }
-        tx.commit()?;
-        Ok(true)
+            let r = tx.execute(
+                "UPDATE review_queue SET state = 'waiting', head_sha = ?2, verdict = NULL,
+                 verdict_by = NULL, reviewed_sha = NULL, reviewer = NULL, attempts = 0,
+                 failure = '', evidence = ?3, state_ms = ?4, updated_ms = ?4
+              WHERE id = ?1 AND state = 'approved'",
+                params![m.review_id, new_head, why, now_ms as i64],
+            )?;
+            if r == 1 {
+                record(
+                    tx,
+                    "review",
+                    &m.review_id,
+                    &m.repository,
+                    Some("approved"),
+                    "waiting",
+                    now_ms,
+                    by,
+                    why,
+                )?;
+            }
+            Ok(true)
+        })
     }
 
     // ===== History =====
@@ -1179,9 +1164,8 @@ impl Store {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<LeaseOutcome> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
+        self.write_tx(|tx| {
+            let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
         // re-read live, in this transaction, so a daemon already running when a newer build
         // migrates the file finds out at its next claim (requirement 1). A schema ABOVE this
@@ -1189,7 +1173,7 @@ impl Store {
         // would be the 2026-10-26 refusal a layer down, where the daemon keeps its session and
         // loses its queue. A schema whose floor moved past this build — or one old enough that
         // nobody said — still claims nothing.
-        if !super::floor::readable_here(&tx, stored)? {
+            if !super::floor::readable_here(tx, stored)? {
             return Ok(LeaseOutcome::WrongSchema {
                 store: stored,
                 mine: SCHEMA_VERSION,
@@ -1251,7 +1235,7 @@ impl Store {
                 None => "took the free lease".to_string(),
             };
             record(
-                &tx,
+                tx,
                 "lease",
                 repository,
                 repository,
@@ -1262,8 +1246,8 @@ impl Store {
                 &why,
             )?;
         }
-        tx.commit()?;
-        Ok(LeaseOutcome::Held { previous })
+            Ok(LeaseOutcome::Held { previous })
+        })
     }
 
     /// **Say this owner is alive.** `Ok(false)` is *the lease is not yours any more* — the
@@ -1290,27 +1274,26 @@ impl Store {
 
     /// Give the lease up — on shutdown, so a successor need not wait out the heartbeat.
     pub fn release_queue_lease(&self, repository: &str, owner: &str, now_ms: u64) -> Result<bool> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let n = tx.execute(
-            "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2",
-            params![repository, owner],
-        )?;
-        if n == 1 {
-            record(
-                &tx,
-                "lease",
-                repository,
-                repository,
-                Some(owner),
-                "released",
-                now_ms,
-                owner,
-                "the daemon serving it stopped and gave the lease up",
+        self.write_tx(|tx| {
+            let n = tx.execute(
+                "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2",
+                params![repository, owner],
             )?;
-        }
-        tx.commit()?;
-        Ok(n == 1)
+            if n == 1 {
+                record(
+                    tx,
+                    "lease",
+                    repository,
+                    repository,
+                    Some(owner),
+                    "released",
+                    now_ms,
+                    owner,
+                    "the daemon serving it stopped and gave the lease up",
+                )?;
+            }
+            Ok(n == 1)
+        })
     }
 
     /// **Give up a lease whose holder is gone** — the supervisor's sweep (2026-10-26), not the
@@ -1329,15 +1312,14 @@ impl Store {
         expired_before_ms: u64,
         now_ms: u64,
     ) -> Result<bool> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let n = tx.execute(
-            "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2 AND heartbeat_ms < ?3",
+        self.write_tx(|tx| {
+            let n = tx.execute(
+                "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2 AND heartbeat_ms < ?3",
             params![repository, owner, expired_before_ms as i64],
         )?;
         if n == 1 {
             record(
-                &tx,
+                tx,
                 "lease",
                 repository,
                 repository,
@@ -1348,8 +1330,8 @@ impl Store {
                 why,
             )?;
         }
-        tx.commit()?;
-        Ok(n == 1)
+            Ok(n == 1)
+        })
     }
 
     pub fn queue_leases(&self) -> Result<Vec<QueueLease>> {
@@ -1444,8 +1426,7 @@ impl Store {
 
     /// Write the target's health, and the move in the history when the state changed.
     pub fn set_target_health(&self, h: &TargetHealth, by: &str) -> Result<()> {
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
+        self.write_tx(|tx| {
         let before: Option<String> = tx
             .query_row(
                 "SELECT state FROM target_health WHERE repository = ?1 AND target = ?2",
@@ -1471,7 +1452,7 @@ impl Store {
         )?;
         if before.as_deref() != Some(h.state.as_str()) {
             record(
-                &tx,
+                tx,
                 "target",
                 &h.target,
                 &h.repository,
@@ -1482,8 +1463,8 @@ impl Store {
                 &format!("{} at {}", h.evidence, h.sha),
             )?;
         }
-        tx.commit()?;
-        Ok(())
+            Ok(())
+        })
     }
 
     /// **The v23 queue as it was archived** — `(id, branch, state, evidence)` per row, for the
@@ -1529,65 +1510,65 @@ impl Store {
                 )));
             }
         }
-        let conn = self.conn();
-        let tx = Self::immediate(&conn)?;
-        let repository: Option<String> = tx
-            .query_row(
-                &format!("SELECT repository FROM {table} WHERE id = ?1"),
-                params![id],
-                |r| r.get(0),
-            )
-            .optional()?;
-        let Some(repository) = repository else {
-            return Ok(false);
-        };
-        let mut sql =
-            format!("UPDATE {table} SET state = ?1, evidence = ?2, state_ms = ?3, updated_ms = ?3");
-        let mut values: Vec<Value> = vec![
-            Value::Text(to.to_string()),
-            Value::Text(mv.why.clone()),
-            Value::Integer(now_ms as i64),
-        ];
-        for (col, v) in &mv.sets {
-            values.push(v.clone());
-            sql.push_str(&format!(", {col} = ?{}", values.len()));
-        }
-        values.push(Value::Text(id.to_string()));
-        sql.push_str(&format!(" WHERE id = ?{}", values.len()));
-        values.push(Value::Text(from.to_string()));
-        sql.push_str(&format!(" AND state = ?{}", values.len()));
-        if let Some(owner) = &mv.expect_owner {
-            values.push(Value::Text(owner.clone()));
-            sql.push_str(&format!(" AND owner = ?{}", values.len()));
-        }
-        let n = tx.execute(&sql, rusqlite::params_from_iter(values.iter()))?;
-        if n != 1 {
-            return Ok(false);
-        }
-        // `repository` may itself be one of the sets (a carried-over row being resolved); the
-        // history names the repository the row belongs to after the move.
-        let repository = mv
-            .sets
-            .iter()
-            .find(|(c, _)| *c == "repository")
-            .and_then(|(_, v)| match v {
-                Value::Text(t) => Some(t.clone()),
-                _ => None,
-            })
-            .unwrap_or(repository);
-        record(
-            &tx,
-            queue,
-            id,
-            &repository,
-            Some(from),
-            to,
-            now_ms,
-            &mv.by,
-            &mv.why,
-        )?;
-        tx.commit()?;
-        Ok(true)
+        self.write_tx(|tx| {
+            let repository: Option<String> = tx
+                .query_row(
+                    &format!("SELECT repository FROM {table} WHERE id = ?1"),
+                    params![id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(repository) = repository else {
+                return Ok(false);
+            };
+            let mut sql = format!(
+                "UPDATE {table} SET state = ?1, evidence = ?2, state_ms = ?3, updated_ms = ?3"
+            );
+            let mut values: Vec<Value> = vec![
+                Value::Text(to.to_string()),
+                Value::Text(mv.why.clone()),
+                Value::Integer(now_ms as i64),
+            ];
+            for (col, v) in &mv.sets {
+                values.push(v.clone());
+                sql.push_str(&format!(", {col} = ?{}", values.len()));
+            }
+            values.push(Value::Text(id.to_string()));
+            sql.push_str(&format!(" WHERE id = ?{}", values.len()));
+            values.push(Value::Text(from.to_string()));
+            sql.push_str(&format!(" AND state = ?{}", values.len()));
+            if let Some(owner) = &mv.expect_owner {
+                values.push(Value::Text(owner.clone()));
+                sql.push_str(&format!(" AND owner = ?{}", values.len()));
+            }
+            let n = tx.execute(&sql, rusqlite::params_from_iter(values.iter()))?;
+            if n != 1 {
+                return Ok(false);
+            }
+            // `repository` may itself be one of the sets (a carried-over row being resolved); the
+            // history names the repository the row belongs to after the move.
+            let repository = mv
+                .sets
+                .iter()
+                .find(|(c, _)| *c == "repository")
+                .and_then(|(_, v)| match v {
+                    Value::Text(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .unwrap_or(repository);
+            record(
+                tx,
+                queue,
+                id,
+                &repository,
+                Some(from),
+                to,
+                now_ms,
+                &mv.by,
+                &mv.why,
+            )?;
+            Ok(true)
+        })
     }
 
     /// **The v24 migration's queue half** — archive the v23 tables by renaming them, create the
