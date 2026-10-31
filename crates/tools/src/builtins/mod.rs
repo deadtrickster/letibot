@@ -34,6 +34,7 @@
 //! is about to change.
 
 pub mod bash;
+pub mod changelog;
 pub mod decisions;
 pub mod digest;
 pub mod edit;

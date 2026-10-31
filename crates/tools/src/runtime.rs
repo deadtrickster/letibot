@@ -1347,6 +1347,14 @@ pub mod roles {
                 // it is how a model stops asking the operator to read their own
                 // terminal aloud.
                 "harness",
+                // **`host_changelog`: the record of what this machine's settings were, what they
+                // are now, why, and on whose words.** The operator, on a governor that had been
+                // `performance` for a month: *"a month later nobody remembers why … and 'the agent
+                // changed it' is not an answer a person can act on"*. Seated with `bash`, because
+                // the change itself is a `bash` call — a record of a change nobody can make is a
+                // record that stays empty. The tool applies nothing; `revert` hands back the value
+                // and the seat undoes it.
+                "host_changelog",
                 // `transcript` and `digest`: this session's own conversation,
                 // including what compaction replaced. Seated together on purpose
                 // — `transcript` reports the count of what it did not show and
@@ -1453,7 +1461,12 @@ pub mod roles {
         // did: a top-level session that cannot say *I am holding this, and here is what I am
         // waiting on* has no way to coordinate with a sibling at all, and trading away a working
         // verb to pay for a queue would be the wrong half of the choice.
-        r.max_tools = 36;
+        // **Thirty-seven since `host_changelog`**, which took its own seat for the reason the ones
+        // before it did: a host config change with no record of why it was made is the state the
+        // operator reported, and a seat that can `bash` the change but not write it down is the
+        // seat that leaves it. `list` narrows to a read, so the read-only default seat pays nothing
+        // for the entry it can already use.
+        r.max_tools = 37;
         r
     }
 
@@ -1494,6 +1507,12 @@ pub mod roles {
                 "read_spill",
                 "todo_write",
                 "room",
+                // **`host_changelog`: what this machine's settings were, what they are, and on
+                // whose words.** Seated here because the question it answers — *why is the
+                // governor `performance`* — is asked of the DEFAULT seat, and its `list` verb
+                // narrows to a read, so the read-only default session can read the record even
+                // though it cannot write one.
+                "host_changelog",
             ],
         )
     }

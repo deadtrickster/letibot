@@ -281,6 +281,13 @@ pub fn with_session_tools(
             std::sync::Arc::new(builtins::room::NoRoom),
         )))?;
     }
+    // **The host's own changelog.** Same shape as `room` one arm up: a seat that names it must
+    // resolve on every registry this function builds, and the tool then says there is no config
+    // dir behind it rather than guessing one and writing into the operator's real one. The daemon
+    // replaces this with the session's own scope (`Harness::open`), which is the one that records.
+    if reg.get(builtins::changelog::TOOL).is_none() {
+        reg.register(Box::new(builtins::changelog::HostChangelogTool::nowhere()))?;
+    }
     Ok(reg)
 }
 
@@ -410,7 +417,10 @@ mod tests {
         // and it resolves here because `with_session_tools` registers a `NoRoom` behind it — the
         // rule this whole test is about: a role that names a tool must resolve on any registry
         // this function builds, and the tool then says what is not behind it.
-        assert_eq!(seated.len(), 8, "{:?}", seated.names());
+        // **Nine since the host changelog.** `host_changelog` is the default seat's too, because
+        // *why is the governor `performance`* is a question a person asks the default session —
+        // and its `list` verb narrows to `Read`, so the read-only seat can answer it.
+        assert_eq!(seated.len(), 9, "{:?}", seated.names());
         assert!(seated.len() <= DEFAULT_MAX_TOOLS, "{} tools", seated.len());
     }
 

@@ -88,6 +88,12 @@ pub struct Harness {
     /// writes a fixture note or reads one back: the workspace and the
     /// box-wide notes dir.
     _notes: (std::path::PathBuf, std::path::PathBuf),
+    /// The file the `host_changelog` tool records into, held so the temp
+    /// directory outlives the tool's scope. A test reads it directly: a test
+    /// that asked the tool whether it wrote is a test of the tool's opinion.
+    _changelog: std::path::PathBuf,
+    /// Held so the directory `_changelog` lives in is removed with the harness.
+    _changelog_dir: TempDir,
 }
 
 impl Harness {
@@ -119,6 +125,12 @@ impl Harness {
     /// across `call`s (which take the harness mutably).
     pub fn notes_dirs(&self) -> (std::path::PathBuf, std::path::PathBuf) {
         self._notes.clone()
+    }
+
+    /// The host changelog this harness records into — a temp file, so a test can read what the
+    /// tool wrote without going through the tool.
+    pub fn changelog_file(&self) -> &std::path::Path {
+        &self._changelog
     }
 
     /// What is actually on disk, read without going through the backend.
@@ -300,6 +312,8 @@ pub fn runner_harness_with_gate(
         _scratch: Some(scratch),
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
     })
 }
 
@@ -335,6 +349,8 @@ pub fn text_only_runner_harness() -> Harness {
         _scratch: None,
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
     }
 }
 
@@ -402,6 +418,8 @@ pub fn confined_harness_with_gate(
         _scratch: None,
         _notes_global: TempDir::new(),
         _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
     })
 }
 
@@ -498,6 +516,23 @@ fn build_ext(
             crate::read_only_tools(retrieval).expect("built-ins register"),
         )
     };
+    // The host changelog, over a scope of this fixture's own: a temp file per harness, so a test
+    // never records into this box's real config dir. Registered BEFORE `with_session_tools`, which
+    // puts a `nowhere` one behind any registry that has none — the role names it, so a seat must
+    // resolve it, and the scoped one is the shape that can actually record.
+    let changelog_dir = TempDir::new();
+    let changelog_file = changelog_dir.path().join(crate::builtins::changelog::FILE);
+    let changelog_scope: Arc<dyn crate::builtins::changelog::ChangelogScope> =
+        Arc::new(TestChangelogScope {
+            file: changelog_file.clone(),
+            who: "s-fixture".to_string(),
+        });
+    let mut registry = registry;
+    registry
+        .register(Box::new(crate::builtins::changelog::HostChangelogTool::new(
+            changelog_scope,
+        )))
+        .expect("the host changelog registers");
     // The session tool rides every registry, exactly as the real harness seats it:
     // the read-only roles name `todo_write`, so a registry they resolve against has
     // to include it. An empty board — these tests are not about the todo pane.
@@ -556,6 +591,8 @@ fn build_ext(
         _scratch: scratch,
         _notes_global: notes_global,
         _notes: notes_dirs,
+        _changelog: changelog_file,
+        _changelog_dir: changelog_dir,
     }
 }
 
@@ -565,6 +602,26 @@ fn build_ext(
 struct TestNotesScope {
     workspace: std::path::PathBuf,
     global: std::path::PathBuf,
+}
+/// The `host_changelog` tool's scope for a fixture: one temp file and a chosen writer, so a test
+/// records without ever touching this box's real config dir.
+struct TestChangelogScope {
+    file: std::path::PathBuf,
+    who: String,
+}
+
+impl crate::builtins::changelog::ChangelogScope for TestChangelogScope {
+    fn path(&self) -> std::path::PathBuf {
+        self.file.clone()
+    }
+
+    fn host(&self) -> String {
+        "fixture-box".to_string()
+    }
+
+    fn who(&self) -> String {
+        self.who.clone()
+    }
 }
 
 impl crate::builtins::notes::NotesScope for TestNotesScope {
