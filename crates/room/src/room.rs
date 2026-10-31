@@ -1498,7 +1498,14 @@ struct Live {
     claim_ms: u64,
 }
 
-fn normalise_tag(tag: &str) -> Result<String, Refused> {
+/// **A tag as the room spells it** — trimmed and lowercased, and empty is refused by name.
+///
+/// Public because a tag is now two things: a queue's name *and* the suffix of the agent that owns
+/// that queue ([`crate::lease::tag_session`]). A second normalisation beside this one would give
+/// `RAM` and `ram` one queue and two agents — the note
+/// `.letibot/notes/the-activity-and-the-delivery-had-two-copies-of-one-rule.md` is that mistake in
+/// another module.
+pub fn normalise_tag(tag: &str) -> Result<String, Refused> {
     let tag = tag.trim().to_lowercase();
     if tag.is_empty() {
         return Err(Refused::EmptyTag);

@@ -439,6 +439,104 @@ pub fn coordinator_session(host_key: &str) -> String {
     format!("s-room-{host_key}")
 }
 
+/// **One tag's own agent, derived from the owner's id and the tag** — `s-room-<host key>-<slug>`.
+///
+/// The operator's design, 2026-10-31: *"one subsession per tag, owned by the host … so a tag can be
+/// talked to about itself"*. The box's owner session is [`coordinator_session`], and a tag's agent
+/// is that name plus the tag — so `--session host:ram` ([`named_session`]) always resolves without
+/// anybody remembering a hash, and a tag's agent is reachable from a shell the same way the box's
+/// owner is.
+///
+/// **It is a function, never an invention.** Two readers derive this name — the coordinator's
+/// upkeep, which opens the session, and a person typing `--session host:ram` — and a name one of
+/// them guessed would be a session the other cannot find. `None` for a tag the room would refuse
+/// ([`crate::room::normalise_tag`]: an empty one), because a tag with no name has no agent.
+///
+/// **The suffix is an escape, so the derivation runs both ways.** `a-z`, `0-9` and `-` are kept; `_`
+/// is written `__`; every other character is `_` and two hex digits per byte of its UTF-8. That is
+/// what makes [`tag_of_session`] exact rather than a guess — `8 gb` and `8-gb` are two tags, and a
+/// derivation that collapsed them would give one agent two queues.
+pub fn tag_session(host_key: &str, tag: &str) -> Option<String> {
+    let tag = crate::room::normalise_tag(tag).ok()?;
+    let mut slug = String::new();
+    for c in tag.chars() {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+            slug.push(c);
+            continue;
+        }
+        if c == '_' {
+            slug.push_str("__");
+            continue;
+        }
+        let mut buf = [0u8; 4];
+        for b in c.encode_utf8(&mut buf).as_bytes() {
+            slug.push_str(&format!("_{b:02x}"));
+        }
+    }
+    Some(format!("{}-{slug}", coordinator_session(host_key)))
+}
+
+/// **The tag a session id belongs to**, or `None` for a session that is not a tag's agent — the
+/// inverse of [`tag_session`], and the question the daemon asks when a session opens (may it join
+/// the room as a top-level speaker?) and when the room rings it (is this event its tag's?).
+pub fn tag_of_session(host_key: &str, session: &str) -> Option<String> {
+    let rest = session.strip_prefix(&format!("{}-", coordinator_session(host_key)))?;
+    if rest.is_empty() {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    // **Bytes, not chars**: an escaped byte is one byte of a UTF-8 character, so `_d0_b4` is `д`
+    // and only the whole run decodes. A `char` accumulator would write each byte as a character of
+    // its own and the round trip below would then refuse a tag that was spelled correctly.
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'_' => {
+                // `__` is a literal underscore; `_hh` is one byte of a character. Anything else is
+                // a name this function did not write, and it says so rather than guessing.
+                if bytes.get(i + 1) == Some(&b'_') {
+                    out.push(b'_');
+                    i += 2;
+                    continue;
+                }
+                let hex = rest.get(i + 1..i + 3)?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    let tag = String::from_utf8(out).ok()?;
+    // **Only a tag that derives back to itself.** A hand-written id that happens to start with the
+    // prefix (`s-room-box-1a2b3c4d-nonsense_zz`) is not an agent of tag `nonsense_zz`, and the
+    // round trip is what tells the two apart — an escaped byte may not be a whole character.
+    (tag_session(host_key, &tag).as_deref() == Some(session)).then_some(tag)
+}
+
+/// **The session a person named**, when they named one by the two derived spellings — `host` for
+/// the box's owner and `host:<tag>` for one tag's agent.
+///
+/// This is the whole of `--session host:ram`: one function, so the shell, the launcher and a test
+/// all resolve a derived name the same way, and `None` means *this was an ordinary session id, use
+/// it as it is*.
+pub fn named_session(host_key: &str, name: &str) -> Option<String> {
+    let (head, tag) = match name.split_once(':') {
+        Some((head, tag)) => (head, Some(tag)),
+        None => (name, None),
+    };
+    if !head.eq_ignore_ascii_case("host") {
+        return None;
+    }
+    match tag {
+        None => Some(coordinator_session(host_key)),
+        Some(tag) => tag_session(host_key, tag),
+    }
+}
+
 /// The file a box's coordinator lease lives in, given the directory the runtime keeps its files in.
 pub fn lease_path(runtime_dir: &Path, host_key: &str) -> PathBuf {
     runtime_dir.join(format!("room-{host_key}.lease"))
@@ -703,5 +801,113 @@ mod tests {
         // And the file names the winner, so the NEXT start is refused by the same name.
         let lease = CoordinatorLease::owned_by(&path, "box/9/100");
         assert_eq!(lease.read().map(|h| h.owner), Some(winner));
+    }
+
+    /// **One tag, one agent, and the name runs both ways** — the whole of *`host:ram` is reachable*
+    /// rests on these two functions agreeing, and a tag that does not derive back to itself is an
+    /// agent nobody can find.
+    #[test]
+    fn a_tag_session_is_the_owners_id_plus_the_tag_and_derives_back() {
+        let key = "lab2x1-1a2b3c4d";
+        for tag in [
+            "ram",
+            "RAM",
+            " ram ",
+            "ram-urgent",
+            "merge_a",
+            "8 gb",
+            "8-gb",
+            "диск",
+            "a.b",
+        ] {
+            let session = tag_session(key, tag).unwrap_or_else(|| panic!("no agent for {tag}"));
+            let normal = crate::room::normalise_tag(tag).unwrap();
+            assert!(
+                session.starts_with(&format!("{}-", coordinator_session(key))),
+                "an agent is named from its owner: {session}"
+            );
+            assert_eq!(
+                tag_of_session(key, &session).as_deref(),
+                Some(normal.as_str()),
+                "the derivation must run both ways for {tag:?} ({session})"
+            );
+            assert!(
+                session
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "a session id is also a filename here: {session}"
+            );
+        }
+        // **`RAM` and `ram` are one queue, so they are one agent.** Two agents for one tag would be
+        // two sessions racing for one claim.
+        assert_eq!(tag_session(key, "RAM"), tag_session(key, " ram "));
+        // **`8 gb` and `8-gb` are two tags**, and a derivation that collapsed them would give one
+        // agent two queues — which is why the suffix escapes rather than sanitises.
+        assert_ne!(tag_session(key, "8 gb"), tag_session(key, "8-gb"));
+        // A tag the room refuses has no agent at all.
+        assert_eq!(tag_session(key, "   "), None);
+    }
+
+    /// **The owner's own id is not a tag's**, and neither is a name this derivation did not write.
+    #[test]
+    fn the_owner_and_a_hand_written_id_are_not_tag_agents() {
+        let key = "lab2x1-1a2b3c4d";
+        assert_eq!(tag_of_session(key, &coordinator_session(key)), None);
+        assert_eq!(tag_of_session(key, "s-a"), None);
+        // Uppercase is not how this function spells a tag, so a name carrying it is somebody
+        // else's.
+        assert_eq!(tag_of_session(key, "s-room-lab2x1-1a2b3c4d-RAM"), None);
+        // A half-escape is not a name this function wrote: `_z` has no hex digits behind it.
+        assert_eq!(tag_of_session(key, "s-room-lab2x1-1a2b3c4d-ram_z"), None);
+        // And an id truncated to the prefix alone is the owner with a trailing dash, not a tag.
+        assert_eq!(tag_of_session(key, "s-room-lab2x1-1a2b3c4d-"), None);
+    }
+
+    /// **Two boxes never collide**, whatever they call themselves — the host key carries a hash of
+    /// the raw name for exactly the two boxes that both answer `localhost`.
+    #[test]
+    fn two_boxes_do_not_share_a_tag_agent() {
+        let one = tag_session("localhost-0badf00d", "ram");
+        let two = tag_session("localhost-5eed1234", "ram");
+        assert_ne!(one, two);
+        assert_ne!(
+            tag_of_session("localhost-0badf00d", two.as_deref().unwrap()),
+            Some("ram".to_string()),
+            "the other box's name is not this box's tag"
+        );
+        // And the derived session carries the same host key the socket and the lease do, so one
+        // `--session host:ram` reaches this box's agent and no other.
+        assert_eq!(
+            tag_session("localhost-0badf00d", "ram").as_deref(),
+            Some("s-room-localhost-0badf00d-ram")
+        );
+    }
+
+    /// **`--session host` and `--session host:ram` are the two derived spellings**, and anything
+    /// else is an ordinary session id that must be passed through untouched.
+    #[test]
+    fn the_two_named_spellings_resolve_and_nothing_else_does() {
+        let key = "lab2x1-1a2b3c4d";
+        assert_eq!(
+            named_session(key, "host").as_deref(),
+            Some("s-room-lab2x1-1a2b3c4d")
+        );
+        assert_eq!(named_session(key, "HOST").as_deref(), Some("s-room-lab2x1-1a2b3c4d"));
+        assert_eq!(
+            named_session(key, "host:ram").as_deref(),
+            Some("s-room-lab2x1-1a2b3c4d-ram")
+        );
+        assert_eq!(
+            named_session(key, "host:RAM").as_deref(),
+            Some("s-room-lab2x1-1a2b3c4d-ram"),
+            "a tag is normalised before it is derived, or `host:RAM` would name nothing"
+        );
+        // **An empty tag is not the owner.** `host:` typed by mistake must not silently attach to
+        // the arbiter: it resolves to nothing, and the caller passes the text through.
+        assert_eq!(named_session(key, "host:"), None);
+        // Everything else is a session id, and a colon in one is not this function's business.
+        assert_eq!(named_session(key, "s-a"), None);
+        assert_eq!(named_session(key, "s-room-x"), None);
+        assert_eq!(named_session(key, "other:ram"), None);
     }
 }
