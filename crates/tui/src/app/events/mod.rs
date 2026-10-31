@@ -726,6 +726,15 @@ impl App {
     /// window of an ordinary message, and putting them here is exactly the defect this
     /// replaces: a trigger built on "some row lacks a body" fires on every healthy turn.
     pub(crate) fn prune_to_the_rows(&mut self) {
+        // **The probe's answers are PRUNED, not cleared**, the same rule the two id-keyed
+        // maps keep and for the same reason: a resync that carries the same rows back under
+        // the same ids must not make this head ask the store the same three questions again,
+        // and must not forget that it already knows the answer. An id that left the
+        // transcript takes its answer with it.
+        let (held, absent, asked) = match self.bulk.take() {
+            Some(b) => (b.held, b.absent, b.asked),
+            None => Default::default(),
+        };
         self.bulk = {
             let ids: std::collections::HashSet<String> = self
                 .items
@@ -735,6 +744,9 @@ impl App {
                 .collect();
             (!ids.is_empty()).then(|| Bulk {
                 announced: ids.len(),
+                held: held.into_iter().filter(|i| ids.contains(i)).collect(),
+                absent: absent.into_iter().filter(|i| ids.contains(i)).collect(),
+                asked: asked.into_iter().filter(|i| ids.contains(i)).collect(),
                 ids,
                 at_ms: self.now_ms,
             })

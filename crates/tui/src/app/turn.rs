@@ -395,6 +395,24 @@ pub(crate) struct Bulk {
     pub(crate) announced: usize,
     /// When the snapshot landed, on this head's clock — [`BODY_PATIENCE`]'s origin.
     pub(crate) at_ms: u64,
+    /// **What the STORE said about each of these positions** — asked of the daemon by
+    /// session ordinal through `FetchRow`, which is the one door that falls through to the
+    /// store when the view cannot answer (`SessionView::row_body_at` returns `None` for a
+    /// row with no body, and the server then asks its `RowSource`).
+    ///
+    /// The distinction is the whole reason the probe exists: a snapshot is cut from the
+    /// daemon's **in-memory view**, so a row the view holds body-less comes back body-less
+    /// on every `Hello` and on every `/resync` — the resync re-cuts the same view. A row the
+    /// store *does* hold is therefore not a row this head missed: it is a row the SNAPSHOT is
+    /// missing, and asking again cannot change that. Only a re-seat — which republishes every
+    /// carried row from the session's own items — rebuilds it.
+    pub(crate) held: std::collections::HashSet<String>,
+    /// The ids the store answered **nothing** for — a row nothing the daemon can reach holds.
+    /// Not the same statement as `held`, and the two must not look alike.
+    pub(crate) absent: std::collections::HashSet<String>,
+    /// The ids this head has already asked about, so one snapshot is one question per id and
+    /// a resync does not flood the daemon with the same probes.
+    pub(crate) asked: std::collections::HashSet<String>,
 }
 
 pub(crate) fn open_call<'a>(calls: &'a mut [CallRow], call_id: &str) -> Option<&'a mut CallRow> {

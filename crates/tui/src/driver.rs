@@ -833,6 +833,14 @@ impl Link {
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;
                     }
+                    // **A snapshot announced a row it never filled** — the head asks the daemon for
+                    // that one row by name, because the daemon's in-memory window and the store can
+                    // disagree and the store is the truth (`ClientFrame::FetchRow`'s server arm
+                    // falls through to `RowSource` for a row with no body). The answer arrives as
+                    // `RowFetched` on the pump and fills the position the head named.
+                    Action::FetchRow { session, row, at, len } => {
+                        self.client.fetch_row(&session, row, at, len)?;
+                    }
                     // **The operator's half of the board, on its way to the daemon.** The head
                     // sends the WHOLE list: the daemon files it in the operator's half by the
                     // `by` tag on each row, persists it, and publishes it to every head. There is

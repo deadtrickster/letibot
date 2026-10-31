@@ -190,6 +190,25 @@ pub enum Action {
     /// `p` on a subagent row, and `/peek ID` for the typed spelling.
     /// Lazy — nothing is read until this is sent.
     Peek(String),
+    /// **Ask the daemon for one row's body, by session ordinal.**
+    ///
+    /// The head sends this for exactly one reason so far: a snapshot arrived with rows it
+    /// announced and never filled, and the question *is this row a hole in the snapshot or a
+    /// hole in the world* can only be answered by the one door that reads the STORE when the
+    /// daemon's in-memory view cannot (`ClientFrame::FetchRow`, whose server arm falls through
+    /// to its `RowSource` for a row with no body). A head that guessed at the answer instead
+    /// would be telling the operator to run a verb on the strength of an assumption — see
+    /// [`Bulk`](crate::app::Bulk).
+    ///
+    /// Answered with `ServerFrame::RowFetched`, on the pump like every other ask.
+    FetchRow {
+        session: String,
+        /// The row's position in the session — `items_dropped` plus the index the head holds
+        /// it at, which is the only name for a row a head can construct.
+        row: usize,
+        at: usize,
+        len: usize,
+    },
     /// Read one background job's output into a pane, without leaving this session
     /// and without posting a slash to the conversation. Answered with a
     /// `SessionEvent::JobOutput` on the log, and the pane is built from it. The
