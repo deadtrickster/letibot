@@ -1006,6 +1006,36 @@ STUB
     echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
   fi
 
+  # **And `--stop N` stops it by the number `--ls` just printed** — the handle the list gives you,
+  # which is how every other daemon is stopped. **The room's record is not named by a workspace
+  # key** (`room-<host key>.json`), so a `retarget` that kept `RECORD` on the key-named file read a
+  # record that does not exist: MEASURED 2026-10-31, the room was stopped and the operator was told
+  # *"the interrupt did not go through"* (the session protocol's frame, refused by a socket that
+  # speaks another one), and `room.json` was left behind so `--ls` went on listing a room that was
+  # gone. Both halves are what reading the record the number printed fixes.
+  RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --room >/dev/null 2>&1
+  n="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | grep -F "the box's room" | awk '{ print $1; exit }')"
+  if [ -n "$n" ]; then echo "ok   ...and --ls gives it a number ($n)"; else
+    echo "FAIL ...and --ls gives it a number: no room row in:"
+    RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls | sed 's/^/     /'; fails=$((fails + 1))
+  fi
+  # **A `letibot-tui` that refuses, because the real one does**: a coordinator's socket speaks the
+  # room's protocol, so the session protocol's interrupt comes back a refusal. That is what makes
+  # the check below a measurement rather than a sentence the suite cannot falsify.
+  cat > "$T/bin/letibot-tui" <<'STUB'
+#!/usr/bin/env bash
+echo "letibot-tui: this socket does not speak the session protocol" >&2
+exit 1
+STUB
+  chmod +x "$T/bin/letibot-tui"
+  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --stop "$n")"
+  expect "--stop N stops the box's room by its number" "$out" "^stopped the box's room"
+  refuse "  ...without sending it the session protocol's interrupt" "$out" "interrupt did not go through"
+  if [ ! -f "$T/run/letibot/room.json" ]; then echo "ok   ...and its record goes with it"; else
+    echo "FAIL ...and its record goes with it"; fails=$((fails + 1))
+  fi
+  cp "$T/bin/harnessd" "$T/bin/letibot-tui"
+
   # **The host key, against the table `letibot_room::lease` pins.** The launcher derives the
   # socket's name in bash before it starts anything, so a key that disagrees with the Rust's would
   # look for a socket no coordinator ever binds: a second coordinator on every run, refused by the

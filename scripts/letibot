@@ -1356,7 +1356,7 @@ record_field_of() { json_field "$2" "$1"; }
 #
 # Sets WORKSPACE, KEY, SOCKET and RECORD, the four the rest of this script reads.
 retarget() {
-  local want="$1" n=0 r ws sock
+  local want="$1" n=0 r ws sock rec
   case "$want" in
     ''|.) return 0 ;;
     *[!0-9]*)
@@ -1374,6 +1374,12 @@ retarget() {
         # for the box's room, whose socket is named by the HOST and lives in the data directory.
         # Reading it here is what lets `--stop N` reach the room as it reaches anything else.
         sock="$(record_field_of "$r" socket)"
+        # **And the record the number printed is the one the verb then reads.** For a folder's
+        # daemon that is the same file as the key below; the box's is `room-<host key>.json`, and
+        # reading the key-named file instead left `RECORD` pointing at nothing — so `--stop N`
+        # sent the room the session protocol's interrupt (a refusal, printed as turns that could
+        # not be interrupted) and could not remove the record it had just stopped.
+        rec="$r"
         break
       done
       [ "$n" -ge "$want" ] || die "there is no daemon $want — \`letibot --ls\` numbers them"
@@ -1381,7 +1387,7 @@ retarget() {
   esac
   KEY="$(printf '%s' "$WORKSPACE" | sha12)"
   SOCKET="${sock:-$RUNDIR/$KEY.sock}"
-  RECORD="$RUNDIR/$KEY.json"
+  RECORD="${rec:-$RUNDIR/$KEY.json}"
   [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
 # **Is this pid gone, waited for, bounded.** The one place the launcher decides
