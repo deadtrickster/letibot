@@ -2868,7 +2868,7 @@ check of an operator row that was already named says "the operator added" once m
 
 ---
 
-## R78 — Up no longer recalls prompt history — **OPEN, 2026-10-11, likely an R69 regression**
+## R78 — Up no longer recalls prompt history — **CLOSED: already fixed in `08bbf9a7` (2026-10-07), four days before this entry was filed**
 
 The operator: *"also up arrow is broken - it doesnt scroll prompt history"*. R69 moved every key
 through the surface stack and per-surface binding tables the same day. The recall path is in
@@ -2878,6 +2878,18 @@ is parked (`!self.following()`, ~272), and the editor's own `vertical(true, …)
 which arm now takes Up first in the conversation surface (likely the parked-scroll arm, or the
 `Conversation` binding table's Up) and pin it with a test: an empty composer, prompts sent
 earlier, Up → the previous prompt in the composer.
+
+**CLOSED, and it was already closed when this was written: `08bbf9a7`, 2026-10-07** (*"Up recalls the
+session's prompts, not only what this head typed"*). The arm this entry suspected is not taken by the
+surface stack — `focused_surface()` answers `None` for `Drawn::Conversation`, so no binding table sees
+Up before the composer does. The recall is `editor.vertical(true, cols)` at the bottom of `key()`, and
+the history it walks is rebuilt from the session's own `User` rows on the press
+(`composer.rs::refresh_prompt_history`, called at the top of `keys/mod.rs::key_dispatch`);
+`Editor::set_history` is ignored mid-walk, so the list cannot be replaced under the walk's index.
+Tests: `up_recalls_the_sessions_earlier_prompts_after_a_restart` and
+`crates/harnessd/tests/prompt_history_resume.rs` (the real daemon twice over one store) — both green
+2026-10-31, as is a scratch test of the plain case (two prompts sent from this head, both rows landed,
+Up twice → newest first).
 
 ---
 
@@ -3399,7 +3411,7 @@ The alternatives were measured and each broke something (see `RELAY`'s doc). A b
 `/usr/bin/script` runs the old line. Still open from the operator: whether the operator's OWN
 pane in a confined session should get the session's no-network rule (`--unshare-net` when the
 egress policy denies) — today it does.
-## A pane's first resize is a real `SIGWINCH` to a program that has not drawn yet, and one test races it — **OPEN, found while landing `agent/term-detach`**
+## A pane's first resize is a real `SIGWINCH` to a program that has not drawn yet, and one test races it — **CLOSED 2026-10-10 by `401e61fe`: the size is set before the spawn**
 
 `TermSession::start` spawns the child (`crates/tools/src/exec/term.rs`, `cmd.spawn()`) and
 **then** sets the pty's size (`set_size(&master, cfg.cols, cfg.rows)`, four statements later).
@@ -3430,9 +3442,16 @@ is born at the right rectangle instead of being resized into it.
 will pass alone, so the check that matters is the full `cargo test -p letibot-tools` on a loaded
 box, or reading the order of those two statements in `TermSession::start`.
 
+**CLOSED 2026-10-10 by `401e61fe`** (*"term: the pane is born at its size, so no resize is a
+change"*): `TermSession::start` sets the winsize on the master **before** `cmd.spawn()`, so the child
+is born at the pane's rectangle and the first `TIOCSWINSZ` changes nothing.
+MEASURED 2026-10-31 on lab2x1: `a_same_size_resize_is_not_a_nudge` green alone **and** 48 of 48
+under the load that used to find it — sixteen copies of its own test binary, three rounds,
+`--test-threads=1` (the recipe in `the-load-a-racy-test-needs-is-sixteen-copies-of-itself`).
+
 ---
 
-## A stop unlinks the socket without the daemon going, so the next start adds a SECOND daemon to one folder — **OPEN, diagnosed on the operator's box 2026-10-04**
+## A stop unlinks the socket without the daemon going, so the next start adds a SECOND daemon to one folder — **CLOSED 2026-10-11 by `f354b051`: the claim is an `flock` beside the socket**
 
 **The symptom the operator met:** a session that could not be written to at all. Every append refused:
 
@@ -3490,6 +3509,19 @@ Two LISTEN rows on one path is the defect.
 **done when** a second daemon for a folder that already has a live one is refused by name, with the
 refusal naming the live pid, and the refusal does not depend on the socket file existing.
 
+**CLOSED 2026-10-11 by `f354b051`** (*"one daemon for one folder, because a filename cannot say so"*).
+`sessionlog/src/server.rs` takes an `flock` on `$KEY.lock` beside the socket **before** it looks at
+the socket file at all (`FolderClaim::take`), writes the holder's pid into it so the refusal can
+name somebody, and never unlinks that file — its name keeps pointing at the inode that holds the
+claim, which is the property `$KEY.sock` never had. The socket's fate follows the daemon's in both
+directions: `unlink_if_ours` removes the file only when the path still names **our** (dev, ino), so a
+stopping daemon cannot unlink its successor's socket, and the accept loop is non-blocking so a daemon
+whose file is already gone can still be stopped politely. `scripts/letibot` asks the kernel instead of
+the filename (`folder_lock_pid`, over `/proc/locks`) before it decides to start anything.
+Tests: `crates/sessionlog/tests/one_daemon_one_folder.rs` — seven, and the entry's own *still open?*
+check is one of them (`the_refusal_does_not_depend_on_the_socket_file_existing`). All seven green on
+this box, 2026-10-31.
+
 ---
 
 ## The `reasoning_content` refusal is a TRAILING SYSTEM MESSAGE plus `tools` — **OPEN, isolated by the relay 2026-10-04**
@@ -3538,7 +3570,7 @@ was introduced.
 
 ---
 
-## A fold that SUCCEEDS is thrown away by the store — **OPEN, measured on the operator's own session 2026-10-04**
+## A fold that SUCCEEDS is thrown away by the store — **CLOSED 2026-10-04 by `f0d9c9a1`: the fork IS a store row**
 
 On `glm-coding/glm-5.3`, so the item above does not apply:
 
@@ -3561,6 +3593,17 @@ of `sessions.db` and compare the first `seq` against the parent's last.
 
 **done when** a successful fold's summary is persisted, and a sequence violation on the fork's
 first row is a named refusal rather than a discarded answer.
+
+**CLOSED 2026-10-04 by `f0d9c9a1`** (*"C1 wiring: /compact forks the transcript; the summary becomes
+the base"*). The summary is written where the conversation continues: `fork_onto`
+(`crates/harnessd/src/harness.rs`) opens the NEW transcript id (`s-…#t1`), appends the summary as its
+first item, and `Store::put_fork_unsealed` writes the row that links the two — so the fork's first row
+is numbered from the fork, which is the shape the paragraph above said to start from. The seal, the
+fingerprint and the stale flag follow the last row (`Harness::seal_fork`, R91.2), so a crash mid-carry
+is not a partial conversation that a resume lands on.
+Test: `crates/harnessd/tests/compact.rs`'s
+`a_compaction_fork_is_a_store_row_and_a_resume_lands_on_it` — two transcripts, the fork's parent
+named, the summary verbatim in row 0, and a reopen landing on the fork. Green here 2026-10-31.
 
 ---
 
@@ -4829,6 +4872,13 @@ once and says whose money it is; whether the interrupt lands during a *transient
 
 **done when** a person who presses interrupt during a retry's wait gets the turn back, however the
 retry was classified.
+
+**The billing half was widened 2026-10-31** (branch `agent/the-five-small-diagnosed-ones`): the phrase
+list in `refused_for_want_of_credit` did not carry this entry's own wording, *out of credit*, nor
+Anthropic's *credit balance is too low*, so a 429 in either shape was still taken six times. Both are
+in the list now, and the case that fails without them is in
+`a_billing_refusal_is_not_taken_again_and_a_rate_limit_still_is`. The interrupt half above is still
+open.
 
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
