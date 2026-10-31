@@ -67,6 +67,7 @@ fn every_frame_round_trips_through_json() {
             decision: Decision::Hand {
                 to: "s-b".to_string(),
             },
+            project: None,
         },
         Request::Queue {
             tag: "ram".to_string(),
@@ -121,6 +122,7 @@ fn every_frame_round_trips_through_json() {
             // **The room answers `[]` for the agents**: a tag's agent is a fact about the daemon
             // that seats one, and `Server::answer_frame` is where it is filled.
             agents: Vec::new(),
+            members: Vec::new(),
         },
         Response::Reminders { rows: Vec::new() },
         Response::Event {
@@ -394,6 +396,7 @@ fn a_dispute_and_its_ruling_cross_the_wire() {
             decision: Decision::Hand {
                 to: "s-a".to_string(),
             },
+            project: None,
         },
         100_002,
     ) {
@@ -429,6 +432,7 @@ fn the_rooms_read_answers_every_item_and_the_open_questions() {
             items,
             questions,
             agents,
+            members,
         } => {
             assert_eq!(
                 items.iter().map(|i| i.id).collect::<Vec<_>>(),
@@ -446,6 +450,9 @@ fn the_rooms_read_answers_every_item_and_the_open_questions() {
             // **And the agents too** — who owns a queue is a fact about the daemon that seats one,
             // so a room driven on its own has none to name.
             assert!(agents.is_empty(), "{agents:?}");
+            // **And the tree** — the membership is the daemon's to describe, so a room driven on
+            // its own holds nobody until one does (`Request::Members`).
+            assert!(members.is_empty(), "{members:?}");
         }
         other => panic!("a room read answers a room: {other:?}"),
     }

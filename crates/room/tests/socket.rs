@@ -467,6 +467,7 @@ fn the_arbiter_hears_every_event_even_with_nothing_under_the_tag() {
             decision: Decision::Drop {
                 why: "three claimants died on it".into(),
             },
+            project: None,
         },
     ) {
         Response::Ruled { question, .. } => assert!(question.answer.is_some()),

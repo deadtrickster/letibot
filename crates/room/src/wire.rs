@@ -81,7 +81,26 @@ use crate::room::{
 /// drawn. [`Response::Room`] carries `agents`; a client that speaks 2 is refused by name rather
 /// than drawn without it, because a pane that silently omitted the column would say *no agent* for
 /// every tag on an older room.
-pub const ROOM_PROTOCOL_VERSION: u16 = 3;
+///
+/// # 4: a room is a PROJECT's
+///
+/// The operator, 2026-10-31: *"yeah i want a room … the herarchy was
+/// `<project>/<top-sessions>/<subagents>*|system/`"*. Until 4 there was one room per box and its
+/// name was the box's, so two projects on one machine shared one set of tags — project B's `ram`
+/// was refused `Busy` by project A's claim, and neither could see that it was the other's fault.
+/// So a room's name is now `<host key>/<project key>` ([`crate::room_name`]) and the coordinator
+/// holds one room per project.
+///
+/// Three fields came with it, and each is a fact only one end can state:
+///
+/// * [`Request::Members`] — **the tree**, from the daemon, which is the only thing that can see
+///   the sessions the room refuses at its door. A room's membership is the project's sessions and
+///   their subagents, not the connections.
+/// * [`Response::Room`]'s `members` — the same list back, for a pane.
+/// * [`crate::Question`]'s `project` — which room asked, stamped by the server, because two rooms
+///   number their questions from 1 and an arbiter that heard both would otherwise rule on the
+///   wrong one.
+pub const ROOM_PROTOCOL_VERSION: u16 = 4;
 
 /// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
 ///
@@ -115,11 +134,10 @@ pub enum Request {
     /// The first frame on every connection: who is speaking, in which protocol, and **which room
     /// the client believes it reached**.
     ///
-    /// `room` is the box's name (`crate::host_name`) — the name a person would type to tell two
-    /// machines apart, and the only thing that distinguishes two coordinators that both call
-    /// themselves `localhost`. A room that is asked for by another name refuses the connection with
-    /// both names in the sentence (`docs/room.md` § *Still owed* 2: *a session that connected to the
-    /// wrong coordinator is told rather than obeyed*).
+    /// `room` is `<host key>/<project key>` ([`crate::room_name`]) — **the box AND the project**,
+    /// since version 4. Both halves are needed: two boxes can serve one repository path (a clone, a
+    /// backup), and two projects can live on one box. The bare host key is the box's own room
+    /// ([`crate::DEFAULT_PROJECT`]), which is where a one-shot, a fixture and the arbiter live.
     ///
     /// **Empty is *I do not say*** — what a protocol-1 client sends, since the field did not exist.
     /// An empty name is not checked, so an old client still reaches the room it dialled and is told
@@ -156,7 +174,23 @@ pub enum Request {
         id: String,
         question: u64,
         decision: Decision,
+        /// **Which room the question is in**, for a client that hears more than one — the arbiter
+        /// does, and two rooms number their questions from 1. A client that names none means *the
+        /// room this connection is in*, which is every ordinary session's answer.
+        #[serde(default)]
+        project: Option<String>,
     },
+    /// **The project's tree, as the daemon holding it sees it** — who is in this room.
+    ///
+    /// The room cannot work this out: it holds no store and no registry, and a subagent never
+    /// opens a connection (the door refuses it), so the connections are not the membership either.
+    /// The daemon can — it has the registry and the store's rows — so it says, and a replacement
+    /// frame is the whole protocol: a tree is the answer to *who is here now*, and a merge would
+    /// keep a session that has been closed since.
+    ///
+    /// A frame with a reply rather than a push, because a client's reader thread is what would
+    /// have to demultiplex a push and this is small: one project's sessions.
+    Members { rows: Vec<crate::tree::Member> },
     /// **A tag's queue, in order** — the read that makes polling unnecessary for a client that
     /// has just reconnected.
     Queue { tag: String },
@@ -188,6 +222,7 @@ impl Request {
             | Request::Holding { .. }
             | Request::Reminders
             | Request::Questions
+            | Request::Members { .. }
             | Request::Room => None,
             Request::Post { id, .. }
             | Request::Claim { id, .. }
@@ -305,7 +340,15 @@ pub enum Response {
         /// which is a fact the pane says rather than a column it leaves blank.
         #[serde(default)]
         agents: Vec<crate::agent::TagAgent>,
+        /// **The project's tree** — every session in this room, in the order the tree draws them:
+        /// the project's own sessions and their subagents, then the `system` agents that serve
+        /// them. Filled by the room from the last [`Request::Members`] its daemon sent, which is
+        /// the only thing that can see a subagent (the door refuses one).
+        #[serde(default)]
+        members: Vec<crate::tree::Member>,
     },
+    /// **The room now holds this tree** — the answer to [`Request::Members`].
+    Members { count: u64 },
     /// **The bell** — an unsolicited event. A client that only ever answers a prompt cannot be
     /// woken by this; see `docs/room.md` § *The bell, and the client that cannot hear it*.
     Event {
@@ -483,6 +526,10 @@ impl Room {
                 id,
                 question,
                 decision,
+                // **The room ignores it, and that is the point**: which room a question is in is
+                // the SERVER's fact (`Server::answer_frame` picks the room from it), and a room
+                // that could be asked about another room's question would be two rooms.
+                project: _,
             } => match self.rule(*question, decision.clone(), &who.session, now) {
                 Ok(o) => Answer {
                     response: Response::Ruled {
@@ -510,6 +557,16 @@ impl Room {
             Request::Reminders => Answer::quiet(Response::Reminders {
                 rows: self.reminders(now),
             }),
+            // **The tree, replaced.** No id and no event: a membership is a set, a repeat is the
+            // same set, and a bell for *somebody else joined the project* would be a turn for
+            // every session on every change — the cost rule `docs/room.md` § *Slice 5* already
+            // settled (a claim is a comparison; only a dispute is a judgement).
+            Request::Members { rows } => {
+                self.set_members(rows.clone());
+                Answer::quiet(Response::Members {
+                    count: self.members().len() as u64,
+                })
+            }
             Request::Questions => Answer::quiet(Response::Questions {
                 rows: self.open_questions().into_iter().cloned().collect(),
             }),
@@ -528,6 +585,7 @@ impl Room {
                 items: self.all().into_iter().cloned().collect(),
                 questions: self.questions().to_vec(),
                 agents: Vec::new(),
+                members: self.members().to_vec(),
             }),
         }
     }

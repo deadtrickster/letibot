@@ -34,6 +34,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// **The project a session with no project is in** — the box's own room.
 ///
 /// Not a name a person types: it is what a `Hello` carries when the daemon could not place the
@@ -114,7 +116,11 @@ pub fn room_of_name(host_key: &str, name: &str) -> Option<String> {
 /// draws it in. The room does not decide which group a session is: the daemon does, from the marks
 /// on the row (`sessionlog`'s own rules — the gatekeeper's id, a queue origin, a brief's title),
 /// and it says so with this type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+// **One spelling of a group's name**, and it is [`Group::as_str`]'s: the wire goes through these two
+// conversions rather than through `serde`'s own renaming, because two spellings of a group's name
+// is how a pane and a room come to disagree about what `gatekeepers` is called.
+#[serde(into = "String", try_from = "String")]
 pub enum Group {
     /// A session nobody spawned: a top-level session of the project.
     Top,
@@ -177,13 +183,36 @@ impl fmt::Display for Group {
     }
 }
 
+impl From<Group> for String {
+    fn from(g: Group) -> String {
+        g.as_str().to_string()
+    }
+}
+
+impl TryFrom<String> for Group {
+    type Error = String;
+
+    fn try_from(word: String) -> Result<Group, String> {
+        Group::from_wire(&word).ok_or_else(|| {
+            format!(
+                "`{word}` is not a group this build knows — the tree draws {}",
+                Group::ALL
+                    .iter()
+                    .map(|g| g.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+    }
+}
+
 /// **One session the room holds** — who, drawn where.
 ///
 /// The room's membership is this list, and it is the TREE's: a project's top-level sessions, their
 /// subagents at any depth, and the `system` agents that serve them. It is not the list of
 /// connections — a subagent never opens one (the room's door refuses it, `docs/room.md` § *The
 /// wire*) and is a member all the same, which is the whole difference this type draws.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
     /// The session's id — what a `hand` names, and what `task_message` takes.
     pub session: String,

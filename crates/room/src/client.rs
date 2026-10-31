@@ -145,17 +145,24 @@ impl Client {
     ///
     /// `wake` is called for every event the room sends about this session, from the reader thread.
     /// It must not block: it is the thread that keeps the connection alive.
+    ///
+    /// **The room it names is the box's own** — the bare host key, which is
+    /// [`crate::DEFAULT_PROJECT`]'s room ([`crate::room_name`]). A session that belongs to a project
+    /// names that project's room instead ([`Client::connect_named`] with
+    /// `crate::room_name(&crate::host_key(), &project)`), and the daemon that opened it is the one
+    /// that knows which.
     pub fn connect(
         path: impl Into<PathBuf>,
         speaker: Speaker,
         wake: Wake,
     ) -> Result<Client, ClientError> {
-        Self::connect_named(path, speaker, crate::lease::host_name(), wake)
+        Self::connect_named(path, speaker, crate::lease::host_key(), wake)
     }
 
-    /// **Connect to a room by NAME**, saying which one it means. A room is per box, and the server
-    /// refuses a `Hello` that names another one with both names in the sentence — so a test (or a
-    /// client moved between boxes) can say the wrong name on purpose and be told.
+    /// **Connect to a room by NAME**, saying which one it means. A room is one box's and one
+    /// project's (`<host key>/<project key>`), and the server refuses a `Hello` that names another
+    /// one with both names in the sentence — so a test (or a client moved between boxes) can say the
+    /// wrong name on purpose and be told.
     pub fn connect_named(
         path: impl Into<PathBuf>,
         speaker: Speaker,

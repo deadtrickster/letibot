@@ -138,6 +138,13 @@ pub struct Room {
     /// the daemon vouches for it with [`Room::vouch`]; this is what makes "top-level only" true
     /// for a hand as well as for a verb.
     seen: BTreeMap<String, Option<String>>,
+    /// **Who is in this room** — the project's tree, as the daemon that holds it last described it.
+    ///
+    /// Not the connections: a subagent never opens one (the door refuses it) and is a member all
+    /// the same, which is the whole reason this is a list of its own. The room cannot work it out —
+    /// it holds no store and no registry — so `Request::Members` replaces it, and a room nobody has
+    /// described holds nobody (`docs/room.md` § *Slice 6*).
+    members: Vec<crate::tree::Member>,
     replay: BTreeMap<(String, String), Outcome>,
     replay_order: VecDeque<(String, String)>,
 }
@@ -414,6 +421,15 @@ pub struct Question {
     /// The question, in words, with the facts in it. A model answers this with a [`Decision`].
     pub text: String,
     pub facts: Facts,
+    /// **Which room asked it**, and the field the room itself cannot fill.
+    ///
+    /// A room is a project's (`crate::tree`), so a box holds several and every one of them numbers
+    /// its questions from 1: an arbiter that hears them all would otherwise rule on question 3 of
+    /// the wrong project. The server stamps this as the answer leaves the room
+    /// (`Server::answer_frame`), because the server is the only thing that knows which room it is
+    /// answering for — the same reason `Response::Room`'s first fields are its.
+    #[serde(default)]
+    pub project: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answer: Option<Ruling>,
 }
@@ -561,6 +577,7 @@ impl Room {
             questions: Vec::new(),
             next_question: 0,
             seen: BTreeMap::new(),
+            members: Vec::new(),
             replay: BTreeMap::new(),
             replay_order: VecDeque::new(),
         }
@@ -568,6 +585,32 @@ impl Room {
 
     pub fn lease_ms(&self) -> u64 {
         self.lease_ms
+    }
+
+    /// **Replace the room's membership with the tree the daemon just described.**
+    ///
+    /// A replacement and not a merge, because the tree is the daemon's answer to *who is in this
+    /// project* and a merge would keep a session that has been closed since — the row a person is
+    /// looking for is the one the daemon still draws, not every row ever drawn. The list is put in
+    /// the tree's own order ([`crate::tree_order`]) so a reader of the room and a pane drawing the
+    /// same project cannot be two orders.
+    ///
+    /// **A member is a session the room has met** — a ruling may hand an item to it
+    /// ([`Decision::Hand`]) without the daemon vouching for it first, which is what makes *the
+    /// room holds what the tree holds* a fact a hand can rely on.
+    pub fn set_members(&mut self, rows: Vec<crate::tree::Member>) {
+        self.members = rows;
+        crate::tree::tree_order(&mut self.members);
+    }
+
+    /// **Who is in this room**, in the tree's order.
+    pub fn members(&self) -> &[crate::tree::Member] {
+        &self.members
+    }
+
+    /// The member with this session id, if the tree the daemon described holds one.
+    pub fn member(&self, session: &str) -> Option<&crate::tree::Member> {
+        self.members.iter().find(|m| m.session == session)
     }
 
     /// **Declare a session the room has not met** — the daemon's word for a session that has not
@@ -1019,7 +1062,14 @@ impl Room {
         // **Validate before touching anything** — a ruling that is refused leaves the item frozen
         // and the question open, which is the only honest outcome.
         if let Decision::Hand { to } = &decision {
-            match self.seen.get(to) {
+            // **The tree is the room's answer to *has it met this one*.** A member the daemon
+            // described is a session of this project, and a hand to one needs no separate
+            // vouch — that is what *the room holds what the tree holds* buys a ruling.
+            let known = match self.seen.get(to) {
+                Some(parent) => Some(parent.clone()),
+                None => self.member(to).map(|m| m.parent.clone()),
+            };
+            match known {
                 None => {
                     return Err(Refused::UnknownSession {
                         session: to.clone(),
@@ -1028,7 +1078,7 @@ impl Room {
                 Some(Some(parent)) => {
                     return Err(Refused::Subagent {
                         session: to.clone(),
-                        parent: parent.clone(),
+                        parent,
                     });
                 }
                 Some(None) => {}
@@ -1383,6 +1433,7 @@ impl Room {
             },
             text,
             facts,
+            project: String::new(),
             answer: None,
         };
         self.questions.push(q.clone());
@@ -1424,6 +1475,7 @@ impl Room {
             },
             text,
             facts,
+            project: String::new(),
             answer: None,
         };
         self.questions.push(q.clone());
