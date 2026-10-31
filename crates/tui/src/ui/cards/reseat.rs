@@ -85,7 +85,7 @@ impl App {
             String::new()
         };
         choices.push(rano::agent::pane::faint(trim_to(
-            &format!("  ↑↓ · enter chooses · esc not now{more}"),
+            &format!("  ↑↓ or a row number · enter chooses · esc not now{more}"),
             w,
         )));
         (

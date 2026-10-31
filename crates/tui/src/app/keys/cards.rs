@@ -478,15 +478,16 @@ impl App {
                     self.redraw = true;
                     return ControlFlow::Break(None);
                 }
+                // **A row number MARKS the row; Enter answers it** (R90.6, R90.2's rule) — it
+                // answered at once, so a `2` typed as the first character of a line left the
+                // head and stopped the daemon with every job in it, while the bar under the
+                // card said *"1/2 or ↑↓ then enter"*. The digits are a move now, like ↑↓, and
+                // the answer stays one deliberate Enter — with the guard below for the line
+                // that was being typed when the card opened (R90.30).
                 _ if self.editor.text().is_empty() && digit_row(&k, 2).is_some() => {
-                    self.quit_sel = digit_row(&k, 2).unwrap();
-                    self.quit_card = false;
-                    self.quit = true;
-                    return ControlFlow::Break(Some(if self.quit_sel == 0 {
-                        Action::Quit
-                    } else {
-                        Action::StopDaemon
-                    }));
+                    self.quit_sel = digit_row(&k, 2).expect("just checked");
+                    self.redraw = true;
+                    return ControlFlow::Break(None);
                 }
                 // **Enter has the digits' empty-composer guard** (R90.30): words typed after the
                 // card opened were lost on an Enter that quit.

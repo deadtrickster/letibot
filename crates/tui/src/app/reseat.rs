@@ -195,9 +195,10 @@ impl App {
 
     /// **The open card's keys**, while it is the card on the screen and the composer is empty.
     ///
-    /// ↑↓ move, Enter and `1`/`2` choose, Tab shows the whole sentence, Esc is `Not now`.
-    /// **Anything typed pins the card and goes to the composer** — the operator continuing to
-    /// work is the abstention, and their key is not swallowed for it.
+    /// ↑↓ and a row number move the mark, Enter chooses, Tab shows the whole sentence, Esc is
+    /// `Not now`. **Anything typed pins the card and goes to the composer** — the operator
+    /// continuing to work is the abstention, and their key is not swallowed for it — except the
+    /// one digit that marks a row.
     pub(crate) fn key_reseat_card(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if !self.reseat_card_up() {
             return ControlFlow::Continue(());
@@ -231,8 +232,16 @@ impl App {
                 choose(self, at)
             }
             _ if !typing && digit_row(k, 2).is_some() => {
-                let at = digit_row(k, 2).expect("just checked");
-                choose(self, at)
+                // **A row number MARKS the row; Enter answers it** (R90.6, R90.2's rule) — the
+                // digit chose at once, so a `1` typed as the first character of a line sent
+                // `/reseat` and forked the conversation while this card's own line said
+                // *"enter chooses"*. One rule for every numbered card: a digit moves the mark,
+                // and the answer is the deliberate Enter.
+                if let Some(c) = self.reseat.as_mut() {
+                    c.sel = digit_row(k, 2).expect("just checked");
+                }
+                self.redraw = true;
+                ControlFlow::Break(None)
             }
             Key::Esc => {
                 self.reseat_abstain();

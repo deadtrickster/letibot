@@ -259,7 +259,7 @@ fn the_git_format_cycles_three_stops_and_re_renders_without_a_new_reading() {
 }
 
 #[test]
-fn a_row_number_marks_the_ask_and_answers_the_mode_card_and_the_quit_card() {
+fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
     // The permission ask.
     let mut a = app();
     a.apply(ServerFrame::Event(env(
@@ -267,7 +267,7 @@ fn a_row_number_marks_the_ask_and_answers_the_mode_card_and_the_quit_card() {
         testing::requested("r1", "`bash` wants exec access"),
     )));
     // **R90.2: on a decision the row number MARKS the row** — the numbers are drawn — and
-    // Enter answers it; the reseat and quit cards keep answering on the digit.
+    // Enter answers it; the quit card's digits mark too (R90.6).
     assert_eq!(a.key(Key::Char('2')), None, "the digit is a move");
     assert_eq!(a.sel, 1);
     assert_eq!(
@@ -281,12 +281,16 @@ fn a_row_number_marks_the_ask_and_answers_the_mode_card_and_the_quit_card() {
         "row 2 of the ask is `deny`"
     );
 
-    // The quit card.
+    // The quit card. **The digit marks here too** (R90.6): it answered at once, so `2` typed as
+    // the first character of a line stopped the daemon while the bar said "then enter".
     let mut b = app();
     b.clock(1_000);
     b.key(Key::CtrlC);
     b.key(Key::CtrlC);
-    assert_eq!(b.key(Key::Char('2')), Some(Action::StopDaemon));
+    assert_eq!(b.key(Key::Char('2')), None, "the digit is a move");
+    assert_eq!(b.quit_sel, 1);
+    assert!(b.quit_card && !b.quit, "nothing left yet");
+    assert_eq!(b.key(Key::Enter), Some(Action::StopDaemon));
 
     // Out of range does nothing — it is not an answer and not a keystroke
     // the card invents a meaning for.

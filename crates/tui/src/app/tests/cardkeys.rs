@@ -274,6 +274,35 @@ fn the_quit_cards_enter_keeps_the_empty_composer_guard() {
     assert_eq!(a.input(), "wait");
 }
 
+/// **A digit on the quit card marks the row; it does not quit** (R90.6). The digit answered at
+/// once, so `2` typed as the first character of a line left the head and stopped the daemon —
+/// with every job and subagent it had running — while the bar under the card said *"1/2 or ↑↓
+/// then enter"*. One rule for every numbered card (R90.2): the digit moves the mark, and the
+/// answer is the deliberate Enter.
+#[test]
+fn a_digit_on_the_quit_card_marks_the_row_and_stops_nothing() {
+    let mut a = app();
+    a.clock(1_000);
+    a.key(Key::CtrlC);
+    a.key(Key::CtrlC);
+    assert!(a.quit_card);
+    assert_eq!(a.key(Key::Char('2')), None, "a move, not an answer");
+    assert_eq!(a.quit_sel, 1, "the stop row is marked");
+    assert!(!a.quit && a.quit_card, "nothing left, the card is still up");
+    assert_eq!(a.key(Key::Enter), Some(Action::StopDaemon), "and Enter answers it");
+
+    // The line being typed when the card opened is not an answer either: the first digit marks,
+    // the rest is the operator's, and Enter refuses while the composer holds words (R90.30).
+    let mut b = app();
+    b.clock(1_000);
+    b.key(Key::CtrlC);
+    b.key(Key::CtrlC);
+    assert_eq!(b.key(Key::Char('2')), None, "the first digit is the mark");
+    typed(&mut b, " minutes");
+    assert_eq!(b.key(Key::Enter), None, "words in the composer");
+    assert!(!b.quit && b.quit_card, "still up, nothing quit");
+}
+
 // ──────────── R90.16 / R90.18 / R90.19: one order for the slot, the keys and the bar ────────────
 
 /// The todo card is open and a permission arrives: the todo card stays drawn and keeps its keys,

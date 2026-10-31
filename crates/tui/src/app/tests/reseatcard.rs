@@ -113,10 +113,13 @@ fn reseat_now_sends_the_bare_reseat_exactly_as_typing_it_would() {
         "a reseat already on its way is not sent again"
     );
 
-    // The digit is the row, as on every card.
+    // **The digit is a move, as on every card** (R90.6): `1` typed as the first character of a
+    // line sent `/reseat` and forked the conversation, so a row number now marks the row and
+    // Enter answers it — the rule R90.2 put on the decision card, applied to this one.
     let (mut a, _hub) = stale();
+    assert_eq!(a.key(Key::Char('1')), None, "the digit marks");
     assert_eq!(
-        a.key(Key::Char('1')),
+        a.key(Key::Enter),
         Some(Action::Reseat { summarise: false })
     );
 }
@@ -392,6 +395,38 @@ fn an_open_pane_takes_the_slot_and_its_keys_never_reach_the_card() {
         a.key(Key::Char('1')),
         Some(Action::Reseat { .. })
     ));
+}
+
+/// **A digit on the reseat card moves the mark; it does not reseat** (R90.6). The digit chose at
+/// once, so `1` typed as the first character of a line sent `/reseat` and forked the conversation
+/// while the card's own line said *"enter chooses"*. The card's other rule — a typed line pins it
+/// and goes to the composer — is what the words after that digit get.
+#[test]
+fn a_digit_on_the_reseat_card_marks_the_row_and_reseats_nothing() {
+    let (mut a, _hub) = stale();
+    assert!(a.reseat_card_up());
+    assert_eq!(a.key(Key::Char('2')), None, "a move, not an answer");
+    assert_eq!(
+        a.reseat.as_ref().expect("the card").sel,
+        1,
+        "the second row is marked"
+    );
+    assert!(a.reseat_card_up(), "the card is still open");
+    assert_eq!(a.input(), "", "and nothing was typed");
+    // Enter is still the answer, and it answers the row the digit marked.
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(!a.reseat.as_ref().expect("the card").open, "not now pins it");
+
+    // A line that starts with a digit is the operator's: the digit marks, the rest is theirs.
+    let (mut b, _hub) = stale();
+    assert_eq!(b.key(Key::Char('1')), None);
+    typed(&mut b, ". check the logs first");
+    assert!(!b.reseat_card_up(), "the typed line pins the card");
+    assert!(
+        b.input().ends_with("check the logs first"),
+        "{:?}",
+        b.input()
+    );
 }
 
 /// **R90.22: the card that says "pgdn scrolls" scrolls on PgDn** — `scroll_card` asked for an open

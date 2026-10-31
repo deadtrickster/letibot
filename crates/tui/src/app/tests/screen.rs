@@ -181,12 +181,15 @@ fn the_quit_card_can_stop_the_daemon_and_can_be_taken_back() {
         "the second row"
     );
 
-    // By number, without moving the cursor.
+    // By number, without moving the cursor: the digit marks the row (R90.6), and the answer
+    // is the Enter after it — a digit that quit on its own stopped the daemon on the first
+    // character of a line somebody was typing.
     let mut b = app();
     b.clock(1_000);
     b.key(Key::CtrlC);
     b.key(Key::CtrlC);
-    assert_eq!(b.key(Key::Char('2')), Some(Action::StopDaemon));
+    assert_eq!(b.key(Key::Char('2')), None, "the digit marks");
+    assert_eq!(b.key(Key::Enter), Some(Action::StopDaemon));
 
     // **Esc takes it back.** A card opened by a habit keystroke has to have
     // an answer that is not an exit.
