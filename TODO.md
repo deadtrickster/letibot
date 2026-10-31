@@ -255,7 +255,17 @@ words reach the failure instead of *it said nothing*. Tests, both measured RED p
 `two_placements_at_once_never_read_each_others_bundle` (the forcing test: the fake ssh holds one
 call, HEAD moves while it is held, a second placement runs, then the first is released) —
 `crates/tools/tests/remote_hosts.rs`.
-**Still open?** R99's own *Done when* — six at once — is still unrun on a real host.
+**What was NOT established, said plainly.** The three packages in the report were three
+WORKTREES of one repository, and `SshBackend::place` takes `git rev-parse --show-toplevel` of the
+source — MEASURED: two worktrees resolve to two different toplevels, so they name two different
+mirrors (`{root}/wt-a.git`, `{root}/wt-b.git`). Neither shared name above is reachable from that
+shape: both need two placements of the SAME repository (two sessions of one worktree, a commit that
+moves between two placements, or a mirror left half-made). So the fixes are real and measured, and
+they are not proved to be the 20:05 failure. The likeliest cause of THAT one remains R99's mux
+saturation — `ccf7b895` landed 12:08 the same day and a daemon started before noon runs the old
+code until it is restarted — and nobody could check which build those daemons were running, because
+`letibot --daemons` was blind to every daemon the bridge started (R102, fixed above).
+**Still open?** R99's own *Done when* — six at once on a real host — is still unrun.
 
 ---
 
