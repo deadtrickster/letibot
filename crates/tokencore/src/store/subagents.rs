@@ -267,7 +267,7 @@ impl Store {
     /// One child's row.
     pub fn subagent_run(&self, child_id: &str) -> Result<Option<SubagentRun>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 &format!("{SELECT_RUN} WHERE child_id = ?1"),
                 params![child_id],
@@ -279,9 +279,8 @@ impl Store {
     /// **Every child any session started**, oldest first — what the daemon's session list reads
     /// the children's names from (their slugs are in `spec_json`, the spawn's own description).
     pub fn subagent_runs(&self) -> Result<Vec<SubagentRun>> {
-        let mut st = self
-            .conn
-            .prepare(&format!("{SELECT_RUN} ORDER BY started_ms, child_id"))?;
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!("{SELECT_RUN} ORDER BY started_ms, child_id"))?;
         let rows = st.query_map([], run_of)?;
         let mut out = Vec::new();
         for r in rows {
@@ -293,7 +292,8 @@ impl Store {
     /// **Every child this session started**, oldest first — what a parent reads when it is
     /// opened.
     pub fn subagent_runs_of(&self, parent_id: &str) -> Result<Vec<SubagentRun>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "{SELECT_RUN} WHERE parent_id = ?1 ORDER BY started_ms, child_id"
         ))?;
         let rows = st.query_map(params![parent_id], run_of)?;
@@ -340,7 +340,8 @@ impl Store {
 
     /// Every monitor row of a session, live or not, by name.
     pub fn monitors_of(&self, session_id: &str) -> Result<Vec<StoredMonitor>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT session_id, name, args_json, instance, ttl_ms, live, declared_ms, updated_ms
                FROM session_monitor WHERE session_id = ?1 ORDER BY name",
         )?;
@@ -384,7 +385,7 @@ impl Store {
 
     pub fn job_context(&self, session_id: &str, handle: &str) -> Result<Option<JobContext>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT handle, slug, cwd, instance, started_ms FROM job_context
                   WHERE session_id = ?1 AND handle = ?2",
@@ -436,7 +437,8 @@ impl Store {
     /// session's creation time (a seeded or long-lived session is older than this daemon without
     /// anything having restarted).
     pub fn lives(&self) -> Result<Vec<DaemonLife>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT instance, started_ms, beat_ms, stopped_ms FROM daemon_life ORDER BY started_ms",
         )?;
         let rows = st.query_map([], |r| {
@@ -456,7 +458,7 @@ impl Store {
 
     pub fn life(&self, instance: &str) -> Result<Option<DaemonLife>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT instance, started_ms, beat_ms, stopped_ms FROM daemon_life
                   WHERE instance = ?1",
@@ -627,7 +629,7 @@ mod tests {
     }
 
     /// **Every write here outlasts a lock held past the busy timeout** (R91.6). They went to
-    /// `self.conn.execute` directly, so each had one 30 s busy-timeout attempt — the single
+    /// `self.conn().execute` directly, so each had one 30 s busy-timeout attempt — the single
     /// lottery ticket `busy.rs` describes — and a lost one cost a redelivery
     /// (`deliver_subagent_run`), a crash counted against `RESUME_LIMIT`
     /// (`interrupt_subagent_run`) or a child that could never be restored (`put_subagent_run`).

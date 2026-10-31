@@ -154,8 +154,8 @@ fn a_transcript_from_the_other_dialect_re_renders_under_this_one() {
 /// A session's transcript is its CURRENT one — newest by `created_at`, then `rowid`, the
 /// order `Store::list_sessions` uses — and its size is that transcript's row count.
 fn biggest_foreign(view: &LiveView, ours: &str) -> Option<String> {
-    let mut stmt = view
-        .connection()
+    let conn = view.connection();
+    let mut stmt = conn
         .prepare(
             "SELECT t.id, (SELECT COUNT(*) FROM live.transcript_item i
                             WHERE i.transcript_id = t.id) AS n

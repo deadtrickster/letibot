@@ -363,7 +363,8 @@ impl Store {
     /// per host without the caller reordering anything, and two readings of one store are one
     /// value.
     pub fn open_processes(&self) -> Result<Vec<ProcessRecord>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM process WHERE state IN ('starting', 'running', 'lost')
               ORDER BY host IS NOT NULL, host, session_id, handle"
         ))?;
@@ -378,7 +379,8 @@ impl Store {
     /// **Every process this session owns**, open or ended, oldest first — what a teardown reads
     /// and what a test asserts against.
     pub fn processes_of(&self, session_id: &str) -> Result<Vec<ProcessRecord>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM process WHERE session_id = ?1 ORDER BY started_ms, handle"
         ))?;
         let rows = st.query_map(params![session_id], row)?;
@@ -392,7 +394,7 @@ impl Store {
     /// One record, by its two keys. `None` for a handle this store never supervised.
     pub fn process(&self, session_id: &str, handle: &str) -> Result<Option<ProcessRecord>> {
         Ok(self
-            .conn
+            .conn()
             .prepare(&format!(
                 "SELECT {COLUMNS} FROM process WHERE session_id = ?1 AND handle = ?2"
             ))?

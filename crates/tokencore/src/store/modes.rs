@@ -50,8 +50,8 @@ pub struct ProjectMode {
 impl Store {
     /// Every project's row, by root.
     pub fn project_modes(&self) -> Result<Vec<ProjectMode>> {
-        let mut st = self
-            .conn
+        let conn = self.conn();
+        let mut st = conn
             .prepare("SELECT root, mode, consented_at FROM project_mode ORDER BY root")?;
         let rows = st
             .query_map([], |r| {
@@ -83,7 +83,7 @@ impl Store {
     /// Whether the legacy file at `source` was imported into this store already.
     pub fn mode_imported(&self, source: &str) -> Result<bool> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT 1 FROM mode_import WHERE source = ?1",
                 params![source],
@@ -105,7 +105,7 @@ impl Store {
     /// The point this session was put at, and the answer that opened it, if it was put anywhere.
     pub fn session_mode(&self, session_id: &str) -> Result<Option<(String, Option<String>)>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT mode, consented_at FROM session_mode WHERE session_id = ?1",
                 params![session_id],

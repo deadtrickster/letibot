@@ -241,14 +241,14 @@ fn transcript_item_cannot_be_updated_or_deleted() {
     let row = ledger.append("it-0", &[10, 11]).unwrap().clone();
     s.append_item(&tr, 0, &item, &row, &[10, 11]).unwrap();
 
-    let update = s.conn.execute(
+    let update = s.conn().execute(
         "UPDATE transcript_item SET item_json = '{}' WHERE transcript_id = ?1",
         params![tr],
     );
     assert!(update.is_err(), "UPDATE must be refused by the trigger");
     assert!(format!("{:?}", update.unwrap_err()).contains("append-only"));
 
-    let delete = s.conn.execute(
+    let delete = s.conn().execute(
         "DELETE FROM transcript_item WHERE transcript_id = ?1",
         params![tr],
     );
@@ -337,7 +337,7 @@ fn a_fork_records_where_it_forked() {
     assert_eq!(fresh.forked_at_seq, None);
 
     // The CHECK keeps the two fields together.
-    let half = s.conn.execute(
+    let half = s.conn().execute(
         "INSERT INTO transcript (id, session_id, parent_transcript_id, forked_at_seq,
                                      stable_prefix_id, created_at)
              VALUES ('tr-3', 'sess-1', 'tr-1', NULL, ?1, 0)",
@@ -439,7 +439,7 @@ fn kinds_are_denormalised_correctly() {
     let row = ledger.append("it", &[1]).unwrap().clone();
     s.append_item(&tr, 0, &item, &row, &[1]).unwrap();
     let kind: String = s
-        .conn
+        .conn()
         .query_row("SELECT kind FROM transcript_item", [], |r| r.get(0))
         .unwrap();
     assert_eq!(kind, "tool_result");
@@ -812,7 +812,7 @@ fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan(
     let s = store();
     let _seeded = seeded(&s);
     let write_raw = |json: &str| {
-        s.conn
+        s.conn()
             .execute(
                 "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
                      ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2",
@@ -858,7 +858,7 @@ fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan(
     );
     s.put_todos("sess-1", &s.todos("sess-1").unwrap()).unwrap();
     let raw: String = s
-        .conn
+        .conn()
         .query_row(
             "SELECT todos_json FROM todo WHERE session_id = ?1",
             params!["sess-1"],
@@ -887,7 +887,7 @@ fn a_board_without_needs_reads_back_and_an_unknown_kind_does_not_empty_the_plan(
     );
     s.put_todos("sess-1", &back).unwrap();
     let raw: String = s
-        .conn
+        .conn()
         .query_row(
             "SELECT todos_json FROM todo WHERE session_id = ?1",
             params!["sess-1"],
@@ -1000,7 +1000,7 @@ fn a_row_written_before_the_title_cap_still_reads() {
     let s = store();
     let _seeded = seeded(&s);
     let legacy = "L".repeat(TODO_TITLE_MAX + 40);
-    s.conn
+    s.conn()
         .execute(
             "INSERT INTO todo (session_id, todos_json, updated_ms) VALUES (?1, ?2, 0) \
                  ON CONFLICT(session_id) DO UPDATE SET todos_json = ?2",
@@ -1062,7 +1062,7 @@ fn a_postponed_row_round_trips_through_the_store_and_so_does_lifting_it() {
     );
     // The word on the wire between this crate and `sqlite3`.
     let raw: String = s
-        .conn
+        .conn()
         .query_row(
             "SELECT todos_json FROM todo WHERE session_id = ?1",
             params!["sess-1"],
@@ -1112,7 +1112,7 @@ fn a_cancelled_row_stays_on_the_board_and_the_store_keeps_it() {
         "**the row is still there** — `rm` is a status, not a removal"
     );
     let raw: String = s
-        .conn
+        .conn()
         .query_row(
             "SELECT todos_json FROM todo WHERE session_id = ?1",
             params!["sess-1"],
@@ -1152,7 +1152,7 @@ fn a_parents_row_round_trips_with_the_authors_own_string() {
     assert_eq!(s.todos("sess-1").unwrap(), vec![told]);
 
     let raw: String = s
-        .conn
+        .conn()
         .query_row(
             "SELECT todos_json FROM todo WHERE session_id = ?1",
             params!["sess-1"],

@@ -234,7 +234,8 @@ impl Store {
         let mut tables = Vec::with_capacity(TABLES.len());
         for (table, filter, order) in TABLES {
             let sql = format!("SELECT * FROM {table} WHERE {filter} {order}");
-            let mut st = self.conn.prepare(&sql)?;
+            let conn = self.conn();
+            let mut st = conn.prepare(&sql)?;
             let columns: Vec<String> = st.column_names().iter().map(|c| c.to_string()).collect();
             let mut rows = st.query(rusqlite::params![session_id])?;
             let mut out: Vec<Vec<Value>> = Vec::new();
@@ -386,7 +387,7 @@ impl Store {
     /// live here), or the endpoint's name and when it moved.
     pub fn lives_on(&self, session_id: &str) -> Result<Option<(String, Option<i64>)>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT lives_on, moved_ms FROM session WHERE id = ?1",
                 rusqlite::params![session_id],
@@ -416,7 +417,8 @@ impl Store {
     /// Every session marked as living somewhere else, by id — what a destination must know
     /// before it takes a copy back, and what `--sessions` reads to say where a row went.
     pub fn migrated_sessions(&self) -> Result<Vec<(String, String, Option<i64>)>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT id, lives_on, moved_ms FROM session WHERE lives_on IS NOT NULL ORDER BY id",
         )?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;

@@ -781,7 +781,7 @@ impl Store {
     /// The lease claim reads it in its own transaction (requirement 1).
     pub fn stored_schema_version(&self) -> Result<i64> {
         Ok(self
-            .conn
+            .conn()
             .query_row("SELECT version FROM schema_version", [], |r| r.get(0))?)
     }
 
@@ -791,9 +791,9 @@ impl Store {
     /// See `store/busy.rs` for the night this was for: `! merge_queue_store_error — the queues
     /// could not read or write their store while serving the queues: sqlite: database is
     /// locked`.
-    pub(crate) fn immediate(&self) -> Result<rusqlite::Transaction<'_>> {
+    pub(crate) fn immediate(conn: &rusqlite::Connection) -> Result<rusqlite::Transaction<'_>> {
         Ok(super::busy::retry_sql(|| {
-            rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
+            rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
         })?)
     }
 
@@ -802,7 +802,8 @@ impl Store {
     /// **Put a branch up for review.** `false` when a row with this id is already there (the
     /// same child enqueued twice is one row), and nothing is written then.
     pub fn enqueue_review(&self, new: &NewReview, by: &str, now_ms: u64) -> Result<bool> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let n = tx.execute(
             "INSERT OR IGNORE INTO review_queue
                (id, repository, target, kind, session_id, branch, worktree, base_sha, head_sha,
@@ -851,7 +852,8 @@ impl Store {
             ),
             None => format!("SELECT {REVIEW_COLUMNS} FROM review_queue ORDER BY created_ms, id"),
         };
-        let mut st = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut st = conn.prepare(&sql)?;
         let rows: Vec<Result<ReviewRow>> = match repository {
             Some(r) => st
                 .query_map(params![r], review_from_row)?
@@ -866,7 +868,7 @@ impl Store {
     pub fn review_row(&self, id: &str) -> Result<Option<ReviewRow>> {
         let sql = format!("SELECT {REVIEW_COLUMNS} FROM review_queue WHERE id = ?1");
         let row = self
-            .conn
+            .conn()
             .query_row(&sql, params![id], review_from_row)
             .optional()?;
         row.transpose()
@@ -901,7 +903,8 @@ impl Store {
     /// row is an approval nobody acts on, and a merge row with no verdict is a landing nobody
     /// approved.
     pub fn approve_review(&self, id: &str, a: &Approval, now_ms: u64) -> Result<bool> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let Some(row) = tx
             .query_row(
                 &format!("SELECT {REVIEW_COLUMNS} FROM review_queue WHERE id = ?1"),
@@ -993,7 +996,8 @@ impl Store {
             ),
             None => format!("SELECT {MERGE_COLUMNS} FROM merge_queue ORDER BY created_ms, id"),
         };
-        let mut st = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut st = conn.prepare(&sql)?;
         let rows: Vec<Result<MergeRow>> = match repository {
             Some(r) => st
                 .query_map(params![r], merge_from_row)?
@@ -1008,7 +1012,7 @@ impl Store {
     pub fn merge_row(&self, id: &str) -> Result<Option<MergeRow>> {
         let sql = format!("SELECT {MERGE_COLUMNS} FROM merge_queue WHERE id = ?1");
         let row = self
-            .conn
+            .conn()
             .query_row(&sql, params![id], merge_from_row)
             .optional()?;
         row.transpose()
@@ -1047,7 +1051,8 @@ impl Store {
         why: &str,
         now_ms: u64,
     ) -> Result<bool> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let Some(m) = tx
             .query_row(
                 &format!("SELECT {MERGE_COLUMNS} FROM merge_queue WHERE id = ?1"),
@@ -1107,7 +1112,8 @@ impl Store {
 
     /// One row's moves, oldest first.
     pub fn transitions(&self, queue: &str, entry_id: &str) -> Result<Vec<QueueTransition>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT seq, queue, entry_id, repository, from_state, to_state, at_ms, by, why
                FROM queue_transition WHERE queue = ?1 AND entry_id = ?2 ORDER BY seq",
         )?;
@@ -1119,7 +1125,8 @@ impl Store {
 
     /// The last `limit` moves across every queue, newest LAST.
     pub fn recent_transitions(&self, limit: usize) -> Result<Vec<QueueTransition>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT seq, queue, entry_id, repository, from_state, to_state, at_ms, by, why
                FROM queue_transition ORDER BY seq DESC LIMIT ?1",
         )?;
@@ -1144,7 +1151,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<()> {
         record(
-            &self.conn, queue, entry_id, repository, from, to, now_ms, by, why,
+            &self.conn(), queue, entry_id, repository, from, to, now_ms, by, why,
         )
     }
 
@@ -1164,7 +1171,8 @@ impl Store {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<LeaseOutcome> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let stored: i64 = tx.query_row("SELECT version FROM schema_version", [], |r| r.get(0))?;
         // **What the mismatch means is the FLOOR's to say, not the version's** — the version is
         // re-read live, in this transaction, so a daemon already running when a newer build
@@ -1262,7 +1270,7 @@ impl Store {
         now_ms: u64,
     ) -> Result<bool> {
         let stored = self.stored_schema_version()?;
-        if !super::floor::readable_here(&self.conn, stored)? {
+        if !super::floor::readable_here(&self.conn(), stored)? {
             return Ok(false);
         }
         let n = self.exec(
@@ -1274,7 +1282,8 @@ impl Store {
 
     /// Give the lease up — on shutdown, so a successor need not wait out the heartbeat.
     pub fn release_queue_lease(&self, repository: &str, owner: &str, now_ms: u64) -> Result<bool> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let n = tx.execute(
             "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2",
             params![repository, owner],
@@ -1312,7 +1321,8 @@ impl Store {
         expired_before_ms: u64,
         now_ms: u64,
     ) -> Result<bool> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let n = tx.execute(
             "DELETE FROM queue_lease WHERE repository = ?1 AND owner = ?2 AND heartbeat_ms < ?3",
             params![repository, owner, expired_before_ms as i64],
@@ -1335,7 +1345,8 @@ impl Store {
     }
 
     pub fn queue_leases(&self) -> Result<Vec<QueueLease>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT {LEASE_COLUMNS} FROM queue_lease ORDER BY repository"
         ))?;
         let rows = st
@@ -1400,7 +1411,7 @@ impl Store {
 
     pub fn target_health(&self, repository: &str, target: &str) -> Result<Option<TargetHealth>> {
         let row = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT repository, target, sha, state, checked_ms, evidence, gate_steps_json
                    FROM target_health WHERE repository = ?1 AND target = ?2",
@@ -1412,7 +1423,8 @@ impl Store {
     }
 
     pub fn target_healths(&self) -> Result<Vec<TargetHealth>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT repository, target, sha, state, checked_ms, evidence, gate_steps_json
                FROM target_health ORDER BY repository, target",
         )?;
@@ -1424,7 +1436,8 @@ impl Store {
 
     /// Write the target's health, and the move in the history when the state changed.
     pub fn set_target_health(&self, h: &TargetHealth, by: &str) -> Result<()> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let before: Option<String> = tx
             .query_row(
                 "SELECT state FROM target_health WHERE repository = ?1 AND target = ?2",
@@ -1469,7 +1482,7 @@ impl Store {
     /// pane and for a person deciding about rows the operator has not ruled on yet.
     pub fn archived_v23_queue(&self) -> Result<Vec<(String, String, String, String)>> {
         let there: bool = self
-            .conn
+            .conn()
             .prepare(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'merge_queue_v23'",
             )?
@@ -1477,7 +1490,8 @@ impl Store {
         if !there {
             return Ok(Vec::new());
         }
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT id, branch, state, evidence FROM merge_queue_v23 ORDER BY created_ms, id",
         )?;
         let rows = st
@@ -1507,7 +1521,8 @@ impl Store {
                 )));
             }
         }
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let repository: Option<String> = tx
             .query_row(
                 &format!("SELECT repository FROM {table} WHERE id = ?1"),
@@ -1589,7 +1604,7 @@ impl Store {
     pub(super) fn migrate_queues_to_v24(&self) -> Result<()> {
         let exists = |name: &str| -> Result<bool> {
             Ok(self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")?
                 .exists(params![name])?)
         };
@@ -1597,20 +1612,20 @@ impl Store {
         // at 24 has a `merge_queue` too.
         let old_merge = exists("merge_queue")?
             && self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'needs_json'",
                 )?
                 .exists([])?;
         if old_merge && !exists("merge_queue_v23")? {
-            self.conn
+            self.conn()
                 .execute_batch("ALTER TABLE merge_queue RENAME TO merge_queue_v23")?;
         }
         if exists("merge_review")? && !exists("merge_review_v23")? {
-            self.conn
+            self.conn()
                 .execute_batch("ALTER TABLE merge_review RENAME TO merge_review_v23")?;
         }
-        self.conn.execute_batch(QUEUES_SQL)?;
+        self.conn().execute_batch(QUEUES_SQL)?;
         if !exists("merge_queue_v23")? {
             return Ok(());
         }
@@ -1626,7 +1641,8 @@ impl Store {
                 "SELECT id, session_id, branch, base_sha, priority, worktree, brief, state, evidence, ''
                    FROM merge_queue_v23 WHERE state IN ('waiting', 'taken', 'stale')"
             };
-            let mut st = self.conn.prepare(sql)?;
+            let conn = self.conn();
+            let mut st = conn.prepare(sql)?;
             st.query_map([], |r| {
                 Ok((
                     r.get(0)?,

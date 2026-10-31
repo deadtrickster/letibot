@@ -66,55 +66,60 @@ impl LiveView {
     /// [`Store::open`] would — including one whose reader floor this build is below.
     pub fn open(path: &Path) -> Result<Self> {
         let store = Store::open_in_memory()?;
-        let conn = store.connection();
-        conn.pragma_update(None, "foreign_keys", false)?;
-        for t in WRITER_TRIGGERS {
-            conn.execute_batch(&format!("DROP TRIGGER IF EXISTS main.{t}"))?;
-        }
-        conn.execute(
-            &format!("ATTACH DATABASE ?1 AS {LIVE}"),
-            params![read_only_uri(path)],
-        )?;
-        // The fact this whole module rests on, checked rather than assumed: a URI the
-        // connection did not parse as one would attach a FILE NAMED `file:…?mode=ro`,
-        // writable, and every promise above would be false.
-        if !conn.is_readonly(LIVE)? {
-            return Err(StoreError::Refused(format!(
-                "{} attached writable; refusing to read the live store through it",
-                path.display()
-            )));
-        }
-        let found: i64 = conn.query_row(
-            &format!("SELECT MAX(version) FROM {LIVE}.schema_version"),
-            [],
-            |r| r.get(0),
-        )?;
-        // **The same rule `Store::open` applies**, floor and all: a live view is a reader, and a
-        // store a newer build migrated additively is one this build can still read. A view is
-        // read-only, so it can neither record a floor nor repair a missing one — a file from
-        // before floors is refused here exactly as it is refused at an open.
-        let floor = super::floor::read_floor(conn, LIVE)?;
-        if found > SCHEMA_VERSION && !floor.is_some_and(|f| f <= SCHEMA_VERSION) {
-            return Err(StoreError::SchemaTooNew {
-                found,
-                known: SCHEMA_VERSION,
-                floor,
-            });
+        {
+            let conn = store.connection();
+            conn.pragma_update(None, "foreign_keys", false)?;
+            for t in WRITER_TRIGGERS {
+                conn.execute_batch(&format!("DROP TRIGGER IF EXISTS main.{t}"))?;
+            }
+            conn.execute(
+                &format!("ATTACH DATABASE ?1 AS {LIVE}"),
+                params![read_only_uri(path)],
+            )?;
+            // The fact this whole module rests on, checked rather than assumed: a URI the
+            // connection did not parse as one would attach a FILE NAMED `file:…?mode=ro`,
+            // writable, and every promise above would be false.
+            if !conn.is_readonly(LIVE)? {
+                return Err(StoreError::Refused(format!(
+                    "{} attached writable; refusing to read the live store through it",
+                    path.display()
+                )));
+            }
+            let found: i64 = conn.query_row(
+                &format!("SELECT MAX(version) FROM {LIVE}.schema_version"),
+                [],
+                |r| r.get(0),
+            )?;
+            // **The same rule `Store::open` applies**, floor and all: a live view is a reader, and
+            // a store a newer build migrated additively is one this build can still read. A view
+            // is read-only, so it can neither record a floor nor repair a missing one — a file
+            // from before floors is refused here exactly as it is refused at an open.
+            let floor = super::floor::read_floor(&conn, LIVE)?;
+            if found > SCHEMA_VERSION && !floor.is_some_and(|f| f <= SCHEMA_VERSION) {
+                return Err(StoreError::SchemaTooNew {
+                    found,
+                    known: SCHEMA_VERSION,
+                    floor,
+                });
+            }
         }
         Ok(LiveView { store })
     }
 
     /// The connection, with the live file attached as `live` — for the queries a test
     /// asks of the live file directly (`SELECT … FROM live.transcript …`).
-    pub fn connection(&self) -> &Connection {
+    ///
+    /// The process's store lock, held — see [`Store::connection`]. **Do not call a method of
+    /// this view while holding it**: the in-memory store is the same one connection, so the
+    /// second method would wait on the lock it already has.
+    pub fn connection(&self) -> super::Conn<'_> {
         self.store.connection()
     }
 
     /// Every transcript id in the live file, in id order.
     pub fn transcripts(&self) -> Result<Vec<String>> {
-        let mut stmt = self
-            .connection()
-            .prepare(&format!("SELECT id FROM {LIVE}.transcript ORDER BY id"))?;
+        let conn = self.connection();
+        let mut stmt = conn.prepare(&format!("SELECT id FROM {LIVE}.transcript ORDER BY id"))?;
         let ids = stmt
             .query_map([], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -123,30 +128,35 @@ impl LiveView {
 
     /// One transcript, read from the live file in one snapshot and loaded through
     /// [`Store::load_transcript`]. The in-memory copy is rolled back before this returns.
+    ///
+    /// **The load runs on the connection this view already holds**, not through a second call
+    /// into the store: there is one connection per store in the process (see [`Store::open`]),
+    /// so asking the store for the transcript while the copy is open would wait on this very
+    /// lock.
     pub fn load(&self, transcript_id: &str) -> Result<LoadedTranscript> {
         let conn = self.connection();
         // DEFERRED: the first read of `live` below takes the read snapshot, and every
         // later read in this transaction sees the same one.
         let tx = conn.unchecked_transaction()?;
         copy(
-            conn,
+            &conn,
             "transcript",
             "WHERE id = ?1 ORDER BY rowid",
             transcript_id,
         )?;
         copy(
-            conn,
+            &conn,
             "stable_prefix",
             &format!("WHERE id = (SELECT stable_prefix_id FROM {LIVE}.transcript WHERE id = ?1)"),
             transcript_id,
         )?;
         copy(
-            conn,
+            &conn,
             "transcript_item",
             "WHERE transcript_id = ?1 ORDER BY seq",
             transcript_id,
         )?;
-        let loaded = self.store.load_transcript(transcript_id);
+        let loaded = Store::load_transcript_on(&conn, transcript_id);
         drop(tx); // rolls back: nothing accumulates across loads
         loaded
     }

@@ -1817,46 +1817,81 @@ impl LoadedTranscript {
     }
 }
 
-pub struct Store {
+/// **The one connection this process holds to a store file, and everything that reaches it.**
+///
+/// A `Store` is a handle onto this, and [`Store::open`] hands every caller in the process the
+/// same one. Two facts made it a `Mutex` around the connection rather than a bare `Connection`:
+/// `rusqlite::Connection` is `Send` and not `Sync`, so a connection cannot be reached from two
+/// threads without a lock; and SQLite caches a descriptor per inode inside the process, released
+/// only when the process's *last* connection to the file closes
+/// (`crates/tokencore/tests/connection_fds.rs` measures that). A daemon that opened four
+/// connections per session therefore held a descriptor for every session it had ever opened.
+struct Shared {
     /// **`ManuallyDrop`, so the close is OURS and its failure can be said.** `rusqlite`'s own
     /// `Drop` calls `sqlite3_close` and *discards* the answer, and `sqlite3_close` fails with
     /// `SQLITE_BUSY` whenever a statement is still outstanding — leaving the connection, and its
-    /// descriptors, open with no error anywhere. [`Drop`] here takes the connection and calls
-    /// `Connection::close`, which reports that failure instead of swallowing it. `ManuallyDrop`
-    /// derefs, so every method below reads `self.conn` exactly as it always did.
-    conn: std::mem::ManuallyDrop<Connection>,
-    /// **Where this store lives**, so a second connection can be opened to it — see
-    /// [`Store::path`]. `None` for `open_in_memory`, which is a store with no file to reach.
+    /// descriptors, open with no error anywhere. [`Drop for Shared`] takes the connection and
+    /// calls `Connection::close`, which reports that failure instead of swallowing it.
+    conn: std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
+    /// **Where this store lives**, so a second caller can be handed this connection instead of
+    /// opening a new one — see [`Store::path`]. `None` for `open_in_memory`, which is a store
+    /// with no file to reach and so nothing to share.
     path: Option<std::path::PathBuf>,
+    /// **`(device, inode)` of the file this connection is open on.** A store file removed and
+    /// written again at the same path is a DIFFERENT store, and a caller that opens that path
+    /// must not be handed the connection to the one that is gone.
+    file: Option<(u64, u64)>,
     /// **The store is written by a build newer than this one, and this build opened it anyway**
-    /// — see [`floor`]. A `Cell` because the fact is settled in `migrate` (which takes `&self`,
-    /// the connection being already owned) and read afterwards by the daemon, and because a
-    /// `Store` is `Send` and not `Sync` for reasons the connection already gave.
-    newer: std::cell::Cell<Option<NewerStore>>,
+    /// — see [`floor`]. A `Mutex` rather than the `Cell` this was: a `Shared` is reached from
+    /// every thread in the daemon, and a `Cell` is not `Sync`.
+    newer: std::sync::Mutex<Option<NewerStore>>,
 }
 
-/// **How many `Store`s this process holds open** — [`Store::live`]'s counter.
+pub struct Store {
+    shared: std::sync::Arc<Shared>,
+}
+
+/// **The process's store lock, held** — what [`Store::connection`] answers and what every method of
+/// this type takes for the length of one statement or one transaction.
+///
+/// A newtype rather than the `MutexGuard` itself so a caller reaches a `Connection` in one `Deref`
+/// step, and so the `ManuallyDrop` the guard holds is this module's business.
+pub struct Conn<'a>(std::sync::MutexGuard<'a, std::mem::ManuallyDrop<Connection>>);
+
+impl std::ops::Deref for Conn<'_> {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        &self.0
+    }
+}
+
+/// **How many connections to a store file this process holds open** — [`Store::live`]'s counter.
 ///
 /// Process-wide and not per-store, because the question it answers is a daemon's: *does the
-/// number of connections grow with the number of sessions?* A `Relaxed` fetch is enough — a test
-/// reads it on one thread after the work it measured has ended, and no other fact is derived
-/// from it.
+/// number of connections grow with the number of sessions?* Since [`Store::open`] shares one
+/// connection per file per process, this number is a function of how many store FILES the process
+/// has opened, and no longer of how many sessions it has served. A `Relaxed` fetch is enough — a
+/// test reads it on one thread after the work it measured has ended.
 ///
 /// **The add is unconditional in the same region as the struct, because the sub is**: `Drop`
-/// gives the count back on every path, so `from_connection` takes it the moment a `Store`
+/// gives the count back on every path, so `from_connection` takes it the moment a `Shared`
 /// exists — an add after the first `?` that can return with one wraps this to `MAX`.
 static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The connection goes with the struct, and **the close is this impl's**: see the field's doc for
-/// the `SQLITE_BUSY` that `rusqlite`'s own `Drop` swallows. A close that fails is said on stderr —
-/// there is no caller to return it to — because the alternative is the shape that cost the
-/// operator 205 of 256 descriptors: connections nobody knows are still open.
-impl Drop for Store {
+/// **The connection goes with the last handle**, and **the close is this impl's**: see the field's
+/// doc for the `SQLITE_BUSY` that `rusqlite`'s own `Drop` swallows. A close that fails is said on
+/// stderr — there is no caller to return it to — because the alternative is the shape that cost
+/// the operator 205 of 256 descriptors: connections nobody knows are still open.
+impl Drop for Shared {
     fn drop(&mut self) {
         LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        // SAFETY: `conn` is initialised in `from_connection` and nothing else takes it; this is
-        // the one place it is moved out, and the struct is being dropped so it is not read again.
-        let conn = unsafe { std::mem::ManuallyDrop::take(&mut self.conn) };
+        // SAFETY: the connection is initialised in `Shared::new` and nothing else takes it; this
+        // is the one place it is moved out, and the struct is being dropped so it is not read
+        // again. The lock is taken so a close never races a statement on another thread.
+        let conn = {
+            let mut held = lock_shared(&self.conn);
+            unsafe { std::mem::ManuallyDrop::take(&mut *held) }
+        };
         if let Err((_conn, e)) = conn.close() {
             eprintln!(
                 "store: the connection to {} did not close ({e}) — a statement was still open, so \
@@ -1870,9 +1905,137 @@ impl Drop for Store {
     }
 }
 
+impl Shared {
+    /// **The connection, held for as long as the guard lives** — the one place this process's
+    /// access to the store is serialised. A poisoned lock is a thread that panicked inside a
+    /// statement: SQLite's own state is fine (the panic was ours, and a statement that panicked
+    /// has been rolled back), so the count is taken back rather than every later read of the
+    /// store being refused.
+    fn conn(&self) -> std::sync::MutexGuard<'_, std::mem::ManuallyDrop<Connection>> {
+        lock_shared(&self.conn)
+    }
+
+    /// **Is the file this connection is open on still the file at this path?** See [`Shared::file`].
+    /// A path that cannot be stat'ed, or one that did not exist when the connection was made, says
+    /// nothing — and refusing to share over that would open a second connection on every call.
+    fn still_the_same_file(&self) -> bool {
+        match (self.file, self.path.as_deref().and_then(file_id)) {
+            (Some(open), Some(now)) => open == now,
+            _ => true,
+        }
+    }
+}
+
+/// **The lock, taken without minding a poison** — see [`Shared::conn`] for why a poisoned lock is
+/// taken back rather than propagated.
+fn lock_shared(
+    conn: &std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
+) -> std::sync::MutexGuard<'_, std::mem::ManuallyDrop<Connection>> {
+    conn.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// **Every store file this process has open, by canonical path** — see [`Store::open`].
+///
+/// A `Weak` and not an `Arc`: the connection lives exactly as long as something holds a `Store`
+/// for it, and the entry is dropped when the next open finds it dead.
+fn shared_stores()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Shared>>>
+{
+    static OPEN: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Shared>>>,
+    > = std::sync::OnceLock::new();
+    OPEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// **The key a store file is shared under** — the path with its directory resolved, so two
+/// spellings of one file (`./x/sessions.db` and `x/sessions.db`) meet. The FILE itself is not
+/// canonicalised: on the first open it does not exist yet.
+fn canonical_key(path: &Path) -> std::path::PathBuf {
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    match (std::fs::canonicalize(parent), path.file_name()) {
+        (Ok(dir), Some(name)) => dir.join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `(device, inode)` of `path`, or `None` when there is no such file to ask about.
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
 impl Store {
+    /// **The process's one connection to this store file.**
+    ///
+    /// # Why one, and not one per caller
+    ///
+    /// MEASURED 2026-10-30 on the operator's Mac and again on lab2x1: SQLite caches a descriptor
+    /// per inode *inside the process*, and releases it only when the process's last connection to
+    /// that file closes — so a connection that is closed does not give its descriptor back while
+    /// any other connection to the same file lives. A daemon keeps one for its whole life (its
+    /// registry's), which means **every descriptor it has ever opened is held until it exits**. The
+    /// operator's own daemon: 253 descriptors, 210 of them on `sessions.db`/`-wal`, and on the Mac
+    /// this ended in `ENFILE` — the whole box out of file table — three times in a day.
+    ///
+    /// `Harness::open` opens the store four times per session (its own, the corpus, the
+    /// `transcript` tool's reader and the `decisions` tool's), so a daemon's descriptor count was a
+    /// function of how many sessions it had ever served. Sharing one connection per file per
+    /// process makes it a function of how many store FILES it has open — three descriptors, for a
+    /// WAL store, whatever the session count.
+    ///
+    /// # What it costs
+    ///
+    /// **Every store access in the process now serialises behind one lock.** The four connections
+    /// existed for two reasons and only one of them was `Send`-ness: `transcript_source`'s own doc
+    /// says a search that takes a second must not hold the lock a turn needs to append its next
+    /// row, and that is no longer true — a search on one session now delays an append on another
+    /// for as long as the search runs. The busy ladder is unchanged (see [`busy`]): a write that
+    /// meets `SQLITE_BUSY` from *another process* still waits [`BUSY_RETRY_TOTAL`] rather than
+    /// failing, but the wait is now the whole process's. That is the trade this makes, and it is
+    /// the one the measurement says to make: a descriptor is a resource the box runs out of, and a
+    /// lock is one it does not.
+    ///
+    /// A store that is `open_in_memory` has no file and is never shared; two of them are two
+    /// databases. [`Store::open_private`] is the same file opened on a connection of its own, for
+    /// the tests that measure what two connections to one file do.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))
+        Self::open_sharing(path, true)
+    }
+
+    /// **A connection of its own to a store file, never shared** — for the tests that measure two
+    /// connections to one file (WAL, `BEGIN IMMEDIATE`, the busy handler). Production code wants
+    /// [`Store::open`]: a second connection here is a descriptor the process cannot give back.
+    pub fn open_private(path: &Path) -> Result<Self> {
+        Self::open_sharing(path, false)
+    }
+
+    fn open_sharing(path: &Path, share: bool) -> Result<Self> {
+        let key = if share { Some(canonical_key(path)) } else { None };
+        // The registry is held across the open so two threads cannot each create a connection to
+        // one file. Nothing inside this window opens another store, so it cannot deadlock.
+        let mut open = shared_stores().lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(key) = &key
+            && let Some(shared) = open.get(key).and_then(std::sync::Weak::upgrade)
+            && shared.still_the_same_file()
+        {
+            return Ok(Store { shared });
+        }
+        let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))?;
+        if let Some(key) = key {
+            open.insert(key, std::sync::Arc::downgrade(&store.shared));
+        }
+        Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self> {
@@ -1892,7 +2055,14 @@ impl Store {
     /// absence rather than an error: a store with no file has no path to give, and a caller
     /// that needs one must say so.
     pub fn path(&self) -> Option<&Path> {
-        self.path.as_deref()
+        self.shared.path.as_deref()
+    }
+
+    /// **The connection, held for the duration of one statement or one transaction** — the
+    /// private door every method of this type goes through. Public callers get the same thing
+    /// through [`Store::connection`].
+    fn conn(&self) -> Conn<'_> {
+        Conn(self.shared.conn())
     }
 
     /// **How many `Store`s are open in this process right now** — the census a test measures a
@@ -1935,6 +2105,8 @@ impl Store {
     /// a commit cost ~411 ms of fsync and the busy handler is a poll, not a queue.
     pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+    /// **The one place a `Shared` is built**, and therefore the one place [`LIVE`] is counted:
+    /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
         // WAL lets readers and the writer run at once, but two *writers* still
         // serialise, and rusqlite's default is to fail immediately rather than wait.
@@ -1953,9 +2125,12 @@ impl Store {
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", true)?;
         let store = Store {
-            conn: std::mem::ManuallyDrop::new(conn),
-            path,
-            newer: std::cell::Cell::new(None),
+            shared: std::sync::Arc::new(Shared {
+                conn: std::sync::Mutex::new(std::mem::ManuallyDrop::new(conn)),
+                file: path.as_deref().and_then(file_id),
+                path,
+                newer: std::sync::Mutex::new(None),
+            }),
         };
         // **Taken here and not on success**: `Drop` gives it back on every path and `migrate`
         // below may refuse and drop this store, so an add after the `?` would leave that drop
@@ -1984,7 +2159,7 @@ impl Store {
         // a store whose migrations had not run. A busy read is waited out; anything else that
         // is not "no such table" is reported.
         let found: Option<i64> = match busy::retry_sql(|| {
-            self.conn
+            self.conn()
                 .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
                 .optional()
         }) {
@@ -2008,8 +2183,8 @@ impl Store {
             // recreated, so a migration is the only shape this can take.
             Some(v) if v < SCHEMA_VERSION => {
                 self.migrate_from(v)?;
-                self.conn.execute("DELETE FROM schema_version", [])?;
-                self.conn.execute(
+                self.conn().execute("DELETE FROM schema_version", [])?;
+                self.conn().execute(
                     "INSERT INTO schema_version (version) VALUES (?1)",
                     params![SCHEMA_VERSION],
                 )?;
@@ -2037,17 +2212,17 @@ impl Store {
             }
             None => {}
         }
-        self.conn.execute_batch(SCHEMA_SQL)?;
-        self.conn.execute_batch(queues::QUEUES_SQL)?;
-        self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
-        self.conn.execute_batch(modes::MODES_SQL)?;
-        self.conn.execute_batch(told::TOLD_SQL)?;
-        self.conn.execute_batch(citations::CITATIONS_SQL)?;
-        self.conn.execute_batch(writers::WRITERS_SQL)?;
-        self.conn.execute_batch(procs::PROCS_SQL)?;
-        self.conn.execute_batch(leases::LEASES_SQL)?;
-        self.conn.execute("DELETE FROM schema_version", [])?;
-        self.conn.execute(
+        self.conn().execute_batch(SCHEMA_SQL)?;
+        self.conn().execute_batch(queues::QUEUES_SQL)?;
+        self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
+        self.conn().execute_batch(modes::MODES_SQL)?;
+        self.conn().execute_batch(told::TOLD_SQL)?;
+        self.conn().execute_batch(citations::CITATIONS_SQL)?;
+        self.conn().execute_batch(writers::WRITERS_SQL)?;
+        self.conn().execute_batch(procs::PROCS_SQL)?;
+        self.conn().execute_batch(leases::LEASES_SQL)?;
+        self.conn().execute("DELETE FROM schema_version", [])?;
+        self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
             params![SCHEMA_VERSION],
         )?;
@@ -2077,14 +2252,14 @@ impl Store {
             // v2: a session records its own role. `ALTER TABLE ... ADD COLUMN` with
             // no default writes NULL into every existing row, which is exactly the
             // "unrecorded, use the daemon default" case the column documents.
-            self.conn
+            self.conn()
                 .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
         }
         if from < 3 {
             // v3: the session todo list. A migrated store never runs `SCHEMA_SQL`
             // — `migrate` returns early — so the table is created here, and
             // `IF NOT EXISTS` keeps a store that somehow already has one honest.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS todo (
                      session_id  TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
                      todos_json  TEXT NOT NULL,
@@ -2096,13 +2271,13 @@ impl Store {
             // v4: a session records the session that spawned it as a subagent, so a
             // subagent tree is a fact on disk rather than an id convention. NULL in
             // every existing row: a session that predates v4 is a top-level one.
-            self.conn
+            self.conn()
                 .execute_batch("ALTER TABLE session ADD COLUMN parent_session_id TEXT")?;
         }
         if from < 5 {
             // v5: the adjudication corpus. Created here for a migrated store,
             // which never runs SCHEMA_SQL.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS adjudication (
     request_id     TEXT PRIMARY KEY,
     session_id     TEXT NOT NULL,
@@ -2156,12 +2331,12 @@ impl Store {
             // "duplicate column name". Asking the file what it has is cheap and is
             // the only thing that is true for both paths.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape TEXT")?;
             }
         }
@@ -2169,14 +2344,14 @@ impl Store {
             // v7: the effect class a shape was approved at, so the shape cache can
             // survive a restart without widening. Same idempotence argument as v6.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape_class'",
                 )
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape_class TEXT")?;
             }
         }
@@ -2187,12 +2362,12 @@ impl Store {
             // NULL in every existing row: "no turn has finished since the column
             // existed", which a head renders as no number rather than zero.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_tokens'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE session ADD COLUMN context_tokens INTEGER;
                      ALTER TABLE session ADD COLUMN context_cached INTEGER;",
                 )?;
@@ -2220,7 +2395,7 @@ impl Store {
                 // transcript and a head would show `0 ctx` for a conversation that
                 // never had one. The gate keeps such a row `NULL` — "no turn has
                 // finished" — which is the true state.
-                self.conn.execute(
+                self.conn().execute(
                     "UPDATE session
                      SET context_tokens = (
                          SELECT COALESCE(SUM(ti.tok_len), 0) + sp.n_tokens
@@ -2253,7 +2428,7 @@ impl Store {
             // indistinguishable from "the oracle did not answer" — which `verdict_by`
             // separates, because that names whether an oracle was consulted at all.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('adjudication') \
                      WHERE name = 'oracle_reply'",
@@ -2261,7 +2436,7 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reply TEXT")?;
             }
         }
@@ -2272,7 +2447,7 @@ impl Store {
             // model was asked". `CorpusCounts::measured` counts `= 1`, so an old store
             // reports 0 there and `model_decided` is the count that speaks for its rows.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('adjudication') \
                      WHERE name = 'consulted'",
@@ -2280,7 +2455,7 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN consulted INTEGER")?;
             }
         }
@@ -2292,7 +2467,7 @@ impl Store {
             // `oracle_reading` is an answered verdict or an old row, and
             // `verdict_basis`/`model_verdict` is where a reader of the old ones goes.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('adjudication') \
                      WHERE name = 'oracle_reading'",
@@ -2300,7 +2475,7 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT")?;
             }
         }
@@ -2330,12 +2505,12 @@ impl Store {
             // Idempotent for the same reason v6 is: the fixtures build a current
             // store and walk the version back, so the column can already be there.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_ledger'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN context_ledger INTEGER")?;
             }
         }
@@ -2348,14 +2523,14 @@ impl Store {
             // Idempotent for the same reason v6 and v12 are: a fixture can walk the version
             // back over a store that already has the column.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('session') WHERE name = 'provider_choice'",
                 )
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN provider_choice TEXT")?;
             }
         }
@@ -2379,12 +2554,12 @@ impl Store {
             // Idempotent for the same reason v6, v12 and v13 are: a fixture walks a current
             // store backwards, so the column can already be here.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_window'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN context_window INTEGER")?;
             }
         }
@@ -2398,7 +2573,7 @@ impl Store {
             //
             // `IF NOT EXISTS` for the same reason v6, v12, v13 and v14 are idempotent: a fixture
             // walks a current store backwards, so the table can already be here.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS job (
                      session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
                      handle      TEXT NOT NULL,
@@ -2426,7 +2601,7 @@ impl Store {
             //
             // `IF NOT EXISTS` for the same reason v6, v12, v13, v14 and v15 are idempotent: a
             // fixture walks a current store backwards, so the table can already be here.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                      id          TEXT PRIMARY KEY,
                      session_id  TEXT NOT NULL,
@@ -2456,12 +2631,12 @@ impl Store {
             // otherwise fail here with "duplicate column name" — which reads as corruption
             // rather than as the idempotence every other step in this function has.
             let has_brief: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'brief'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has_brief {
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE merge_queue ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
                 )?;
             }
@@ -2476,7 +2651,7 @@ impl Store {
             // `IF NOT EXISTS` for the same reason v6, v12, v13, v14, v15 and v16 are
             // idempotent: a fixture walks a current store backwards, so the table can already
             // be here.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
                      session_id     TEXT NOT NULL,
@@ -2508,7 +2683,7 @@ impl Store {
             // Idempotent for the reason v6, v12, v13, v14 and v19 are: a fixture walks a
             // current store backwards, so the column can already be here.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('session') \
                      WHERE name = 'prefix_fingerprint'",
@@ -2516,7 +2691,7 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN prefix_fingerprint TEXT")?;
             }
         }
@@ -2538,7 +2713,7 @@ impl Store {
             // may arrive at this version with no table at all (the stood-down fixture builds a
             // bare v18 store and jumps straight here). On a real v18 store this is a no-op and
             // the guarded `ALTER`s below do the work; on a bare one it IS the work.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
                      session_id     TEXT NOT NULL,
@@ -2556,7 +2731,7 @@ impl Store {
                  );",
             )?;
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('merge_review') WHERE name = 'failure'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
@@ -2565,7 +2740,7 @@ impl Store {
                 // these columns existed has a `decision` and an `answered_ms` — it is a verdict,
                 // and a verdict is not a failure. `attempts = 0` says the queue has not spent an
                 // attempt on it, which is the true state of a row whose ask was answered.
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE merge_review ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
                      ALTER TABLE merge_review ADD COLUMN failed_ms INTEGER;
                      ALTER TABLE merge_review ADD COLUMN failure TEXT NOT NULL DEFAULT '';",
@@ -2585,14 +2760,14 @@ impl Store {
             // Idempotent for the same reason v6, v12, v13 and v14 are: a fixture walks a
             // current store backwards, so the columns can already be here.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('session') WHERE name = 'auto_compact_resident'",
                 )
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE session ADD COLUMN auto_compact_resident INTEGER;
                      ALTER TABLE session ADD COLUMN auto_compact_after INTEGER;",
                 )?;
@@ -2622,7 +2797,7 @@ impl Store {
             // fixture builds a bare v18 store and jumps straight here). On a real v21 store this
             // is a no-op and the guarded `ALTER` below does the work; on a bare one it IS the
             // work.
-            self.conn.execute_batch(
+            self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                       id          TEXT PRIMARY KEY,
                       session_id  TEXT NOT NULL,
@@ -2643,14 +2818,14 @@ impl Store {
                       ON merge_queue (state, priority, created_ms);",
             )?;
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'gate_steps_json'",
                 )
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE merge_queue ADD COLUMN gate_steps_json TEXT NOT NULL DEFAULT '[]'",
                 )?;
             }
@@ -2698,12 +2873,12 @@ impl Store {
             // empty file would be a worse bug than the one this arm exists to fix.
             for table in ["merge_queue", "merge_review"] {
                 let there: bool = self
-                    .conn
+                    .conn()
                     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
                     .and_then(|mut st| st.exists(params![table]))
                     .unwrap_or(false);
                 if there {
-                    self.conn.execute(&format!("DELETE FROM {table}"), [])?;
+                    self.conn().execute(&format!("DELETE FROM {table}"), [])?;
                 }
             }
         }
@@ -2725,14 +2900,14 @@ impl Store {
             // because the guard is what makes this arm safe to RENUMBER if another migration takes
             // 25 first: it asks whether the column is there, not which number the file carries.
             let has: bool = self
-                .conn
+                .conn()
                 .prepare(
                     "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_until'",
                 )
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_until INTEGER")?;
             }
         }
@@ -2743,13 +2918,13 @@ impl Store {
             // has them. Nothing existing is read or rewritten: a store from before this build has
             // no record of its children, and its running children are not resumed — there is
             // nothing to resume them FROM.
-            self.conn.execute_batch(subagents::SUBAGENTS_SQL)?;
+            self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         }
         if from < 27 {
             // v27: **the permission modes, as rows** — see [`modes`]. Two new tables, both
             // `IF NOT EXISTS`; nothing existing is read or rewritten. The rows `modes.tsv` held
             // are imported by the daemon (`harnessd::modes`), which is the one that knows the file.
-            self.conn.execute_batch(modes::MODES_SQL)?;
+            self.conn().execute_batch(modes::MODES_SQL)?;
         }
         if from < 28 {
             // v28: **whether a job's ending reached the model** — `job.delivered`, see
@@ -2760,7 +2935,7 @@ impl Store {
             // the column rather than the number, for the reason v25 gives — and on the table: a
             // fixture that is only a `session` table has no `job` to add it to.
             let has = |sql: &str| -> bool {
-                self.conn
+                self.conn()
                     .prepare(sql)
                     .and_then(|mut st| st.exists([]))
                     .unwrap_or(false)
@@ -2768,7 +2943,7 @@ impl Store {
             let table = has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job'");
             let column = has("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'");
             if table && !column {
-                self.conn.execute_batch(
+                self.conn().execute_batch(
                     "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 1",
                 )?;
             }
@@ -2778,13 +2953,13 @@ impl Store {
             // `IF NOT EXISTS`; nothing existing is read or rewritten. A store from before it has
             // no record of what was rung, so the first daemon on this build may say each
             // standing alert once more — and then never again across a restart.
-            self.conn.execute_batch(told::TOLD_SQL)?;
+            self.conn().execute_batch(told::TOLD_SQL)?;
         }
         if from < 30 {
             // v30: **the lines a reply cited** — see [`citations`]. One new table, `IF NOT
             // EXISTS`; a reply from before it has no snapshot, and one is taken the first time
             // it is shown.
-            self.conn.execute_batch(citations::CITATIONS_SQL)?;
+            self.conn().execute_batch(citations::CITATIONS_SQL)?;
         }
         if from < 31 {
             // v31: **a session can live somewhere else** — [`StoredSession::lives_on`]. Two
@@ -2794,17 +2969,17 @@ impl Store {
             // walks a current store backwards, and the guard is what makes the arm safe to
             // renumber if another migration takes 31 first.
             let has = |sql: &str| -> bool {
-                self.conn
+                self.conn()
                     .prepare(sql)
                     .and_then(|mut st| st.exists([]))
                     .unwrap_or(false)
             };
             if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'lives_on'") {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN lives_on TEXT")?;
             }
             if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'moved_ms'") {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN moved_ms INTEGER")?;
             }
         }
@@ -2813,7 +2988,7 @@ impl Store {
             // A migrated store never runs `SCHEMA_SQL`, so the table is created here, and
             // `IF NOT EXISTS` keeps a store that somehow already has one honest (the fixtures
             // walk a current store backwards, and this arm must be safe to run on one).
-            self.conn.execute_batch(writers::WRITERS_SQL)?;
+            self.conn().execute_batch(writers::WRITERS_SQL)?;
         }
         if from < 33 {
             // v33: **who a session is for**, on the session's own row — see
@@ -2827,12 +3002,12 @@ impl Store {
             // reverse a step by hand and set the version back, so a plain `ALTER` here would
             // fail with "duplicate column name".
             let has: bool = self
-                .conn
+                .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'origin'")
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                self.conn
+                self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN origin TEXT")?;
             }
         }
@@ -2844,7 +3019,7 @@ impl Store {
             // running are `job` rows and are reminded as ever — the supervisor adopts nothing it
             // has no record of, because a pid it was never told and cannot identify is a pid it
             // has no business signalling.
-            self.conn.execute_batch(procs::PROCS_SQL)?;
+            self.conn().execute_batch(procs::PROCS_SQL)?;
         }
         if from < 35 {
             // v35: **a block of a shared host's ports, held by one session** — [`leases`] carries
@@ -2853,7 +3028,7 @@ impl Store {
             // whose sessions picked their ports and wrote nothing down. Those ports are still
             // taken on the host by whatever is listening on them, and the first lease on this
             // build finds that out the way it always does — by asking `ss -ltn` there.
-            self.conn.execute_batch(leases::LEASES_SQL)?;
+            self.conn().execute_batch(leases::LEASES_SQL)?;
         }
         Ok(())
     }
@@ -2908,8 +3083,13 @@ impl Store {
     }
 
     pub fn get_stable_prefix(&self, id: &str) -> Result<(Vec<TokenId>, [u8; 32])> {
-        let (blob, hash): (Vec<u8>, Vec<u8>) = self
-            .conn
+        Self::stable_prefix_on(&self.conn(), id)
+    }
+
+    /// [`Store::get_stable_prefix`] on a connection the caller already holds — see
+    /// [`Store::load_transcript_on`].
+    fn stable_prefix_on(conn: &Connection, id: &str) -> Result<(Vec<TokenId>, [u8; 32])> {
+        let (blob, hash): (Vec<u8>, Vec<u8>) = conn
             .query_row(
                 "SELECT tokens, h_init FROM stable_prefix WHERE id = ?1",
                 params![id],
@@ -2936,7 +3116,7 @@ impl Store {
             Vec<u8>,
             String,
         ) = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT dialect_sha, system, tools_json, tokens, h_init, vocab_source
                    FROM stable_prefix WHERE id = ?1",
@@ -3068,7 +3248,7 @@ impl Store {
     /// is content-addressed, so two ids that differ are two different prompts.
     pub fn transcript_prefix_id(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT stable_prefix_id FROM transcript WHERE id = ?1",
                 params![transcript_id],
@@ -3104,7 +3284,7 @@ impl Store {
             return Ok(());
         }
         let rows: Option<i64> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT (SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1)
                    FROM transcript WHERE id = ?1",
@@ -3133,7 +3313,8 @@ impl Store {
     /// among the answers by rebuilding, which is the only test that can tell two prefixes of
     /// one length apart.
     pub fn stable_prefix_ids_of_len(&self, n_tokens: u32) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT id FROM stable_prefix WHERE LENGTH(tokens) / 4 = ?1
               ORDER BY created_at DESC, rowid DESC",
         )?;
@@ -3174,7 +3355,7 @@ impl Store {
         // `LENGTH` of the blob, not `n_tokens`: the bytes are what a restore replays, and
         // the two can only differ for a prefix row somebody wrote by hand.
         let prefix_len: i64 = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT LENGTH(sp.tokens) / 4
                    FROM transcript t JOIN stable_prefix sp ON sp.id = t.stable_prefix_id
@@ -3184,7 +3365,7 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
-        let before: i64 = self.conn.query_row(
+        let before: i64 = self.conn().query_row(
             "SELECT COALESCE(SUM(tok_len), 0) FROM transcript_item
               WHERE transcript_id = ?1 AND seq < ?2",
             params![transcript_id, seq as i64],
@@ -3351,13 +3532,20 @@ impl Store {
 
     /// Everything needed to rebuild the ledger.
     pub fn load_transcript(&self, transcript_id: &str) -> Result<LoadedTranscript> {
+        let conn = self.conn();
+        Self::load_transcript_on(&conn, transcript_id)
+    }
+
+    /// [`Store::load_transcript`] on a connection the caller already holds — the form
+    /// [`live_view`] needs, because it reads one transcript out of a file it has ATTACHed and
+    /// holds that connection for the whole copy.
+    fn load_transcript_on(conn: &Connection, transcript_id: &str) -> Result<LoadedTranscript> {
         let (session_id, parent, forked_at, prefix_id): (
             String,
             Option<String>,
             Option<i64>,
             String,
-        ) = self
-            .conn
+        ) = conn
             .query_row(
                 "SELECT session_id, parent_transcript_id, forked_at_seq, stable_prefix_id
                        FROM transcript WHERE id = ?1",
@@ -3367,9 +3555,9 @@ impl Store {
             .optional()?
             .ok_or_else(|| StoreError::NotFound(format!("transcript {transcript_id}")))?;
 
-        let (prefix_tokens, h_init) = self.get_stable_prefix(&prefix_id)?;
+        let (prefix_tokens, h_init) = Self::stable_prefix_on(conn, &prefix_id)?;
 
-        let mut stmt = self.conn.prepare(
+        let mut stmt = conn.prepare(
             "SELECT item_id, item_json, tok_offset, tok_len, h_k, tokens
                FROM transcript_item WHERE transcript_id = ?1 ORDER BY seq ASC",
         )?;
@@ -3410,7 +3598,7 @@ impl Store {
     }
 
     pub fn item_count(&self, transcript_id: &str) -> Result<u32> {
-        let n: i64 = self.conn.query_row(
+        let n: i64 = self.conn().query_row(
             "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = ?1",
             params![transcript_id],
             |r| r.get(0),
@@ -3426,7 +3614,7 @@ impl Store {
     /// decides whether the parent's rows are needed at all.
     pub fn parent_of(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT parent_transcript_id FROM transcript WHERE id = ?1",
                 params![transcript_id],
@@ -3450,7 +3638,7 @@ impl Store {
     /// which is the same rule `RowFetched`'s own doc states for the wire.
     pub fn row_json_at(&self, transcript_id: &str, seq: u32) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT item_json FROM transcript_item\n                   WHERE transcript_id = ?1 AND seq = ?2",
                 params![transcript_id, seq as i64],
@@ -3470,7 +3658,7 @@ impl Store {
     /// millisecond as the row that caused it.
     pub fn current_transcript_id(&self, session_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT id FROM transcript WHERE session_id = ?1\n                   ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 params![session_id],
@@ -3515,7 +3703,8 @@ impl Store {
         // transcript's: since forks exist, a cross-transcript count double-counts
         // the history a compaction just stopped carrying, and a picker row that
         // grew because the conversation got shorter is a lie.
-        let mut stmt = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&format!(
             "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
                     s.created_at,
                     (SELECT t.id FROM transcript t
@@ -3620,7 +3809,7 @@ impl Store {
     /// had just typed.
     pub fn title(&self, id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT title FROM session WHERE id = ?1",
                 params![id],
@@ -3657,7 +3846,7 @@ impl Store {
     /// column off the primary key and nothing else.
     pub fn session_parent(&self, id: &str) -> Result<Option<Option<String>>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT parent_session_id FROM session WHERE id = ?1",
                 params![id],
@@ -3671,7 +3860,7 @@ impl Store {
     /// which folder a session belongs to.
     pub fn session_workspace(&self, id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT workspace_root FROM session WHERE id = ?1",
                 params![id],
@@ -3719,7 +3908,7 @@ impl Store {
     /// id should hear it; zero rows on a session that ALREADY has one is not an error.
     pub fn set_session_origin(&self, id: &str, origin: &str) -> Result<()> {
         let there: bool = self
-            .conn
+            .conn()
             .prepare("SELECT 1 FROM session WHERE id = ?1")
             .and_then(|mut st| st.exists(params![id]))?;
         if !there {
@@ -3860,7 +4049,7 @@ impl Store {
     /// second connection can write the row while a harness holds an older idea.
     pub fn provider_choice(&self, id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT provider_choice FROM session WHERE id = ?1",
                 params![id],
@@ -3895,7 +4084,7 @@ impl Store {
     /// showing a distinction nothing stands behind.
     pub fn todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {
         let json: Option<String> = self
-            .conn
+            .conn()
             .query_row(
                 "SELECT todos_json FROM todo WHERE session_id = ?1",
                 params![session_id],
@@ -3918,7 +4107,8 @@ impl Store {
     /// failing the listing: a picker that refused to draw over one bad row would hide every
     /// session to report one.
     pub fn sessions_waiting_on_operator(&self) -> Result<BTreeMap<String, usize>> {
-        let mut st = self.conn.prepare(
+        let conn = self.conn();
+        let mut st = conn.prepare(
             "SELECT session_id, todos_json FROM todo WHERE todos_json LIKE '%\"kind\":\"operator\"%'",
         )?;
         let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
@@ -3960,7 +4150,8 @@ impl Store {
 
     /// [`Store::jobs`], narrowed by a fixed SQL condition (never a caller's text).
     fn jobs_where(&self, session_id: &str, and: &str) -> Result<Vec<JobRecord>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT handle, command, how, state, produced, elapsed_ms, redirect
                FROM job WHERE session_id = ?1 {and} ORDER BY updated_ms, handle"
         ))?;
@@ -4052,9 +4243,8 @@ impl Store {
     /// daemon seeds its handle counter above at start, so a handle is never minted twice for one
     /// session across restarts (TODO.md R91.3). `0` for a store with no `jN` handle.
     pub fn max_job_number(&self) -> Result<u64> {
-        let mut st = self
-            .conn
-            .prepare("SELECT handle FROM job WHERE handle GLOB 'j[0-9]*'")?;
+        let conn = self.conn();
+        let mut st = conn.prepare("SELECT handle FROM job WHERE handle GLOB 'j[0-9]*'")?;
         let rows = st.query_map([], |r| r.get::<_, String>(0))?;
         let mut max = 0u64;
         for h in rows {
@@ -4104,7 +4294,7 @@ impl Store {
     /// What a stable prefix was rendered from and by. `None` if it is not here.
     pub fn stable_prefix_meta(&self, id: &str) -> Result<Option<StablePrefixMeta>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT dialect_sha, vocab_source, n_tokens FROM stable_prefix WHERE id = ?1",
                 params![id],
@@ -4198,7 +4388,7 @@ impl Store {
     /// and the next write collide once more — never silently wrong in the
     /// direction that loses data, because that collision is now reported.
     pub fn max_adjudication_seq(&self, session_id: &str) -> Result<u64> {
-        let n: Option<i64> = self.conn.query_row(
+        let n: Option<i64> = self.conn().query_row(
             "SELECT MAX(CAST(substr(request_id, length(?1) + 6) AS INTEGER))
                FROM adjudication WHERE session_id = ?1",
             params![session_id],
@@ -4258,7 +4448,7 @@ impl Store {
         };
         let sql = format!("SELECT {field} FROM adjudication WHERE request_id = ?1");
         let out: Option<Option<String>> = self
-            .conn
+            .conn()
             .query_row(&sql, rusqlite::params![request_id], |r| r.get(0))
             .optional()?;
         // Nothing flattened: a row that is not there and a column that is `NULL` are the same
@@ -4286,7 +4476,8 @@ impl Store {
         } else {
             format!("SELECT {COLS} FROM adjudication ORDER BY decided_ms DESC LIMIT ?1")
         };
-        let mut stmt = self.conn.prepare(&sql)?;
+        let conn = self.conn();
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map([limit as i64], |r| {
                 Ok(StoredAdjudication {
@@ -4358,7 +4549,8 @@ impl Store {
     /// Newest first, so a caller keeping the first answer per shape keeps the most
     /// recent ruling.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT a.shape, a.shape_class
                FROM adjudication a
                JOIN session s ON s.id = a.session_id
@@ -4385,7 +4577,8 @@ impl Store {
     /// The row's own arguments come back unparsed — deciding what a command means is
     /// the intent layer's job and this module does not have an opinion.
     pub fn shapeless_human_admits(&self) -> Result<Vec<ShapelessAdmit>> {
-        let mut stmt = self.conn.prepare(
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
             "SELECT a.request_id, s.workspace_root, a.tool, a.arguments_json
                FROM adjudication a
                JOIN session s ON s.id = a.session_id
@@ -4428,7 +4621,7 @@ impl Store {
     /// a corpus nobody maintains.
     pub fn corpus_counts(&self) -> Result<CorpusCounts> {
         let one = |sql: &str| -> Result<u64> {
-            let n: i64 = self.conn.query_row(sql, [], |r| r.get(0))?;
+            let n: i64 = self.conn().query_row(sql, [], |r| r.get(0))?;
             Ok(n as u64)
         };
         Ok(CorpusCounts {
@@ -4473,7 +4666,7 @@ impl Store {
     /// Every write method of this store that is a single statement goes through here; a
     /// write that is several statements goes through [`Store::write_tx`] instead.
     fn exec<P: Params + Clone>(&self, sql: &str, p: P) -> rusqlite::Result<usize> {
-        busy::retry_sql(|| self.conn.execute(sql, p.clone()))
+        busy::retry_sql(|| self.conn().execute(sql, p.clone()))
     }
 
     /// **A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT` — the whole of it taken
@@ -4493,16 +4686,24 @@ impl Store {
         mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         busy::retry_store(|| {
+            let conn = self.conn();
             let tx =
-                rusqlite::Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+                rusqlite::Transaction::new_unchecked(&conn, TransactionBehavior::Immediate)?;
             let out = body(&tx)?;
             tx.commit()?;
             Ok(out)
         })
     }
 
-    pub fn connection(&self) -> &Connection {
-        &self.conn
+    /// **The connection, with the process's lock held for as long as the guard lives.**
+    ///
+    /// A guard and not `&Connection`: there is one connection per store file per process (see
+    /// [`Store::open`]), so handing out a bare reference would let two threads reach it at once.
+    /// Everything a `Connection` offers is reachable through the guard by `Deref`, which is what
+    /// every caller of this needs — but **a caller must not call another method of this store
+    /// while it holds one**, or it waits on a lock it already has.
+    pub fn connection(&self) -> Conn<'_> {
+        self.conn()
     }
 }
 
@@ -4639,7 +4840,7 @@ mod corpus_tests {
 
         // A row from an older daemon: the column is there and empty, which is why
         // `verdict_by` is what tells a reader whether anybody was asked.
-        s.conn
+        s.conn()
             .execute(
                 "UPDATE adjudication SET oracle_reply = NULL WHERE request_id = 'adj-r11'",
                 [],
@@ -4721,8 +4922,8 @@ mod corpus_tests {
 
         // **The rate of each**, which is the thing the column exists for: one query, and
         // the answer is a count per token rather than a regex over a sentence.
-        let mut stmt = s
-            .conn
+        let conn = s.conn();
+        let mut stmt = conn
             .prepare(
                 "SELECT oracle_reading, COUNT(*) FROM adjudication
                   WHERE oracle_reading IS NOT NULL GROUP BY 1 ORDER BY 1",
@@ -4746,7 +4947,7 @@ mod corpus_tests {
         // And a row written before the column — `NULL`, which is not any of the four. A
         // reader of the old ones goes to `model_verdict`/`verdict_basis`, and `corpus_version`
         // is what says the row is older than the question.
-        s.conn
+        s.conn()
             .execute(
                 "UPDATE adjudication SET oracle_reading = NULL WHERE request_id = 'adj-r12-3'",
                 [],

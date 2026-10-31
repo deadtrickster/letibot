@@ -25,7 +25,7 @@ impl Store {
     /// The citations stored for a reply, as the JSON they were written with.
     pub fn citations(&self, session_id: &str, text_hash: &str) -> Result<Option<String>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT json FROM citation WHERE session_id = ?1 AND text_hash = ?2",
                 params![session_id, text_hash],

@@ -252,12 +252,16 @@ impl Store {
     /// session served by a binary older than its store behaves correctly and is one restart away
     /// from being right, and the operator is the only one who can make that restart happen.
     pub fn newer_store(&self) -> Option<NewerStore> {
-        self.newer.get()
+        *self
+            .shared
+            .newer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// **The floor this store records**, or `None` for one written before there were floors.
     pub(crate) fn reader_floor(&self) -> Result<Option<i64>> {
-        read_floor(&self.conn, "main")
+        read_floor(&self.conn(), "main")
     }
 
     /// **Record the floor a store at `at_version` carries, raising the row and never lowering
@@ -279,16 +283,16 @@ impl Store {
         {
             return Ok(have);
         }
-        self.conn.execute_batch(READER_FLOOR_SQL)?;
+        self.conn().execute_batch(READER_FLOOR_SQL)?;
         // `INSERT OR IGNORE` then `max`, rather than an upsert: this is the spelling that says
         // *a floor moves up or not at all*, and it is the same statement whether the row is
         // absent (a store from before this table) or behind (a schema that grew a breaking
         // migration since).
-        self.conn.execute(
+        self.conn().execute(
             "INSERT OR IGNORE INTO schema_reader_floor (only_row, min_reader) VALUES (1, ?1)",
             params![want],
         )?;
-        self.conn.execute(
+        self.conn().execute(
             "UPDATE schema_reader_floor SET min_reader = max(min_reader, ?1) WHERE only_row = 1",
             params![want],
         )?;
@@ -305,10 +309,14 @@ impl Store {
         let floor = self.reader_floor()?;
         match floor {
             Some(floor) if floor <= SCHEMA_VERSION => {
-                self.newer.set(Some(NewerStore {
+                *self
+                    .shared
+                    .newer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(NewerStore {
                     found,
                     known: SCHEMA_VERSION,
-                }));
+                });
                 Ok(())
             }
             floor => Err(StoreError::SchemaTooNew {

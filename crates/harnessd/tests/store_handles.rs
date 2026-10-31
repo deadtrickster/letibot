@@ -1,26 +1,29 @@
-//! **A session's store connections are given back when the session ends** — the measurement the
-//! operator's `EMFILE` (`pid 99166`, eleven hours, `ulimit -n` 256, **205 of 256 descriptors on
-//! `sessions.db` and its `-wal`** while the daemon reported two sessions) is answered with.
+//! **A session that closes gives its descriptors back** — the measurement the operator's `EMFILE`
+//! is answered with, and the one that says which fix works.
 //!
-//! # The arithmetic
+//! # The arithmetic, before and after
 //!
-//! `Harness::open` opens the store **four times per session** — once for the session itself, once
-//! for the corpus the gate writes, once for the `transcript` tool and once for the `decisions`
-//! tool — and each of those is a `rusqlite` connection to a WAL file: the db and its `-wal`, so
-//! two descriptors apiece. `support/room.rs` measured ~6 per harness on this box, and
-//! `the-macs-256-open-files.md` records 102 `sessions.db` descriptors in a test process holding
-//! ~17 harnesses.
+//! `Harness::open` used to open the store **four times per session** — once for the session
+//! itself, once for the corpus the gate writes, once for the `transcript` tool and once for the
+//! `decisions` tool — and each of those was a `rusqlite` connection to a WAL file. MEASURED on
+//! lab2x1, `main` at `4b2f2113`: **20 sessions opened and closed left 92 descriptors on
+//! `sessions.db`** while the process held 5 `Store`s, and 88 stayed after the daemon's own
+//! connection was dropped too.
 //!
-//! So the daemon's descriptor count is a function of **how many sessions it has ever opened**
-//! unless something gives them back. What this file measures is exactly that, at two moments:
-//! *while* N sessions are open (what a daemon that opens one per reviewer holds), and *after*
-//! closing them (what it should be holding).
+//! `crates/tokencore/tests/connection_fds.rs` measures why: `sqlite3` keeps a descriptor per file
+//! in the inode's own record and releases it when the process's **last** connection to that file
+//! closes, so closing a session's four connections returned none of them while the daemon's own
+//! connection lived. So "close it properly" was never the fix — **fewer connections** is, and
+//! `Store::open` now hands every caller in the process the same connection per store file.
+//!
+//! After: the count is the same before and after twenty sessions, and it is the daemon's own
+//! three descriptors (the db, its `-wal` and its `-shm`).
 //!
 //! # How it counts
 //!
 //! `/dev/fd` on Darwin and `/proc/self/fd` on Linux: both are directories whose entries ARE the
 //! process's open descriptors, so `read_dir` is a census and not an estimate. `Store::live()` is
-//! the second, independent count — how many `Store`s the process holds — because a descriptor
+//! the second, independent count — how many connections the process holds — because a descriptor
 //! count is a proxy for a lifetime and `Store::live` is the lifetime itself.
 //!
 //! # What it needs
@@ -115,10 +118,7 @@ fn descriptors_on(path: &Path) -> usize {
         .map(|d| {
             d.filter_map(|e| e.ok())
                 .filter_map(|e| e.file_name().to_string_lossy().parse::<i32>().ok())
-                .filter(|fd| {
-                    let target = descriptor_target(*fd);
-                    target.contains(&name)
-                })
+                .filter(|fd| descriptor_target(*fd).contains(&name))
                 .count()
         })
         .unwrap_or(0)
@@ -168,16 +168,16 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// **A store opened for a session is closed when that session ends** — the lifetime, stated as the
-/// count of live `Store`s rather than as descriptors, because that is the thing that is wrong or
-/// right and the descriptors follow it.
+/// **Twenty sessions opened and closed leave the store's descriptors where they were.**
 ///
-/// MEASURED, before the fix: one session opened and closed through `Sessions` left **4** live
-/// `Store`s behind out of the 5 it opened, and 20 such sessions left 100 descriptors on the store
-/// file where one session costs 20.
+/// This is the deliverable's number. `Harness::open` opened the store four times per session, each
+/// a WAL connection, and MEASURED on `main` at `4b2f2113` twenty sessions left **92** descriptors
+/// on `sessions.db` after they were closed. One connection per store file per process makes the
+/// count the daemon's own three whatever the session count, and the bound below is the baseline
+/// plus nothing.
 #[test]
-fn a_closed_session_leaves_no_store_of_its_own_open() {
-    let Some(_) = room::room_for("one session opened and closed", 1024) else {
+fn a_closed_session_gives_its_descriptors_back() {
+    let Some(_) = room::room_for("twenty sessions opened and closed", 1024) else {
         return;
     };
     let _one = serial();
@@ -193,19 +193,25 @@ fn a_closed_session_leaves_no_store_of_its_own_open() {
     registry
         .create(ROOT, "the root", wiring(&cfg))
         .expect("the root is created");
-    // The daemon's own connection to its store — the one it keeps for its whole life. Taken
-    // before the first session opens, so the root's four are counted as a session's and not as
-    // the daemon's.
-    let daemon_own = Store::live();
-    assert_eq!(daemon_own, 1, "a daemon holds exactly one store of its own");
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
-    let with_root = Store::live();
+
+    // **The baseline, taken with the daemon up and no session of its own** — one connection to the
+    // store file, so the db, its `-wal` and its `-shm`.
+    let baseline = descriptors_on(&path);
+    let connections = Store::live();
+    eprintln!(
+        "baseline: {baseline} descriptors on the store file, {connections} connection(s), {} in \
+         the process",
+        open_descriptors()
+    );
     assert_eq!(
-        with_root - daemon_own,
-        4,
-        "the root session's own four stores (its store, the corpus, the transcript reader and \
-         the decisions reader)"
+        connections, 1,
+        "the daemon holds ONE connection to its store, whatever it is serving"
+    );
+    assert!(
+        baseline <= 3,
+        "one WAL connection is the db, its -wal and its -shm: {baseline}"
     );
 
     let ids: Vec<String> = (0..20).map(|n| format!("s-handle-{n}")).collect();
@@ -215,72 +221,145 @@ fn a_closed_session_leaves_no_store_of_its_own_open() {
             .expect("the session is created");
         sessions.open(id).expect("the session opens");
     }
-    let open_stores = Store::live();
-    let open_descriptors_on_file = descriptors_on(&path);
-    let per_session_open = (open_stores - with_root) / ids.len();
+    let open_descs = descriptors_on(&path);
+    let open_connections = Store::live();
     eprintln!(
-        "while open: {} live stores for {} sessions ({} per session), {} descriptors on the \
-         store file, {} in the process",
-        open_stores,
-        ids.len(),
-        per_session_open,
-        open_descriptors_on_file,
-        open_descriptors()
+        "while open: {open_connections} connection(s) for {} sessions, {open_descs} descriptors on \
+         the store file",
+        ids.len()
     );
     assert_eq!(
-        per_session_open, 4,
-        "a session is expected to open its store, the corpus, the transcript tool's reader and \
-         the decisions reader — the number this test's own doc says to expect"
+        open_connections, 1,
+        "twenty sessions opened a second connection between them"
     );
 
     for id in &ids {
         sessions.close(id);
     }
-    let closed_stores = Store::live();
-    let closed_descriptors_on_file = descriptors_on(&path);
+    let closed_descs = descriptors_on(&path);
+    let closed_connections = Store::live();
     eprintln!(
-        "after closing all {}: {} live stores (the root's four and the daemon's own are {}), \
-         {} descriptors on the store file, {} in the process",
+        "after closing all {}: {closed_connections} connection(s), {closed_descs} descriptors on \
+         the store file, {} in the process",
         ids.len(),
-        closed_stores,
-        with_root,
-        closed_descriptors_on_file,
         open_descriptors()
     );
 
+    // **The number, in the assertion**: the count comes back to the baseline it started at.
+    assert!(
+        closed_descs <= baseline,
+        "closing {} sessions left {closed_descs} descriptors on the store file, where the daemon \
+         held {baseline} before any of them opened — a session that ends does not give its store \
+         back",
+        ids.len()
+    );
     assert_eq!(
-        closed_stores,
-        with_root,
-        "closing {} sessions left {} live stores behind — a session's store, its corpus, its \
-         transcript reader and its decisions reader are not being given back",
-        ids.len(),
-        closed_stores - with_root
+        closed_connections, 1,
+        "a closed session left a connection of its own behind"
     );
 
-    // **And the descriptors do NOT go with them.** Every `Store` is dropped — the assertion above
-    // is that count — and the file's descriptors stay until the process's LAST connection to it
-    // closes. That is the whole of the operator's shape: a daemon keeps one connection for its
-    // whole life, so a descriptor from every connection it has ever opened is held until it exits.
+    // And the process's own census did not climb by the sessions either: whatever else this
+    // binary holds, twenty sessions' worth of connections would show here.
     drop(sessions);
     drop(registry);
-    let after_last_connection = descriptors_on(&path);
+}
+
+/// **Two sessions at once are not blocked by each other.**
+///
+/// The fix's cost is a lock: every store access in the process now serialises behind one
+/// connection, so this is the test that says the second session still gets its work done. Two
+/// threads write and read through the same store while two sessions are open; both finish, every
+/// row is there, and the connection count does not move.
+///
+/// **What it would catch**: a lock held across a whole turn (a second session waiting for ever), a
+/// transaction left open (the next writer blocking on `BEGIN IMMEDIATE` until its thirty-second
+/// timeout), and a second connection appearing per thread.
+#[test]
+fn two_sessions_at_once_are_not_blocked_by_each_other() {
+    let Some(_) = room::room_for("two sessions at once", 1024) else {
+        return;
+    };
+    let _one = serial();
+
+    let dir = TempDir::new("harnessd-store-two");
+    let path = dir.path.join("sessions.db");
+    let cfg = config(ROOT, &path);
+    let parts = parts_for(&cfg);
+    let registry = Registry::new();
+    registry.set_source(
+        letibot_harnessd::sessions::StoreSessions::open(&cfg).expect("the store opens"),
+    );
+    registry
+        .create(ROOT, "the root", wiring(&cfg))
+        .expect("the root is created");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    for id in ["s-two-a", "s-two-b"] {
+        registry
+            .create(id, "a session", wiring(&cfg))
+            .expect("the session is created");
+        sessions.open(id).expect("the session opens");
+    }
+    let baseline = descriptors_on(&path);
+    let connections = Store::live();
+
+    // Two writers, one store, at the same time — each on its own thread, each through its own
+    // `Store` handle, which is the same connection.
+    let writes = 50;
+    let work = |session: &'static str| {
+        let path = path.clone();
+        std::thread::spawn(move || {
+            let store = Store::open(&path).expect("the same store");
+            for n in 0..writes {
+                store
+                    .put_todos(
+                        session,
+                        &[letibot_tokencore::store::TodoItem {
+                            content: format!("{session} row {n}"),
+                            status: letibot_tokencore::store::TodoStatus::Pending,
+                            by: letibot_tokencore::store::TodoBy::Model,
+                            when: None,
+                            needs: Vec::new(),
+                        }],
+                    )
+                    .expect("a write");
+                let back = store.todos(session).expect("a read");
+                assert_eq!(back.len(), 1, "{session} lost its board");
+            }
+        })
+    };
+    let a = work("s-two-a");
+    let b = work("s-two-b");
+    a.join().expect("the first session's thread finished");
+    b.join().expect("the second session's thread finished");
+
+    // Both sessions' rows are on the store, and each is its own.
+    let store = Store::open(&path).expect("the store");
+    for session in ["s-two-a", "s-two-b"] {
+        let todos = store.todos(session).expect("a read");
+        assert_eq!(todos.len(), 1, "{session} has no board");
+        assert_eq!(
+            todos[0].content,
+            format!("{session} row {}", writes - 1),
+            "{session}'s last write is not the one on its row"
+        );
+    }
+    let after = descriptors_on(&path);
     eprintln!(
-        "after the daemon's own connection closes: {after_last_connection} descriptors on the \
-         store file"
+        "two sessions, {writes} writes each: {connections} connection(s) before, {} after; \
+         {baseline} descriptors on the store file before, {after} after",
+        Store::live()
     );
-    // **TODO.md item 17**: SQLite holds one descriptor per connection to the file until the
-    // process's LAST connection to it closes, and a daemon keeps one for its whole life — so the
-    // descriptors an ended session opened outlive it. That is the defect, measured here rather
-    // than asserted away; the fix is one connection per store file per process, which makes this
-    // number constant. Until then the test pins the *bounded* shape: no more than a session's four
-    // readers plus the daemon's own, so a connection opened per *call* would still fail it.
-    // Five per session and a few for the root's own readers: measured at 88 for 20 sessions, i.e.
-    // 4.4 each, which is the four readers plus the root's share. The bound is deliberately loose
-    // enough for that and tight enough to fail a connection opened per CALL rather than per session.
-    let ceiling = 5 * ids.len() + 8;
+    assert_eq!(
+        Store::live(),
+        1,
+        "a second thread's store was a second connection"
+    );
     assert!(
-        after_last_connection <= ceiling,
-        "{after_last_connection} descriptors on the store file outlived every connection to it — \
-         more than the {ceiling} that a session's four readers plus the daemon's own account for"
+        after <= baseline,
+        "two sessions writing left {after} descriptors on the store file where {baseline} was the \
+         baseline"
     );
+    drop(sessions);
+    drop(registry);
 }

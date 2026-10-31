@@ -262,7 +262,8 @@ impl Store {
     /// taken *before* it — a probe over ssh inside the write lock would hold every other session's
     /// lease for up to a round trip.
     pub fn allocate_lease(&self, ask: &Ask<'_>) -> Result<Lease> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let mut held: Vec<(u16, u16)> = Vec::new();
         let mut held_text: Vec<String> = Vec::new();
         {
@@ -329,7 +330,8 @@ impl Store {
     /// **Every block still held**, across every host and session — the reaper's work list and what
     /// `hosts` prints.
     pub fn held_leases(&self) -> Result<Vec<Lease>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM host_lease WHERE released_ms IS NULL
               ORDER BY host IS NOT NULL, host, id"
         ))?;
@@ -344,7 +346,8 @@ impl Store {
     /// Every block this session ever held, newest last — what a close releases and a test asserts
     /// against.
     pub fn leases_of_session(&self, session: &str) -> Result<Vec<Lease>> {
-        let mut st = self.conn.prepare(&format!(
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
             "SELECT {COLUMNS} FROM host_lease WHERE session_id = ?1 ORDER BY id"
         ))?;
         let rows = st.query_map(params![session], row)?;
@@ -358,7 +361,7 @@ impl Store {
     /// One lease by its number. `None` for a lease this store never wrote.
     pub fn lease(&self, id: i64) -> Result<Option<Lease>> {
         Ok(self
-            .conn
+            .conn()
             .prepare(&format!("SELECT {COLUMNS} FROM host_lease WHERE id = ?1"))?
             .query_row(params![id], row)
             .optional()?)
@@ -385,7 +388,8 @@ impl Store {
         by: &str,
         now_ms: i64,
     ) -> Result<Vec<Lease>> {
-        let tx = self.immediate()?;
+        let conn = self.conn();
+        let tx = Self::immediate(&conn)?;
         let mut out = Vec::new();
         {
             let mut st = tx.prepare(&format!(

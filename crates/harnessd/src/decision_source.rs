@@ -171,7 +171,7 @@ impl DecisionSource for StoreDecisions {
                 .map_err(|e| format!("reading the decision: {e}"))?
                 .collect::<std::result::Result<_, _>>()
                 .map_err(|e| format!("reading the decision: {e}"))?;
-            let scanned = scalar(conn, "SELECT COUNT(*) FROM adjudication", &[]).unwrap_or(0);
+            let scanned = scalar(&conn, "SELECT COUNT(*) FROM adjudication", &[]).unwrap_or(0);
             return Ok(DecisionHits {
                 matched: rows.len(),
                 rows,
@@ -203,7 +203,7 @@ impl DecisionSource for StoreDecisions {
         // "0 of 4000 searched" and "0 of 0" are different answers, and only one of
         // them is about the predicates.
         let scanned = scalar(
-            conn,
+            &conn,
             &format!("SELECT COUNT(*) FROM adjudication{scope_sql}"),
             &scope_binds,
         )
@@ -235,7 +235,7 @@ impl DecisionSource for StoreDecisions {
         };
 
         let matched = scalar(
-            conn,
+            &conn,
             &format!("SELECT COUNT(*) FROM adjudication{where_sql}"),
             &binds,
         )
@@ -280,9 +280,9 @@ impl DecisionSource for StoreDecisions {
             // Computed over the SCOPE, not over the filtered set — a miss report
             // listing "the verdicts present" from a query that matched nothing
             // would list nothing.
-            verdicts_present: distinct(conn, "verdict", &scope_sql, &scope_binds),
-            tools_present: distinct(conn, "tool", &scope_sql, &scope_binds),
-            deciders_present: distinct(conn, "verdict_by", &scope_sql, &scope_binds),
+            verdicts_present: distinct(&conn, "verdict", &scope_sql, &scope_binds),
+            tools_present: distinct(&conn, "tool", &scope_sql, &scope_binds),
+            deciders_present: distinct(&conn, "verdict_by", &scope_sql, &scope_binds),
         })
     }
 
@@ -306,7 +306,7 @@ impl DecisionSource for StoreDecisions {
         let conn = store.connection();
         let one = |extra: &str| -> u64 {
             scalar(
-                conn,
+                &conn,
                 &format!("SELECT COUNT(*) FROM adjudication WHERE session_id = ?1{extra}"),
                 &[Box::new(s.clone()) as Box<dyn rusqlite::ToSql>],
             )

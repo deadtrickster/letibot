@@ -55,7 +55,7 @@ impl Store {
     /// What was said about `key`, if anything.
     pub fn told(&self, key: &str) -> Result<Option<Told>> {
         Ok(self
-            .conn
+            .conn()
             .query_row(
                 "SELECT count, at_ms FROM queue_told WHERE key = ?1",
                 params![key],

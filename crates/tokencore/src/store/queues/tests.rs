@@ -143,11 +143,11 @@ fn a_move_from_a_state_the_row_left_is_refused_and_every_real_move_is_recorded()
 
     // Append-only, by trigger.
     assert!(
-        s.conn
+        s.conn()
             .execute("UPDATE queue_transition SET why = 'rewritten'", [])
             .is_err()
     );
-    assert!(s.conn.execute("DELETE FROM queue_transition", []).is_err());
+    assert!(s.conn().execute("DELETE FROM queue_transition", []).is_err());
 }
 
 /// **A move may only write the columns the queue names.** A typo is a refusal, not SQL.
@@ -344,7 +344,7 @@ fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     ));
 
     // An additive migration by a newer build: the version moves, the floor does not.
-    s.conn
+    s.conn()
         .execute(
             "UPDATE schema_version SET version = ?1",
             params![SCHEMA_VERSION + 1],
@@ -361,7 +361,7 @@ fn a_store_the_queue_has_moved_past_grants_no_lease_and_stops_a_heartbeat() {
     assert!(s.heartbeat_queue_lease("/repo", "A", 3).unwrap());
 
     // A breaking one: the version moves AND the floor moves past this build.
-    s.conn
+    s.conn()
         .execute(
             "UPDATE schema_reader_floor SET min_reader = ?1 WHERE only_row = 1",
             params![SCHEMA_VERSION + 1],
@@ -468,13 +468,13 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
     {
         let s = Store::open(&d.db()).unwrap();
         // Make the store look like v23: the new tables out, the old ones in.
-        s.conn
+        s.conn()
             .execute_batch(
                 "DROP TABLE merge_queue; DROP TABLE review_queue; DROP TABLE queue_transition;
                  DROP TABLE queue_lease; DROP TABLE target_health;",
             )
             .unwrap();
-        s.conn.execute_batch(V23_QUEUE).unwrap();
+        s.conn().execute_batch(V23_QUEUE).unwrap();
         for (id, state) in [
             ("a-pass-reads-one-row", "waiting"),
             ("queue-spin", "waiting"),
@@ -485,7 +485,7 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
             ("conflicted", "conflict"),
             ("vetoed-one", "vetoed"),
         ] {
-            s.conn
+            s.conn()
                 .execute(
                     "INSERT INTO merge_queue (id, session_id, branch, base_sha, priority, needs_json,
                         state, brief, evidence, created_ms, updated_ms, worktree)
@@ -494,14 +494,14 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
                 )
                 .unwrap();
         }
-        s.conn
+        s.conn()
             .execute(
                 "INSERT INTO merge_review (entry_id, session_id, branch, base_sha, asked_ms,
                     answered_ms, decision) VALUES ('queue-spin', 's-gk', 'agent/queue-spin', 'b', 1, 2, 'reject')",
                 [],
             )
             .unwrap();
-        s.conn
+        s.conn()
             .execute("UPDATE schema_version SET version = 23", [])
             .unwrap();
     }
@@ -530,7 +530,7 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
     assert!(s.merge_rows(None).unwrap().is_empty());
     // An old build's own write: the column list of v23 against the table of v24.
     assert!(
-        s.conn
+        s.conn()
             .execute(
                 "INSERT INTO merge_queue (id, session_id, branch, base_sha, priority, needs_json,
                     state, brief, evidence, created_ms, updated_ms)
@@ -541,7 +541,7 @@ fn a_v23_store_is_archived_whole_and_its_waiting_rows_go_to_review() {
         "a daemon of the old build cannot write the new merge queue"
     );
     assert!(
-        s.conn
+        s.conn()
             .prepare("SELECT needs_json FROM merge_queue")
             .is_err(),
         "nor read it"
