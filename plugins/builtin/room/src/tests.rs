@@ -563,3 +563,62 @@ fn every_act_names_one_of_the_five_controls() {
         );
     }
 }
+
+/// **A tag with an agent says who it is, and a tag with none says that** — the operator's
+/// requirement, drawn: *"a tag with an agent says so (who it is, whether it is up, its re-seat
+/// count), and a tag with none says that too rather than looking the same"*.
+#[test]
+fn a_tag_row_says_who_owns_it_or_that_nobody_does() {
+    let feed = feed(
+        json!([
+            {"tag": "ram", "counts": {"items": 1, "live": 1, "claimable": 1},
+             "agent": {"session": "s-room-box-1a2b3c4d-ram", "up": true, "reseats": 2,
+                       "age_ms": 30_000},
+             "rows": [item(1, "8 GB", "open", json!({}))]},
+            {"tag": "disk", "counts": {"items": 1, "live": 1, "claimable": 1},
+             "rows": [item(2, "40 GB", "open", json!({}))]},
+        ]),
+        json!([]),
+    );
+    let first = view(&feed);
+    let ram = cells_of(&row_with(&first, "t:ram"), "facts");
+    let said = ram.join(" · ");
+    assert!(said.contains("agent"), "{said}");
+    assert!(
+        said.contains("ram"),
+        "the tail of the derived id names the tag: {said}"
+    );
+    assert!(said.contains(" up"), "and whether it is up: {said}");
+    assert!(said.contains("30s"), "and how long it has been up: {said}");
+    assert!(
+        said.contains("re-seated 2×"),
+        "and how many times it had to come back: {said}"
+    );
+
+    // **A tag nobody owns says so**, in its own words — not a blank column, which would read as
+    // *an agent, details unknown*.
+    let disk = cells_of(&row_with(&first, "t:disk"), "facts").join(" · ");
+    assert!(disk.contains("no agent"), "{disk}");
+    assert!(!disk.contains("re-seated"), "{disk}");
+
+    // **And an agent that is not connected is drawn as down**, in the role that makes a person
+    // look: a tag whose agent died is a queue nobody is ruling on.
+    let down = feed_of(json!({
+        "now_ms": NOW, "here": "s-a", "identity": "the room", "lease_ms": 90_000,
+        "threshold": 3, "connected": ["s-a"], "unreadable": null,
+        "restart": {"available": false, "why": "no supervisor", "marker": null},
+        "questions": [],
+        "tags": [{"tag": "ram", "counts": {"items": 1, "live": 1, "claimable": 1},
+                  "agent": {"session": "s-room-box-1a2b3c4d-ram", "up": false, "reseats": 0,
+                            "age_ms": 2_000},
+                  "rows": [item(1, "8 GB", "open", json!({}))]}],
+    }));
+    let drawn = view(&down);
+    let row = row_with(&drawn, "t:ram");
+    let facts = row["facts"].as_array().expect("facts");
+    let agent = facts
+        .iter()
+        .find(|c| c["text"].as_str().is_some_and(|t| t.contains("agent")))
+        .expect("the agent fact");
+    assert_eq!(agent["role"], json!("failure"), "{agent}");
+}

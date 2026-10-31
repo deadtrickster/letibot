@@ -103,6 +103,10 @@ pub struct RoomSnapshot {
     pub items: Vec<letibot_room::Item>,
     /// The open questions, oldest first.
     pub questions: Vec<letibot_room::Question>,
+    /// **Which tags have an agent** — who it is, how many times it had to be re-seated, and when
+    /// the one now seated began. A tag absent from this list has no agent, and the pane says that
+    /// rather than leaving the column blank: *nobody is watching this queue* is a fact.
+    pub agents: Vec<letibot_room::TagAgent>,
     /// **Why the room could not be read**, when it could not. The pane draws this sentence instead
     /// of an empty room: *nothing is queued* and *nobody answered* are two facts, and a screen that
     /// shows one for the other is a screen a person cannot act on.
@@ -122,6 +126,10 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
     }
     let mut tags: Vec<Value> = Vec::new();
     let mut all = Counts::default();
+    // **Who owns each queue** — keyed once, so the loop below asks one map per tag instead of
+    // scanning a list, and so the two readers of *does this tag have an agent* cannot disagree.
+    let agents: BTreeMap<&str, &letibot_room::TagAgent> =
+        snap.agents.iter().map(|a| (a.tag.as_str(), a)).collect();
     for (tag, mut rows) in per_tag {
         // **First come, first served** — the room's own order (`(posted_ms, id)`), restated here
         // because this feed is a second reader of that rule and the two must agree about the head.
@@ -135,9 +143,29 @@ pub fn room(source: &dyn RoomFeed, here: &str, now: u64) -> Value {
                 row_of(item, now, snap.lease_ms, here)
             })
             .collect();
+        // **The agent's block, computed before the tag is moved into the row** — `json!` builds in
+        // order, so `"tag": tag` above it would leave nothing for this to look up.
+        let agent = match agents.get(tag.as_str()) {
+            Some(a) => json!({
+                "session": a.session,
+                // **Up is the room's own `connected` list** — the same fact the arbiter's `up` is,
+                // because the socket is the daemon's liveness and an agent that is not connected
+                // cannot rule on anything.
+                "up": snap.connected.iter().any(|c| c == &a.session),
+                // **The count is the point**: a tag whose agent keeps dying is a fact about that
+                // tag, and it is drawn beside the tag rather than swallowed.
+                "reseats": a.reseats,
+                "since_ms": a.since_ms,
+                "age_ms": now.saturating_sub(a.since_ms),
+            }),
+            None => Value::Null,
+        };
         tags.push(json!({
             "tag": tag,
             "counts": counts.value(),
+            // **The agent, or `null` for a tag nobody owns** — the layer prints *no agent* rather
+            // than leaving a column blank, which would read as *an agent, details unknown*.
+            "agent": agent,
             "rows": drawn,
         }));
     }
@@ -379,6 +407,9 @@ mod tests {
             threshold: 3,
             items,
             questions: Vec::new(),
+            // **No tag has an agent unless a test says so** — the room's own answer for a daemon
+            // whose upkeep has seated none.
+            agents: Vec::new(),
             unreadable: None,
             restart: RestartView {
                 available: true,
@@ -457,6 +488,45 @@ mod tests {
         assert_eq!(value["counts"]["abandoned"], json!(1));
         assert_eq!(value["counts"]["claimable"], json!(2));
         assert_eq!(value["tags"][1]["counts"]["items"], json!(2));
+    }
+
+    /// **A tag with an agent says so; a tag with none says that too** — the operator's requirement
+    /// for the pane: *"a tag with an agent says so (who it is, whether it is up, its re-seat count),
+    /// and a tag with none says that too rather than looking the same"*.
+    #[test]
+    fn a_tag_with_an_agent_says_who_and_a_tag_with_none_says_that() {
+        let mut snap = snapshot(vec![
+            open(1, "ram", "8 GB", "s-a", NOW - 60_000),
+            open(2, "disk", "2 TB", "s-a", NOW - 60_000),
+        ]);
+        snap.agents = vec![letibot_room::TagAgent {
+            tag: "ram".to_string(),
+            session: "s-room-box-1a2b3c4d-ram".to_string(),
+            reseats: 2,
+            since_ms: NOW - 30_000,
+        }];
+        // **Up is the room's own `connected` list** — the same fact the arbiter's `up` is, and the
+        // one that says whether this agent can rule on anything.
+        snap.connected = vec!["s-room-box-1a2b3c4d-ram".to_string()];
+        let value = feed(snap.clone());
+
+        let ram = &value["tags"][1]["agent"];
+        assert_eq!(ram["session"], json!("s-room-box-1a2b3c4d-ram"));
+        assert_eq!(ram["up"], json!(true));
+        assert_eq!(ram["reseats"], json!(2), "the count is drawn, not smoothed");
+        assert_eq!(ram["age_ms"], json!(30_000));
+
+        // A tag nobody owns is `null`, which is a fact the layer prints as *no agent* — not a
+        // column left out, which would read as *an agent, details unknown*.
+        assert_eq!(value["tags"][0]["tag"], json!("disk"));
+        assert_eq!(value["tags"][0]["agent"], json!(null));
+
+        // **And an agent that is not connected is drawn as down**, which is the reading that
+        // matters: a tag whose agent died is a queue nobody is ruling on.
+        let mut down = snap;
+        down.connected = Vec::new();
+        let value = feed(down);
+        assert_eq!(value["tags"][1]["agent"]["up"], json!(false));
     }
 
     /// **A claim whose beat has stopped is `stale`**, and the lease is what decides it.

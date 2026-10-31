@@ -159,8 +159,31 @@ struct Tag {
     tag: String,
     #[serde(default)]
     counts: Counts,
+    /// **The tag's agent** — who it is, whether it is up, and how many times it had to be
+    /// re-seated. Absent (JSON `null`) for a tag nobody owns, which is a fact the pane says rather
+    /// than a column it leaves out.
+    #[serde(default)]
+    agent: Option<Agent>,
     #[serde(default)]
     rows: Vec<Row>,
+}
+
+/// **One tag's agent**, as the host measured it — every age already subtracted, because a guest
+/// compiled for `wasm32-unknown-unknown` has no clock.
+#[derive(Debug, Default, Deserialize)]
+struct Agent {
+    #[serde(default)]
+    session: String,
+    /// Is it connected to the room right now? An agent that is not cannot rule on anything.
+    #[serde(default)]
+    up: bool,
+    /// How many times it had to be brought back — a tag whose agent keeps dying is a fact about the
+    /// tag, and the pane prints the number rather than smoothing it over.
+    #[serde(default)]
+    reseats: u32,
+    /// How long the one now seated has been up.
+    #[serde(default)]
+    age_ms: u64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -521,6 +544,10 @@ fn queues(feed: &Feed) -> Value {
                     },
                     Role::Attention,
                 ),
+                // **Who owns this queue, or that nobody does.** Two sentences, never a blank: a tag
+                // with an agent says who and whether it is up; a tag with none says so, because
+                // *nobody is watching this queue* is the fact a person needs before posting to it.
+                agent_cell(tag.agent.as_ref()),
             ],
             "children": tag.rows.iter().map(item_row).collect::<Vec<Value>>(),
         }));
@@ -535,6 +562,52 @@ fn queues(feed: &Feed) -> Value {
                       the line above for how long it has been up.",
         }}],
     })
+}
+
+/// **Who owns a tag's queue, or that nobody does** — the one fact a person needs before posting.
+///
+/// Two sentences and never a blank, which is the operator's requirement: *a tag with an agent says
+/// so (who it is, whether it is up, its re-seat count), and a tag with none says that too rather
+/// than looking the same*. A blank column would read as *an agent, details unknown* — the one
+/// reading that is never true.
+///
+/// **The re-seat count is printed only when there is one**, and in the role that makes a person
+/// look: a tag whose agent has been brought back twice is a tag something keeps killing, and that
+/// is a fact about the tag rather than noise to smooth over.
+fn agent_cell(agent: Option<&Agent>) -> Cell {
+    match agent {
+        None => Cell::role("no agent", Role::Faint),
+        Some(a) if a.session.is_empty() => Cell::role("no agent", Role::Faint),
+        Some(a) => {
+            let mut said = format!("agent {}", short(&a.session));
+            said.push_str(if a.up { " up" } else { " DOWN" });
+            said.push_str(&format!(" {}", age(a.age_ms)));
+            if a.reseats > 0 {
+                said.push_str(&format!(" · re-seated {}×", a.reseats));
+            }
+            Cell::role(
+                said,
+                if !a.up {
+                    Role::Failure
+                } else if a.reseats > 0 {
+                    Role::Attention
+                } else {
+                    Role::Faint
+                },
+            )
+        }
+    }
+}
+
+/// **A session id, short enough for a fact column** — the tail, which is the half that tells two
+/// derivations apart (`s-room-<host key>-<tag>`: the tag is the end, and the key is not).
+fn short(session: &str) -> String {
+    let n = session.chars().count();
+    if n <= 12 {
+        return session.to_string();
+    }
+    let tail: String = session.chars().skip(n - 10).collect();
+    format!("…{tail}")
 }
 
 /// **One item, one row** — and the one verb that would do something on it.
