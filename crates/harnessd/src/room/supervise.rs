@@ -155,10 +155,6 @@ impl Launcher {
         on_path("letibot").map(Launcher::new)
     }
 
-    pub fn program(&self) -> &Path {
-        &self.program
-    }
-
     fn say(&self, verb: &str, ended: letibot_tools::rpc::Ended) -> Result<(), String> {
         use letibot_tools::rpc::Ended;
         match ended {
@@ -270,19 +266,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("calls");
         let script = dir.join("letibot");
-        std::fs::write(
+        // **`write_stub` and not `write` + `chmod`**: a file written by this thread is `ETXTBSY` to
+        // every `fork` in the binary until each child has exec'd, so the naive spelling fails about
+        // one run in three under load (`.letibot/notes/a-written-then-exec39d-file-races-every-fork-in-its-binary.md`).
+        // The probe run takes no arguments, so it must record nothing: `write_stub` proves the file
+        // by exec'ing it, and a stand-in that logged that would be logging its own proof.
+        letibot_tools::testing::write_stub(
             &script,
-            format!(
+            &format!(
                 "#!/bin/sh\n\
+                 [ -n \"${{LETIBOT_STUB_PROBE:-}}\" ] && exit 0\n\
                  echo \"$*\" >> '{log}'\n\
                  cat >> '{log}'\n\
                  exit 0\n",
                 log = log.display()
             ),
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let frame = RestartFrame {
             at_ms: 42,
@@ -316,13 +315,12 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("letibot-room-sup-no-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("letibot");
-        std::fs::write(
+        // The same written-then-exec'd rule as above; this one is harmless under its probe because
+        // it exits 1 either way.
+        letibot_tools::testing::write_stub(
             &script,
             "#!/bin/sh\necho 'no room on this box' >&2\nexit 1\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let frame = RestartFrame {
             at_ms: 1,

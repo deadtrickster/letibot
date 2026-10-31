@@ -1124,7 +1124,13 @@ mod tests {
         // read yet*, which is the honest first frame and a poor assertion.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut snap = me.snapshot();
-        while snap.unreadable.is_some() && std::time::Instant::now() < deadline {
+        // **The first read is a promise and the second is the answer** — the reader thread starts
+        // at connect, so the frame it lands may be the one taken BEFORE this test's post. Waiting
+        // for the item as well as for the read is the difference between a test that measures the
+        // feed and one that measures the scheduler.
+        while (snap.unreadable.is_some() || snap.items.is_empty())
+            && std::time::Instant::now() < deadline
+        {
             std::thread::sleep(std::time::Duration::from_millis(10));
             snap = me.snapshot();
         }
