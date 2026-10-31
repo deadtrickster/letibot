@@ -182,8 +182,41 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// **The fixture daemon, killed even when the test never reaches its `wait`.**
+///
+/// A `Child` whose test panics is not reaped — Rust does not kill on `Drop` — so every red run of
+/// this suite left daemons behind, and nobody saw them: twelve were found on this box, three of them
+/// from a gate four hours old, every one of them `stop_force --exact fixture_daemon`. The gate's own
+/// cgroup reaped its share (*"5 process(es) the step left running were killed with its cgroup"*);
+/// the ones a person started had nothing to reap them. A guard makes the leak impossible rather
+/// than unlikely.
+///
+/// **`SIGKILL`, not `SIGTERM`**: the `wedged` mode ignores `SIGTERM` on purpose — that is what the
+/// force path is tested against — so a polite kill would leave exactly the daemon most likely to
+/// be a leak.
+struct FixtureDaemon(Child);
+
+impl FixtureDaemon {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.wait()
+    }
+}
+
+impl Drop for FixtureDaemon {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 /// Start the fixture daemon and wait for its socket to answer.
-fn spawn_daemon(mode: &str, dir: &Path) -> (Child, PathBuf) {
+fn spawn_daemon(mode: &str, dir: &Path) -> (FixtureDaemon, PathBuf) {
     let socket = letibot_sessionlog::testing::socket_path(&dir, "harnessd.sock");
     let child = Command::new(std::env::current_exe().expect("this test executable"))
         .args([
@@ -207,7 +240,32 @@ fn spawn_daemon(mode: &str, dir: &Path) -> (Child, PathBuf) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    (child, socket)
+    (FixtureDaemon(child), socket)
+}
+
+/// **The guard itself, proved.** A fixture daemon whose test never reaches `wait` — a panic, a
+/// timeout, a run somebody killed — is a process that is gone once the handle drops, and the proof
+/// is the pid leaving `/proc`. Without the guard this test is a leak of exactly the kind twelve of
+/// them were.
+#[test]
+fn a_fixture_daemon_that_the_test_did_not_wait_for_is_killed() {
+    let dir = scratch("guard");
+    let (daemon, _socket) = spawn_daemon("orderly", &dir);
+    let pid = daemon.id() as i32;
+    assert!(
+        Path::new(&format!("/proc/{pid}")).exists(),
+        "the fixture daemon was running when the handle dropped"
+    );
+    drop(daemon);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Path::new(&format!("/proc/{pid}")).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the fixture daemon outlived the guard: pid {pid}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn app() -> App {
