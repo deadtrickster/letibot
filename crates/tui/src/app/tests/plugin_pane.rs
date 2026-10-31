@@ -660,6 +660,58 @@ fn a_rows_enter_act_switches_and_the_pane_leaves_with_it() {
     );
 }
 
+/// **A row's verb, and its letter, are both sent to the host that drew the row.**
+///
+/// `Act::Verb` names an entry and one of the layer's own verbs (`actions = ["claim", …]`, gated by
+/// `View::validate_for` before this head ever sees the view); `Action`'s `verb` does the same on a
+/// letter. Both are `PaneAction`s, because the host that performs them is the one that drew them —
+/// the room's daemon, which holds the connection the verbs go down. This head has no state to act
+/// on and must not invent one.
+#[test]
+fn a_rows_verb_act_and_verb_letter_go_to_the_host() {
+    const ROOM: &str = "room/room";
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::PluginPane {
+            pane: ROOM.into(),
+            view: serde_json::json!({
+                "panels": [{"id": "queues", "title": "queues", "summary": [{"tree": {"rows": [
+                    {"id": "i1", "cells": ["8 GB"], "enter": {"verb": "claim", "id": "i1"}},
+                    {"id": "i2", "cells": ["2 GB"], "enter": {"verb": "release", "id": "i2"},
+                     "actions": [{"key": "x", "label": "mark abandoned", "verb": "abandon"}]}
+                ]}}]}]
+            }),
+        },
+    )));
+    a.command(&format!("pane {ROOM}"));
+    a.screen(100, 30);
+
+    // **Enter on a verb row is the verb, on the entry the row named.**
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::PaneAction {
+            pane: ROOM.into(),
+            item: "i1".into(),
+            action: "claim".into(),
+        }),
+        "the row's own entry and its own verb"
+    );
+
+    // **And a letter is the same door** — `x` on the second row, whose `enter` is a different verb.
+    a.key(Key::Down);
+    assert_eq!(
+        a.key(Key::Char('x')),
+        Some(Action::PaneAction {
+            pane: ROOM.into(),
+            item: "i2".into(),
+            action: "abandon".into(),
+        }),
+        "a letter naming a host verb is sent, not performed here"
+    );
+}
+
 /// **A row with no act still opens its detail** — the behaviour every existing pane has, and the
 /// reason the act is checked first rather than instead.
 #[test]
