@@ -364,37 +364,32 @@ impl PluginHost {
         host
     }
 
-    /// **Put the built-in layers a session declared a tool from at the bottom of this stack — and
-    /// the ones whose PANES this daemon answers.**
+    /// **Put the built-in layers a session declared a tool from at the bottom of this stack.**
     ///
     /// The match is on the tool's NAME: a built-in that declares `claude_transcript` is installed
     /// for a session whose declarations include `claude_transcript`, and not otherwise. The layer
     /// above it is what the model was offered — the built-in is the module that answers, which is
     /// why a project's ask can be a manifest with no `plugin.wasm`.
     ///
-    /// # And the room, which declares no tool and is still the daemon's to draw
-    ///
-    /// The built-in panes are otherwise the HEAD's (`letibot_builtins::install` in the TUI's own
-    /// stack) because a pane is a screen and the head owns the screen. The room's is the exception,
-    /// and the reason is the whole slice: its four controls are the HOST's verbs — a claim, a
-    /// release, a ruling — and the host that can perform them is this daemon, over the session's own
-    /// connection to the coordinator. A head that drew it would have a pane whose keys send nothing.
-    /// So the layer whose hook is [`ROOM_HOOK`] is installed here, whatever the session declared.
+    /// **A built-in whose PANE this daemon answers is not installed here**, and the cost is why:
+    /// compiling one module is 1.4–2.0 s of CPU in a debug host (`.letibot/notes/
+    /// a-built-in-layer-costs-two-seconds-per-session-open.md`), and a session that no head ever
+    /// attaches to would pay it for a screen nobody draws. `ensure_the_room_pane` installs the one
+    /// such layer at the door a head comes through.
     fn install_builtin_tools(&self, declared: &[DeclaredTool]) {
+        if declared.is_empty() {
+            return;
+        }
         let mut inner = self.lock();
         for builtin in letibot_builtins::table() {
-            let manifest = Manifest::parse(builtin.manifest).ok();
-            let declares_tool = manifest.as_ref().is_some_and(|m| {
-                m.tools
-                    .iter()
-                    .any(|t| declared.iter().any(|d| d.tool.name == t.name))
-            });
-            let answers_the_room = manifest.as_ref().is_some_and(|m| {
-                m.hooks
-                    .iter()
-                    .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
-            });
-            if !declares_tool && !answers_the_room {
+            let declares = Manifest::parse(builtin.manifest)
+                .map(|m| {
+                    m.tools
+                        .iter()
+                        .any(|t| declared.iter().any(|d| d.tool.name == t.name))
+                })
+                .unwrap_or(false);
+            if !declares {
                 continue;
             }
             if let Err(why) =
@@ -406,6 +401,59 @@ impl PluginHost {
                 // the line a person reading the daemon's log sees while it happens.
                 eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
             }
+        }
+    }
+
+    /// **Install the built-in whose pane this DAEMON answers** — the room's — the first time a head
+    /// comes through a door that needs it.
+    ///
+    /// The built-in panes are otherwise the HEAD's (`letibot_builtins::install` in the TUI's own
+    /// stack): a pane is a screen, and the head owns the screen. The room's is the exception, and
+    /// the reason is the whole slice — its four controls are the HOST's verbs, and the host that can
+    /// perform them is this daemon, over the session's own connection to the coordinator. A head
+    /// that drew it would have a pane whose keys send nothing.
+    ///
+    /// **Lazily, and that is a measurement, not a habit.** Compiling one built-in module costs
+    /// 1.4–2.0 s of CPU in a debug host, and this layer is 218 KB — so installing it at every
+    /// session open would put two seconds on every `leticode` on a box with a coordinator, for a
+    /// pane most sessions never show. A session's pane is only worth a compile once a HEAD is
+    /// looking at that session, so the install happens at [`PluginHost::attach`] (and at `open`,
+    /// for a head that asks without having announced).
+    ///
+    /// Nothing happens on a box with no coordinator: `room` is `None` and there is no queue to draw.
+    fn ensure_the_room_pane(&self) {
+        if self.room.is_none() {
+            return;
+        }
+        // **A layer that already answers the hook is the one that will draw it** — ours would sit
+        // below it and never be called, and a project that shipped its own room pane has said
+        // which one it wants.
+        if self.lock().stack.layers().iter().any(|l| {
+            l.manifest
+                .hooks
+                .iter()
+                .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
+        }) {
+            return;
+        }
+        let Some(builtin) = letibot_builtins::table()
+            .iter()
+            .find(|b| {
+                Manifest::parse(b.manifest).is_ok_and(|m| {
+                    m.hooks
+                        .iter()
+                        .any(|h| h.strip_prefix("pane_") == Some(ROOM_HOOK))
+                })
+            })
+        else {
+            return;
+        };
+        if let Err(why) = self.lock().stack.register_builtin_bytes(
+            builtin.name,
+            builtin.manifest,
+            builtin.wasm,
+        ) {
+            eprintln!("  plugin built-in `{}` did not load: {why}", builtin.name);
         }
     }
 
@@ -1867,10 +1915,15 @@ fn truncate(text: &str, width: usize) -> String {
 
 impl PaneDriver for PluginHost {
     fn attach(&self, _session_id: &str, hub: &Arc<Hub>) {
+        // **The room's pane is installed at this door**, because a head arriving is the first
+        // moment the pane is worth a compile (see [`PluginHost::ensure_the_room_pane`]).
+        self.ensure_the_room_pane();
         self.announce(hub);
     }
 
     fn open(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, size: (u32, u32)) {
+        // A head that asks for a pane without having been announced one still gets it.
+        self.ensure_the_room_pane();
         self.record_size(pane, size);
         self.render(hub, pane, Req::fresh());
     }
@@ -3301,14 +3354,11 @@ mod tests {
             );
         }
         // It is a tool and not a pane: nothing of the transcript layer's is announced to a head.
-        // **The room's pane is the one this host answers**, and for a different reason — its rows
-        // are the person's four controls, so the HOST is what performs them (`ROOM_HOOK`). A
-        // session that declared no tool would still have that pane and nothing else.
-        assert_eq!(
-            host.panes(),
-            vec!["room/room".to_string()],
-            "the transcript layer draws no pane; the room's is the daemon's own"
-        );
+        // **The room's pane is not here either**, and that is the measurement: this host has no
+        // room feed, and the room's layer is installed lazily at the door a head comes through
+        // (`ensure_the_room_pane`) — a module costs 1.4–2.0 s to compile and a session nobody looks
+        // at must not pay it.
+        assert!(host.panes().is_empty(), "{:?}", host.panes());
         let hub = Hub::new("s-tool");
         host.announce(&hub);
         assert!(
@@ -5633,7 +5683,20 @@ mod tests {
         let workspace = tempdir("room-builtin-ws");
         let host = PluginHost::production("s-room-builtin", &workspace).with_room(link);
         let hub = Hub::new("s-room-builtin");
+        // **Nothing is compiled until a head looks.** The room's module is 218 KB and costs
+        // 1.4–2.0 s of CPU in a debug host, so a session that nobody attaches to must not pay for
+        // it — `ensure_the_room_pane` is called from `attach` and from this door.
+        assert!(
+            host.panes().is_empty(),
+            "a session with no head has no pane: {:?}",
+            host.panes()
+        );
         host.open("s-room-builtin", &hub, "room/room", (100, 30));
+        assert_eq!(
+            host.panes(),
+            vec!["room/room".to_string()],
+            "and the door that asks for it is the door that installs it"
+        );
 
         let (pane, view) = views(&hub)
             .into_iter()
