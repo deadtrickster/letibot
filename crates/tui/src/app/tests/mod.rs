@@ -3,7 +3,9 @@
 
 use super::*;
 
+use crate::ui::loading::{ATTACH_IMPATIENT, BODY_PATIENCE, CAT_FRAMES, CAT_SLOT};
 use crate::ui::render::{RenderConfig, sgr, visible_width, wrap};
+use crate::ui::screen::HOLD_MARKER;
 
 use letibot_sessionlog::client::Unreadable;
 
@@ -1267,35 +1269,6 @@ fn jobs_frame(session_id: &str, jobs: Vec<letibot_sessionlog::protocol::JobEntry
         monitors: Vec::new(),
         session_id: session_id.into(),
         jobs,
-    }
-}
-
-fn backgrounded_finished(handle: &str, call_id: &str) -> SessionEvent {
-    SessionEvent::ToolFinished {
-        turn_id: "t1".into(),
-        call_id: call_id.into(),
-        outcome: letibot_transcript::ToolOutcome::Backgrounded {
-            handle: handle.into(),
-            ran_for_ms: 0,
-            how: letibot_transcript::Backgrounding::Asked,
-            next: "job_wait".into(),
-        },
-        payload_digest: "fnv1a:1".into(),
-        inline_bytes: 0,
-        full_bytes: 0,
-        spill: None,
-        repairs: 0,
-        edit: None,
-    }
-}
-
-fn proposed_bash(call_id: &str, target: &str) -> SessionEvent {
-    SessionEvent::ToolCallProposed {
-        turn_id: "t1".into(),
-        call_id: call_id.into(),
-        name: "bash".into(),
-        args_digest: "fnv1a:2".into(),
-        target: target.into(),
     }
 }
 

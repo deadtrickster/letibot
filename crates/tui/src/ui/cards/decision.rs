@@ -207,6 +207,7 @@ impl App {
     /// The whole card as one list, for the callers that want it whole: the fit loop in
     /// [`App::screen`] does not, because R20 splits it there, so this is the transcript's
     /// shape and the tests' entry point rather than the drawing path.
+    #[cfg(test)]
     pub(crate) fn decision_lines(&self, d: &OpenDecision, w: usize) -> Vec<String> {
         let (mut content, choices) = self.decision_card(d, w);
         content.extend(choices);

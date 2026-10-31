@@ -121,13 +121,11 @@ fn needs(content: &str, status: TodoStatus, on: &[&str]) -> TodoItem {
 
 // -- a parent writing a child's board ---------------------------------
 
-/// The fake daemon half: one child id, one board, a refusal it hands back verbatim —
-/// everything the tool needs to be tested against, and nothing the real resolver does
-/// that the tool relies on (the parentage check and the author stamp are the daemon's,
-/// and are tested where the daemon is).
+/// The fake daemon half: one child id, one board — everything the tool needs to be tested
+/// against, and nothing the real resolver does that the tool relies on (the parentage check and
+/// the author stamp are the daemon's, and are tested where the daemon is).
 struct FakeChildren {
     board: Arc<TodoBoard>,
-    refused: Mutex<Vec<String>>,
 }
 
 impl super::ChildTodos for FakeChildren {
@@ -159,10 +157,7 @@ impl super::ChildTodos for FakeChildren {
 
 fn children_runtime(board: Arc<TodoBoard>) -> (ToolRuntime, Arc<TodoBoard>, Arc<FakeChildren>) {
     let own = Arc::new(TodoBoard::new(vec![]));
-    let fake = Arc::new(FakeChildren {
-        board,
-        refused: Mutex::new(Vec::new()),
-    });
+    let fake = Arc::new(FakeChildren { board });
     let mut reg = Registry::new();
     reg.register(Box::new(super::TodoWriteTool::with_children(
         own.clone(),

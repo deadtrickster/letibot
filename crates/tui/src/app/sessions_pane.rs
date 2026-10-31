@@ -382,12 +382,6 @@ impl Host {
         Ok(pin)
     }
 
-    /// **Re-decide this stack against the book** — a pin taken elsewhere, and the pins whose
-    /// bytes moved. The head has no daemon to be told by, so it asks on its own clock.
-    pub(crate) fn refresh_trust(&mut self) {
-        self.stack.refresh_trust();
-    }
-
     /// **The layer a pane's hook would ask.** A head with a `queue` layer that does not read the
     /// queue feed is not that pane's: it may answer, but it would be drawing rows from data it
     /// never asked for.

@@ -50,7 +50,6 @@ pub(crate) struct CallRow {
 #[derive(Debug, Default)]
 pub(crate) struct TurnPane {
     pub(crate) turn_id: String,
-    pub(crate) model: String,
     pub(crate) text: IncrementalMarkdown,
     /// **The thinking no row holds yet** — not the whole round's reasoning.
     ///

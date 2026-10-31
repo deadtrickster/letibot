@@ -2119,10 +2119,14 @@ fn a_run_takes_the_write_lock_once_per_chunk_not_once_per_row() {
     let commits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     {
         let commits = commits.clone();
-        s.connection().commit_hook(Some(move || {
-            commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            false
-        }));
+        // **A hook that did not install makes every count below zero**, which the assertions would
+        // read as *this batching beats that one* — so the failure is named here instead.
+        s.connection()
+            .commit_hook(Some(move || {
+                commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                false
+            }))
+            .expect("the commit hook installs");
     }
     let count = || commits.load(std::sync::atomic::Ordering::Relaxed);
 

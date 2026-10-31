@@ -205,11 +205,6 @@ pub(crate) fn session_card(text: &str) -> Option<Card> {
     (kind.read)(notice)
 }
 
-/// **Whether a row is one a card draws** — the click map's question, which needs no width.
-pub(crate) fn is_card_row(text: &str) -> bool {
-    session_card(text).is_some()
-}
-
 /// **The card a hub warning is drawn as**, or `None` for a code or a detail no card reads (the
 /// note is then drawn as it always was).
 pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {

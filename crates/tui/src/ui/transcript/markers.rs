@@ -404,7 +404,7 @@ pub(crate) fn reserved_for_run(
     vis: Visibility,
     bound: &std::collections::HashMap<String, String>,
     live: LiveWork,
-    cfg: &RenderConfig,
+    _cfg: &RenderConfig,
     row: usize,
     newest: bool,
 ) -> Option<usize> {
@@ -451,11 +451,8 @@ pub(crate) fn reserved_for_run(
 ///
 /// The dot lives inside the seam string rather than being painted beside it, so the separator
 /// cannot come out in one register and its own key in another.
-pub(crate) fn marker_seam(newest: bool) -> &'static str {
-    marker_seam_rung(newest, 0)
-}
-
-/// **The seam at one rung** — the whole chord, the chord alone, nothing; and the verb instead of
+///
+/// **At one rung** — the whole chord, the chord alone, nothing; and the verb instead of
 /// the chord on a run the chord does not act on. See [`SEAM_RUNGS`].
 pub(crate) fn marker_seam_rung(newest: bool, rung: usize) -> &'static str {
     if !MARKER_SEAM {
@@ -776,10 +773,6 @@ pub(crate) const MARKER_LADDER: [(usize, usize); 6] =
     [(0, 0), (1, 0), (2, 0), (3, 0), (3, 1), (3, 2)];
 
 impl Counts {
-    pub(crate) fn of(calls: usize, think_lines: usize) -> Counts {
-        Counts::at_rung(calls, think_lines, 0, 0)
-    }
-
     /// **The counts spelled at one rung of the ladder** — see [`COUNT_RUNGS`].
     pub(crate) fn at_rung(calls: usize, think_lines: usize, events: usize, rung: usize) -> Counts {
         let (c1, cn, t1, tn, e1, en) = COUNT_RUNGS[rung.min(COUNT_RUNGS.len() - 1)];

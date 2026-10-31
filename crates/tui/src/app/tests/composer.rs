@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::app::composer::{PathCompletion, complete_path_word};
+
 /// **A bare line is not spent on the model while the operator's own command waits.**
 ///
 /// The measured case, 2026-10-09: `! sudo apt install mc`, the password taken, `apt` at

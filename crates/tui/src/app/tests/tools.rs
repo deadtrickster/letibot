@@ -662,9 +662,9 @@ fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_execu
         });
     }
 
-    /// **The daemon's own session, whose one call has finished** — the `ToolFinished` the runtime
-    /// publishes from inside the call (`crates/tools/src/runtime.rs`), with no result row appended
-    /// yet, which is the frame a call's row is one frame away from.
+    // **The daemon's own session, whose one call has finished** — the `ToolFinished` the runtime
+    // publishes from inside the call (`crates/tools/src/runtime.rs`), with no result row appended
+    // yet, which is the frame a call's row is one frame away from.
     let hub = Hub::new("s");
     started(&hub);
     hub.publish(SessionEvent::ToolFinished {

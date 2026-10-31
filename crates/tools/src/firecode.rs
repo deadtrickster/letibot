@@ -1944,8 +1944,6 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
 /// **Shared with `crate::media`**, which needs the same encoder for an image's `data:` URI.
 ///
 /// `pub(crate)` rather than a second copy: this tree's whole ledger of defects tonight is one fact

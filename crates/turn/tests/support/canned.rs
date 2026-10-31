@@ -20,6 +20,11 @@
 //! `tokens` array on the terminal frame and the fabricated id 0 on a progress
 //! frame, because those are the two behaviours the accumulator exists to survive.
 
+// A fixture, not a library: nineteen test binaries include this file by path and each uses the
+// part of it that binary's subject needs, so the rest is dead in that compilation and alive in
+// another. Per-item allows would be nineteen copies of this sentence.
+#![allow(dead_code)]
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread::JoinHandle;

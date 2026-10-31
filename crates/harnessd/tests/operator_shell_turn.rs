@@ -73,7 +73,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use letibot_harnessd::config::{Config, Seat};
 use letibot_harnessd::sessions::{Outcome, Sessions};
@@ -107,10 +106,6 @@ const THE_OUTPUT: &str = "bang-marker-output-the-command-really-ran";
 /// WHICH turn an answer came from.
 const TO_THE_PROMPT: &str = "answering the prompt";
 const TO_THE_BANG: &str = "answering the command";
-
-/// How long the driver waits for something a correct build produces in milliseconds
-/// — generous on purpose, because the assertion is what happened, not how fast.
-const PATIENCE: Duration = Duration::from_secs(20);
 
 fn config(session_id: &str, endpoint: Endpoint, store: &std::path::Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");

@@ -1132,6 +1132,12 @@ const WORKSPACE_GONE: &str = "workspace_gone";
 /// consequence is invisible from the inside: D16 admits a command without a card only *inside a
 /// measured boundary*, so a session without one asks the operator about every `cargo test` — and
 /// an operator who is not told that would read the cards as the gate being broken.
+///
+/// **macOS only**, and that is the shape of the rule rather than an accident: on Linux a boundary
+/// that cannot be built is a refusal, so there is no unconfined session to warn about
+/// (`docs/boundary-and-adjudication.md` §4k). The one arm that publishes this is the macOS
+/// fallback in `Harness::open`, which is behind the same `cfg`.
+#[cfg(target_os = "macos")]
 const BOUNDARY_ABSENT: &str = "boundary_absent";
 
 /// The warning code for a session whose tools run on another machine — where its tree is,
@@ -5016,9 +5022,7 @@ impl Harness {
         // report themselves as nothing anybody can reach; `Confinement` from whether an
         // exec backend was actually built. `Oracle` is on nothing this build can
         // supply, which is why `automode` refuses here rather than being absent.
-        let mut supplies: Option<(Vec<letibot_tools::mode::Prereq>, letibot_tools::mode::Seats)> =
-            None;
-        {
+        let supplies: Option<(Vec<letibot_tools::mode::Prereq>, letibot_tools::mode::Seats)> = {
             use letibot_tools::mode::Prereq;
             let mut have: Vec<Prereq> = Vec::new();
             if backend_writable {
@@ -5109,8 +5113,8 @@ impl Harness {
             // classes — and a point the operator moves to later is checked
             // against the same list, or the move refuses by name exactly as the
             // open would have.
-            supplies = Some((have, seats));
-        }
+            Some((have, seats))
+        };
 
         let trail = Arc::new(TrailMirror::default());
         // **What this session will hold, and the ceiling it states for itself** — see
@@ -24800,7 +24804,6 @@ mod endpoint_retry {
     /// to stop and no boundary to reach. Nothing in the daemon looked, because settlement had three
     /// callers and every one of them was the thread that was gone.
     mod abandoned_call_sweep {
-        use super::*;
         use crate::harness::abandoned_calls;
         use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
 

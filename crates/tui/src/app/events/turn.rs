@@ -180,7 +180,6 @@ impl App {
                 };
                 self.turn = Some(TurnPane {
                     turn_id,
-                    model,
                     state: Some(TurnState::Running),
                     started_ms: started,
                     last_ms: started,

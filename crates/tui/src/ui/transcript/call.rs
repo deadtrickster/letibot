@@ -15,19 +15,6 @@ use rano::style::Role;
 #[cfg(test)]
 pub(crate) use rano::agent::text::{ellipsise_left, header_names_the_file, shorten_subject};
 
-/// The pane's word for how a job came to be in the background — the three causes
-/// `Backgrounding` names, as a person reads them. The distinction is the one the
-/// outcome already draws: who wanted it there.
-pub(crate) fn how_word(how: &letibot_transcript::Backgrounding) -> String {
-    match how {
-        letibot_transcript::Backgrounding::Asked => "asked".into(),
-        letibot_transcript::Backgrounding::Promoted => "promoted".into(),
-        letibot_transcript::Backgrounding::Operator { identity } => {
-            format!("promoted by {identity}")
-        }
-    }
-}
-
 /// The one mapping from engine types to display types.
 ///
 /// `crates/ui/DESIGN.md` §1: the display side (`rano::agent` now) deliberately does not

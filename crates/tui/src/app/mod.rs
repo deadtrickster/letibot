@@ -930,7 +930,7 @@ pub struct App {
     /// invariants are the shape this file has been bitten by, and `Option` makes it
     /// structural.
     ///
-    /// The card itself is one renderer for all four (see `App::setting_picker_lines`): the
+    /// The card itself is one renderer for all four (see `App::setting_picker_layout`): the
     /// choices, the cursor, the click arithmetic and the drawing are shared, because the one
     /// thing this file has already been burned by is a second copy of a list that then
     /// drifts.
@@ -1785,16 +1785,6 @@ pub struct App {
     /// — and a live append is not, so the shape of the evidence separates the two with no
     /// threshold. See [`Bulk`].
     pub(crate) bulk: Option<Bulk>,
-    /// **How many rows the daemon's snapshot left out of the front of this transcript** —
-    /// `Snapshot::items_dropped`, held because it is the base of every row's *session ordinal*,
-    /// and the ordinal is the only name for a row a head can construct when it has to ask the
-    /// store about one (`ClientFrame::FetchRow`). See [`App::ask_the_store_about_the_unfilled`].
-    pub(crate) items_dropped: u64,
-    /// **The ordinal each probe was about, so its answer can be given to the right id.**
-    /// Emptied on every snapshot: a probe is about one view of the transcript, and an answer
-    /// that arrives after the rows were replaced names a position in a transcript this head no
-    /// longer holds.
-    pub(crate) unfilled_at: std::collections::HashMap<usize, String>,
     /// **A fill the daemon named** ([`SessionEvent::Filling`](letibot_sessionlog::SessionEvent::Filling)):
     /// `what`, `unit`, `done`, `total`, or `None` when nothing is running. Cleared the
     /// moment `done >= total`, because the finish is a durable note, not a line that
@@ -2271,8 +2261,6 @@ impl App {
             attach_started_ms: 0,
             cursor: None,
             bulk: None,
-            items_dropped: 0,
-            unfilled_at: std::collections::HashMap::new(),
             filling: None,
             filling_since: 0,
             booting: None,
@@ -2539,7 +2527,6 @@ pub use action::*;
 pub(crate) use asks::*;
 pub(crate) use attention::*;
 pub(crate) use commands::*;
-pub(crate) use composer::*;
 pub use editor::*;
 pub(crate) use events::*;
 pub(crate) use hits::*;

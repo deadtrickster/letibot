@@ -509,7 +509,6 @@ impl App {
             self.model = t.model.clone();
             let mut pane = TurnPane {
                 turn_id: t.turn_id,
-                model: t.model,
                 // No timestamps in a snapshot, so every one of these renders
                 // without a duration rather than with a fabricated one.
                 calls: t

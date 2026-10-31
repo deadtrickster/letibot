@@ -162,7 +162,6 @@ fn a_wait_on_the_operators_row_leaves_their_words_and_status_alone() {
         )]));
         let fake = Arc::new(FakeChildren {
             board: Arc::new(TodoBoard::new(vec![])),
-            refused: Mutex::new(Vec::new()),
         });
         (board, fake)
     };
@@ -270,7 +269,7 @@ fn detach_restores_the_row() {
 /// `todos` — through the real runtime, so the top-level door is the one under test.
 #[test]
 fn a_malformed_wait_on_is_refused_and_writes_nothing() {
-    let (mut rt, board) = runtime_with(vec![item(CRITERION, TodoStatus::InProgress)]);
+    let (rt, board) = runtime_with(vec![item(CRITERION, TodoStatus::InProgress)]);
     let mut sink = RecordingToolSink::new();
     for (args, says) in [
         (

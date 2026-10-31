@@ -334,7 +334,7 @@ impl App {
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let mut covered = |built: &[(usize, RowClass, Vec<String>, Option<Marker>, bool)]| {
+        let covered = |built: &[(usize, RowClass, Vec<String>, Option<Marker>, bool)]| {
             self.hist_lines.len()
                 + built
                     .iter()
@@ -663,7 +663,8 @@ impl App {
 
     /// How many transcript rows this head has rendered. `hist_upto` counts every row
     /// accounted for, and `hist_floor` says how many were deliberately skipped, so the
-    /// difference is what was drawn.
+    /// difference is what was drawn. Read by the tests that pin the budget.
+    #[cfg(test)]
     pub(crate) fn rendered_rows(&self) -> usize {
         self.hist_upto.saturating_sub(self.hist_floor)
     }

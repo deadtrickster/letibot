@@ -52,16 +52,6 @@ unsafe extern "C" {
         parse_special: bool,
     ) -> i32;
 
-    pub fn llama_detokenize(
-        vocab: *const LlamaVocab,
-        tokens: *const LlamaToken,
-        n_tokens: i32,
-        text: *mut c_char,
-        text_len_max: i32,
-        remove_special: bool,
-        unparse_special: bool,
-    ) -> i32;
-
     pub fn llama_token_to_piece(
         vocab: *const LlamaVocab,
         token: LlamaToken,

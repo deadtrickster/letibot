@@ -124,6 +124,7 @@ impl App {
 
     /// **What this reader has read of one kind of notice** — the newest `ts` a `ctrl-n`
     /// covered, or `None` for a kind it has never read.
+    #[cfg(test)]
     pub(crate) fn read_upto(&self, kind: &str) -> Option<u64> {
         self.read_marks
             .iter()

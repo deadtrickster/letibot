@@ -8,18 +8,6 @@ use rano::render::Line;
 use rano::width::text as width;
 
 impl App {
-    /// The live completion row shown above the composer while a `/command` or a
-    /// `!` line is being typed. A `/` line lists its matches, name plus hint; a
-    /// `!` line lists the history's candidates and the model's, with their
-    /// provenance. A prefix nothing matches leaves the row empty rather than absent — the
-    /// row is a slot and its height does not follow its content (see [`App::completion_slot`]
-    /// and the composer block in `compose_screen`) — and Tab will say what went wrong when
-    /// it is asked.
-    pub(crate) fn completions_line(&mut self, w: usize) -> Option<String> {
-        let p = self.cfg.palette();
-        self.completions_legend(w).map(|l| row(&l, p))
-    }
-
     /// **The completions as a line, for the composer's bottom edge** — where they are drawn, so
     /// that typing `/` moves nothing: the operator, 2026-10-08, *"when i type / this gray hint
     /// line appears and conversation jumps one line. i hate that. leticl does this gray thing
@@ -63,6 +51,7 @@ impl App {
     /// (`! git status`), never the marked form (`~! git status`). And nothing
     /// here is submitted — the row is a typing aid, and Enter is still the
     /// operator's.
+    #[cfg(test)]
     pub(crate) fn shell_completions_line(&mut self, w: usize) -> Option<String> {
         let p = self.cfg.palette();
         self.shell_completions_legend(w).map(|l| row(&l, p))

@@ -1145,6 +1145,11 @@ struct FlagRule {
     intent: Intent,
     /// The sentence a person reads. Written for somebody who does not know the flag.
     why: &'static str,
+    /// **Whether a person typed this row or a page produced it.** Read by
+    /// `a_documented_row_is_a_flag_and_not_a_verb`, which is the only reader there is: the field
+    /// travels with the row so a generated table can be told from a hand-argued one, and nothing
+    /// in the decision path branches on it.
+    #[allow(dead_code)]
     provenance: Provenance,
 }
 
@@ -5510,11 +5515,6 @@ fn receiver_expr(before: &str) -> &str {
         }
     }
     &t[..end]
-}
-
-/// The literal path a method's **receiver** is, when it is one.
-fn receiver_path(before: &str) -> Option<String> {
-    literal_path(receiver_expr(before))
 }
 
 /// **Names bound once to a literal path**, for the `p = Path('x')` … `open(p,'w')` shape.

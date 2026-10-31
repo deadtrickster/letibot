@@ -6,6 +6,9 @@ use crate::ui::render::row_strings;
 use rano::agent::picker::{SettingPicker, SettingValue};
 
 impl App {
+    /// The picker's rows as one list — the tests' entry point, since the drawing path reads
+    /// [`App::picker_layout`] for the row spans as well.
+    #[cfg(test)]
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
         self.picker_layout(w).0
     }
@@ -68,20 +71,17 @@ impl App {
     /// the left, `← now` on the right of the current one, then the keys, then the consequence.
     /// The click arithmetic in [`App::screen`] counts on this: the title is one row and the
     /// first value is the next one.
-    pub(crate) fn setting_picker_lines(&self, w: usize) -> Vec<String> {
-        self.setting_picker_layout(w).0
-    }
-
-    /// **The setting card's rows, and which of them belong to which value** — `spans[k]` is
-    /// the range of card rows value `k` (an index into [`App::pick_values`], the order
-    /// `mode_sel` counts in) was drawn on: its own row and the `why` text wrapped under it.
     ///
-    /// Read off rano's own record of where each value's row landed (`PaneLines::stop_rows`),
-    /// not off one-row-per-value arithmetic — a value's meaning wraps under it, so the rows
-    /// below the first one with a `why` were each a value further down than the click counted
-    /// (R67 item 3). A value's span runs to the next value's row; the last one's stops above
-    /// the lines rano puts under the list (the keys, the legend, the consequence), which are
-    /// this function's own fields and so are counted here, not guessed.
+    /// **The rows, and which of them belong to which value** — `spans[k]` is the range of card
+    /// rows value `k` (an index into [`App::pick_values`], the order `mode_sel` counts in) was
+    /// drawn on: its own row and the `why` text wrapped under it.
+    ///
+    /// Read off rano's own record of where each value's row landed (`PaneLines::stop_rows`), not
+    /// off one-row-per-value arithmetic — a value's meaning wraps under it, so the rows below the
+    /// first one with a `why` were each a value further down than the click counted (R67 item 3).
+    /// A value's span runs to the next value's row; the last one's stops above the lines rano puts
+    /// under the list (the keys, the legend, the consequence), which are this function's own
+    /// fields and so are counted here, not guessed.
     pub(crate) fn setting_picker_layout(
         &self,
         w: usize,

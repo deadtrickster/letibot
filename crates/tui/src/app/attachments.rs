@@ -537,8 +537,10 @@ pub(crate) fn save_clipboard_image_under(
 }
 
 /// The tests' clipboard: whatever the test put in it, and nothing else.
+#[cfg(test)]
 pub(crate) struct FakeClipboard(pub(crate) Result<Option<Vec<u8>>, String>);
 
+#[cfg(test)]
 impl Clipboard for FakeClipboard {
     fn image(&self) -> Result<Option<Vec<u8>>, String> {
         self.0.clone()
