@@ -1415,6 +1415,7 @@ mod markerorder;
 mod misc;
 mod monitors;
 mod notes;
+mod onevent;
 mod oneliners;
 mod pane;
 mod paste;

@@ -1113,8 +1113,13 @@ impl App {
                 // **A row of an OPEN run draws itself under that header**, and a row the click's
                 // kind skips draws nothing (that is what `run_skips` is for). A CLOSED run's rows
                 // are not lexed at all, which is the whole point of the marker.
-                let absorbed_here =
-                    crate::app::one_event::is_absorbed(absorbed, notes, dismissed, *hist_upto);
+                let absorbed_here = crate::app::one_event::is_absorbed(
+                    absorbed,
+                    notes,
+                    dismissed,
+                    read_marks,
+                    items[*hist_upto].item_id.as_str(),
+                );
                 let skipped =
                     open_run && crate::app::runclick::run_skips(*lift, &items[*hist_upto]);
                 let (body_class, body) =

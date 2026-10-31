@@ -82,8 +82,10 @@ impl App {
         // the reason the turn in flight is: a head that attached between two rounds has seen no
         // `ActivityChanged`, and the round-level turn would draw it as idle while a call runs.
         self.activity = s.activity.clone();
-        // The rows are replaced, so the pairings by row index go with them (re-made after it).
-        self.absorbed.clear();
+        // The rows are replaced — but a snapshot renumbers nothing, so the rows that come back
+        // under the same ids are the rows a collapse was made on. The pairings are PRUNED below,
+        // where the new rows are known, and not cleared here: clearing them was the event that
+        // un-collapsed every notice (a `/resync`, a reattach, a switch back).
         // **The same conversation, or a different one**, read once and at the top: the
         // session id is assigned a few lines down, and three things here ask the
         // question — what is carried over, and (R19) which of this head's own notes keep
@@ -317,6 +319,22 @@ impl App {
             arriving: false,
         });
         self.items = s.items;
+        // **A collapse is about a ROW, so it goes only with the rows that went.** The pairing is
+        // keyed by `item_id` (see [`App::absorbed`]), and a snapshot hands back the same ids for
+        // the same rows — a `/resync`, a reattach and a switch back all carry the conversation it
+        // was made on. Clearing the map here instead drew every collapsed notice in full again,
+        // which is the operator's *"after certain events all collapsed notifications reappear"*.
+        //
+        // **And a retired one outlives even the session it was made in.** A switch away takes the
+        // rows and with them the pairing — but a note the reader retired is a hide they asked
+        // for, and coming back to a session drew the wall they cleared. The key set is the
+        // head's own (`dismissed`, one list for every session, capped), so an entry it still
+        // names is kept; an evicted one is dropped with the rows. An id is
+        // `{transcript}.{n}` and no two transcripts share one, so a kept id can only ever mean
+        // the row it was made on.
+        self.absorbed.retain(|id, key| {
+            self.items.iter().any(|r| &r.item_id == id) || self.dismissed.contains(key)
+        });
         // **And whether this session's store row holds a conversation the head has not got.**
         // Asked here because this is where the rows are replaced, and asked of both sources in
         // one place: a snapshot can be the empty one a session the daemon has registered but
@@ -847,15 +865,19 @@ impl App {
             .position(|r| r.item_id.starts_with(gone.as_str()))
             .unwrap_or(self.items.len());
         self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
-        // **So the two things this head keeps by row INDEX go with the rows, as `load` drops
-        // them** — the pairings R89 made (`one_event`) and the seams its notes were filed at.
-        // pg-noop, 2026-10-16: a `target_red` warning filed at seam 566 of `#t50` had absorbed
-        // that transcript's `EMERGENCY` notice, row 566; two compactions later row 566 of `#t52`
-        // was the operator's *"how we are doing"*, which drew nothing, and the red card stood
-        // where it should have been with a time seven hours old — *"my latest message simply not
-        // rendered"*. A seam into the rows that went joins the history (`/notes` lists it), the
-        // rule `load` applies to a seam the new transcript no longer has.
-        self.absorbed.clear();
+        // **So the one thing this head keeps by row INDEX goes with the rows** — the seams its
+        // notes were filed at. pg-noop, 2026-10-16: a `target_red` warning filed at seam 566 of
+        // `#t50` had absorbed that transcript's `EMERGENCY` notice, row 566; two compactions later
+        // row 566 of `#t52` was the operator's *"how we are doing"*, which drew nothing, and the
+        // red card stood where it should have been with a time seven hours old — *"my latest
+        // message simply not rendered"*. A seam into the rows that went joins the history
+        // (`/notes` lists it), the rule `load` applies to a seam the new transcript no longer has.
+        //
+        // **The pairings do not go with the indices, because they are not keyed by one.** They
+        // are keyed by the row's own id (see [`App::absorbed`]), and the `retain` above has
+        // already taken the rows that went — so what is left is a pairing whose row is still
+        // here, under an id a fork does not reuse. Pruned, not cleared: a `/reseat` carries the
+        // conversation across, and the collapse of its notice has to cross with it.
         for (place, _) in &mut self.notes {
             if matches!(place, Placed::Seam(at) if *at > kept) {
                 *place = Placed::Before;

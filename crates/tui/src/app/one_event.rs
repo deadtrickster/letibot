@@ -20,7 +20,24 @@
 //! A row holding several notices (a todo check with the stale paragraph under it) is never
 //! absorbed — hiding it would hide the others with it — save a `[restart]` notice followed only
 //! by the `[task]` groups it carries (the children that restart handed over, which its warning
-//! counts). A note the reader retired gives its rows back.
+//! counts).
+//!
+//! # What a row is collapsed BY, and when the collapse ends
+//!
+//! A row is drawn as nothing while **its note's card is on the screen** (a note this head filed at
+//! a seam) **or the reader retired that note**. That second half is the operator's `ctrl-n`: a
+//! retired note is *hidden, counted and listed* (R10), so the rows it stands for stay hidden with
+//! it. Handing them back instead turned a key that clears the screen into one that swaps a
+//! one-line card for the wall it replaced — the operator: *"after certain events all collapsed
+//! notifications reappear"*.
+//!
+//! A note the reader did **not** retire and whose card is not on the screen — a snapshot's
+//! warning, which is `Placed::Before` and is history (R19) — gives its rows back, because the row
+//! is then the only thing that says the event happened.
+//!
+//! **The pairing is a fact about the ROW, not about where it sits**: it is keyed by `item_id`, so a
+//! snapshot that hands back the same rows keeps it (`App::load` and `App::rows_replaced` prune it
+//! to the rows that survive, instead of clearing it).
 
 use super::*;
 use crate::ui::transcript::{job_card, red_card, stale_card};
@@ -121,13 +138,11 @@ impl App {
                 continue;
             };
             let key = note_key(n);
-            if self.dismissed.contains(&key) {
-                continue;
-            }
             let lo = at.saturating_sub(WINDOW);
             let hi = (at + WINDOW).min(self.items.len());
             for r in lo..hi {
-                if self.absorbed.contains_key(&r) || found.iter().any(|(f, _, _)| *f == r) {
+                let id = self.items[r].item_id.as_str();
+                if self.absorbed.contains_key(id) || found.iter().any(|(f, _, _)| *f == r) {
                     continue;
                 }
                 let Some((re, text, system)) = of_row(&self.items[r]) else {
@@ -141,16 +156,15 @@ impl App {
                 let taken = self
                     .absorbed
                     .iter()
-                    .map(|(k, v)| (*k, v))
-                    .chain(found.iter().map(|(k, v, _)| (*k, v)))
-                    .any(|(k, v)| {
-                        *v == key
-                            && self
-                                .items
-                                .get(k)
-                                .and_then(of_row)
-                                .is_some_and(|(_, _, s)| s == system)
-                    });
+                    .filter(|(_, v)| *v == &key)
+                    .filter_map(|(id, _)| self.items.iter().find(|r| &r.item_id == id))
+                    .chain(
+                        found
+                            .iter()
+                            .filter(|(_, v, _)| *v == key)
+                            .filter_map(|(k, _, _)| self.items.get(*k)),
+                    )
+                    .any(|it| of_row(it).is_some_and(|(_, _, s)| s == system));
                 if !taken {
                     found.push((r, key.clone(), *at));
                 }
@@ -165,42 +179,57 @@ impl App {
             .min()
             .unwrap_or(0);
         for (r, key, _) in found {
-            self.absorbed.insert(r, key);
+            let id = self.items[r].item_id.clone();
+            self.absorbed.insert(id, key);
         }
         self.invalidate_history_from(from);
         self.redraw = true;
     }
 }
 
-/// **Whether row `k` is drawn as nothing because a warning's card stands for it** — its note
-/// still held and not retired.
+/// **Whether row `item_id` is drawn as nothing because a warning's card stands for it.**
+///
+/// Two ways for the collapse to hold, and they are one question asked of the note: its card is on
+/// the screen ([`Placed::Seam`] — this head watched the event and filed it between two rows), or
+/// the reader retired it ([`App::is_retired`], which is the same pair `note_retired` asks). A note
+/// that is held but *not* drawn and not retired — a snapshot's warning, `Placed::Before`, history
+/// by R19 — does not collapse its rows: the row is then the only thing that says it happened.
+///
+/// **Retirement does not hand the rows back.** It did, and `ctrl-n` therefore swapped a one-line
+/// card for the wall it had replaced: the operator's *"after certain events all collapsed
+/// notifications reappear"*. A retired note is hidden, counted and listed (R10) — `/notes` names
+/// the event and `/notes restore` brings the card back — so the rows it stands for stay hidden
+/// with it.
 pub(crate) fn is_absorbed(
-    absorbed: &std::collections::HashMap<usize, String>,
+    absorbed: &std::collections::HashMap<String, String>,
     notes: &[(Placed, Note)],
     dismissed: &[String],
-    k: usize,
+    marks: &[(String, u64)],
+    item_id: &str,
 ) -> bool {
-    absorbed.get(&k).is_some_and(|key| {
-        !dismissed.contains(key) && notes.iter().any(|(_, n)| note_key(n) == *key)
+    absorbed.get(item_id).is_some_and(|key| {
+        notes.iter().any(|(place, n)| {
+            note_key(n) == *key
+                && (matches!(place, Placed::Seam(_)) || note_retired(dismissed, marks, n))
+        })
     })
 }
 
 /// **The texts of the rows a note's card stands for**, in transcript order — appended to its
 /// popup under the warning's own text.
 pub(crate) fn absorbed_texts(
-    absorbed: &std::collections::HashMap<usize, String>,
+    absorbed: &std::collections::HashMap<String, String>,
     items: &[SnapshotItem],
     key: &str,
 ) -> Vec<String> {
-    let mut rows: Vec<usize> = absorbed
+    let mut rows: Vec<(usize, String)> = items
         .iter()
-        .filter(|(_, v)| v.as_str() == key)
-        .map(|(k, _)| *k)
+        .enumerate()
+        .filter(|(_, it)| absorbed.get(&it.item_id).is_some_and(|k| k == key))
+        .filter_map(|(at, it)| of_row(it).map(|(_, t, _)| (at, t)))
         .collect();
-    rows.sort_unstable();
-    rows.into_iter()
-        .filter_map(|r| items.get(r).and_then(of_row).map(|(_, t, _)| t))
-        .collect()
+    rows.sort_by_key(|(at, _)| *at);
+    rows.into_iter().map(|(_, t)| t).collect()
 }
 
 /// **A card's popup: its own text and the rows it stands for — the event said ONCE.**

@@ -563,7 +563,7 @@ fn a_fork_does_not_carry_a_red_cards_pairing_onto_the_operators_next_message() {
     assert_eq!(a.card_rows.len(), 1, "{}", screen.join("\n"));
     assert_eq!(a.notice_rows.len(), 0, "{}", screen.join("\n"));
     assert!(
-        a.absorbed.contains_key(&2),
+        a.absorbed.contains_key("s.2"),
         "the premise: row 2 is absorbed"
     );
 

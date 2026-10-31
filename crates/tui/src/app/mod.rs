@@ -1916,10 +1916,17 @@ pub struct App {
     /// until the daemon settles them (`DecisionAnswered`) or refuses the answer (`Rejected`, which
     /// puts the card back in front). See [`App::answer_leaving`].
     pub(crate) answering: Vec<crate::app::todos::Answering>,
-    /// **Rows a warning's card stands for** (R89, one event one row): row index → the key of the
-    /// note whose card draws the event. Such a row draws nothing; its text is in the card's
-    /// popup. See [`one_event`]. Cleared with the rows on a snapshot.
-    pub(crate) absorbed: std::collections::HashMap<usize, String>,
+    /// **Rows a warning's card stands for** (R89, one event one row): the row's `item_id` → the
+    /// key of the note whose card draws the event. Such a row draws nothing; its text is in the
+    /// card's popup. See [`one_event`].
+    ///
+    /// **Keyed by the row's own id and not by its index**, because a snapshot renumbers nothing
+    /// and a `resync` hands back the same rows: an index-keyed map had to be cleared on every
+    /// snapshot, so a `/resync`, a reattach or a switch back **un-collapsed every notice it had
+    /// collapsed** and the rows they stood for came back in full. Pruned to the rows that
+    /// survive instead — `App::load` and `App::rows_replaced` — so the collapse outlives the
+    /// event that replaced the transcript around it.
+    pub(crate) absorbed: std::collections::HashMap<String, String>,
     /// **Todo questions this head has answered and whose board has not come back yet**, as
     /// `(row, question)`. [`App::operator_asks`] leaves them out, so the card can move on to the
     /// next row and the resident line can count what is really left the moment the answer goes;
