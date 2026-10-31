@@ -691,6 +691,10 @@ pub fn mem_sample(
     }
     let sessions = census.len();
     let heads: usize = census.iter().map(|(c, _)| c.heads).sum();
+    // **The term R66 was about**, on the series: what the HARNESSES hold, which the hub's own
+    // numbers (a log, a view, a queue) do not include. A `mem.sample` without it charts a
+    // daemon's resident memory beside counts that never explain it.
+    let harness: usize = census.iter().map(|(c, _)| c.footprint.total()).sum();
     const MIB: u64 = 1 << 20;
     Event::new(kind::MEM_SAMPLE)
         .n1(rss / MIB)
@@ -699,6 +703,7 @@ pub fn mem_sample(
         .attr("threads", threads)
         .attr("sessions", sessions)
         .attr("heads", heads)
+        .attr("harness_mib", harness / MIB as usize)
         .emit();
 }
 
