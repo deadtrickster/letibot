@@ -225,7 +225,22 @@ impl Host {
         // and the daemon's stack reads the same file at its next poll, so one person's answer is
         // in force in both processes. Discovery happens first and `set_trust` re-decides every
         // placed layer against it, so a layer pinned before this head started is free here too.
-        stack.set_trust(letibot_plugins::Trust::open_default());
+        // **And a pin whose bytes moved while this head was not running is SAID**, once: the same
+        // rule the daemon's tick follows (`PluginHost::with_trust`), because the head has no
+        // warning stream of its own and a layer that quietly stopped being yours is the state the
+        // ladder exists to make impossible to miss.
+        let mut broke: Vec<String> = stack
+            .set_trust(letibot_plugins::Trust::open_default())
+            .into_iter()
+            .map(|b| {
+                format!(
+                    "the plugin layer `{}` is not pinned any more: its bytes changed after it was \
+                     pinned — what was pinned is module sha256 {}, and on disk now {}; \
+                     `/plugin trust {}` pins what is there now",
+                    b.name, b.pin.module, b.module, b.name
+                )
+            })
+            .collect();
         // **The built-in scope at the bottom of the stack, and a failure here is SAYABLE.**
         //
         // The head still draws its own list when a built-in will not load — that is the way out
@@ -233,7 +248,10 @@ impl Host {
         // binary whose own layer is broken is a defect, and the person opening the list is owed
         // the sentence. It is recorded once, at build time, because a layer that never loads is
         // never asked and so has no call to fail in.
-        let problem = install_builtins(&mut stack);
+        if let Some(builtin) = install_builtins(&mut stack) {
+            broke.push(builtin);
+        }
+        let problem = (!broke.is_empty()).then(|| broke.join("; "));
         Host {
             stack,
             cache: Mutex::new(Cached::default()),

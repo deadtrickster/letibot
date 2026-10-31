@@ -70,7 +70,7 @@ pub struct DeclaredTool {
     pub capabilities: Vec<Capability>,
 }
 
-/// A layer: where it came from, what it declares, and which bytes it is./// A layer: where it came from, what it declares, and which bytes it is.
+/// A layer: where it came from, what it declares, and which bytes it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
     /// `s3`, `p1`, `u1` — or `b-github-pr` for a built-in.
@@ -367,9 +367,14 @@ impl Stack {
     /// A stack nobody gives a book to has every placed layer untrusted, which is the fail-closed
     /// direction and the reason this is a setter rather than an argument to `discover`: a caller
     /// that forgot it would otherwise be a caller that trusted everything.
-    pub fn set_trust(&mut self, trust: Arc<Trust>) {
+    /// **The answer is the news, and the caller must say it.** A layer whose bytes moved while no
+    /// daemon was running is exactly the case `plugin_untrusted` exists for, and `refresh_trust`
+    /// records a pin as *said* as it answers it — so a caller that dropped this `Vec` would silence
+    /// the one warning the restart path needs. `PluginHost::with_trust` queues it for its first
+    /// tick; the head's `Host::build` puts it in the sentence a person sees.
+    pub fn set_trust(&mut self, trust: Arc<Trust>) -> Vec<BrokenPin> {
         self.trust = Some(trust);
-        self.refresh_trust();
+        self.refresh_trust()
     }
 
     /// The book this stack decides against, if it has one.

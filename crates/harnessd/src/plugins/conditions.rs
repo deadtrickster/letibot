@@ -47,6 +47,7 @@
 //! The capability is checked **first**, before the gate: a program the layer did not declare is
 //! not a call to adjudicate at all.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,6 +133,7 @@ impl PluginConditions for HostConditions {
             host,
             hub: Arc::clone(&self.hub),
             gate: self.gate.clone(),
+            answered: Mutex::new(BTreeMap::new()),
         });
         let condition = PluginCondition::arm(stack, plugin, args)?;
         let note = Some(format!(
@@ -151,16 +153,43 @@ struct StackOver {
     host: Arc<PluginHost>,
     hub: Arc<Hub>,
     gate: Option<Arc<dyn Unasked>>,
+    /// **Which layer ANSWERED each hook, by id** — the last `ask`'s `Resolved::by`.
+    ///
+    /// The look that comes back belongs to the answer that asked for it, and that is not always the
+    /// layer that DECLARES the hook: a pinned layer may pass or trap, and the answer then comes
+    /// from an unpinned one below it. Judging the look by the topmost declarer would let the layer
+    /// below run a program the top one declared, and run it unadjudicated — so the answering layer
+    /// is kept here, and both the capability check and D17's trust decision read it.
+    answered: Mutex<BTreeMap<String, String>>,
 }
 
 impl PluginStack for StackOver {
     fn ask(&self, hook: &str, input: &Value) -> Option<Value> {
         let resolved = self.host.ask(&self.hub, hook, input)?;
+        if let Some(by) = resolved.by.clone() {
+            self.answered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(hook.to_string(), by);
+        }
         resolved.answer
     }
 
     fn look(&self, hook: &str, ask: &letibot_plugin::condition::LookAsk) -> Look {
-        let caps = self.host.capabilities_for(hook);
+        // **The layer whose answer asked**, or — for an answer nobody attributed — the topmost
+        // declarer, which is what every look before this used and is still right for the ordinary
+        // case of one layer per hook.
+        let by = self
+            .answered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(hook)
+            .cloned();
+        let answered = by.as_deref().and_then(|id| self.host.layer(id));
+        let caps = match &answered {
+            Some(layer) => layer.manifest.capabilities.clone(),
+            None => self.host.capabilities_for(hook),
+        };
         let workspace = self.host.workspace();
         match ask {
             letibot_plugin::condition::LookAsk::Read(read) => {
@@ -187,7 +216,9 @@ impl PluginStack for StackOver {
                          run — a capability is declared in plugin.toml and enforced here"
                     )));
                 }
-                if let Some(verdict) = self.adjudicate(hook, program, argv, &workspace) {
+                if let Some(verdict) =
+                    self.adjudicate(hook, program, argv, &workspace, answered.as_ref())
+                {
                     return verdict;
                 }
                 match ChildLook::spawn(argv, &workspace) {
@@ -220,14 +251,18 @@ impl StackOver {
         program: &str,
         argv: &[String],
         workspace: &std::path::Path,
+        answered: Option<&letibot_plugins::Layer>,
     ) -> Option<Look> {
         // **D17's first two arms: a built-in, or a layer whose bytes a person pinned, runs
         // freely** — `exec` included. That is the operator's own rule (*"Only the builtins run
         // freely; anything I place later needs a pin"*), and the pin is what stands in for the
         // judgement a card would otherwise be: a person read these bytes and said they are theirs.
         //
-        // A layer nobody pinned is adjudicated below, on every look, exactly as before.
-        if self.host.free_layer(hook) {
+        // **The layer that ANSWERED, not the one that declares the hook** — the reviewer's hole:
+        // a pinned layer that passes or traps hands the answer to an unpinned layer below it, and
+        // that layer's look must be adjudicated. A look nobody attributed is adjudicated too: the
+        // fail-closed direction, and the one a `None` here has to take.
+        if answered.is_some_and(|layer| layer.trusted) {
             return None;
         }
         let Some(gate) = self.gate.as_deref() else {

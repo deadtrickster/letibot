@@ -49,8 +49,33 @@ struct Tmp {
     path: PathBuf,
 }
 
+/// **The trust book this binary records into — a scratch one, never the operator's.**
+///
+/// `plugin scaffold` records the sha256 of the bytes it wrote (D17's third arm), and the book it
+/// records them in is the box's own by default: `~/.config/letibot/plugin-trust.json`. A test
+/// binary that drives the real desk must not put its fixtures in a person's file, so the path is
+/// named once here and every test in the file uses it.
+///
+/// `Once` and not a plain call, because `set_var` is process-global (Rust 2024 marks it `unsafe`
+/// for that reason): exactly one thread writes it, the value never changes, and every test reaches
+/// it through [`Tmp::new`] before anything reads the environment.
+fn the_books_path() -> &'static Path {
+    static BOOK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BOOK.get_or_init(|| {
+        let path = std::env::temp_dir().join(format!(
+            "letibot-plugins-tool-trust-{}.json",
+            std::process::id()
+        ));
+        // SAFETY: the `Once` runs this once, before any thread that reads the variable can be
+        // past `Tmp::new`, and the value is never changed again.
+        unsafe { std::env::set_var("LETIBOT_PLUGIN_TRUST", &path) };
+        path
+    })
+}
+
 impl Tmp {
     fn new(tag: &str) -> Tmp {
+        the_books_path();
         let path = std::env::temp_dir().join(format!(
             "letibot-plugins-tool-{tag}-{}-{}",
             std::process::id(),

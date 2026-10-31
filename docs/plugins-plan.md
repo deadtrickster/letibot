@@ -204,12 +204,19 @@ reports the records beside the hash it pinned.
 
 | piece | where |
 |---|---|
-| the book (pins + write records), one JSON file in the config dir | `letibot_plugins::Trust` (`crates/plugins/src/trust.rs`) |
+| the book (pins + write records), one JSON file in the config dir — written under a lock, merged by time | `letibot_plugins::Trust` (`crates/plugins/src/trust.rs`) |
 | the decision, per layer | `Layer::trusted` / `Layer::pin`, filled by `Stack::set_trust` and re-decided on every poll (`Stack::refresh_trust`) |
 | a tool call of an unpinned layer | `crates/harnessd/src/plugins/tool.rs` (`PluginTool::admit`) |
 | an `exec` look of an unpinned layer | `crates/harnessd/src/plugins/conditions.rs` (`StackOver::adjudicate`) |
 | the write records | `crates/tools/src/provenance.rs` + `crates/harnessd/src/plugins.rs`'s `Provenance` |
 | the operator's door | `crates/tui` — `/plugin`, `/plugin trust NAME`, `/plugin untrust NAME` |
+
+**The book has two writers in two processes** — the daemon records a write, the head takes or takes
+back a pin — so a save is a read-modify-write under an exclusive lock on `<book>.lock`, merging with
+the file **by time** (`Book::merge`): a pin only stands if it is newer than the revocation of the
+same layer, so a peer's stale copy can neither undo a revocation nor undo a re-pin, and the lock is
+what stops two saves interleaving inside that window. A revocation is a row with a time on it, not
+an absence — an absence cannot be told from *never mentioned*.
 
 **The door is the operator's and not a model's.** The `plugin` tool has no `trust` verb: a layer
 that could pin itself would run freely because it said so, which is the one thing the ladder cannot
@@ -1282,6 +1289,31 @@ why its work runs between the session's turns when the two share a server.
     type stripping, which is a fast transform but code to embed or write, so it comes second.
     This is also the shape §4.11's scripts and the butler's small fixes want, a fix written and
     loaded in one call, so the script world should be designed with them rather than beside them.
+
+    **Not built, 2026-10-31 — and it stops on three decisions this plan does not make.** They are
+    written here because the next session will otherwise re-derive them:
+
+    1. **Where the engine artifact comes from.** No JavaScript engine is available offline on this
+       box — `Cargo.lock` has none and the offline registry cache holds no `quickjs`/`rquickjs`/
+       `boa`/`javy` — and `crates/builtins/build.rs` compiles Rust guests with cargo, not C. So it
+       is a vendored prebuilt module or a crate the boxes cannot fetch. **And that is a decision
+       about the ladder, not about packaging**: a vendored blob compiled into the binary is a
+       BUILT-IN, so §2.5 runs it freely, `exec` included, and the model's `.js` text becomes the
+       only untrusted thing in the path. Nobody should discover that by reading a `build.rs`.
+    2. **What a script layer's module IS.** `Trust::pin` hashes `plugin.wasm` and nothing else, and
+       so do `Layer::sha256`, `has_module`, `poll_changes` and the declaration rule (§4.8's *a
+       manifest and no module*). A `.js` layer as it stands would pin with an EMPTY module hash,
+       and an edit to the `.js` would never un-pin it — a pinned layer could be rewritten by a
+       model and stay free. So step 11 has to say **the script text is the module** — one field on
+       the manifest (`module = "sessions.js"`, default `plugin.wasm`) that the pin, the poll and
+       the declaration rule all read — before any of it can sit on the ladder.
+    3. **The JS-side contract, and the shadow gate's determinism.** Which functions a `.js` layer
+       exports per hook, how it asks for a look, what a trap and a fuel exhaustion mean for the
+       engine, and how §2.4's replay stays exact with a clock and `Math.random` inside it.
+
+    The first two are the ones that block: (1) is a trust decision and (2) is a one-line manifest
+    field that has to be decided before the engine is wired, or the ladder's first arm silently
+    grows a hole.
 
 ## 8. Open questions
 

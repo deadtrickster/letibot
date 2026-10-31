@@ -51,3 +51,40 @@ dir.
   wake test, not in the ladder.
 * A `plugin.wasm` a test rewrites must be a **different length** to be seen on a filesystem with
   coarse mtimes (`poll_changes` compares mtime and len first) — `b"a module"` → `b"a module, rebuilt"`.
+
+## UPDATE 2026-10-31 (the queue refused `1d53ebd1`, and it was right)
+
+The first book merged "mine wins per entry" with a per-process `revoked` list that was never
+serialised. **A merge is only half the fix** — two processes can each read the file, each merge,
+and the second's `rename` discards the first's statement, so a revocation survives on luck with a
+narrow window. And a revocation carried as an ABSENCE cannot be told from *never mentioned*, so a
+peer's stale copy puts the pin back — with a model's ordinary `write` into the layer directory as
+the trigger. What it is now:
+
+* **A revocation is a row with a time on it** (`Book::revoked`), and every merge is decided by
+  `at_ms` (`Book::merge`), so a stale copy can neither undo a revocation nor undo a re-pin. A pin
+  superseded by a newer revocation is dropped from the file entirely, so the book never reads as
+  the opposite of what it means.
+* **`save` is a read-modify-write under an exclusive lock on `<book>.lock`** — `std::fs::File::lock`
+  (stable since 1.89; this box's rustc has it), a SIDECAR because the book itself is written by
+  `rename` and a lock on the old inode says nothing about the new one.
+* The timestamps come from `Book::next_ms` — strictly greater than every statement in the book — so
+  two acts in one millisecond are still ordered and a backwards clock cannot invert them.
+
+**The seam that proves it has to be thread-scoped.** `#[cfg(test)] test_seam` pauses `save` between
+its read and its rename so a test can land a second writer in the window. A process-wide static
+fired inside *another* parallel test's save and took it down (`a_stale_book_cannot_put_back_the_pin_
+that_a_byte_change_replaced` failed with the first test's message). It now stores the installing
+thread's id and only that thread can trip it.
+
+**Two more things the same review found, both real:** `Stack::set_trust` discarded the
+`Vec<BrokenPin>` it returns — and `refresh_trust` marks a pin as said as it answers it, so a pin
+that broke while no daemon ran was never published (now queued by `PluginHost::with_trust` and said
+on the first tick; the head puts it in `problem`); and an `exec` look was judged by the topmost
+layer that DECLARES the hook rather than the layer whose ANSWER asked for it, so an unpinned layer
+below a pinned one ran unadjudicated (`StackOver` now keeps `Resolved::by` per hook, and the
+capability check reads it too).
+
+**And a test binary must not write the operator's book**: `LETIBOT_PLUGIN_TRUST` names the file
+(empty = no book), which `crates/harnessd/tests/plugins_tool.rs` sets once per process to a scratch
+path, because `plugin scaffold` records provenance through the real desk.

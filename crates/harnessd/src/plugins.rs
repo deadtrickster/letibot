@@ -133,6 +133,9 @@ struct Inner {
     notices: Vec<String>,
     /// When the next hot-reload poll is due.
     poll_at: Instant,
+    /// **Pins whose bytes moved before this host existed** — `with_trust`'s answer, held for the
+    /// first tick that can say them. See [`PluginHost::with_trust`].
+    broken_pins: Vec<letibot_plugins::BrokenPin>,
 }
 
 /// What the host knows about one open pane.
@@ -212,6 +215,7 @@ impl PluginHost {
                 said: BTreeSet::new(),
                 notices: Vec::new(),
                 poll_at: Instant::now() + POLL_EVERY,
+                broken_pins: Vec::new(),
             }),
             builder,
             sessions: None,
@@ -256,8 +260,18 @@ impl PluginHost {
 
     /// **Hand this host D17's trust book** — which placed layers a person has pinned, and which
     /// ones have changed since. See [`letibot_plugins::Trust`].
+    ///
+    /// **A pin that broke while no daemon was running is news, and this is where it arrives.**
+    /// `Stack::set_trust` re-decides every layer and answers the pins whose bytes moved — and it
+    /// records them as said as it answers them, so a caller that dropped the answer would silence
+    /// the warning for exactly the case it exists for. So they are queued, and the first
+    /// [`PluginHost::tick`] says them (`plugin_untrusted`). Nothing runs free in the meantime: the
+    /// refusal sentences already name both hashes.
     pub fn with_trust(self, trust: Arc<letibot_plugins::Trust>) -> PluginHost {
-        self.lock().stack.set_trust(trust);
+        let news = self.lock().stack.set_trust(trust);
+        if !news.is_empty() {
+            self.lock().broken_pins.extend(news);
+        }
         self
     }
 
@@ -544,7 +558,9 @@ impl PluginHost {
         // or not the gate has caught up with the module.
         let broken = {
             let mut inner = self.lock();
-            inner.stack.refresh_trust()
+            let mut broken = std::mem::take(&mut inner.broken_pins);
+            broken.extend(inner.stack.refresh_trust());
+            broken
         };
         for pin in broken {
             self.say_broken_pin(&hub, &pin);
@@ -4793,6 +4809,117 @@ mod tests {
             .find(|i| !i["look"].is_null())
             .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
         assert_eq!(handed["look"]["exit"], json!(0), "the program really ran");
+    }
+
+    /// **The look belongs to the layer whose ANSWER asked for it, not to the one that declares the
+    /// hook** — the reviewer's hole, closed.
+    ///
+    /// A PINNED layer sits on top and passes the hook; the answer therefore comes from an UNPINNED
+    /// layer below it, and the `exec` look in that answer is the unpinned layer's. Judged by the
+    /// topmost declarer (what this used to do) the look ran unadjudicated, because the top layer
+    /// was free — so an unpinned layer could run a program through a pinned layer's good name.
+    /// Judged by the answering layer it is adjudicated, and this gate refuses everything.
+    #[test]
+    fn an_exec_look_is_judged_by_the_layer_whose_answer_asked_for_it() {
+        use letibot_tools::exec::plugin_condition::PluginConditions as _;
+        let root = tempdir("look-answerer");
+        let table = Table::new();
+        // `b-top` sorts last, so it is the newest and sits on top. It passes everything.
+        table.layer_with_caps(
+            &root,
+            "a-bottom",
+            &["exec:true"],
+            &[(
+                "condition_shell",
+                vec![
+                    Some(json!({"look": {"exec": ["true"]}, "every_s": 5})),
+                    Some(json!({"fired": "the look came back"})),
+                ],
+            )],
+        );
+        table.layer_with_caps(
+            &root,
+            "b-top",
+            &["exec:true"],
+            &[("condition_shell", vec![Some(json!({"pass": true}))])],
+        );
+        let book = letibot_plugins::Trust::in_memory();
+        book.pin("b-top", &root.join(".letibot/plugins/b-top"))
+            .expect("the top layer is the operator's");
+        let host = Arc::new(table_host(&root, &table).with_trust(book.clone()));
+        // The premise, asserted rather than assumed: the top layer is free and the one that
+        // answers is not.
+        assert!(
+            host.free_layer("condition_shell"),
+            "the topmost declarer is pinned, which is what made the old rule wrong"
+        );
+
+        let probe = ProbeGate::refusing(|| {
+            GateDecision::refuse_and_tell(
+                letibot_transcript::ToolOutcome::NotRun {
+                    why: "would need your approval: an unpinned layer's `exec`".into(),
+                },
+                "",
+            )
+        });
+        let armed = conditions_with(&host, Some(probe.clone()))
+            .arm("shell", json!({}))
+            .expect("armed");
+        assert_eq!(until_fired(&armed.condition), "the look came back");
+        assert!(
+            !probe.seen().is_empty(),
+            "the answering layer is unpinned, so its look meets the gate: the top layer's pin \
+             cannot stand in for the layer below it"
+        );
+        let seen = host.lock().rec.inputs("condition_shell").to_vec();
+        let handed = seen
+            .iter()
+            .find(|i| !i["look"].is_null())
+            .unwrap_or_else(|| panic!("the look's result was handed back: {seen:?}"));
+        assert_ne!(
+            handed["look"]["exit"],
+            json!(0),
+            "the refused look did not run: {handed}"
+        );
+    }
+
+    /// **A pin that broke while no daemon was running is still SAID.** `with_trust` re-decides every
+    /// layer and `refresh_trust` records a broken pin as said as it answers it, so a host that
+    /// dropped that answer would silence `plugin_untrusted` for exactly the restart case it exists
+    /// for. The first tick says it.
+    #[test]
+    fn a_pin_that_broke_before_the_host_existed_is_said_on_its_first_tick() {
+        let root = tempdir("pin-broken-restart");
+        let table = Table::new();
+        table.layer_with_caps(
+            &root,
+            "one",
+            &[],
+            &[("pane_dashboard", says(json!({"title": "one"})))],
+        );
+        let book = letibot_plugins::Trust::in_memory();
+        let dir = root.join(".letibot/plugins/one");
+        let pin = book.pin("one", &dir).expect("a pin");
+        // The bytes move while nothing is running: a rebuild the daemon never saw.
+        std::fs::write(dir.join("plugin.wasm"), b"a module, rebuilt and longer")
+            .expect("a rebuild");
+
+        // A host built NOW — the restart — is the first thing to see the broken pin.
+        let host = Arc::new(table_host(&root, &table).with_trust(book.clone()));
+        let hub = Hub::new("s-plugins");
+        Arc::clone(&host).tick(hub.clone());
+
+        let said = warned(&hub, "plugin_untrusted");
+        assert_eq!(said.len(), 1, "the broken pin is said once: {said:?}");
+        assert!(said[0].contains("`one`"), "{}", said[0]);
+        assert!(
+            said[0].contains(&pin.module),
+            "the pinned hash: {}",
+            said[0]
+        );
+        // And it is said ONCE: a tick every two seconds is not a wall.
+        Arc::clone(&host).tick(hub.clone());
+        assert_eq!(warned(&hub, "plugin_untrusted").len(), 1);
     }
 
     /// **A look the gate admits RUNS** — and what the gate was asked is the call a `bash` of that
