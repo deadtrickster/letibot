@@ -317,6 +317,7 @@ scope_ok() {
     && systemd-run --user --scope --quiet --collect --expand-environment=no true >/dev/null 2>&1
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
+DETACHES=0
 scope_run() { # scope_run UNIT-STEM
   SCOPE_RUN=()
   if scope_ok; then
@@ -327,10 +328,17 @@ scope_run() { # scope_run UNIT-STEM
   fi
 }
 detach() { # detach COMMAND [ARGS...]
+  # **Two detaches from one launcher must not want one scope name.** The name is
+  # `letibot-harnessd-$KEY-$$`, and `$$` is the launcher's pid — so once the ROOM autostarts
+  # beside a session daemon, the second `systemd-run --unit` is refused: *"Unit
+  # letibot-harnessd-…-1272849.scope was already loaded or has a fragment file"*. MEASURED
+  # 2026-10-31 on the first `leticode` in a folder with no daemon: the room took the name and
+  # the daemon could not start. A counter per run is what makes each its own scope.
+  DETACHES=$((DETACHES + 1))
   if [ "$HOST_OS" = Darwin ]; then
     /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
   else
-    scope_run letibot-harnessd
+    scope_run "letibot-harnessd-$DETACHES"
     ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} setsid "$@"
   fi
 }
