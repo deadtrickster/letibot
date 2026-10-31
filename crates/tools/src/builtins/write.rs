@@ -349,7 +349,8 @@ mod tests {
         let mut h = writable_harness();
         let keeps = std::sync::Arc::new(Keeps(std::sync::Mutex::new(Vec::new())));
         h.rt.provenance = Some(keeps.clone());
-        let manifest = "name = \"one\"\npurpose = \"p\"\nhooks = []\ncapabilities = []\ncontract = 1\n";
+        let manifest =
+            "name = \"one\"\npurpose = \"p\"\nhooks = []\ncapabilities = []\ncontract = 1\n";
         let r = h.call(
             "write",
             &serde_json::json!({

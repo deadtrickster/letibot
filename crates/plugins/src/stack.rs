@@ -841,7 +841,8 @@ impl Stack {
                 // pin no longer holds is news the next `refresh_trust` says.
                 let manifest_sha256 =
                     sha256_file(&dir.join(MANIFEST)).unwrap_or_else(|_| String::new());
-                let (trusted, pin) = self.standing_of(&dir, &self.layers[i].sha256, &manifest_sha256);
+                let (trusted, pin) =
+                    self.standing_of(&dir, &self.layers[i].sha256, &manifest_sha256);
                 self.layers[i].manifest_sha256 = manifest_sha256;
                 self.layers[i].trusted = trusted;
                 self.layers[i].pin = pin;
@@ -1235,19 +1236,28 @@ mod tests {
         assert!(said.contains("not pinned"), "{said}");
 
         // Arm 2, the other half: pinning the bytes it has now makes it free.
-        let pin = book.pin("one", &t.path().join("project/.letibot/plugins/one"))
+        let pin = book
+            .pin("one", &t.path().join("project/.letibot/plugins/one"))
             .expect("a pin");
         assert!(s.refresh_trust().is_empty(), "nothing was pinned before");
         let placed = s.layer("p1").expect("the project layer");
         assert!(placed.trusted, "a pinned layer runs freely");
-        assert_eq!(placed.pin.as_ref().map(|p| p.module.as_str()), Some(pin.module.as_str()));
+        assert_eq!(
+            placed.pin.as_ref().map(|p| p.module.as_str()),
+            Some(pin.module.as_str())
+        );
     }
 
     #[test]
     fn a_module_rebuilt_after_its_pin_un_pins_the_layer_and_the_stack_says_so_once() {
         let t = TempDir::new("trust-broken");
         let root = t.path().join("project/.letibot/plugins");
-        layer(&root, "one", &["pane_dashboard"], Act::answer(json!({"from": "v1"})));
+        layer(
+            &root,
+            "one",
+            &["pane_dashboard"],
+            Act::answer(json!({"from": "v1"})),
+        );
         let book = Trust::in_memory();
         let mut s = stack(&t);
         s.set_trust(book.clone());
@@ -1267,7 +1277,10 @@ mod tests {
         assert!(!placed.trusted, "the pin was about the old bytes");
         let said = placed.untrusted_sentence();
         assert!(said.contains(&pin.module), "the pinned hash: {said}");
-        assert!(said.contains(&placed.sha256), "and what is there now: {said}");
+        assert!(
+            said.contains(&placed.sha256),
+            "and what is there now: {said}"
+        );
         let rebuilt = placed.sha256.clone();
 
         // Said once, by name: the news a host turns into a `plugin_untrusted` warning.
@@ -1276,7 +1289,10 @@ mod tests {
         assert_eq!(news[0].layer, "p1");
         assert_eq!(news[0].pin.module, pin.module);
         assert_eq!(news[0].module, rebuilt);
-        assert!(s.refresh_trust().is_empty(), "a poll every two seconds is not news twice");
+        assert!(
+            s.refresh_trust().is_empty(),
+            "a poll every two seconds is not news twice"
+        );
     }
 
     #[test]

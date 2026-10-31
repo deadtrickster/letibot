@@ -494,7 +494,8 @@ impl InvokeCtx<'_> {
             return;
         }
         let workspace = self.backend.workspace_path().map(std::path::PathBuf::from);
-        let absolute = crate::provenance::absolute(std::path::Path::new(path), workspace.as_deref());
+        let absolute =
+            crate::provenance::absolute(std::path::Path::new(path), workspace.as_deref());
         sink.wrote(&absolute, bytes);
     }
 
@@ -534,7 +535,11 @@ impl InvokeCtx<'_> {
             target_exists: None,
             scripts: &scripts,
         };
-        Some(gate.lock().unwrap_or_else(|e| e.into_inner()).admit_unasked(&call))
+        Some(
+            gate.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .admit_unasked(&call),
+        )
     }
 
     /// **Put a memory ask above the ceiling to the operator.** See [`Gate::grant_memory`].

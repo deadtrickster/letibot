@@ -762,6 +762,20 @@ impl App {
                 let name = verb_arg(cmd, "pane").unwrap_or("").trim().to_string();
                 self.open_plugin(&name)
             }
+            // **D17's ladder, and the person who decides it.** `/plugin` lists the layers a person
+            // placed with what the book says about each; `/plugin trust NAME` pins the bytes on
+            // disk now. It is the OPERATOR's door and the `plugin` tool has no such verb: a layer
+            // that could pin itself would run freely because it said so.
+            "plugin" => {
+                self.slash_out = Some(("/plugin".to_string(), self.plugin_trust_listing()));
+                self.push_surface(Surface::Listing);
+                None
+            }
+            _ if verb_arg(cmd, "plugin").is_some() => {
+                let said = self.trust_plugin(verb_arg(cmd, "plugin").unwrap_or(""));
+                self.say(&said);
+                None
+            }
             // **The merge queue**, and it is not this session's: there is one `main` and one
             // queue, so the pane asks for the whole thing and the daemon answers with it.
             //
@@ -1593,6 +1607,12 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
         "pane",
         "the plugin panes this session has — /pane NAME opens one: a dashboard a plugin \
          describes, drawn by this head",
+    ),
+    (
+        "plugin",
+        "the plugin layers a person placed here, and whether each is pinned — /plugin trust NAME \
+         pins the bytes on disk now (a built-in needs no pin: it is this binary's own), \
+         /plugin untrust NAME takes a pin back",
     ),
     (
         "queue",

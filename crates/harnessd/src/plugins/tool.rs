@@ -277,9 +277,12 @@ impl PluginTool {
         decider: Option<&dyn Decides>,
         args: &Value,
     ) -> Option<Invocation> {
-        let Some(layer) = host.layer(&self.layer) else {
+        let Some(layer) = host.layer_in(&self.layer, self.scope) else {
             return Some(Invocation::not_run(
-                format!("the plugin layer `{}` is not on this session's stack", self.layer),
+                format!(
+                    "the plugin layer `{}` is not on this session's stack",
+                    self.layer
+                ),
                 format!(
                     "`{}` is declared by `{}` ({}) and this session's stack does not hold that \
                      layer any more — it was removed, disabled and dropped, or the declaration is \

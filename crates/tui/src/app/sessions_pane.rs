@@ -221,6 +221,11 @@ impl Host {
             user_config_dir().as_deref(),
             Arc::new(RanoLoader),
         );
+        // **D17's book, and the head is where a pin is TAKEN** — `/plugin trust NAME` writes it,
+        // and the daemon's stack reads the same file at its next poll, so one person's answer is
+        // in force in both processes. Discovery happens first and `set_trust` re-decides every
+        // placed layer against it, so a layer pinned before this head started is free here too.
+        stack.set_trust(letibot_plugins::Trust::open_default());
         // **The built-in scope at the bottom of the stack, and a failure here is SAYABLE.**
         //
         // The head still draws its own list when a built-in will not load — that is the way out
@@ -258,6 +263,10 @@ impl Host {
             return;
         }
         self.next_poll = now_ms.saturating_add(POLL_MS);
+        // **The book before the modules**: a pin taken by another process (or one whose bytes
+        // moved) decides a layer without any module having changed, and a pane drawn from a layer
+        // that stopped being pinned should say so on this head's own clock rather than a daemon's.
+        self.stack.refresh_trust();
         let candidates = self.stack.poll_changes();
         if candidates.is_empty() {
             return;
@@ -280,6 +289,79 @@ impl Host {
                 state.clear();
             }
         }
+    }
+
+    /// **The layers a person could pin, with what the book says about each** — `/plugin`'s listing,
+    /// and the answer `/plugin trust NAME` reports back.
+    ///
+    /// A built-in is not in it: it runs freely by definition, and a list of things that need no
+    /// decision is a list that hides the ones that do.
+    pub(crate) fn placed(&self) -> Vec<letibot_plugins::Layer> {
+        self.stack.placed().into_iter().cloned().collect()
+    }
+
+    /// **Pin a layer's bytes as they are now** — the operator's one act in D17's ladder.
+    ///
+    /// The pin is taken through the head's own book (`Trust`), so the file is written once and
+    /// the daemon reads it; and this stack is re-decided immediately, so the pane the person is
+    /// looking at does not wait for a poll to agree.
+    pub(crate) fn pin(&mut self, name: &str) -> Result<(letibot_plugins::Pin, String), String> {
+        let layer = self.stack.layer_named(name).cloned().ok_or_else(|| {
+            let names: Vec<String> = self
+                .stack
+                .placed()
+                .iter()
+                .map(|l| l.manifest.name.clone())
+                .collect();
+            format!(
+                "no placed layer `{name}` — this session's stack has [{}]",
+                names.join(", ")
+            )
+        })?;
+        if layer.scope == letibot_plugins::Scope::BuiltIn {
+            return Err(format!(
+                "`{name}` is a built-in — it is part of this binary, and D17 runs the built-ins \
+                 freely: there is nothing to pin"
+            ));
+        }
+        let trust = self.stack.trust().cloned().ok_or_else(|| {
+            "this head has no trust book open, so nothing could be recorded".to_string()
+        })?;
+        let pin = trust.pin(&layer.manifest.name, &layer.dir)?;
+        self.stack.refresh_trust();
+        // **Who wrote them**, when a tool did — the third arm, reported beside the hash so the
+        // person pinning knows whether these bytes are the model's or their own.
+        let wrote = trust
+            .writes_for(&layer.dir)
+            .into_iter()
+            .map(|w| format!("{} (session {})", w.path, w.session))
+            .collect::<Vec<_>>();
+        Ok((pin, wrote.join("; ")))
+    }
+
+    /// **Take a pin back** — `/plugin untrust NAME`.
+    pub(crate) fn unpin(&mut self, name: &str) -> Result<letibot_plugins::Pin, String> {
+        let trust = self
+            .stack
+            .trust()
+            .cloned()
+            .ok_or_else(|| "this head has no trust book open".to_string())?;
+        let pin = trust
+            .unpin(name)
+            .or_else(|| {
+                self.stack
+                    .layer_named(name)
+                    .and_then(|l| trust.unpin(&l.dir.display().to_string()))
+            })
+            .ok_or_else(|| format!("nothing is pinned as `{name}`"))?;
+        self.stack.refresh_trust();
+        Ok(pin)
+    }
+
+    /// **Re-decide this stack against the book** — a pin taken elsewhere, and the pins whose
+    /// bytes moved. The head has no daemon to be told by, so it asks on its own clock.
+    pub(crate) fn refresh_trust(&mut self) {
+        self.stack.refresh_trust();
     }
 
     /// **The layer a pane's hook would ask.** A head with a `queue` layer that does not read the

@@ -1449,6 +1449,7 @@ mod paste;
 mod payloadwindow;
 mod pictures;
 mod plugin_pane;
+mod plugin_trust;
 mod queue;
 mod queue_plugin;
 mod reach;

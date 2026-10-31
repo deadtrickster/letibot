@@ -178,6 +178,49 @@ change to the live session, hot. On a box with a session VM the build and the sh
 it; the shadow is discarded either way. Layers the session's model writes itself take the same
 path — there is no way to apply a change that skips the gate.
 
+### 2.5 Trust: a built-in runs freely, and a placed layer needs a pin — **built 2026-10-31**
+
+The operator, restating D17 on 2026-10-31: *"Only the builtins run freely; anything I place later
+needs a pin."* Three arms, and the second is the one that costs a person something:
+
+1. **A built-in runs freely**, `exec` included. It is the binary's own bytes; nobody placed them at
+   run time, so there is nothing to decide (`Stack::register_builtin_shared` marks it free).
+2. **A placed layer needs a pin.** A pin is the SHA-256 of the layer's module AND of its
+   `plugin.toml`, taken by a person (`/plugin trust NAME`). A layer whose bytes match a pin is free.
+   **Every other layer a person or a model put on disk is adjudicated on every call** — its tool
+   calls and its `exec` looks go through `Gate::admit_unasked`, which admits by the session's own
+   rules or refuses, and never raises a card: a layer cannot put a question to a person.
+3. **A byte change after the pin un-pins it.** The pin is a statement about bytes, so a layer
+   rebuilt or edited after it was pinned is adjudicated again, and the sentence names the layer and
+   BOTH hashes (what was pinned, what is on disk now). It is said once, by name, as the
+   `plugin_untrusted` warning.
+
+**Provenance is recorded, not inferred.** `write` and `edit` report the bytes they landed
+(`letibot_tools::provenance::Sink`), and the daemon appends a record for anything that is about a
+layer — a `plugin.toml`, a module, or a file beside one — so *who wrote these bytes* is a fact on
+disk rather than a guess from a path. **The ladder never consults it**: an unpinned layer is
+adjudicated whatever wrote it, so the weaker fact can never widen what runs. `/plugin trust`
+reports the records beside the hash it pinned.
+
+| piece | where |
+|---|---|
+| the book (pins + write records), one JSON file in the config dir | `letibot_plugins::Trust` (`crates/plugins/src/trust.rs`) |
+| the decision, per layer | `Layer::trusted` / `Layer::pin`, filled by `Stack::set_trust` and re-decided on every poll (`Stack::refresh_trust`) |
+| a tool call of an unpinned layer | `crates/harnessd/src/plugins/tool.rs` (`PluginTool::admit`) |
+| an `exec` look of an unpinned layer | `crates/harnessd/src/plugins/conditions.rs` (`StackOver::adjudicate`) |
+| the write records | `crates/tools/src/provenance.rs` + `crates/harnessd/src/plugins.rs`'s `Provenance` |
+| the operator's door | `crates/tui` — `/plugin`, `/plugin trust NAME`, `/plugin untrust NAME` |
+
+**The door is the operator's and not a model's.** The `plugin` tool has no `trust` verb: a layer
+that could pin itself would run freely because it said so, which is the one thing the ladder cannot
+survive. The book lives in `$XDG_CONFIG_HOME/letibot/plugin-trust.json` and not beside the layer it
+is about, for the same reason — a pin written where a model can write is not a pin.
+
+**What is NOT adjudicated, and why**: a `pane_`, `notice_`, `command_` or `digest_` answer. Those
+hooks reach nothing — they answer JSON, the host validates it against the contract, and a look they
+ask for is capability-checked against the manifest. The ladder decides what a layer can *do*, and a
+layer that answers words does nothing.
+
 ## 3. Capabilities
 
 Declared in `plugin.toml`, enforced by the host at the moment a plugin declares a look:
@@ -195,6 +238,11 @@ Declared in `plugin.toml`, enforced by the host at the moment a plugin declares 
 the merge — the capability list is part of the reviewed diff. Session plugins: the first time a
 session plugin is loaded with a capability, the operator gets one question (an ask card naming the
 plugin, the capability, and the plugin's one-line purpose); allow-all answers it yes.
+
+**A capability says what a layer MAY do; §2.5's ladder says whether it does it freely.** A
+capability is still enforced either way — a look outside the manifest's lines is refused whatever
+the layer's trust — but an unpinned layer's `exec` look also meets the gate, and a built-in's or a
+pinned one's does not.
 
 ### 3.1 Two ABIs: rano's, and WASI
 
@@ -633,9 +681,11 @@ over and an age is one subtraction.
 
 A feed is read-only data the host is already showing; it adjudicates nothing, and declaring it is
 the whole of the grant. **A pane gets no `exec` look today**: `look::EXEC_REFUSED`
-(`crates/harnessd/src/plugins/look.rs`) refuses one, and it stays refused until D17 is built — after
-which the rule is who wrote the layer: a layer the operator wrote (or pinned by hash) may exec from
-a pane, and a model's may not. Nothing here builds that.
+(`crates/harnessd/src/plugins/look.rs`) refuses one. D17 is built (§2.5) and it decides what a
+layer's `exec` looks are worth — a built-in's and a pinned layer's run freely, an unpinned one's
+meet the gate — but the pane's own look runner still refuses `exec` outright, so a layer that may
+exec from a condition may not yet exec from a pane. That is a change of one refusal, not of the
+ladder.
 
 **Acts.** What a row's Enter does is a verb the HOST performs, declared in the same manifest so a
 reviewer reads it:
@@ -1020,11 +1070,13 @@ hook: a layer that traps must not be able to trap again about its own trap.
 
 **What is decided about an `exec` look.** An `exec` look runs under the answering layer's
 `exec:<program>` capability (the capability is checked first: a program the layer did not declare
-is not a call anybody adjudicates) **and through the adjudicator** — §1 principle 2, so a plugin
-can do nothing the model could not. It goes through it **without asking**: the look runs on the
-session's monitor thread, so a card would park that thread — and the watch with it — until a person
-answered. `letibot_tools::Gate::admit_unasked` is therefore the entry, and it is the same ladder as
-`admit` stopped at the card:
+is not a call anybody adjudicates) **and — for a layer nobody pinned — through the adjudicator**,
+§1 principle 2, so a plugin can do nothing the model could not. **A built-in's and a pinned
+layer's look does not meet the gate at all** (D17, §2.5: *"only the builtins run freely"*), which
+is the operator's own rule about who placed the bytes. For an unpinned layer it goes through it
+**without asking**: the look runs on the session's monitor thread, so a card would park that
+thread — and the watch with it — until a person answered. `letibot_tools::Gate::admit_unasked` is
+therefore the entry, and it is the same ladder as `admit` stopped at the card:
 
 * **admitted** by a `permission` rule, a standing grant, the point the session sits at, or a
   measured boundary (D16) → the look runs, as it always did;
@@ -1189,7 +1241,7 @@ why its work runs between the session's turns when the two share a server.
     | the table, the build script, `install` | `crates/builtins` (`build.rs` compiles `plugins/builtin/*`; `lib.rs` is `table()` and `Stack::register_builtin_bytes`) |
     | the guest's ABI half | `plugins/builtin/abi` — `rano_abi`, `rano_alloc`, the answer arena, the result block |
     | **the session list** | `plugins/builtin/sessions` — the groups, the names, the counts, the acts and so the hint line; its own native tests are `src/tests.rs` |
-    | the bytes path | `letibot_plugins::Loader::load_bytes` / `Loader::load_builtin` (the same bytes, compiled once per process), `Stack::register_builtin_bytes` / `register_builtin_shared`, and `letibot_plugins::Layer::trusted` (D17's place) |
+    | the bytes path | `letibot_plugins::Loader::load_bytes` / `Loader::load_builtin` (the same bytes, compiled once per process), `Stack::register_builtin_bytes` / `register_builtin_shared`, and `letibot_plugins::Layer::trusted` / `Layer::pin` — D17's ladder, §2.5, built 2026-10-31 |
     | the head's host | `crates/tui/src/app/sessions_pane.rs` — its own stack (the session's, the project's, the user's, then the built-ins), the feed, the acts, the fold state, and the way out |
     | the C3 additions | `crates/plugin-sdk/src/pane.rs` (`Input`, `Feed`, `Act`, `Fold`, `Cell`), `crates/sessionlog/src/pane.rs` (`Row`'s `facts`/`under`/`number`/`depth`/`open`/`enter`, `Tree::empty`, `View::validate_for`) |
     | the example | `plugins/examples/sessions-override` — a project layer that calls below, renames a group and hides its rows |

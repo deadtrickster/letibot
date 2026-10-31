@@ -471,4 +471,108 @@ impl App {
     pub(crate) fn plugin_badge(&self) -> Option<(String, rano::style::Role)> {
         self.plugin_view().and_then(view::badge)
     }
+
+    // ----------------------------------------------------------------------------------------
+    // D17's ladder: the operator's own door
+    // ----------------------------------------------------------------------------------------
+
+    /// **`/plugin`** — every layer this session has that a person PLACED, and what D17's book says
+    /// about each: pinned (these bytes are mine) or not (adjudicated call by call).
+    ///
+    /// A built-in is not in the list. The operator's rule is *"only the builtins run freely"*, so a
+    /// row for one would be a row with no decision to make, and a list of things that need no
+    /// decision hides the ones that do.
+    pub(crate) fn plugin_trust_listing(&self) -> Vec<String> {
+        let slot = self.plugin_host();
+        let Some(host) = slot.as_ref() else {
+            return vec!["this head has no plugin stack for this folder".to_string()];
+        };
+        let placed = host.placed();
+        if placed.is_empty() {
+            return vec![
+                "no plugin layers here — a built-in is part of this binary and runs freely, so \
+                 there is nothing to pin in this folder"
+                    .to_string(),
+            ];
+        }
+        let mut out = vec![
+            "/plugin trust NAME pins what is on disk now; a placed layer with no pin is \
+             adjudicated call by call"
+                .to_string(),
+            String::new(),
+        ];
+        for layer in placed {
+            let state = if layer.trusted {
+                match &layer.pin {
+                    Some(pin) => format!("pinned — module sha256 {}", pin.module),
+                    None => "free".to_string(),
+                }
+            } else {
+                match &layer.pin {
+                    Some(pin) => format!(
+                        "NOT pinned any more — pinned module sha256 {}, on disk now {}",
+                        pin.module, layer.sha256
+                    ),
+                    None => "not pinned — every call is adjudicated".to_string(),
+                }
+            };
+            out.push(format!(
+                "  {} ({} · {})\n    {}",
+                layer.manifest.name, layer.id, layer.scope, state
+            ));
+            out.push(format!("    /plugin trust {}", layer.manifest.name));
+        }
+        out
+    }
+
+    /// **`/plugin trust NAME`** — pin the bytes that are on disk now, and say which hash was
+    /// pinned. D17's fourth arm: *the operator promotes by hash*, and any later change to those
+    /// bytes un-pins the layer until it is trusted anew.
+    ///
+    /// **This is the operator's door and not a model's.** The `plugin` tool has no `trust` verb: a
+    /// layer that could pin itself would be a layer that runs freely because it said so, which is
+    /// the one thing the ladder cannot survive.
+    pub(crate) fn trust_plugin(&mut self, arg: &str) -> String {
+        let (verb, name) = match arg.trim().split_once(char::is_whitespace) {
+            Some((verb, rest)) => (verb, rest.trim()),
+            None => (arg.trim(), ""),
+        };
+        // Build the stack first — the host is lazy, and the borrow it takes has to end before the
+        // mutable one below.
+        {
+            let _ = self.plugin_host();
+        }
+        let Some(host) = self.sessions_host.get_mut().as_mut() else {
+            return "this head has no plugin stack for this folder".to_string();
+        };
+        match verb {
+            "trust" => match host.pin(name) {
+                Ok((pin, wrote)) => {
+                    let who = if wrote.is_empty() {
+                        "nothing on this box recorded a tool writing these bytes".to_string()
+                    } else {
+                        format!("written by a tool: {wrote}")
+                    };
+                    format!(
+                        "pinned `{}`: module sha256 {}, manifest sha256 {} — {who}. Any change to \
+                         either un-pins it",
+                        pin.name, pin.module, pin.manifest
+                    )
+                }
+                Err(why) => why,
+            },
+            "untrust" => match host.unpin(name) {
+                Ok(pin) => format!(
+                    "`{}` is not pinned any more — module sha256 {} is adjudicated call by call \
+                     from now on",
+                    pin.name, pin.module
+                ),
+                Err(why) => why,
+            },
+            other => format!(
+                "`/plugin {other}` is not a verb — `/plugin` lists the layers, `/plugin trust NAME` \
+                 pins one, `/plugin untrust NAME` takes the pin back"
+            ),
+        }
+    }
 }

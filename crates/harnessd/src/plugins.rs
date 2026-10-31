@@ -271,6 +271,29 @@ impl PluginHost {
         self.lock().stack.layer_named(what).cloned()
     }
 
+    /// [`PluginHost::layer`] with the SCOPE it must be — for a caller that has one.
+    ///
+    /// A tool's `DeclaredTool` names its layer by directory name, and two scopes may hold layers
+    /// of one name (a session fix and the project layer it was promoted from). A name alone is
+    /// then two answers to *is this layer pinned*, so the caller that knows the scope says it;
+    /// the fallback is the name-only lookup, because a layer that has moved scope (a project
+    /// layer promoted from a session) is still the layer the declaration meant.
+    pub fn layer_in(&self, what: &str, scope: Scope) -> Option<letibot_plugins::Layer> {
+        let inner = self.lock();
+        inner
+            .stack
+            .layers()
+            .iter()
+            .find(|l| {
+                l.scope == scope
+                    && (l.id == what
+                        || l.manifest.name == what
+                        || l.dir.file_name().is_some_and(|n| n == what))
+            })
+            .or_else(|| inner.stack.layer_named(what))
+            .cloned()
+    }
+
     /// **Whether the layer answering `hook` runs freely** — a built-in, or a layer whose bytes a
     /// person pinned. Asked by an `exec` look before the gate: D17's first two arms.
     pub fn free_layer(&self, hook: &str) -> bool {
@@ -2747,7 +2770,11 @@ mod tests {
             sink.wrote(&root.join("README.md"), b"# not a layer");
             trust.writes_for(&dir)
         };
-        assert_eq!(wrote.len(), 1, "one record, for the layer's own file: {wrote:?}");
+        assert_eq!(
+            wrote.len(),
+            1,
+            "one record, for the layer's own file: {wrote:?}"
+        );
         assert_eq!(wrote[0].session, "s-writer");
         let pin = trust.pin("one", &dir).expect("a pin");
         assert_eq!(
@@ -2756,7 +2783,11 @@ mod tests {
         );
         // And it is a fact on disk: a second book over the same file reads it back.
         let reopened = letibot_plugins::Trust::open(trust.path().unwrap());
-        assert_eq!(reopened.writes().len(), 1, "the record survives the process");
+        assert_eq!(
+            reopened.writes().len(),
+            1,
+            "the record survives the process"
+        );
     }
 
     /// **D17's second arm: a layer nobody pinned is adjudicated on EVERY call.**
@@ -2775,10 +2806,7 @@ mod tests {
                 access: Access,
                 _args: &Value,
             ) -> Option<GateDecision> {
-                self.1
-                    .lock()
-                    .unwrap()
-                    .push(format!("{name}/{access:?}"));
+                self.1.lock().unwrap().push(format!("{name}/{access:?}"));
                 Some(match &self.0 {
                     GateDecision::Admit => GateDecision::Admit,
                     GateDecision::Refuse { outcome, tell } => GateDecision::Refuse {
@@ -2829,7 +2857,11 @@ mod tests {
             }
             other => panic!("a refused layer is `not_run`, not {other:?}"),
         }
-        assert!(out.payload.contains("`claude-transcript`"), "{}", out.payload);
+        assert!(
+            out.payload.contains("`claude-transcript`"),
+            "{}",
+            out.payload
+        );
         assert!(out.payload.contains("not pinned"), "{}", out.payload);
         assert!(out.payload.contains("sha256"), "{}", out.payload);
 
@@ -2920,7 +2952,11 @@ mod tests {
             "{:?}",
             out.outcome
         );
-        assert!(out.payload.contains(&pin.module), "the pinned hash: {}", out.payload);
+        assert!(
+            out.payload.contains(&pin.module),
+            "the pinned hash: {}",
+            out.payload
+        );
         assert!(
             out.payload.contains("not pinned any more"),
             "{}",

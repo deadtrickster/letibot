@@ -141,7 +141,12 @@ impl Book {
             return Book::default();
         };
         let mut book = Book::default();
-        for pin in value.get("pins").and_then(Value::as_array).into_iter().flatten() {
+        for pin in value
+            .get("pins")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             let text = |k: &str| pin.get(k).and_then(Value::as_str).unwrap_or_default();
             if text("dir").is_empty() {
                 continue;
@@ -375,7 +380,8 @@ impl Trust {
         };
         {
             let mut book = self.lock();
-            book.pins.retain(|p| p.name != pin.name || !p.dir.is_empty());
+            book.pins
+                .retain(|p| p.name != pin.name || !p.dir.is_empty());
             book.pins.push(pin.clone());
         }
         self.save();
@@ -557,7 +563,11 @@ mod tests {
         let dir = layer(&root, "one", b"module v1");
         let trust = Trust::in_memory();
 
-        let before = trust.standing(&dir, &sha256_hex(b"module v1"), &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap()));
+        let before = trust.standing(
+            &dir,
+            &sha256_hex(b"module v1"),
+            &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap()),
+        );
         assert!(!before.free, "an unpinned layer runs nothing freely");
         assert!(before.pin.is_none());
         let said = before.sentence("one", &sha256_hex(b"module v1"), "");
@@ -598,7 +608,15 @@ mod tests {
         let file = root.join("plugin-trust.json");
         let daemon = Trust::open(&file);
         assert!(!daemon.refresh(), "nothing has changed yet");
-        assert!(!daemon.standing(&dir, &sha256_hex(b"module v1"), &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap())).free);
+        assert!(
+            !daemon
+                .standing(
+                    &dir,
+                    &sha256_hex(b"module v1"),
+                    &sha256_hex(&std::fs::read(dir.join(MANIFEST)).unwrap())
+                )
+                .free
+        );
 
         // The head, in another process, pins it.
         let head = Trust::open(&file);
@@ -623,10 +641,18 @@ mod tests {
         assert_eq!(record.sha256, sha256_hex(&bytes));
         assert_eq!(record.session, "s-1");
         // The source beside a manifest is an artifact too.
-        assert!(trust.note_write(&dir.join("src/lib.rs"), b"fn view() {}", "s-1").is_some());
+        assert!(
+            trust
+                .note_write(&dir.join("src/lib.rs"), b"fn view() {}", "s-1")
+                .is_some()
+        );
         assert_eq!(trust.writes_for(&dir).len(), 2);
         // And a README is not.
-        assert!(trust.note_write(&root.join("README.md"), b"# x", "s-1").is_none());
+        assert!(
+            trust
+                .note_write(&root.join("README.md"), b"# x", "s-1")
+                .is_none()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

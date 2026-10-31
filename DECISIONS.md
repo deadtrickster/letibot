@@ -418,3 +418,23 @@ its look does:
 
 Supersedes, for trusted layers, the pane rule written the same evening (*panes get feeds and
 `read`, not `exec`*): that stays the rule for a model's layers.
+
+### Refined 2026-10-31, and the operator's wording is the requirement
+
+The operator, building the ladder: *"Only the builtins run freely; anything I place later needs a
+pin."* **Item 1 above is superseded on one point**: a layer the operator *places* is not free
+because they placed it. Trust is a hash a person recorded, not an authorship somebody inferred —
+and provenance is still recorded (item 3), because *who wrote these bytes* is a question a person
+asking *should I pin this?* wants answered, not a question the ladder asks.
+
+As built (`docs/plugins-plan.md` §2.5):
+
+1. **A built-in runs freely**, `exec` included — it is the binary's own bytes.
+2. **A placed layer is free only when its module AND manifest match a pin.** Every other one —
+   the operator's own copy and the model's alike — is adjudicated on every call through
+   `Gate::admit_unasked`, and never by a card.
+3. **A byte change after the pin un-pins the layer**, and the refusal names the layer and both
+   hashes.
+4. **`/plugin trust NAME` is the operator's door and not a model's**: the `plugin` tool has no
+   `trust` verb, and the book lives in `$XDG_CONFIG_HOME/letibot/plugin-trust.json` rather than
+   beside the layer it is about. A pin a model can write is not a pin.
