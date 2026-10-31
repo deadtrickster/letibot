@@ -750,6 +750,10 @@ mod tests {
             "len",
             "is_empty",
             "capacity",
+            // Added on purpose with R66's census: the bytes this region is MAPPED at, read from a
+            // field the constructor set and only `grow_to` moves. It cannot shorten, reorder or
+            // overwrite anything — it answers a number.
+            "bytes",
             "as_slice",
             "append",
             "head_hash",

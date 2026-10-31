@@ -279,6 +279,19 @@ impl TokenRegion {
         self.capacity
     }
 
+    /// **Bytes this region is mapped at** — the file's length, and the ceiling the kernel can
+    /// charge this process for it.
+    ///
+    /// What it is NOT: the bytes actually resident. The mapping is `MAP_SHARED` over a memfd, so
+    /// a page costs memory only once it is written, and [`len`](Self::len) × `size_of::<TokenId>()`
+    /// (+ [`HEADER_BYTES`]) is the resident figure for a fully written region. The difference is
+    /// the tail of the last doubling, which is capacity nobody asked for yet — reported because
+    /// that is what a memory census must show (R66), and named here so nobody reads it as
+    /// resident.
+    pub fn bytes(&self) -> usize {
+        self.mapped
+    }
+
     /// Every token appended so far, in order.
     ///
     /// Borrows `&self`, so it cannot be alive across an [`append`](Self::append)
