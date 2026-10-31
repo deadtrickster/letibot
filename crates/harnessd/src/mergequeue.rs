@@ -59,6 +59,7 @@ pub mod review;
 pub mod serve;
 pub mod settings;
 pub mod setup;
+pub mod stuck;
 pub mod verbs;
 pub mod watch;
 

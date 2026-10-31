@@ -224,13 +224,14 @@ const FLOW: [&str; 10] = [
 ];
 
 /// **A review row somebody still has to deal with** — the queue's business (open) or a person's (a
-/// verdict that needs a decision).
-fn parked(r: ReviewState) -> bool {
+/// verdict that needs a decision). `pub(super)` for `mergequeue::stuck`, which counts the half of
+/// it that is nobody's: one rule, so the census's numbers are a sub-line of `status`'s.
+pub(super) fn parked(r: ReviewState) -> bool {
     r.is_open() || matches!(r, ReviewState::Rejected | ReviewState::CannotDecide)
 }
 
 /// **A landing row somebody still has to deal with**, the same rule one queue over.
-fn parked_merge(m: MergeState) -> bool {
+pub(super) fn parked_merge(m: MergeState) -> bool {
     m.is_open()
         || matches!(
             m,
@@ -715,18 +716,26 @@ fn live_lease(leases: &[QueueLease], repo: &str) -> bool {
 
 /// **Rows counted by state, in the queue's own order** — only the states that are there, so a line
 /// says `3 waiting · 1 gating` and never `0 of nine things`.
-fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<String> {
+pub(super) fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<String> {
+    counts_of(states)
+        .into_iter()
+        .map(|(s, n)| format!("{n} {s}"))
+        .collect()
+}
+
+/// **[`states_of`]'s counts, unformatted** — the same `FLOW` order and the same rule, for a reader
+/// that wants the numbers rather than the line (`mergequeue::stuck`, whose counts have to be
+/// `status`'s counts and not a second opinion about them).
+pub(super) fn counts_of(
+    states: impl Iterator<Item = &'static str>,
+) -> Vec<(&'static str, usize)> {
     let mut counts: Vec<(&'static str, usize)> = FLOW.iter().map(|s| (*s, 0)).collect();
     for s in states {
         if let Some(slot) = counts.iter_mut().find(|(name, _)| *name == s) {
             slot.1 += 1;
         }
     }
-    counts
-        .into_iter()
-        .filter(|(_, n)| *n > 0)
-        .map(|(s, n)| format!("{n} {s}"))
-        .collect()
+    counts.into_iter().filter(|(_, n)| *n > 0).collect()
 }
 
 /// **One queue's line: the states somebody can act on, then the day's successes** — the second

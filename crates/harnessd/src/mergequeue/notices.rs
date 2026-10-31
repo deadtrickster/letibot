@@ -322,6 +322,25 @@ pub fn parked(r: &ReviewRow) -> String {
     }
 }
 
+/// **`stuck_census`** — the count and the age, on the idle check's clock
+/// (`mergequeue::stuck`, `Harness::stuck_census`).
+///
+/// Every other sentence in this file is about ONE row and says so when that row MOVES. This one is
+/// the only place a project is told how many rows are bad at once, and the only place any of them
+/// is given an age — which is what the operator's report was missing: eight rows sat for hours
+/// with every transition already said. The verbs are the same two the transitions name, because a
+/// count with no verb is a statistic.
+pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
+    format!(
+        "[queue stuck] {} row(s) of this project's queue are stuck and no pass will move them: \
+         {}. The oldest has been there {}. `/queue restart <id>` puts one back in line and \
+         `/queue rm <id>` withdraws it; `queue` with `action: \"status\"` names them.",
+        c.total,
+        c.said(),
+        super::stuck::age_words(c.oldest_age_ms(now_ms)),
+    )
+}
+
 // **The rest of what the review queue says about a verdict**, moved here from where each was
 // built inline (`review`, `serve`, `verbs`, `Harness::handover_notices`) — byte for byte — so
 // that one test can write the TUI's review-card fixtures from the daemon's own words. The TUI
