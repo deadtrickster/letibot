@@ -1101,7 +1101,11 @@ fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
     // **The pass runs, and the clock is not due** — three passes inside the window say nothing,
     // and none of them moves the deadline (`due_now` is what a pass calls; a pass runs no turn, so
     // it owes no re-arm).
-    for at in [t0, t0 + Duration::from_secs(20), t0 + Duration::from_secs(59)] {
+    for at in [
+        t0,
+        t0 + Duration::from_secs(20),
+        t0 + Duration::from_secs(59),
+    ] {
         assert!(!clock.due_now(at), "nothing is due at {at:?}");
         assert_eq!(
             clock.due_at(),
@@ -1148,7 +1152,12 @@ fn a_queue_that_goes_clean_stands_the_clock_down() {
     clock.queue(super::QueueNews::none());
     assert!(clock.due_now(t0 + Duration::from_secs(180)));
     clock.said(None, t0 + Duration::from_secs(180));
-    clock.rearm(&none, t0 + Duration::from_secs(180), &no_children(), &no_jobs());
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(180),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(
         clock.due_at(),
         None,
@@ -1158,7 +1167,12 @@ fn a_queue_that_goes_clean_stands_the_clock_down() {
     // **And the next interval is silent too** — a pass later arms nothing, because there is still
     // nothing stuck. A tree that goes quiet must stop nagging, or the next reader learns to
     // ignore it.
-    clock.rearm(&none, t0 + Duration::from_secs(600), &no_children(), &no_jobs());
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(600),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(clock.due_at(), None);
     assert!(!clock.due_now(t0 + Duration::from_secs(9_000)));
 }
@@ -1221,16 +1235,31 @@ fn a_census_arrives_at_the_base_window_even_when_the_plan_has_climbed_the_ladder
     clock.rearm(&plan, t0, &no_children(), &no_jobs());
     assert!(clock.due_now(t0 + Duration::from_secs(60)));
     clock.said(Some(said.clone()), t0 + Duration::from_secs(60));
-    clock.rearm(&plan, t0 + Duration::from_secs(60), &no_children(), &no_jobs());
+    clock.rearm(
+        &plan,
+        t0 + Duration::from_secs(60),
+        &no_children(),
+        &no_jobs(),
+    );
     assert!(clock.due_now(t0 + Duration::from_secs(180)));
     clock.said(Some(said.clone()), t0 + Duration::from_secs(180));
-    clock.rearm(&plan, t0 + Duration::from_secs(180), &no_children(), &no_jobs());
+    clock.rearm(
+        &plan,
+        t0 + Duration::from_secs(180),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
 
     // **A row has now been stuck long enough to be news.** The clock is re-armed at the base
     // window, not at the plan's rung — so the census is heard, and the plan rides along.
     clock.queue(news());
-    clock.rearm(&plan, t0 + Duration::from_secs(200), &no_children(), &no_jobs());
+    clock.rearm(
+        &plan,
+        t0 + Duration::from_secs(200),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(
         clock.due_at(),
         Some(t0 + Duration::from_secs(260)),
@@ -1241,7 +1270,12 @@ fn a_census_arrives_at_the_base_window_even_when_the_plan_has_climbed_the_ladder
     // restarts from here rather than being reset by the census forever.
     assert!(clock.due_now(t0 + Duration::from_secs(260)));
     clock.said(Some(said.clone()), t0 + Duration::from_secs(260));
-    clock.rearm(&plan, t0 + Duration::from_secs(260), &no_children(), &no_jobs());
+    clock.rearm(
+        &plan,
+        t0 + Duration::from_secs(260),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(260 + 120)));
 }
 
@@ -1262,7 +1296,12 @@ fn an_operators_message_earns_the_census_back() {
     assert_eq!(clock.due_at(), Some(t0 + Duration::from_secs(180 + 240)));
 
     clock.prompt_arrived();
-    clock.rearm(&none, t0 + Duration::from_secs(400), &no_children(), &no_jobs());
+    clock.rearm(
+        &none,
+        t0 + Duration::from_secs(400),
+        &no_children(),
+        &no_jobs(),
+    );
     assert_eq!(
         clock.due_at(),
         Some(t0 + Duration::from_secs(460)),

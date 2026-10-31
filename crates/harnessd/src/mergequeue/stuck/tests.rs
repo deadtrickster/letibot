@@ -65,7 +65,13 @@ fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
         )
         .unwrap();
     store
-        .move_merge(id, MergeState::Queued, to, &Move::new("test", "the gate"), at)
+        .move_merge(
+            id,
+            MergeState::Queued,
+            to,
+            &Move::new("test", "the gate"),
+            at,
+        )
         .unwrap();
 }
 
@@ -119,10 +125,22 @@ fn the_states_a_row_is_stuck_in_are_the_ones_no_pass_will_move() {
     let (_dir, s) = store("stuck-count");
     let repo = "/tmp/stuck-count";
     for i in 0..3 {
-        a_landing(&s, repo, &format!("m-failed-{i}"), MergeState::Failed, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-failed-{i}"),
+            MergeState::Failed,
+            1_000,
+        );
     }
     for i in 0..5 {
-        a_landing(&s, repo, &format!("m-conflict-{i}"), MergeState::Conflict, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-conflict-{i}"),
+            MergeState::Conflict,
+            1_000,
+        );
     }
     a_landing(&s, repo, "m-queued", MergeState::Queued, 1_000);
     a_review(&s, repo, "r-waiting", ReviewState::Waiting, 1_000);
@@ -152,10 +170,22 @@ fn the_census_counts_the_rows_status_prints() {
     let (_dir, s) = store("stuck-agrees");
     let repo = "/tmp/stuck-agrees";
     for i in 0..3 {
-        a_landing(&s, repo, &format!("m-failed-{i}"), MergeState::Failed, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-failed-{i}"),
+            MergeState::Failed,
+            1_000,
+        );
     }
     for i in 0..2 {
-        a_landing(&s, repo, &format!("m-conflict-{i}"), MergeState::Conflict, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-conflict-{i}"),
+            MergeState::Conflict,
+            1_000,
+        );
     }
     a_landing(&s, repo, "m-queued", MergeState::Queued, 1_000);
     a_review(&s, repo, "r-cannot", ReviewState::CannotDecide, 1_000);
@@ -282,13 +312,26 @@ fn the_sentence_says_how_many_and_how_long_and_what_to_do() {
     let (_dir, s) = store("stuck-sentence");
     let repo = "/tmp/stuck-sentence";
     for i in 0..3 {
-        a_landing(&s, repo, &format!("m-failed-{i}"), MergeState::Failed, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-failed-{i}"),
+            MergeState::Failed,
+            1_000,
+        );
     }
     for i in 0..5 {
-        a_landing(&s, repo, &format!("m-conflict-{i}"), MergeState::Conflict, 1_000);
+        a_landing(
+            &s,
+            repo,
+            &format!("m-conflict-{i}"),
+            MergeState::Conflict,
+            1_000,
+        );
     }
     let census = of(&s, &[repo.to_string()]).expect("the census");
-    let said = crate::mergequeue::notices::stuck_census(&census, 1_000 + 4 * 3_600_000 + 12 * 60_000);
+    let said =
+        crate::mergequeue::notices::stuck_census(&census, 1_000 + 4 * 3_600_000 + 12 * 60_000);
     assert_eq!(
         said,
         "[queue stuck] 8 row(s) of this project's queue are stuck and no pass will move them: 5 \

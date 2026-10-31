@@ -18,8 +18,8 @@ use std::time::Duration;
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Parts, Sessions};
-use letibot_sessionlog::registry::Registry;
 use letibot_sessionlog::SessionEvent;
+use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{
     Approval, MergePriority, MergeState, Move, NewReview, ReviewKind, ReviewState, SessionRecord,
     Store,
@@ -123,7 +123,13 @@ fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
         )
         .unwrap();
     store
-        .move_merge(id, MergeState::Queued, to, &Move::new("test", "the gate"), at)
+        .move_merge(
+            id,
+            MergeState::Queued,
+            to,
+            &Move::new("test", "the gate"),
+            at,
+        )
         .unwrap();
 }
 
@@ -213,7 +219,13 @@ fn the_queue_is_counted_once_and_goes_quiet_when_it_recovers() {
     // `STUCK_AFTER_MS`, so the census is news the first time the clock looks.
     let four_hours_ago = now_ms().saturating_sub(4 * 3_600_000);
     for i in 0..3 {
-        a_landing(&store, &key, &format!("m-failed-{i}"), MergeState::Failed, four_hours_ago);
+        a_landing(
+            &store,
+            &key,
+            &format!("m-failed-{i}"),
+            MergeState::Failed,
+            four_hours_ago,
+        );
     }
     for i in 0..5 {
         a_landing(

@@ -726,9 +726,7 @@ pub(super) fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<Strin
 /// **[`states_of`]'s counts, unformatted** — the same `FLOW` order and the same rule, for a reader
 /// that wants the numbers rather than the line (`mergequeue::stuck`, whose counts have to be
 /// `status`'s counts and not a second opinion about them).
-pub(super) fn counts_of(
-    states: impl Iterator<Item = &'static str>,
-) -> Vec<(&'static str, usize)> {
+pub(super) fn counts_of(states: impl Iterator<Item = &'static str>) -> Vec<(&'static str, usize)> {
     let mut counts: Vec<(&'static str, usize)> = FLOW.iter().map(|s| (*s, 0)).collect();
     for s in states {
         if let Some(slot) = counts.iter_mut().find(|(name, _)| *name == s) {
