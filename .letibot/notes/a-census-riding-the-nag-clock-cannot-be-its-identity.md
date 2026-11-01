@@ -1,9 +1,10 @@
-<!-- abstract: MEASURED 2026-11-01: a scheduled notice whose text carries a growing number must be paced by its OWN deadline, not by comparing texts (every delivery is "new") and not by another subject's ladder; plus a re-arm re-arms from NOW, `next_nag_at()` includes the sweep, and `merge_rows(Some(repo))` measured 27.5 µs against 434.5 µs unscoped. -->
+<!-- abstract: MEASURED 2026-11-01: a scheduled notice whose text carries a growing number needs its OWN deadline (§1–§7); and §8 — the census was a NOTICE for eight hours and reached nobody, so it is a `Door::Census` TURN now (a `Door::Nag` would write it into the plan's ladder, the record must precede the re-arm or it fires every pass, and `next_nag_at()` stops being a probe once a delivery arms the sweep). -->
 
 # A notice that carries a growing number gets its own deadline
 
 MEASURED 2026-11-01, branch `agent/the-queue-counts-what-is-stuck` (twice: the first cut was
-refused by the review and this is the correction).
+refused by the review and this is the correction), and §8 the same night on
+`agent/the-census-rings`.
 
 ## 1. `nagged` is a TEXT identity, and a growing number cannot be in it
 
@@ -31,6 +32,8 @@ the shape to copy: walk the sessions, take the queued sentences, write them, no 
 `Sessions::note_due_censuses` is that, on the idle pass beside `deliver_due_nags`. A test proves
 "no model call" with `SessionEvent::TurnStarted` — zero — rather than by timing.
 
+**§8 below reverses this one**: the door reaches nobody, and the census is a turn now.
+
 ## 3. A re-arm re-arms from NOW, so "three passes inside one interval" needs care
 
 `rearm` sets `due = now + window` when the notice is new. So a *pass* that re-arms moves the
@@ -43,7 +46,8 @@ is due) or measure from the delivery.
 
 It is `min(nag clocks, census clocks, sweep_at)`, and `arm_sweep` runs at the start of every turn
 with `SWEEP_AFTER` (2 s). So `next_nag_at().is_some()` after a nag turn is the SWEEP. Assert on
-deliveries, not on `next_nag_at`.
+deliveries, not on `next_nag_at` — and see §8, where a delivery becoming a turn made that rule
+bite a test that had been honest.
 
 ## 5. What a scoped read costs, measured
 
@@ -100,3 +104,50 @@ crossing, not a repeat of a census whose rows are gone).
 code, and the dead arm is the one written for the newest case. When adding an arm to a chain,
 ask which earlier condition can already be true for the state the new arm describes — and write
 the test that starts from that state, not from a fresh clock.
+
+## 8. UPDATE 2026-11-01 — the census is a TURN now, and §1–§2's premise is gone
+
+Branch `agent/the-census-rings`, from the operator's *"probably doesnt even reach you"*. A row sat in
+`conflict` from 02:37 to 10:52 while the census wrote its sentence every interval — through
+`Harness::note_to_model`, which is a MAILBOX: the model reads that row at its next turn, and a
+project session with nothing on its board takes none. So §2's *"the no-turn notice door already
+existed"* is now the defect rather than the fix, and the census goes through
+`Sessions::deliver_due_censuses` → `Sessions::turn` → `Harness::census_turn` → `submit_spoken`.
+Everything §1 says about the CLOCK (a separate deadline, its own anchor, the text free to grow) is
+still true and is why the door could be changed without touching the schedule.
+
+**It cannot be a `Door::Nag`, and the reason is identity, not metrics.** `DaemonTurn::turn_ended`
+records a nag against the PLAN's ladder (`clock.said` writes `nagged`/`nagged_at`/`repeats`), so a
+census sent through that door would tell the ladder the plan's notice had been sent. Hence
+`Door::Census`, whose arm calls `census_said` and nothing else — and needs no payload, because the
+sentence names the age of the oldest row.
+
+**The record must come BEFORE the re-arm.** `turn_ended` calls `rearm`, which recomputes
+`arm_census`; with `census_said` after it, `census_said_at` is still `None`, `arm_census` answers
+`Some(now)`, and the next idle pass runs another model call. The nag's metronome rule, one subject
+over.
+
+**`next_nag_at()` stopped being a probe the moment a delivery became a turn.** It is
+`min(plan due, census due, sweep_at)` and every turn arms the sweep (`SWEEP_AFTER`, 2 s), so the
+honest `assert!(next_nag_at().is_none())` after a recovered queue became `Some` for ever. The test
+now reads ONE clock (`Sessions::census_due_at(id)`), as `nag_arms_the_sweep.rs` reads `sweep_due_at`.
+**A rake: an assertion about a minimum over N clocks is a claim about all N, and making a subject
+costlier is enough to arm one of them.**
+
+**What it costs, and the one number worth re-ruling.** One model call per interval per project while
+a row is stuck; the interval stayed `STUCK_REPEAT_MS` (2 h, flat), so a ten-hour night costs five
+calls where the plan's ladder (60 s doubling to 30 min) would cost about twenty. The flat 2 h was
+chosen when a delivery cost NOTHING, and its argument in §1 ("a ladder on top of a growing number is
+two mechanisms doing one job") is about text identity, not about price.
+
+**The limit that is real:** a census turn ends like any turn, so `rearm` gives a moved plan one base
+window from now — the census can postpone a pending `[todo check]` by ONE WINDOW (60 s in
+production), never by its own two hours. The reverse is free: the census's deadline is an anchor no
+turn touches. Both directions are pinned in `crates/harnessd/tests/queue_census.rs`.
+
+**And the test that proves it.** That file now carries a recording stub (`canned` frames, shared by
+path with the turn crate's tests) and asserts the PROMPT, not the row. With the door reverted to
+`note_to_model` it fails at *the census must reach the model: left 0, right 1* while the census row
+is still on the transcript — that pair is the eight hours, in one assertion. A "costs no model call"
+test and a "the model got it" test are one fixture with the assertion inverted, and only the second
+is evidence that anything arrived.

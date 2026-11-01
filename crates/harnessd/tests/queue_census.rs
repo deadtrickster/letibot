@@ -279,7 +279,9 @@ impl Stub {
     /// one turn, so a sentence that arrived on a later turn is found where it belongs.
     #[allow(dead_code)]
     fn prompts(&self, vocab: &Vocab) -> Vec<String> {
-        (0..self.turns()).map(|n| self.prompt_of(n, vocab)).collect()
+        (0..self.turns())
+            .map(|n| self.prompt_of(n, vocab))
+            .collect()
     }
 }
 
@@ -515,17 +517,24 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
 
     // **One delivery, and it is a TURN** — the model was asked, and what it was asked is the
     // sentence: the count, the age and the verbs.
+    //
+    // The sweep is spent first, so "this door armed it" is a measurement and not a leftover: a
+    // census turn dispatches tool calls exactly as a prompt's does, and a call it stranded must be
+    // looked at by something (`nag_arms_the_sweep.rs`'s rule, on the fourth door).
+    sessions.sweep_abandoned_calls();
+    assert!(sessions.sweep_due_at().is_none(), "the fixture spent it");
     assert_eq!(sessions.deliver_due_censuses(), 1, "one session is told");
+    assert!(
+        sessions.sweep_due_at().is_some(),
+        "a census turn must arm the sweep that closes out a call it stranded"
+    );
     assert_eq!(stub.turns(), 1, "the census must reach the model");
     let said = stub.prompt_of(0, &parts.vocab);
     assert!(
         said.contains("[queue stuck]"),
         "the model's prompt carries the census: {said}"
     );
-    assert!(
-        said.contains("8 row(s)"),
-        "the total nobody had: {said}"
-    );
+    assert!(said.contains("8 row(s)"), "the total nobody had: {said}");
     assert!(
         said.contains("5 conflict · 3 failed"),
         "and each bad state's own count: {said}"

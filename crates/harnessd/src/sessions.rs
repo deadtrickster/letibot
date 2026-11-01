@@ -4255,8 +4255,10 @@ impl<'a> Sessions<'a> {
             .filter_map(|(id, clock)| clock.census_due_now(now).then(|| id.clone()))
             .collect();
         for session_id in due {
-            // A session a court holds is not in `open` — its own thread runs its own copy of this
-            // pass, which `ask_courts` above has already done.
+            // **A clock with no harness behind it is skipped, not reported.** `court_of` MOVES a
+            // court-served session's clock onto its own thread (which runs its own copy of this
+            // pass, through `ask_courts` above), so this is the leftover case — and `turn` on a
+            // session nothing holds answers `Err`, which would print a line at every pass.
             if !self.open.contains_key(&session_id) {
                 continue;
             }
