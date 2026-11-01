@@ -90,6 +90,17 @@
 //! filed into the session and read at the model's next turn (or at the next step boundary of a
 //! turn already running), never as a turn of its own. A generation spent to say *"the daemon came
 //! back at 21:28"* is a generation spent on a sentence.
+//!
+//! # Except when the session still owes something — the operator's ruling, 2026-11-01
+//!
+//! *"well it is not ok that restart notice arrived with my continue. because just before restart
+//! you said 'after restart i owe you blabla' so i expected that after restart you will continue"*.
+//! The cost argument above is right about a session with nothing to do and wrong about one with
+//! work outstanding, because there the person is waiting for the session to CONTINUE and a row is
+//! read when they type. So *nothing was running* is not the question — *nothing is owed* is, and
+//! [`Owed`] is the four facts that answer it. A session that owes anything gets the same sentence
+//! through the other door: it is queued as a notice, the daemon's own ring at open turns it into a
+//! turn, and that turn is the work continuing ([`nothing_running_but`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -99,6 +110,7 @@ use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{
     JobRecord, Store, StoredMonitor, TodoCondition, TodoItem, TodoNeed, TodoStatus,
 };
+use letibot_transcript::{Speaker, TranscriptItem};
 
 /// How often a daemon writes its heartbeat — the bound on how wrong a crash's down time can be.
 pub const BEAT: Duration = Duration::from_secs(30);
@@ -449,6 +461,115 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     format!(
         "[restart] the daemon came back at {} ({down}): nothing was running",
         crate::subagent_record::utc(back_ms)
+    )
+}
+
+/// **Whether a session's last row is a turn that was still going when its rows stopped.**
+///
+/// [`StoredSession::last_item`](letibot_tokencore::store::StoredSession::last_item)'s rule read
+/// from the other side, and the one fact a session with nothing else to show leaves behind: an
+/// `Assistant` with no call after it is a finished turn, and the rest are turns that never got
+/// their answer — the person's prompt (`User`), a call whose result was never written (`Assistant`
+/// with calls), a result whose next round never ran (`ToolResult`), a thought (`Reasoning`), a
+/// compaction instruction with no summary after it (`System`).
+///
+/// **A row the harness filed itself is NOT counted** (`User` with `Speaker::Agent`). The harness
+/// writes those both when it means to start a turn (a wake's notice) and when it files a sentence
+/// for later (the empty restart's own row), and a row is all the store has — so the class is left
+/// out rather than spending a call on every restart that follows a filed sentence. What that
+/// misses is a wake whose turn died before it answered; whatever caused that wake is counted by
+/// the arms above whenever it still exists.
+pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
+    match last {
+        None => false,
+        Some(TranscriptItem::Assistant { tool_calls, .. }) => !tool_calls.is_empty(),
+        Some(TranscriptItem::User {
+            speaker: Speaker::Agent,
+            ..
+        }) => false,
+        Some(_) => true,
+    }
+}
+
+/// **What a session still owes when its daemon comes back** — the reason an empty restart is a
+/// TURN and not a row.
+///
+/// Every arm is a fact already in the store or on the board, and each means *somebody is waiting
+/// for this session to do something*. None of them is prose: a model that promised to continue
+/// (`"after restart i owe you"`) leaves nothing a reader can trust, so the promise itself is not
+/// an arm — what a session owes has to be something it WROTE DOWN.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Owed {
+    /// **A turn was in flight when the rows stopped** — [`mid_turn`].
+    pub mid_turn: bool,
+    /// **Settlements this daemon wrote and nobody has been told about** — a child that answered,
+    /// or a job that ended, into a session nobody was holding
+    /// (`Harness::deliver_settlements_left_undelivered`).
+    pub settlements: usize,
+    /// **Rows whose condition the world now meets** — the board says the work is due
+    /// (`Harness::due_todo_rows`).
+    pub due_rows: usize,
+    /// **Rows still owed** — the plan the model wrote, `Pending` or `InProgress`. A row the
+    /// operator postponed or struck off is not owed, and a completed one is not either.
+    pub plan_rows: usize,
+}
+
+impl Owed {
+    /// Whether there is anything at all — the one question the door is chosen on.
+    pub fn any(&self) -> bool {
+        self.mid_turn || self.settlements + self.due_rows + self.plan_rows > 0
+    }
+
+    /// **Why this restart is a turn**, as the sentence says it — every arm that holds, in the
+    /// model's own reading order: the turn it was in, then what the daemon could not deliver,
+    /// then what the board says.
+    pub fn clause(&self) -> String {
+        fn rows(n: usize, one: &str, many: &str) -> String {
+            match n {
+                1 => format!("1 {one}"),
+                n => format!("{n} {many}"),
+            }
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if self.mid_turn {
+            parts.push("a turn was in flight when the rows stopped".into());
+        }
+        if self.settlements > 0 {
+            parts.push(rows(
+                self.settlements,
+                "a settlement nobody has been told about",
+                "settlements nobody has been told about",
+            ));
+        }
+        if self.due_rows > 0 {
+            parts.push(rows(
+                self.due_rows,
+                "a todo row whose condition is met",
+                "todo rows whose condition is met",
+            ));
+        }
+        if self.plan_rows > 0 {
+            parts.push(rows(
+                self.plan_rows,
+                "a todo row still owed",
+                "todo rows still owed",
+            ));
+        }
+        parts.join(", ")
+    }
+}
+
+/// **A restart with nothing running that still owes work** — the same sentence as
+/// [`nothing_running`], with the reason it is a TURN rather than a row.
+///
+/// The clause is load-bearing: a model woken to a sentence that only says *nothing was running*
+/// has no way to know why it is reading it now, and the work it owes is what it should pick up.
+pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
+    format!(
+        "{} — but this session has work outstanding ({}), so this turn is that work continuing \
+         and not a notice about it: read the conversation and carry on.",
+        nothing_running(stop, back_ms),
+        owed.clause()
     )
 }
 

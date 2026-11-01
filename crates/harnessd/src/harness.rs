@@ -48,7 +48,7 @@ use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_sessionlog::{LogSink, SessionEvent, ToolLogSink};
 use letibot_tokencore::store::TodoItem;
 use letibot_tokencore::store::{
-    JobRecord, SessionRecord, StablePrefixRecord, Store, StoredSession,
+    JobRecord, SessionRecord, StablePrefixRecord, Store, StoredSession, TodoStatus,
 };
 use letibot_tokencore::{Vocab, ledger::hex as hex32};
 // The same hash `letibot_tokencore::store` content-addresses a stable prefix with, taken
@@ -11979,9 +11979,16 @@ impl Harness {
     /// the process is long reaped — so the notice names the job and says how it ended, which is
     /// what `job_output`'s absence leaves true. A child's answer IS in the row (`outcome`), and
     /// the notice carries its first line exactly as a live settlement does.
-    fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) {
+    ///
+    /// # What it returns
+    ///
+    /// How many settlements it queued. A queued settlement is a notice the next wake says, and a
+    /// session whose ONLY news is one of them is a session that still owes work — which is
+    /// [`Harness::restore_after_restart`]'s decision about the restart sentence's door, so the
+    /// count has to leave this function rather than be recomputed there.
+    fn deliver_settlements_left_undelivered(&self, store: &Store, me: &str, sid: &str) -> usize {
         let Some(watch) = self.job_watch.clone() else {
-            return;
+            return 0;
         };
         let mut queued = 0usize;
         // **The children first** — this row's own subject, and the one the operator went
@@ -12050,6 +12057,7 @@ impl Harness {
                  open are said at this open"
             );
         }
+        queued
     }
 
     /// **What this session was running when its daemon stopped — restored, or reminded** — called
@@ -12086,8 +12094,10 @@ impl Harness {
         // [`Harness::deliver_settlements_left_undelivered`]. It lives here because this is the
         // door every open passes through (`Sessions::harness_as`, `Sessions::open_first_with_seat`,
         // a resumed child's `run_to_completion`) and it is the door whose own ring, a few lines
-        // later in `Sessions`, is what turns a queued settlement into a turn.
-        self.deliver_settlements_left_undelivered(&store, &me, &sid);
+        // later in `Sessions`, is what turns a queued settlement into a turn. The count is kept
+        // because a settlement nobody has been told about is one of the things that makes an
+        // otherwise empty restart a TURN ([`crate::restart::Owed`]).
+        let settlements = self.deliver_settlements_left_undelivered(&store, &me, &sid);
 
         // **What a gone daemon left**, and which daemon that was. Read before anything is
         // touched, so the down time is decided once for the whole session.
@@ -12203,12 +12213,15 @@ impl Harness {
         // (*"i dont need two"*). A subagent is nobody's either; it reads what its parent tells it.
         let a_persons_session = !letibot_sessionlog::is_gatekeeper_session(&sid)
             && !matches!(store.session_parent(&sid), Ok(Some(Some(p))) if !p.is_empty());
+        // **The session's own row, read once**, because it answers two questions: whether this
+        // session existed before this daemon started (so a daemon that is gone held it), and what
+        // its last row was — which is the only evidence a session that was mid-turn when the
+        // daemon stopped leaves behind ([`crate::restart::mid_turn`]).
+        let row = store.session(&sid).ok().flatten();
         let came_back = a_daemon_stopped
             && a_persons_session
-            && store
-                .session(&sid)
-                .ok()
-                .flatten()
+            && row
+                .as_ref()
                 .is_some_and(|s| (s.created_ms.max(0) as u64) < back_ms);
         // **Once per (session, restart)** — `queue_told` is the store's own "said once" table and
         // the key names the daemon, so a session this daemon opens twice says it once, and the
@@ -12227,7 +12240,14 @@ impl Harness {
             if !came_back || already_said {
                 return None;
             }
-            return self.say_nothing_was_running(&store, back_ms);
+            // **What this session still owes decides the door its sentence takes** — the
+            // operator, 2026-11-01: *"it is not ok that restart notice arrived with my continue"*.
+            // Nothing owed keeps the row (a generation spent on a sentence is still a generation
+            // spent); anything owed makes the sentence the content of the turn the work already
+            // costs. See [`crate::restart::Owed`].
+            let owed = self
+                .owed_after_a_restart(row.as_ref().and_then(|s| s.last_item.as_ref()), settlements);
+            return self.say_nothing_was_running(&store, back_ms, &owed);
         }
 
         // **How long the daemon was down**: from the latest stop among the daemons these records
@@ -12426,12 +12446,26 @@ impl Harness {
     /// which belongs to whichever daemon on this box stopped last and is a claim about another
     /// folder's process.
     ///
-    /// # The door, and why it is not the one a restore takes
+    /// # The door, and which of the two it takes
     ///
-    /// There is nothing to continue, so the sentence is filed and the model reads it when it next
-    /// reads ([`Harness::say_without_a_turn`]): **no wake, no turn**. A restore is the opposite —
-    /// a resumed child is work to continue — and keeps the turn it has always had.
-    fn say_nothing_was_running(&mut self, store: &Store, back_ms: u64) -> Option<String> {
+    /// **A session that owes nothing** has nothing to continue, so the sentence is filed and the
+    /// model reads it when it next reads ([`Harness::say_without_a_turn`]): no wake, no turn. A
+    /// restore is the opposite — a resumed child is work to continue — and keeps the turn it has
+    /// always had.
+    ///
+    /// **A session that owes something is the operator's ruling of 2026-11-01**: *"it is not ok
+    /// that restart notice arrived with my continue … so i expected that after restart you will
+    /// continue"*. The sentence is queued as a restart notice instead, which is the turn the
+    /// daemon's own ring at open already costs for the work ([`crate::restart::Owed`], and
+    /// [`Harness::owed_after_a_restart`] for what counts). The cost of the whole mechanism is one
+    /// model call per restart per session that owed anything; a session that owes nothing keeps
+    /// the row and spends none.
+    fn say_nothing_was_running(
+        &mut self,
+        store: &Store,
+        back_ms: u64,
+        owed: &crate::restart::Owed,
+    ) -> Option<String> {
         let sid = self.cfg.session_id.clone();
         let mut instances: Vec<(String, u64)> = Vec::new();
         let mut note =
@@ -12457,35 +12491,82 @@ impl Harness {
                 .iter()
                 .map(|(i, at)| crate::restart::stop_of(store, i, *at)),
         );
-        let text = crate::restart::header(
-            &stop,
-            back_ms,
-            letibot_sessionlog::event::now_ms(),
-            self.cfg.restore_within,
-            crate::restart::Outcome::Nothing,
-        );
+        // **The same sentence, and one clause when the session owes work** — a model woken to
+        // *nothing was running* alone could not know why it is reading it now.
+        let text = match owed.any() {
+            true => crate::restart::nothing_running_but(&stop, back_ms, owed),
+            false => crate::restart::header(
+                &stop,
+                back_ms,
+                letibot_sessionlog::event::now_ms(),
+                self.cfg.restore_within,
+                crate::restart::Outcome::Nothing,
+            ),
+        };
         eprintln!("  {sid} · restart: nothing was running — {text}");
-        // **One line, not two.** The sentence is written as a transcript row
+        // **One line, not two.** In the quiet case the sentence is written as a transcript row
         // ([`Harness::say_without_a_turn`]), which the person sees where the rest of the
-        // conversation is and the model reads at its next turn. Publishing it as a hub warning as
-        // well drew it twice for one restart — the operator: *"i need only one restart
-        // notification"* — and the row is the copy that both readers can use.
-        if let Err(e) = self.say_without_a_turn(&text) {
+        // conversation is and the model reads at its next turn. In the owed case it is queued as
+        // a restart notice, which the wake spends a turn on and the person sees as that turn's
+        // opening line. Neither publishes a hub warning: the row drew the restart twice for one
+        // stop — the operator: *"i need only one restart notification"* — and the row is the copy
+        // that both readers can use.
+        if owed.any() {
+            self.restart_notices.push(text.clone());
+        } else if let Err(e) = self.say_without_a_turn(&text) {
             eprintln!("  {sid} · restart: the notice was not recorded ({e})");
         }
         Some(text)
     }
 
-    /// **Tell this session's model something without starting a turn** — the door the empty
-    /// restart takes (`crate::restart`), and the two states it has to tell apart.
+    /// **What this session still owes**, as [`crate::restart::Owed`] — the four facts that decide
+    /// whether an otherwise empty restart is a turn.
+    ///
+    /// `last` is the session row's last transcript row (read once by
+    /// [`Harness::restore_after_restart`]) and `settlements` is what
+    /// [`Harness::deliver_settlements_left_undelivered`] queued at this open.
+    ///
+    /// The board is read twice on purpose: `due_rows` is the rows whose condition the world now
+    /// meets ([`Harness::due_todo_rows`], the wake's own predicate, so the two cannot disagree)
+    /// and `plan_rows` is every row still owed — the plan the model wrote, which is the one thing
+    /// a session with no record of a turn leaves that says it has work left. A `Postponed` or
+    /// `Cancelled` row is the operator's act and is not owed; a `Completed` one is answered.
+    fn owed_after_a_restart(
+        &self,
+        last: Option<&TranscriptItem>,
+        settlements: usize,
+    ) -> crate::restart::Owed {
+        let plan_rows = self
+            .todos
+            .snapshot()
+            .iter()
+            .filter(|r| matches!(r.status, TodoStatus::Pending | TodoStatus::InProgress))
+            .count();
+        crate::restart::Owed {
+            mid_turn: crate::restart::mid_turn(last),
+            settlements,
+            due_rows: self.due_todo_rows().len(),
+            plan_rows,
+        }
+    }
+
+    /// **Tell this session's model something without starting a turn** — the door a restart with
+    /// nothing owed takes (`crate::restart`), and the two states it has to tell apart.
     ///
     /// * **A turn is running** → the step boundary of THAT turn (`self.injected`, the queue the
     ///   harness's own nudges ride): the model reads the sentence in the turn already open, and
     ///   nothing is preempted.
     /// * **Idle** → a transcript row, which the model reads at its next turn — whenever that is.
     ///   **No wake**: a wake is a model call, and a call spent to say *"the daemon came back at
-    ///   21:28"* is a call spent on a sentence. What the line is for is closing a gap in the
-    ///   model's sense of time, and that gap is closed whenever it next reads.
+    ///   21:28"* to a session that owes nothing is a call spent on a sentence. What the line is
+    ///   for is closing a gap in the model's sense of time, and that gap is closed whenever it
+    ///   next reads.
+    ///
+    /// **And that is the cost argument's whole reach.** It decides the door for a session with
+    /// nothing outstanding; a session that owes work takes the turn it already costs
+    /// ([`Harness::say_nothing_was_running`], [`crate::restart::Owed`]), because there the person
+    /// is waiting for the session to continue and a row is read when they type — the operator,
+    /// 2026-11-01: *"it is not ok that restart notice arrived with my continue"*.
     ///
     /// A row rather than an injection in the idle case, deliberately: an injection is read at a
     /// step boundary and there is no step boundary to wait for, while a row is in the transcript
