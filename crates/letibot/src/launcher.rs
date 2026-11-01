@@ -2679,6 +2679,7 @@ mod target_tests {
         // and the number reaches where that daemon listens.
         let mut folders = 0;
         let mut others = 0;
+                let mut rooms = 0;
         for (i, path) in records.iter().enumerate() {
             let rec = read_record(path).expect("a record under the runtime dir must parse");
             let w = retarget(&dir, Path::new("/here"), &(i + 1).to_string())
@@ -2697,6 +2698,15 @@ mod target_tests {
             // one kind and is asserted of that one.
             if rec.kind == Kind::Daemon {
                 folders += 1;
+                // **A room coordinator's record is not a workspace's.** Its name is the
+                // host-derived room key (`room-lab2x1-home-…`), not `key(workspace)`, and its
+                // `role` says so. The test reads REAL records from the box, and a box with a
+                // running room has one of these — skipping them by role is a fact about what
+                // the record is, not a guess about what it might be.
+                if rec.role == "room" {
+                    rooms += 1;
+                    continue;
+                }
                 assert_eq!(
                     path.file_stem().unwrap().to_string_lossy(),
                     key(Path::new(&rec.workspace)),
@@ -2708,7 +2718,7 @@ mod target_tests {
             }
         }
         eprintln!(
-            "{} folder daemon(s) and {others} other record(s) under the box's runtime dir",
+            "{} folder daemon(s), {rooms} room(s) and {others} other record(s) under the box's runtime dir",
             folders
         );
         assert!(
