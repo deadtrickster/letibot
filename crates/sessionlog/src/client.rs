@@ -361,6 +361,30 @@ impl HeadClient {
         Ok(())
     }
 
+    /// **Ask what this session can be handed** — the `/skills` pane's bootstrap read.
+    pub fn list_skills(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::ListSkills)?;
+        Ok(())
+    }
+
+    /// **Hand this session one skill's body** — `/skills NAME`, and the pane's Enter. The daemon
+    /// writes the operator's message and runs the turn; `then` is the rest of the line.
+    pub fn load_skill(
+        &mut self,
+        expected_seq: u64,
+        name: &str,
+        then: &str,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::LoadSkill {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            name: name.to_string(),
+            then: then.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// **Ask for the merge queue, whole.** The pane's bootstrap read, exactly as
     /// [`Client::list_jobs`] is the jobs pane's: the queue is the daemon's and a head that drew
     /// its own version would draw a stale one. From then on a `QueueMoved` event says when

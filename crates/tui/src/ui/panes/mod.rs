@@ -8,6 +8,7 @@ pub mod notes;
 pub mod picker;
 pub mod plugin;
 pub mod queue;
+pub mod skills;
 pub mod standing;
 pub mod subagents;
 pub mod todos;

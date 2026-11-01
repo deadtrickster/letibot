@@ -3166,6 +3166,28 @@ pub fn vm_copy_for(
     Ok(None)
 }
 
+/// **The operator's message when they hand a skill over** — `/skills NAME`, the pane's Enter.
+///
+/// The label is the whole of it: the body is somebody else's prose, and a model that read it as
+/// the operator's own instruction would be following a text the operator merely pointed at. What
+/// follows the name on their line goes on after it, as their words, in the same turn.
+pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) -> String {
+    let mut text = format!(
+        "[skill `{}`, from {} — the words below are the skill's, handed to you by the \
+         operator]\n{}\n[end of the skill `{}`]",
+        skill.name,
+        skill.source.label(),
+        skill.body.trim_end(),
+        skill.name
+    );
+    let then = then.trim();
+    if !then.is_empty() {
+        text.push_str("\n\n");
+        text.push_str(then);
+    }
+    text
+}
+
 /// **What the model is told when a reseat lands** — one line, and the three things it must not
 /// say.
 ///
@@ -4985,7 +5007,7 @@ impl Harness {
         // One read, one seat — the two used to be resolved separately and could
         // disagree.
         let role = role_for(&cfg);
-        let mut registry = registry
+        let registry = registry
             .resolve_role(&role)
             .map_err(|e| {
                 HarnessError::Setup(format!("seating the `{}` role: {e}", cfg.seat.as_str()))
@@ -4993,6 +5015,30 @@ impl Harness {
             // The downgrade, applied to what is SEATED: a denied class's tools leave
             // the prompt, so the model is not told it has what the gate would refuse.
             .without_access(&cfg.downgrade.deny);
+        // **And a skill that declares `allowed-tools` may only NARROW this seat** (D17: a skill
+        // is tighten-only, never a pre-approval). Read over the skills this session was STARTED
+        // with: a skill loaded mid-conversation narrows nothing, because a session's tool list is
+        // its prompt and message zero is frozen.
+        let ceiling = parts.skills.tool_ceiling(&cfg.skills);
+        let mut registry = match &ceiling {
+            Some(allowed) => {
+                let before: std::collections::BTreeSet<String> =
+                    registry.schemas().iter().map(|s| s.name.clone()).collect();
+                let narrowed = registry.only_tools(allowed);
+                let gone: Vec<&String> = before.difference(allowed).collect();
+                if !gone.is_empty() {
+                    let names: Vec<String> = gone.iter().map(|n| format!("`{n}`")).collect();
+                    notes.push(format!(
+                        "a skill this session was started with declares `allowed-tools`, so {} \
+                         {} not seated here — a skill may narrow a session and never widen it",
+                        names.join(", "),
+                        if names.len() == 1 { "is" } else { "are" },
+                    ));
+                }
+                narrowed
+            }
+            None => registry,
+        };
         // **And the tools this session's PLUGIN LAYERS declare** (`docs/plugins-plan.md` §4.8).
         //
         // After the role, because a layer's tool is not one the role names — it is a seat the
@@ -6693,6 +6739,9 @@ impl Harness {
         // is answered from it, so it has to be installed before a head can attach. See
         // `Harness::install_notes_source`.
         h.install_notes_source();
+        // **And the skills source**, for the same reason: a head's `ListSkills` is answered from
+        // it, and it has to be in place before a head can attach.
+        h.install_skills_source();
         // **And the live job-output read**, for the same reason and with the same timing: the
         // jobs pane's Enter is answered from it while a turn holds the worker. See
         // `Harness::install_job_output_source`.
@@ -10002,6 +10051,38 @@ impl Harness {
                 crate::standing_notes::rows(&workspace, &global, &box_dirs, &vocab)
             }),
         );
+    }
+
+    /// **Install this session's skills source**, which is what a head's `ListSkills` is answered
+    /// from — the same rows the prompt's index is composed from, read on the ask.
+    fn install_skills_source(&self) {
+        let skills = self.skills.clone();
+        self.session_registry.set_skills_source(
+            &self.cfg.session_id,
+            std::sync::Arc::new(move || {
+                let (rows, _) = skills.index_rows();
+                rows.into_iter()
+                    .map(|r| letibot_sessionlog::protocol::SkillRow {
+                        name: r.name,
+                        source: r.source.label(),
+                        description: r.description,
+                    })
+                    .collect()
+            }),
+        );
+    }
+
+    /// **The operator hands this session one skill's body** — `/skills NAME`, and the `/skills`
+    /// pane's Enter.
+    ///
+    /// Three rows' worth of decision in one place: the body is the operator's message (a `User`
+    /// row with `Speaker::Operator`), the label says what it is and where it came from — a skill
+    /// is not the operator's words, and a model that read it as an instruction would be following
+    /// somebody else's prose on their word — and the rest of the line, when there is one, goes on
+    /// as the operator's own prompt in the same turn.
+    pub fn load_skill(&mut self, name: &str, then: &str) -> Result<Reply, HarnessError> {
+        let skill = self.skills.load_any(name).map_err(HarnessError::Setup)?;
+        self.submit(&skill_message(&skill, then))
     }
 
     /// **Say what this session is waiting on, if it has changed** — `PROTOCOL_VERSION` 52.

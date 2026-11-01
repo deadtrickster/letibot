@@ -345,6 +345,20 @@ const STANDING: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
+/// **The skills: a list whose Enter HANDS the row over** — `Act::Open` is the same key path the
+/// standing pane's Enter takes, and the pane's own arm is what decides what opening means here
+/// (the body goes to the session, not into the editor).
+const SKILLS: &[Binding] = &[
+    LIST,
+    b(
+        &[On::Enter],
+        Always,
+        Act::Open,
+        Text("hands the skill to the session"),
+    ),
+    PAGE,
+    WHEEL,
+];
 const SUBAGENTS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Always, Act::Open, Row),
@@ -427,6 +441,7 @@ impl Surface {
             Surface::Queue => QUEUE,
             Surface::QueueEntry => QUEUE_ENTRY,
             Surface::Standing => STANDING,
+            Surface::Skills => SKILLS,
             Surface::Subagents => SUBAGENTS,
             Surface::SubOut => SUB_OUT,
             Surface::Jobs => JOBS,
@@ -463,6 +478,7 @@ impl Surface {
             Surface::Queue => "queue",
             Surface::QueueEntry => "queue entry",
             Surface::Standing => "standing notes",
+            Surface::Skills => "skills",
             Surface::Subagents => "subagents",
             Surface::SubOut => "subagent's output",
             Surface::Jobs => "jobs",
@@ -512,6 +528,7 @@ impl Surface {
             Surface::Todos => Some("/todos"),
             Surface::Queue => Some("/queue"),
             Surface::Standing => Some("/standing"),
+            Surface::Skills => Some("/skills"),
             Surface::Subagents => Some("/subagents"),
             Surface::Jobs => Some("/jobs"),
             Surface::Monitors => Some("/monitors"),
@@ -546,6 +563,10 @@ impl Surface {
                 "the notes the harness reads into the prompt, one row each, with the form the \
                  budget gave it (`verbatim`, or `indexed` when only its headings fit). NOT \
                  /notes, which is what this head has shown"
+            }
+            Surface::Skills => {
+                "the skills this box has — the name, where it was found and its one line. Enter \
+                 hands that skill's body to the session, as your message"
             }
             Surface::Subagents => {
                 "the subagent tree; enter goes into that subagent's session, and esc inside a \

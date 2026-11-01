@@ -908,6 +908,15 @@ impl Link {
                     Action::ListNotes => {
                         self.client.list_notes()?;
                     }
+                    // The skills pane's bootstrap read — rows of names, never bodies.
+                    Action::ListSkills => {
+                        self.client.list_skills()?;
+                    }
+                    // **The operator hands the session a skill.** Stale-tolerant like a prompt:
+                    // somebody who asked while the screen moved still meant it.
+                    Action::LoadSkill { name, then } => {
+                        self.client.load_skill(app.seq, &name, &then)?;
+                    }
                     Action::ListTodos => {
                         self.client.list_todos()?;
                     }

@@ -1090,6 +1090,11 @@ pub const STOPPING_TURN_REASON: &str = "the daemon is stopping";
 /// read is no rows rather than an error — see `standing_notes::rows`.
 pub type NotesSource = Arc<dyn Fn() -> Vec<crate::protocol::NoteEntry> + Send + Sync>;
 
+/// **A session's skills, as the pane's rows** — the same shape and the same reasons as
+/// [`NotesSource`]: read on the ask (a skill may be written while the session sits idle), and a
+/// corpus that cannot be read is no rows rather than an error.
+pub type SkillsSource = Arc<dyn Fn() -> Vec<crate::protocol::SkillRow> + Send + Sync>;
+
 /// **A live read of one background job's output, answered off the worker.**
 ///
 /// The jobs pane's Enter sends `ReadJobOutput`, and that frame used to go through the command
@@ -1130,6 +1135,8 @@ pub struct Registry {
     /// owns the token counter — and removed with the session ([`Registry::remove`]). See
     /// [`NotesSource`].
     notes: Mutex<std::collections::HashMap<String, NotesSource>>,
+    /// The `/skills` pane's rows, one source per session — see [`SkillsSource`].
+    skills: Mutex<std::collections::HashMap<String, SkillsSource>>,
     /// **One per session that has a process host**, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
@@ -1308,6 +1315,7 @@ impl Registry {
             runs: Mutex::new(std::collections::HashMap::new()),
             panes: Mutex::new(std::collections::HashMap::new()),
             notes: Mutex::new(std::collections::HashMap::new()),
+            skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
             ended_runs: std::sync::atomic::AtomicBool::new(false),
             source: Mutex::new(None),
@@ -1926,6 +1934,11 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let skills = self
+            .skills
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         let boundary = self
             .panes
             .lock()
@@ -1944,7 +1957,15 @@ impl Registry {
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
-        drop((ender, prompt, notes, boundary, job_output, pane_driver));
+        drop((
+            ender,
+            prompt,
+            notes,
+            skills,
+            boundary,
+            job_output,
+            pane_driver,
+        ));
         Some(entry.hub)
     }
 
@@ -2134,6 +2155,26 @@ impl Registry {
     /// opened has no source, and an empty corpus has no rows, and from out here those look
     /// alike. The pane says *the harness is reading none for this session*, which is true of
     /// both.
+    pub fn skills(&self, session_id: &str) -> Vec<crate::protocol::SkillRow> {
+        let source = self
+            .skills
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        source.map(|s| s()).unwrap_or_default()
+    }
+
+    /// **Install a session's skills source** — the `/skills` pane's rows, read on the ask. Called
+    /// by the session's own harness at open ([`Registry::set_notes_source`]'s shape and reasons:
+    /// the registry is the log and the wire, and the corpus is the harness's).
+    pub fn set_skills_source(&self, session_id: &str, source: SkillsSource) {
+        self.skills
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
+    }
+
     pub fn notes(&self, session_id: &str) -> Vec<crate::protocol::NoteEntry> {
         // The closure is cloned out before it is called, so the lock is not held across a
         // readdir, a file read and a pass of token counting — the same rule

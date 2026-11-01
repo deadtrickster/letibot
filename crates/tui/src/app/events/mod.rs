@@ -46,6 +46,7 @@ impl App {
             frame @ (ServerFrame::Sessions { .. }
             | ServerFrame::Jobs { .. }
             | ServerFrame::StandingNotes { .. }
+            | ServerFrame::Skills { .. }
             | ServerFrame::Queues { .. }
             | ServerFrame::ShellSuggestions { .. }
             | ServerFrame::Todos { .. }

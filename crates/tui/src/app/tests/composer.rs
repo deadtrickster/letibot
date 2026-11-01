@@ -1204,6 +1204,10 @@ fn tab_completes_a_slash_command_and_more_tabs_cycle_the_matches() {
     // pinning a list that no longer exists.
     // **And `/standing`**, which joined the same way and for the same reason: the pane's
     // verb is in the table, so `/s` reaches it and this cycle names it.
+    // **And `/skills`**, which joined the table with the pane: a verb this head implements is a
+    // verb `/s` reaches, and this cycle names it rather than pinning a list that moved.
+    a.key(Key::Tab);
+    assert_eq!(a.input(), "/skills");
     a.key(Key::Tab);
     assert_eq!(a.input(), "/standing");
     a.key(Key::Tab);

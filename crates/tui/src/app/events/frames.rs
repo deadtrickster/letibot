@@ -172,6 +172,16 @@ impl App {
                 }
                 Disposition::Control
             }
+            // **The skills pane's rows.** Names, one line each and where each was found — the
+            // index the prompt carries, which is what makes the pane and the prompt one list.
+            ServerFrame::Skills { session_id, skills } => {
+                if session_id == self.session_id {
+                    self.skills = skills;
+                    self.skills_sel = self.skills_sel.min(self.skills.len().saturating_sub(1));
+                    self.redraw = true;
+                }
+                Disposition::Control
+            }
             // **Both queues, whole** (R61) — the daemon's one snapshot, kept as it came, and
             // cut to the pane's scope (R92 item 5): the daemon names the asking session's
             // repository, and the pane and the edge are about that one unless told otherwise.

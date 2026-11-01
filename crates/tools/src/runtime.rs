@@ -2004,6 +2004,18 @@ impl Registry {
         self
     }
 
+    /// **Keep only the tools a set of declared skills allows** (D17's tighten-only rule): a
+    /// session started with `skill.allowed-tools` may call those names and no others, so the
+    /// rest leave the prompt — a model is not told it has what the list refuses.
+    ///
+    /// An EMPTY set narrows to nothing, which is what a declaration of no tools means; callers
+    /// pass `None` for *no declaration*, which is the ordinary case and a no-op.
+    pub fn only_tools(mut self, allowed: &std::collections::BTreeSet<String>) -> Registry {
+        self.tools
+            .retain(|t| allowed.contains(&t.schema().name.clone()));
+        self
+    }
+
     pub fn resolve_role(self, role: &Role) -> Result<Registry, RoleError> {
         // **R93.F30 — one plan tool per seat.** `todo` (the intent ledger's list) and
         // `todo_write` (the board the nag, the pane and `wait_on` read) are two lists with two
@@ -2965,6 +2977,24 @@ mod tests {
         fn invoke(&self, _ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
             Invocation::ok(format!("probed {}", args["path"]))
         }
+    }
+
+    /// **A declared skill's `allowed-tools` narrows the seat and cannot widen it** — the tools
+    /// it does not name leave the registry, so the prompt does not announce them.
+    #[test]
+    fn only_tools_narrows_to_the_declared_names() {
+        let mut reg = Registry::new();
+        reg.register(Box::new(Probe {
+            access: Access::Read,
+        }))
+        .unwrap();
+        reg.register(Box::new(crate::builtins::bash::Bash::default()))
+            .unwrap();
+        let allowed: std::collections::BTreeSet<String> =
+            ["probe".to_string()].into_iter().collect();
+        let narrowed = reg.only_tools(&allowed);
+        let names: Vec<String> = narrowed.schemas().iter().map(|s| s.name.clone()).collect();
+        assert_eq!(names, vec!["probe".to_string()]);
     }
 
     /// **A tool that runs a command line**, for R39's changed-file check — the real

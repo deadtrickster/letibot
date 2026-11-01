@@ -176,6 +176,17 @@ pub enum Action {
     /// Asked on every pane-open rather than held: the notes are the operator's own files, and
     /// this is the read that makes a note written a minute ago a row.
     ListNotes,
+    /// **Ask what this session can be handed** — the `/skills` pane's bootstrap read. Rows only:
+    /// the name, its one line and where it was found. A body travels on [`Action::LoadSkill`],
+    /// because a listing of bodies is not a listing.
+    ListSkills,
+    /// **Hand this session one skill's body** — the pane's Enter, and `/skills NAME rest`. The
+    /// daemon loads it, writes the operator's message and runs the turn; `then` is what followed
+    /// the name on the line.
+    LoadSkill {
+        name: String,
+        then: String,
+    },
     /// **Ask for the merge queue, whole.** The queue pane's bootstrap read, and
     /// daemon-level: there is one `main` and one queue, so the answer is not scoped to this
     /// session — see `ClientFrame::ListMergeQueue`.

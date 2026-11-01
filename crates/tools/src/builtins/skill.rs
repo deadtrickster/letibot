@@ -1009,6 +1009,46 @@ mod tests {
         assert!(off.first().is_none_or(|(_, s)| *s < QUERY_FLOOR), "{off:?}");
     }
 
+    /// **`allowed-tools` is parsed and it can only narrow** — the union over the skills a session
+    /// was started with, `None` when none of them declares one (D17: tighten-only).
+    #[test]
+    fn allowed_tools_is_a_ceiling_and_never_a_permission() {
+        let root = std::env::temp_dir().join(format!("letibot-skilltools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("strict");
+        std::fs::create_dir_all(&dir).expect("a skill dir");
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: strict\ndescription: read only\nallowed-tools: Read, Grep(src/**)\n---\n\nread it\n",
+        )
+        .expect("a skill");
+        let r = SkillRegistry::load_onto(Vec::new(), std::slice::from_ref(&root));
+        let strict = r
+            .skills
+            .iter()
+            .find(|s| s.name == "strict")
+            .expect("strict");
+        assert_eq!(
+            strict.allowed_tools.as_deref(),
+            Some(["read".to_string(), "grep".to_string()].as_slice()),
+            "the names, lowercased, with the qualifier dropped"
+        );
+        let ceiling = r.tool_ceiling(&["strict".to_string()]).expect("a ceiling");
+        assert!(
+            ceiling.contains("read") && !ceiling.contains("bash"),
+            "{ceiling:?}"
+        );
+        // A session started with a skill that declares nothing restricts nothing.
+        let plain = SkillRegistry::new(vec![Skill::new(
+            "plain",
+            "",
+            "a body",
+            SkillSource::Operator,
+        )]);
+        assert!(plain.tool_ceiling(&["plain".to_string()]).is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn lists_and_loads() {
         let r = registry();

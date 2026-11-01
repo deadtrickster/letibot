@@ -832,7 +832,22 @@ use crate::view::Snapshot;
 /// would fail to decode it mid-session — and these travel in both directions, so a version-53
 /// daemon would fail to parse the ask and a version-53 head the card. Nothing on the event
 /// side changes, so a session never touched by a bridge reads exactly as it did.
-pub const PROTOCOL_VERSION: u32 = 54;
+///
+/// # 55: the skills pane, and a skill the operator hands over
+///
+/// Three frames: [`ClientFrame::ListSkills`] (the pane's rows), [`ClientFrame::LoadSkill`] (the
+/// operator hands one skill's body to the session) and [`ServerFrame::Skills`] (the answer to
+/// the first). The design they serve is that a skill is *proposed*: its name, one line and where
+/// it was found are in the prompt, and its body arrives when somebody asks for it.
+///
+/// **The body is injected by the DAEMON, and that is why [`ClientFrame::LoadSkill`] exists.** The
+/// message lands as the operator's own row, and a row is the daemon's to write; a head that
+/// composed one would have to hold every body, and a fabric skill's body is a read over the
+/// network that only the daemon may make.
+///
+/// **New variants are a bump**, by every version since 4: an older peer has no arm for one and
+/// would fail to decode it mid-session.
+pub const PROTOCOL_VERSION: u32 = 55;
 
 /// **The names an operator may run through the head-run door, and record.**
 ///
@@ -1599,6 +1614,20 @@ pub struct NoteEntry {
     pub form: NoteForm,
 }
 
+/// **One skill, as the `/skills` pane draws it** — the name, the one line, and where it was found.
+///
+/// **No body.** The pane lists what can be handed over; the body travels when somebody presses
+/// Enter (`ClientFrame::LoadSkill`), because a corpus of every body is not a listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillRow {
+    /// The name `skill`'s index and `LoadSkill` take.
+    pub name: String,
+    /// **Where it was found**, in the words the index uses: `this project`, `the operator's`,
+    /// `installed from …`, `this build`, `the fabric`.
+    pub source: String,
+    pub description: String,
+}
+
 /// **Which of the two forms the standing-notes section carries a note in.**
 ///
 /// The words are the section's own: a file that fits what is left of the budget is
@@ -2132,6 +2161,27 @@ pub enum ClientFrame {
     /// `Harness::publish_notes` — so this read is the same shape [`ClientFrame::ListJobs`]
     /// has, one mailbox over.
     ListNotes,
+    /// **The skills pane's bootstrap read.** What can be handed to this session, one row each.
+    ///
+    /// Answered with [`ServerFrame::Skills`]. Read-only and unserialised like
+    /// [`ClientFrame::ListNotes`]: a list is a question, not an act, and a pane that opens must
+    /// answer while it is open.
+    ListSkills,
+    /// **The operator hands this session one skill's body** — `/skills NAME`, and the pane's
+    /// Enter. The daemon loads it (disk or shelf), writes the operator's message and runs a turn.
+    ///
+    /// Queued like [`ClientFrame::OperatorShell`], and for the same reason: it is the operator's
+    /// own line, and a turn already running reads it at its next round boundary. `then` is what
+    /// followed the name on the line — the rest of `/skills release cut 0.5.2`, which goes on as
+    /// the operator's prompt in the same turn.
+    LoadSkill {
+        client_request_id: String,
+        expected_seq: u64,
+        /// The skill's name, as [`ServerFrame::Skills`] listed it.
+        name: String,
+        #[serde(default)]
+        then: String,
+    },
     /// This session's background jobs, from the daemon's process table.
     ///
     /// Read-only and unserialised like [`ClientFrame::ListTodos`], and for the
@@ -2839,6 +2889,14 @@ pub enum ServerFrame {
         session_id: String,
         notes: Vec<NoteEntry>,
     },
+    /// **The answer to [`ClientFrame::ListSkills`]**: what this session can be handed, in the
+    /// order the index lists it — and never a body (a listing of bodies is not a listing).
+    ///
+    /// An empty list is an answer: a box with no skill is a box whose `skill list` is empty.
+    Skills {
+        session_id: String,
+        skills: Vec<SkillRow>,
+    },
     /// The answer to [`ClientFrame::ListMergeQueue`]: **both queues as of now, every state**,
     /// with each repository's lease and heartbeat, the target branches' health and the last
     /// moves (R61). A [`crate::SessionEvent::QueueMoved`] tells a head to ask again. A read that
@@ -3237,6 +3295,8 @@ mod tests {
                 | ClientFrame::ListJobs
                 | ClientFrame::ListMergeQueue
                 | ClientFrame::ListNotes
+                | ClientFrame::ListSkills
+                | ClientFrame::LoadSkill { .. }
                 | ClientFrame::ListSessions
                 | ClientFrame::ListTodos
                 | ClientFrame::Mode { .. }
@@ -3339,6 +3399,7 @@ mod tests {
                 | ServerFrame::Settings { .. }
                 | ServerFrame::Jobs { .. }
                 | ServerFrame::StandingNotes { .. }
+                | ServerFrame::Skills { .. }
                 | ServerFrame::Queues { .. }
                 | ServerFrame::Peeked { .. }
                 | ServerFrame::ModeConfirm { .. }
@@ -3360,8 +3421,14 @@ mod tests {
         let _ = event;
         let _ = server;
         assert_eq!(
-            PROTOCOL_VERSION, 54,
-            "the match above was last reconciled with the frame list at 54 — 54 added the \
+            PROTOCOL_VERSION, 55,
+            "the match above was last reconciled with the frame list at 55 — 55 added the \
+             three frames of the skills pane: `ClientFrame::ListSkills` (the rows), \
+             `ClientFrame::LoadSkill` (the operator hands one body to the session, and the \
+             DAEMON writes the message, because a row is the daemon's to write and a fabric \
+             skill's body is a read only the daemon may make) and `ServerFrame::Skills` (the \
+             answer). New variants in both directions, so a version-54 peer fails to parse \
+             whichever arrives first. 54 added the \
              four frames of one feature: `ClientFrame::ModeConfirm` (a head ASKS for the point \
              that needs a person), `ServerFrame::ModeConfirm` (the card, to every other head \
              that declared `can_decide`), `ClientFrame::ModeConsent` (that head's answer) and \

@@ -257,6 +257,14 @@ impl App {
                 self.standing_sel = step(self.standing_sel.min(n - 1), n, up);
                 self.scroll_into_view(self.standing_row_of());
             }
+            Surface::Skills => {
+                let n = self.skills.len();
+                if n == 0 {
+                    return ControlFlow::Continue(());
+                }
+                self.skills_sel = step(self.skills_sel.min(n - 1), n, up);
+                self.scroll_into_view(self.skills_row_of());
+            }
             Surface::Subagents => {
                 let n = self.subagent_stops().len();
                 if n == 0 {
@@ -349,6 +357,18 @@ impl App {
                 }
                 self.open_note();
                 ControlFlow::Break(None)
+            }
+            // **Enter hands the skill over** — the daemon loads the body and writes the
+            // operator's message; the head never holds one. The pane stays open under it.
+            Surface::Skills => {
+                let Some(name) = self.selected_skill() else {
+                    return ControlFlow::Continue(());
+                };
+                self.say(&format!("`{name}` handed to the session"));
+                ControlFlow::Break(Some(Action::LoadSkill {
+                    name,
+                    then: String::new(),
+                }))
             }
             Surface::Subagents => self.subagents_enter(),
             Surface::Jobs => self.jobs_enter(),

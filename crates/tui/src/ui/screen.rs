@@ -1230,6 +1230,10 @@ impl App {
                 let rows = self.standing_lines(w);
                 self.pane_window(rows, room)
             }
+            Drawn::Surface(Surface::Skills) => {
+                let rows = self.skills_lines(w);
+                self.pane_window(rows, room)
+            }
             Drawn::Surface(Surface::Subagents) => {
                 let rows = self.subagents_lines(w);
                 self.pane_window(rows, room)

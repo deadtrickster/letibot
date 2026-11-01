@@ -836,6 +836,28 @@ impl App {
             // `/notes` is the head's own disclosures, numbered for `/notes dismiss N`, and it
             // keeps meaning that. A pane over the corpus takes the corpus's word.
             "standing" => self.toggle_surface(Surface::Standing),
+            // **`/skills` — the box's skills, and `/skills NAME rest` hands one over.** The
+            // body is the DAEMON's to inject: it loads the skill (a fabric one is a read only
+            // it may make), writes the operator's message and runs the turn. What the head
+            // sends is the name and what followed it, which is the rest of the line going on as
+            // the operator's prompt in the same turn.
+            "skills" => self.toggle_surface(Surface::Skills),
+            _ if verb_arg(cmd, "skills").is_some() => {
+                let rest = verb_arg(cmd, "skills").unwrap_or("").trim();
+                let (name, then) = match rest.split_once(char::is_whitespace) {
+                    Some((n, t)) => (n.trim().to_string(), t.trim().to_string()),
+                    None => (rest.to_string(), String::new()),
+                };
+                if name.is_empty() {
+                    self.say("/skills NAME — one of the names the skills pane lists");
+                    return None;
+                }
+                if self.session_id.is_empty() {
+                    self.say("not attached to a session yet");
+                    return None;
+                }
+                Some(Action::LoadSkill { name, then })
+            }
             // **§6: the panes and the promote, reachable as verbs.**
             //
             // Each of these had a chord and no word, which is two problems: a head
@@ -1629,6 +1651,14 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "queue",
         "open or close the merge-queue pane: what is landing on main, and why it is not",
+    ),
+    // **`/skills` hands a skill's body to the session** as the operator's message — the body is
+    // the daemon's to inject, so the head sends the name and the rest of the line.
+    (
+        "skills",
+        "the skills this box has, one row each: enter (or `/skills NAME`) hands that skill's body \
+         to the session as your message, and `/skills NAME rest of line` sends the rest on as your \
+         prompt in the same turn",
     ),
     (
         "standing",

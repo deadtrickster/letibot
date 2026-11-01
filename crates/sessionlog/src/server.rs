@@ -924,6 +924,45 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            // **The skills pane's bootstrap read** — the rows the index names, and never a body:
+            // the body travels when somebody presses Enter (`ClientFrame::LoadSkill`), which is
+            // also the only door a fabric skill's body could come through.
+            Ok(ClientFrame::ListSkills) => {
+                let f = ServerFrame::Skills {
+                    session_id: seat.hub.session_id().to_string(),
+                    skills: registry.skills(&seat.hub.session_id()),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            // **The operator hands this session one skill** — `/skills NAME rest`, and the
+            // pane's Enter. Queued like `OperatorShell`: it is the operator's own line, and a
+            // turn already running reads it at its next round boundary.
+            Ok(ClientFrame::LoadSkill {
+                client_request_id,
+                expected_seq,
+                name,
+                then,
+            }) => {
+                if name.trim().is_empty() {
+                    let f = ServerFrame::Rejected {
+                        client_request_id,
+                        reason: "a skill to load needs a name: `/skills NAME`, with NAME one of \
+                                 the rows the pane lists. Nothing was loaded."
+                            .into(),
+                        expected_seq,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                } else {
+                    let f = seat.hub.submit(
+                        &seat.head_id,
+                        client_request_id,
+                        expected_seq,
+                        CommandKind::LoadSkill { name, then },
+                    );
+                    writer.lock().unwrap().write(&f)?;
+                }
+            }
             Ok(ClientFrame::ListTodos) => {
                 // The bootstrap read: the snapshot carries items, not events, so
                 // a head attaching fresh has nothing to replay. From here the

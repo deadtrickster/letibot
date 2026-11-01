@@ -259,6 +259,19 @@ pub enum CommandKind {
         /// door's rows name the actor the same way.
         who: String,
     },
+    /// **The operator handed this session one skill's body** — `/skills NAME`, and the `/skills`
+    /// pane's Enter.
+    ///
+    /// Rides the queue like every other verb, and for the reason [`CommandKind::OperatorShell`]
+    /// gives: the single worker is the transcript's one writer. What it carries is the NAME and
+    /// what followed it on the line; the daemon loads the body, because a fabric skill's body is
+    /// a read only the daemon may make, and writes the operator's message itself.
+    LoadSkill {
+        /// The skill, as `ServerFrame::Skills` listed it.
+        name: String,
+        /// What followed the name on the operator's line — their own prompt, in the same turn.
+        then: String,
+    },
     /// **What the operator's own shell line produced — back from the run's own thread.**
     ///
     /// [`CommandKind::OperatorShell`] no longer runs on the worker: it is handed to a thread
@@ -479,6 +492,7 @@ impl CommandKind {
             CommandKind::OperatorCall { .. } => "operator-call",
             CommandKind::OperatorResult { .. } => "operator-result",
             CommandKind::OperatorShell { .. } => "operator-shell",
+            CommandKind::LoadSkill { .. } => "load-skill",
             CommandKind::OperatorShellResult { .. } => "operator-shell-result",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::SetOperatorTodos { .. } => "operator todos",
@@ -1907,6 +1921,14 @@ impl Hub {
                     }
                 }
                 (CommandKind::Promote, _) => "background requested".into(),
+                // **The skill is named, because the operator is about to read a long body.** A
+                // line that said only "queued" would not say WHICH skill it had handed over.
+                (CommandKind::LoadSkill { name, .. }, true) => {
+                    format!("{REJECT_STALE_SEQ}: `{name}` queued anyway")
+                }
+                (CommandKind::LoadSkill { name, .. }, false) => {
+                    format!("`{name}` queued — its body is handed to the model in the next turn")
+                }
                 (CommandKind::Answer { reply, .. }, _) => {
                     format!("{} answered", reply.as_str())
                 }

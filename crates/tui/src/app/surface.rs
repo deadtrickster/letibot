@@ -52,6 +52,9 @@ pub(crate) enum Surface {
     QueueEntry,
     /// The standing notes — `/standing`.
     Standing,
+    /// **The skills this box has** — `/skills`. One row each: the name, where it was found and
+    /// its one line; Enter hands the body to the session.
+    Skills,
     /// The subagent tree — `ctrl-g`, `/subagents`.
     Subagents,
     /// One subagent's output — the tree's `p`, `/peek ID`.
@@ -104,7 +107,7 @@ impl Surface {
     }
 
     /// Every surface, for the tests and the generated help that walk them.
-    pub(crate) const ALL: [Surface; 17] = [
+    pub(crate) const ALL: [Surface; 18] = [
         Surface::Help,
         Surface::Stats,
         Surface::Picker,
@@ -114,6 +117,7 @@ impl Surface {
         Surface::Queue,
         Surface::QueueEntry,
         Surface::Standing,
+        Surface::Skills,
         Surface::Subagents,
         Surface::SubOut,
         Surface::Jobs,
@@ -283,6 +287,9 @@ impl App {
             Surface::Listing => self.slash_out = None,
             Surface::Subagents => self.sub_out_pending = None,
             Surface::Standing => self.standing_corpus = None,
+            // The rows and the cursor stay: a skill written since is a row at the next open,
+            // and the reader lands on the one they left.
+            Surface::Skills => {}
             // **A plugin's pane closes the pane's own state with it**: which of them was open,
             // which of its screens, and the row the detail was read from. The views themselves
             // stay — they are the daemon's answers about the session, not about this screen —
@@ -342,6 +349,8 @@ impl App {
                 self.standing_corpus = None;
                 Some(Action::ListNotes)
             }
+            // The skills, read on the open: a skill written a minute ago is a row.
+            Surface::Skills => Some(Action::ListSkills),
             Surface::Subagents => {
                 self.fold_subagents();
                 None

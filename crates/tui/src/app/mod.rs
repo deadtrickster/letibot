@@ -1094,6 +1094,14 @@ pub struct App {
     /// open is a change the pane can notice and answer for. `None` until the first draw after
     /// the rows land, which is the baseline rather than a change. See [`standing::Corpus`].
     pub(crate) standing_corpus: Option<standing::Corpus>,
+    /// **The skills, as the daemon last answered `ListSkills`** — the same rows the prompt's
+    /// index is composed from: a name, its one line, and where it was found. Never a body: the
+    /// body is the daemon's to inject, on Enter (`Action::LoadSkill`).
+    pub(crate) skills: Vec<letibot_sessionlog::protocol::SkillRow>,
+    /// Which skill row the cursor is on — an index into [`App::skills`], kept across a close.
+    pub(crate) skills_sel: usize,
+    /// **The pane row each skill was DRAWN on**, the record the arrows move by.
+    pub(crate) skills_stop_rows: Vec<usize>,
     /// **Both queues, as the daemon last answered `ListMergeQueue`** (R61) — the review queue,
     /// the merge queue, who serves each repository and how recently it said so, the targets'
     /// health and the last moves: the daemon's own snapshot, never a reconstruction. A
@@ -2223,6 +2231,9 @@ impl App {
             box_top_hits: None,
             standing: Vec::new(),
             standing_sel: 0,
+            skills: Vec::new(),
+            skills_sel: 0,
+            skills_stop_rows: Vec::new(),
             standing_stop_rows: Vec::new(),
             standing_corpus: None,
             queues: Default::default(),

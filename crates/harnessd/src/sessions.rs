@@ -5299,6 +5299,25 @@ impl<'a> Sessions<'a> {
             // boundary takes it (`apply_queued_head_run`), which is the door's own timing
             // and for its own reason: a turn already running reads the rows at its next
             // round, and that pickup stays synchronous.
+            // **The operator handed this session a skill** — `/skills NAME rest`, or the pane's
+            // Enter. The body is loaded and written as THEIR row by the session's own harness
+            // (`Harness::load_skill`), and the turn it opens is the turn a prompt opens: this is
+            // the same door, one inference further back. A name nothing answers to is refused on
+            // the session's log, by the code every other verb's "no" uses.
+            CommandKind::LoadSkill { name, then } => {
+                let (name, then) = (name.clone(), then.clone());
+                match self.turn(session_id, Door::Prompt, |h| {
+                    h.load_skill(&name, &then).map(Some)
+                }) {
+                    None => Outcome::Ignored,
+                    Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
+                    Some(Err(why)) => {
+                        let said = why.to_string();
+                        self.warn(session_id, "slash_refused", said.clone());
+                        Outcome::Failed(said)
+                    }
+                }
+            }
             CommandKind::OperatorShell { line, who } => {
                 let (line, who) = (line.clone(), who.clone());
                 if !self.open.contains_key(session_id) {
