@@ -194,13 +194,13 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
     let text = h
         .restore_after_restart()
         .expect("a restart with nothing running is still said");
-    assert_eq!(
-        text,
-        crate::restart::nothing_running(
-            &crate::restart::Stopped::Unknown { seen_ms: 0 },
-            h.session_registry.started_ms()
-        ),
-        "a session that names no daemon says the stop is unknown rather than inventing one"
+    // The fixture stages a stopped life row, so `latest_box_stop` finds it: the stop is
+    // dated from that row, not Unknown, even though the session's own rows name no daemon.
+    // The down time is a fact about the box (three restarts in an hour measured 1 h 11 m
+    // when the notice asked only the session's daemons), so every stopped life row counts.
+    assert!(
+        text.contains("stopped at "),
+        "the stop is dated from a stopped life row, not invented: {text}"
     );
     assert!(text.contains("the daemon came back at "), "{text}");
     assert!(text.ends_with(": nothing was running"), "{text}");

@@ -3458,6 +3458,38 @@ fn transcript_exists(store: &Store, transcript_id: &str) -> bool {
         .is_ok()
 }
 
+/// **The most recent daemon stop in the store, whatever session's rows named it.**
+///
+/// The down time is a fact about the BOX: three restarts in an hour — the operator's
+/// *"i restarted immediately"* — measured 1 h 11 m because the notice asked only the
+/// session's own daemons, and the two intermediates were invisible to it. This looks at
+/// every `daemon_life` row with a stop, and answers the latest, so the intermediate
+/// restarts are counted and the down time is the gap between the LAST stop and THIS start.
+fn latest_box_stop(store: &Store) -> crate::restart::Stopped {
+    let latest = store
+        .lives()
+        .ok()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|l| l.stopped_ms.map(|at_ms| (at_ms, l.instance)))
+        .max_by_key(|(at_ms, _)| *at_ms);
+    match latest {
+        Some((at_ms, instance)) => crate::restart::Stopped::At {
+            at_ms,
+            estimated_from: None,
+        },
+        None => crate::restart::Stopped::Unknown {
+            seen_ms: 0,
+        },
+    }
+}
+
+
+/// **The most recent daemon stop in the store, whatever session's rows named it.**
+///
+/// The down time is a fact about the BOX: three restarts in an hour — the operator's
+/// *"i restarted immediately"* — measured 1 h 11 m because the notice asked only the
+
 impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools,
     /// render the stable prefix, and record all of it.
@@ -12278,7 +12310,8 @@ impl Harness {
         let stop = crate::restart::Stopped::latest(
             instances
                 .iter()
-                .map(|(i, at)| crate::restart::stop_of(&store, i, *at)),
+                .map(|(i, at)| crate::restart::stop_of(&store, i, *at))
+                .chain(std::iter::once(latest_box_stop(&store))),
         );
         let restore = stop.restores(opened_ms, self.cfg.restore_within);
         // Whether anything WAS brought back — which decides the notice's first line and its code.
@@ -12489,7 +12522,8 @@ impl Harness {
         let stop = crate::restart::Stopped::latest(
             instances
                 .iter()
-                .map(|(i, at)| crate::restart::stop_of(store, i, *at)),
+                .map(|(i, at)| crate::restart::stop_of(store, i, *at))
+                .chain(std::iter::once(latest_box_stop(store))),
         );
         // **The same sentence, and one clause when the session owes work** — a model woken to
         // *nothing was running* alone could not know why it is reading it now.
