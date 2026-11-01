@@ -196,7 +196,7 @@ fn live_rows_fill_the_frame_and_history_is_one_folded_line() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(titles.iter().any(|t| *t == "live · 3"), "{titles:?}");
+    assert!(titles.contains(&"live · 3"), "{titles:?}");
 }
 
 /// **The fold, opened**: the history rows appear, and the same line says how to close it.
@@ -519,7 +519,7 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
     assert!(
-        titles.iter().any(|t| *t == "the queue is idle"),
+        titles.contains(&"the queue is idle"),
         "{titles:?}"
     );
     let text = view.to_string();

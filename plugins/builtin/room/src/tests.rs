@@ -107,7 +107,7 @@ fn cells_of(row: &Value, which: &str) -> Vec<String> {
         .collect()
 }
 
-fn row_with<'a>(view: &'a Value, id: &str) -> Value {
+fn row_with(view: &Value, id: &str) -> Value {
     rows(view)
         .into_iter()
         .find(|r| r["id"] == json!(id))
@@ -491,12 +491,11 @@ fn an_unreadable_room_says_so_instead_of_drawing_an_empty_queue() {
         view["panels"][0]["unavailable"]["why"],
         json!("the room at /tmp/room.sock did not answer in 10s")
     );
-    assert_eq!(
+    assert!(
         view["panels"][0]["unavailable"]["fix"]
             .as_str()
             .unwrap()
-            .contains("harnessd --room"),
-        true
+            .contains("harnessd --room")
     );
     // **The control is still there**, on the panel that needs nothing from the room: an unreadable
     // room is the one a person restarts.
