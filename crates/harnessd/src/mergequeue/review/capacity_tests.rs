@@ -220,6 +220,7 @@ impl World {
             // A directory of this fixture's own, named as the queue's is: `sweep_clones` refuses
             // any other name, so no test can point a sweep at the box's real clone directory.
             clones: self._dir.0.join(CLONES_DIR),
+            reviewer_skills: &[],
             slots: &|| self.holders.clone(),
         };
         serve(&pool).unwrap();

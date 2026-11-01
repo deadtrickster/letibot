@@ -327,6 +327,18 @@ impl ModelSource {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
+    /// **The skills a session is STARTED with** — their bodies are preloaded into its prompt, on
+    /// top of the index every session gets (see `Harness::open`).
+    ///
+    /// **Declared, never inferred.** A `task {skills}` child's spec fills this for the child; a
+    /// seat nobody types for — the review queue's reviewer, through `[queue] reviewer_skills` —
+    /// fills it where the session opens. A child that names no skills of its own inherits its
+    /// parent's list, which is the spawn's `..base.clone()` and not a second field.
+    pub skills: Vec<String>,
+    /// **The reviewer's declared list**, from `[queue] reviewer_skills`: read by the daemon and
+    /// handed to the review queue's session as its `skills`, so every reviewer it starts carries
+    /// them. Empty is the ordinary case.
+    pub reviewer_skills: Vec<String>,
     /// The alias the server reports. Recorded in `turn_metrics` and in the store;
     /// several models may share one dialect.
     pub model: String,
@@ -2271,6 +2283,11 @@ impl Config {
             // its gate on another machine because a file on the operator's box said so — see the
             // field, and `Config::for_the_daemon` for the one caller that reads it.
             gate_host: None,
+            // **A fixture starts no session with a skill it did not name.** The reviewer's list is
+            // the daemon's (`for_the_daemon` reads `[queue] reviewer_skills`), and a child's is its
+            // spec's — see the fields.
+            skills: Vec::new(),
+            reviewer_skills: Vec::new(),
             provider: None,
             fabric: None,
             allow_bash: false,
@@ -2326,6 +2343,7 @@ impl Config {
         // gate runs are the same file, and two calls could disagree about which file that is.
         let queue = crate::mergequeue::settings::for_repository(&cfg.workspace).unwrap_or_default();
         cfg.reviewers = queue.reviewers;
+        cfg.reviewer_skills = queue.reviewer_skills.clone();
         cfg.gate_host = queue.gate_host;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
         // **The reviewers' own directory**, beside the landing root and for the same reason: it is

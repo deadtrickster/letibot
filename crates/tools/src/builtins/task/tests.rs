@@ -2007,3 +2007,89 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
         "a recorded child's answer is its answer, byte for byte"
     );
 }
+
+/// **A `task` that names skills carries them to the spawn, and a name nothing answers to is a
+/// refusal before anything starts** — the brief's own rule: an unknown skill is refused by name,
+/// never silently a child without the instructions its parent asked for.
+#[test]
+fn a_task_that_names_skills_carries_them_and_refuses_an_unknown_one() {
+    use crate::builtins::skill::{Skill, SkillRegistry, SkillSource};
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    /// Records what each spawn was asked, so the spec itself can be read back.
+    struct Specs(std::sync::Mutex<Vec<TaskSpec>>);
+    impl TaskRunner for Specs {
+        fn start(&self, _prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+            let mut g = self.0.lock().unwrap();
+            g.push(spec.clone());
+            Ok(format!("sub-{}", g.len()))
+        }
+        fn collect(&self, _handle: &str, _timeout: std::time::Duration) -> TaskStatus {
+            TaskStatus::Unknown
+        }
+        fn started(&self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+
+    let specs = Arc::new(Specs(std::sync::Mutex::new(Vec::new())));
+    let skills = Arc::new(SkillRegistry::new(vec![Skill::new(
+        "release",
+        "cut a release",
+        "tag, push, write the notes",
+        SkillSource::Operator,
+    )]));
+    let d = crate::backend::tempdir::TempDir::new();
+    let mut reg = Registry::new();
+    reg.register(Box::new(
+        TaskTool::new(specs.clone()).with_skills(skills.clone()),
+    ))
+    .unwrap();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let run = |rt: &mut ToolRuntime, sink: &mut crate::NullToolSink, args: &str| {
+        rt.invoke(
+            "t1",
+            &ToolCall {
+                id: "c0".into(),
+                name: "task".into(),
+                arguments: args.into(),
+            },
+            sink,
+        )
+        .payload
+    };
+
+    run(
+        &mut rt,
+        &mut sink,
+        r#"{"prompt": "cut 0.5.2", "skills": ["release"]}"#,
+    );
+    let spawned = specs.0.lock().unwrap().clone();
+    assert_eq!(spawned.len(), 1, "the child started");
+    assert_eq!(spawned[0].skills, vec!["release".to_string()]);
+
+    // An unknown name is refused BY NAME, and nothing is spawned for it.
+    let refused = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task".into(),
+            arguments: r#"{"prompt": "cut it", "skills": ["relese"]}"#.into(),
+        },
+        &mut sink,
+    );
+    let said = match &refused.outcome {
+        letibot_transcript::ToolOutcome::Failed { reason } => reason.clone(),
+        other => panic!("a refusal, not {other:?}: {}", refused.payload),
+    };
+    assert!(said.contains("relese"), "{said}");
+    assert!(said.contains("release"), "the names there are: {said}");
+    assert_eq!(
+        specs.0.lock().unwrap().len(),
+        1,
+        "nothing was spawned: {said}"
+    );
+}

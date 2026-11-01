@@ -738,6 +738,31 @@ fn the_runtime_names_neither_instruction_file() {
     );
 }
 
+/// **A skill a session was STARTED with arrives whole, and the name it was started with is the
+/// one that is read** — `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s landing
+/// place, so a name that resolves to nothing is said rather than dropped.
+#[test]
+fn a_declared_skill_arrives_whole_and_an_unknown_one_is_said() {
+    let r = letibot_tools::builtins::skill::SkillRegistry::new(vec![
+        letibot_tools::builtins::skill::Skill::new(
+            "review-a-branch",
+            "judge a branch",
+            "read the diff, then run the tests",
+            letibot_tools::builtins::skill::SkillSource::Project,
+        ),
+    ]);
+    let block =
+        preloaded(&r, &["review-a-branch".to_string(), "nope".to_string()]).expect("a block");
+    assert!(
+        block.contains("read the diff, then run the tests"),
+        "{block}"
+    );
+    assert!(block.contains("[this project]"), "{block}");
+    assert!(block.contains("nope — could not be read"), "{block}");
+    // Nothing declared is nothing at all, not an empty heading in the prompt.
+    assert!(preloaded(&r, &[]).is_none());
+}
+
 /// **The skills index rides the same section, and no body comes with it** — the operator's
 /// design: the names and their sources reach the prompt; the text arrives only when asked.
 #[test]
@@ -752,7 +777,7 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
             letibot_tools::builtins::skill::SkillSource::Project,
         ),
     ]);
-    let s = section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&r)).expect("a section");
+    let s = section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&r), None).expect("a section");
     assert!(
         s.contains("- release  [this project]  cut a release"),
         "{s}"
@@ -764,7 +789,20 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
     // The pane and the prompt are the same rule: a box with neither notes nor skills has no
     // section at all rather than an empty one.
     let empty = letibot_tools::builtins::skill::SkillRegistry::new(Vec::new());
-    assert!(section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&empty)).is_none());
+    assert!(section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&empty), None).is_none());
+    // **A skill this session was STARTED with arrives whole** — `task {skills}`, a declared seat —
+    // while everything else stays an index of names.
+    let launched = section_with_skills(
+        &ws,
+        &g,
+        &no_box(),
+        &vocab(),
+        Some(&r),
+        Some("### the skills this session was started with\n#### release  [this project]\ncut it, then tell people\n"),
+    )
+    .expect("a section");
+    assert!(launched.contains("cut it, then tell people"), "{launched}");
+    assert!(launched.contains("- release  [this project]"), "{launched}");
     let _ = std::fs::remove_dir_all(&ws);
     let _ = std::fs::remove_dir_all(&g);
 }

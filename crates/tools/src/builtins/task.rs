@@ -303,6 +303,12 @@ pub struct TaskSpec {
     /// eighteen hours after their `digest` had read them: *"finished helper/reader children
     /// shouldn't appear in the restored set at all"*.
     pub helper: bool,
+    /// **The skills this child is started with** — their bodies preloaded into its prompt, on
+    /// top of the index every session gets. Names are checked against the registry before the
+    /// child exists, so a typo is a refusal and not a session that never got its instructions.
+    /// Empty means *none of its own*, which for a child is its parent's list (the spawn clones
+    /// the parent's config and this field is only written when the call named one).
+    pub skills: Vec<String>,
 }
 
 /// **What one `task_start` call asked for**, beyond the prompt and the [`TaskSpec`].
@@ -1232,6 +1238,10 @@ pub struct TaskTool {
     /// host may be declared. A field so a test says which file without an environment
     /// variable that would race the other readers of it.
     hosts: Option<crate::remote::Hosts>,
+    /// The skills corpus a call's `skills` names are checked against. `None` in a registry a
+    /// test built by hand: a call that names one is then refused rather than spawned with a
+    /// list nothing could vouch for.
+    skills: Option<Arc<crate::builtins::skill::SkillRegistry>>,
 }
 
 impl TaskTool {
@@ -1240,7 +1250,14 @@ impl TaskTool {
             runner,
             firecode_bin: None,
             hosts: None,
+            skills: None,
         }
+    }
+
+    /// Read a call's `skills` against `skills` rather than refusing the argument outright.
+    pub fn with_skills(mut self, skills: Arc<crate::builtins::skill::SkillRegistry>) -> Self {
+        self.skills = Some(skills);
+        self
     }
 
     /// Check `where: firecode` against `bin` rather than the host's `$FIRECODE_BIN`/PATH.
@@ -1299,7 +1316,8 @@ impl Tool for TaskTool {
                     "repo": {"type": "string", "description": "With `where: firecode`: the repository the VM copies, relative to the session root or absolute. A VM holds one repository, so it is required when the session root holds several. Refused without `where: firecode`."},
                     "model": {"type": "string", "description": "Run the child on a different model than yours (`local`, or `PROVIDER/MODEL` — an unknown name or a missing key is refused at the spawn, naming the fix)."},
                     "slug": {"type": "string", "description": "A short name for the child (letters, digits, `-`), your word for the work — `task_result`, `task_message` and `job_kill` take it in place of the handle. Defaults to a derivation from the prompt; made unique among your subagents."},
-                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
+                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."}
                 },
                 "required": ["prompt"]
             }),
@@ -1377,6 +1395,52 @@ impl Tool for TaskTool {
                 format!("{why} Nothing was spawned."),
             );
         }
+        // **The skills, checked before anything is spawned.** A name nothing answers to would
+        // otherwise be a child that boots without the instructions its parent named, which is
+        // the silent-provenance defect this file refuses everywhere else.
+        let skills = match args.get("skills").and_then(|v| v.as_array()) {
+            None => Vec::new(),
+            Some(items) => {
+                let named: Vec<String> = items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let Some(registry) = &self.skills else {
+                    return Invocation::failed(
+                        "`skills` cannot be checked here",
+                        "this registry seats no skill corpus, so no name can be vouched for and                          nothing was spawned. Drop `skills`.",
+                    );
+                };
+                let unknown: Vec<&str> = named
+                    .iter()
+                    .filter(|n| registry.load_any(n).is_err())
+                    .map(String::as_str)
+                    .collect();
+                if !unknown.is_empty() {
+                    let here = registry
+                        .index_rows()
+                        .0
+                        .iter()
+                        .map(|r| r.name.clone())
+                        .collect::<Vec<_>>();
+                    return Invocation::failed(
+                        format!(
+                            "no skill named {} — the skills here are {}",
+                            unknown.join(", "),
+                            if here.is_empty() {
+                                "none".to_string()
+                            } else {
+                                here.join(", ")
+                            }
+                        ),
+                        "`skill` action=\"list\" shows every one; nothing was spawned.",
+                    );
+                }
+                named
+            }
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -1398,6 +1462,7 @@ impl Tool for TaskTool {
             slug,
             // A child the model started is the model's, never a tool's helper.
             helper: false,
+            skills,
         };
         let handle = match self.runner.start(prompt, &spec) {
             Ok(h) => h,
@@ -1515,6 +1580,9 @@ pub struct TaskStartTool {
     runner: Arc<dyn TaskRunner>,
     /// The machines `where: "host:NAME"` may name — see [`TaskTool::with_hosts`].
     hosts: Option<crate::remote::Hosts>,
+    /// The skills corpus a call's `skills` names are checked against — see
+    /// [`TaskTool::with_skills`].
+    skills: Option<Arc<crate::builtins::skill::SkillRegistry>>,
 }
 
 impl TaskStartTool {
@@ -1522,7 +1590,14 @@ impl TaskStartTool {
         TaskStartTool {
             runner,
             hosts: None,
+            skills: None,
         }
+    }
+
+    /// Read a call's `skills` against `skills` rather than refusing the argument outright.
+    pub fn with_skills(mut self, skills: Arc<crate::builtins::skill::SkillRegistry>) -> Self {
+        self.skills = Some(skills);
+        self
     }
 
     /// Read `where: "host:NAME"` against `hosts` rather than the operator's file.
@@ -1567,7 +1642,8 @@ impl Tool for TaskStartTool {
                     "slug": {"type": "string", "description": "The slug the worktree and branch are named by. Defaults to a derivation from the prompt."},
                     "main_tree": {"type": "boolean", "description": "Work in the main checkout instead of a fresh worktree. The exception; off by default."},
                     "repo": {"type": "string", "description": "The repository to work in, when it is not the one the session root is in (a session above its repositories names one). Relative to the session root, or absolute."},
-                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG}
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": WAKE_ARG},
+                    "skills": {"type": "array", "items": {"type": "string"}, "description": "Skills this child is STARTED with: each body is preloaded into its prompt, on top of the index every session gets. A name that matches nothing is refused before the child starts."}
                 },
                 "required": ["prompt"]
             }),
@@ -1714,6 +1790,52 @@ impl Tool for TaskStartTool {
             }
         }
 
+        // **The skills, checked before anything is spawned.** A name nothing answers to would
+        // otherwise be a child that boots without the instructions its parent named, which is
+        // the silent-provenance defect this file refuses everywhere else.
+        let skills = match args.get("skills").and_then(|v| v.as_array()) {
+            None => Vec::new(),
+            Some(items) => {
+                let named: Vec<String> = items
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let Some(registry) = &self.skills else {
+                    return Invocation::failed(
+                        "`skills` cannot be checked here",
+                        "this registry seats no skill corpus, so no name can be vouched for and                          nothing was spawned. Drop `skills`.",
+                    );
+                };
+                let unknown: Vec<&str> = named
+                    .iter()
+                    .filter(|n| registry.load_any(n).is_err())
+                    .map(String::as_str)
+                    .collect();
+                if !unknown.is_empty() {
+                    let here = registry
+                        .index_rows()
+                        .0
+                        .iter()
+                        .map(|r| r.name.clone())
+                        .collect::<Vec<_>>();
+                    return Invocation::failed(
+                        format!(
+                            "no skill named {} — the skills here are {}",
+                            unknown.join(", "),
+                            if here.is_empty() {
+                                "none".to_string()
+                            } else {
+                                here.join(", ")
+                            }
+                        ),
+                        "`skill` action=\"list\" shows every one; nothing was spawned.",
+                    );
+                }
+                named
+            }
+        };
         let spec = TaskSpec {
             role: role.to_string(),
             downgrade,
@@ -1732,6 +1854,7 @@ impl Tool for TaskStartTool {
             slug: Some(slug.clone()),
             // A child the model started is the model's, never a tool's helper.
             helper: false,
+            skills,
         };
         let worktree_spec = WorktreeSpec {
             slug,

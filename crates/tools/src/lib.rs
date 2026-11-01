@@ -231,9 +231,14 @@ pub fn with_session_tools(
         None => builtins::todo::TodoWriteTool::new(board),
     };
     reg.register(Box::new(todo))?;
-    reg.register(Box::new(builtins::skill::SkillTool::new(skills)))?;
+    // **The children read the same corpus as the tool**, so a `task {skills}` name is checked
+    // against what `skill list` would answer — a second registry would be a second answer to
+    // *is there a skill called this*.
+    reg.register(Box::new(builtins::skill::SkillTool::new(skills.clone())))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
-    reg.register(Box::new(builtins::task::TaskTool::new(task_runner.clone())))?;
+    reg.register(Box::new(
+        builtins::task::TaskTool::new(task_runner.clone()).with_skills(skills.clone()),
+    ))?;
     // `task_result` is seated with `task` and never without it: a handle that
     // nothing can collect is worse than no handle.
     reg.register(Box::new(builtins::task::TaskResultTool::new(
@@ -252,7 +257,9 @@ pub fn with_session_tools(
     // registered with the same runner as `task`, because it is the same spawn with the
     // placement arranged first: a `task_start` that used a second runner would hand out
     // handles its sibling's `task_result` cannot collect.
-    reg.register(Box::new(builtins::task::TaskStartTool::new(task_runner)))?;
+    reg.register(Box::new(
+        builtins::task::TaskStartTool::new(task_runner).with_skills(skills),
+    ))?;
     // **The merge queue, read** — what a repository's queue runs before landing, and what its
     // files suggest. Read-only: the agent writes the `AGENTS.md` section with `edit`, which is
     // where the operator's approval is. See `builtins::merge_gate`.

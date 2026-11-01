@@ -5823,12 +5823,18 @@ impl Harness {
         // **Named `standing` and not `notes`**: there is a `let mut notes: Vec<String>` alive in
         // this function from the resume-report path, and a local called `notes` here shadows it
         // for every later use in the body.
+        // **And the skills this session was STARTED with**, whole: `task {skills}` put them on
+        // the spec, a declared seat read them from its config, and a session started by a parent
+        // inherited its list. The bodies land inside the same section as the index they are named
+        // in, so a fork re-reads both together.
+        let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
         let standing = crate::standing_notes::section_with_skills(
             &cfg.workspace,
             &crate::standing_notes::global_dir(),
             &crate::leticode_config::BoxDirs::for_this_box(),
             parts.vocab.as_ref(),
             Some(parts.skills.as_ref()),
+            declared.as_deref(),
         );
         // **And the base prompt is composed HERE when the session asked for it**
         // (`Config::seat_prompt`): for the tools just seated, with the notes, the
@@ -11444,6 +11450,8 @@ impl Harness {
             // both dead: the session that takes it has to be one this daemon holds now.
             live: &|id: &str| crate::mergequeue::session_is_live(&registry, id),
             settings: &crate::mergequeue::settings::for_repository,
+            // **The reviewers' declared skills**, from this daemon's project file.
+            reviewer_skills: &self.cfg.reviewer_skills,
             clones: self.cfg.review_clones.clone().unwrap_or_else(|| {
                 std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
             }),
@@ -13476,12 +13484,14 @@ impl Harness {
     /// (the standing notes are still taken up then, as they always were), or when there is no
     /// store to record a new one in.
     fn reseat_candidate(&mut self) -> Option<StablePrefix> {
+        let declared = crate::standing_notes::preloaded(self.skills.as_ref(), &self.cfg.skills);
         let notes = crate::standing_notes::section_with_skills(
             &self.cfg.workspace,
             &crate::standing_notes::global_dir(),
             &crate::leticode_config::BoxDirs::for_this_box(),
             self.engine.vocab(),
             Some(self.skills.as_ref()),
+            declared.as_deref(),
         );
         let system = crate::standing_notes::replace(&self.cfg.system, notes.as_deref());
         let next = StablePrefix {
@@ -23021,6 +23031,12 @@ impl HarnessTaskRunner {
             provider: sub_provider,
             ..self.base.clone()
         };
+        // **The skills this child was started with**, when the call named any — the child's own
+        // list REPLACES the one it inherited through `..self.base.clone()`, so a parent that was
+        // started with three does not hand all three to a child asked for one.
+        if !spec.skills.is_empty() {
+            sub_cfg.skills = spec.skills.clone();
+        }
         // **The child's prompt is composed for ITS seat, at its open** (R93.G5) — not the
         // parent's finished prompt, which carried the parent's own-session paragraph (a
         // reviewer under the queue session was told "You are the review queue") and the

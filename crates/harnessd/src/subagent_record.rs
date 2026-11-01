@@ -94,6 +94,11 @@ pub struct RecordedSpec {
     /// [`is_helper`] recognises those by their brief.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub helper: bool,
+    /// **The skills the child was started with** ([`TaskSpec::skills`]), so a child brought back
+    /// after a restart still boots with the instructions its parent named. Absent in older
+    /// records, which means none — which is what those children had.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
 }
 
 /// **Whether a recorded child is a tool's helper rather than the model's child** — its record
@@ -186,6 +191,7 @@ impl RecordedSpec {
             vm_verify: spec.vm_verify.clone(),
             slug: spec.slug.clone(),
             helper: spec.helper,
+            skills: spec.skills.clone(),
         }
     }
 
@@ -205,6 +211,7 @@ impl RecordedSpec {
             vm_verify: self.vm_verify.clone(),
             slug: self.slug.clone(),
             helper: self.helper,
+            skills: self.skills.clone(),
         })
     }
 
@@ -1291,6 +1298,7 @@ mod tests {
             vm_verify: None,
             slug: Some("survey-the-store".into()),
             helper: true,
+            skills: vec!["release".into()],
         };
         let back = RecordedSpec::from_json(&RecordedSpec::of(&spec).to_json())
             .unwrap()

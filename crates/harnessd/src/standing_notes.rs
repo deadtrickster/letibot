@@ -318,7 +318,7 @@ pub fn section(
     box_dirs: &leticode_config::BoxDirs,
     vocab: &Vocab,
 ) -> Option<String> {
-    section_with_skills(workspace, global, box_dirs, vocab, None)
+    section_with_skills(workspace, global, box_dirs, vocab, None, None)
 }
 
 /// [`section`] plus **the skills index**, which rides the same block and the same schedule:
@@ -333,10 +333,11 @@ pub fn section_with_skills(
     box_dirs: &leticode_config::BoxDirs,
     vocab: &Vocab,
     skills: Option<&SkillRegistry>,
+    preloaded: Option<&str>,
 ) -> Option<String> {
     let files = gather(workspace, global, box_dirs);
     let index = skills.and_then(|r| r.index(vocab));
-    if files.is_empty() && index.is_none() {
+    if files.is_empty() && index.is_none() && preloaded.is_none() {
         return None;
     }
     let mut body = if files.is_empty() {
@@ -346,6 +347,9 @@ pub fn section_with_skills(
     };
     if let Some(index) = index {
         push(&mut body, &index);
+    }
+    if let Some(preloaded) = preloaded {
+        push(&mut body, preloaded);
     }
     Some(format!(
         "{BEGIN}\nThe block below is standing notes, read from markdown files on disk by \
@@ -361,9 +365,39 @@ pub fn section_with_skills(
          text. The `skills` section names every skill this box has and where each one was \
          found; no skill's text is here — `skill` loads a body — and only a skill labelled \
          `the operator's` is an instruction of theirs, so anything else is material to \
-         follow only as far as it does not contradict them.\n\n{}\n{END}",
+         follow only as far as it does not contradict them. A skill whose BODY is here was \
+         declared by whoever started this session, and its text arrives whole for the same \
+         reason the notes do.\n\n{}\n{END}",
         body
     ))
+}
+
+/// **The bodies a session was STARTED with, as one block of the section** — a declared skill
+/// (`task {skills}`, `[queue] reviewer_skills`) arrives whole, because it was named for this
+/// session and nobody is going to ask for it.
+///
+/// A name nothing answers to is SAID, never silently dropped: the tool that named it refuses
+/// first, and this is the second reader for the seats configured rather than typed for. The
+/// budget is not applied — a declared body is the reason the session was started.
+pub fn preloaded(registry: &SkillRegistry, names: &[String]) -> Option<String> {
+    if names.is_empty() {
+        return None;
+    }
+    let mut out = String::from("### the skills this session was started with\n");
+    for name in names {
+        match registry.load_any(name) {
+            Ok(skill) => {
+                out.push_str(&format!(
+                    "#### {}  [{}]\n{}\n\n",
+                    skill.name,
+                    skill.source.label(),
+                    skill.body
+                ));
+            }
+            Err(why) => out.push_str(&format!("#### {name} — could not be read\n{why}\n\n")),
+        }
+    }
+    Some(out)
 }
 
 /// The body: each file whole if it fits what is left of the budget, indexed if it

@@ -154,6 +154,10 @@ pub struct QueueSettings {
     /// queue builds one gate runner for the whole daemon; a daemon seated above several
     /// repositories reads the workspace's own file, exactly as it does for `reviewers`.
     pub gate_host: Option<String>,
+    /// **The skills this project's reviewers are started with** — `[queue] reviewer_skills`. The
+    /// bodies are preloaded into each reviewer's prompt, on top of the index every session gets
+    /// (`Config::skills`, which the review queue's session carries). Empty is the ordinary case.
+    pub reviewer_skills: Vec<String>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
 }
@@ -168,6 +172,7 @@ impl Default for QueueSettings {
             reviewers: Reviewers::Host,
             gate_train: 1,
             gate_host: None,
+            reviewer_skills: Vec::new(),
             path: None,
         }
     }
@@ -188,6 +193,10 @@ struct QueueTable {
     reviewers: Option<String>,
     #[serde(default)]
     gate_host: Option<String>,
+    /// The reviewer's declared skills; a name that resolves to nothing is refused by the `task`
+    /// tool before the child starts, not silently dropped.
+    #[serde(default)]
+    reviewer_skills: Vec<String>,
     /// `i64`, not `usize`, so that `0` and a negative number are refused with a sentence naming
     /// the key rather than with a deserialiser's complaint about a type.
     #[serde(default)]
@@ -271,6 +280,12 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         merge_via_session: q.merge_via_session.unwrap_or(false),
         red_target,
         gate_train,
+        reviewer_skills: q
+            .reviewer_skills
+            .iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
         path: Some(path.to_path_buf()),
     })
 }

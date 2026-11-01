@@ -1166,6 +1166,7 @@ fn refuse(fx: &Fixture, id: &str, reasons: &[&str]) {
         // A directory of this fixture's own, named as the queue's is: `sweep_clones` refuses any
         // other name, so no test can point a sweep at the box's real clone directory.
         clones: fx.dir.path().join(crate::mergequeue::review::CLONES_DIR),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     for _ in 0..3 {

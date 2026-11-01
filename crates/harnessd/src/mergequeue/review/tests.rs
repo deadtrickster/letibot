@@ -266,6 +266,7 @@ fn judge(
     let clones_dir = TempDir::new("review-judge-clones");
     let clones = clones_dir.0.join(CLONES_DIR);
     let pool = Pool {
+        reviewer_skills: &[],
         store,
         runner: &Reviewers,
         desk: &desk,
@@ -992,6 +993,7 @@ fn a_reject_against_a_tip_the_target_has_moved_past_opens_no_fix_branch() {
     // real clones (see `review::sweep_clones`).
     let clones = dir.0.join(CLONES_DIR);
     let pool = Pool {
+        reviewer_skills: &[],
         store: &store,
         runner: &Reviewers,
         desk: &desk,
@@ -1166,6 +1168,7 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
         live: &|_: &str| false,
         settings: &settings,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     assert_eq!(
@@ -1459,6 +1462,7 @@ fn a_clone_no_row_is_on_is_removed_and_a_live_rows_is_kept() {
         live: &|_: &str| false,
         settings: &settings,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     // **One sweep, with the grace named as zero**: the row rule is this test's subject, and the
@@ -1600,6 +1604,7 @@ fn a_live_rows_trees_are_never_swept_and_a_dead_rows_go_once_they_are_old() {
         // verdict and a deadline, not about liveness.
         live: &|_: &str| true,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     // **The REAL grace, and every tree YOUNG.** Nothing of the dead row's goes yet — a clone may
@@ -1749,6 +1754,7 @@ fn the_sweep_does_not_disturb_a_clone_it_meets() {
         // verdict and a deadline, not about liveness.
         live: &|_: &str| true,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     let stem = clones.join("review-cloning");
@@ -1890,6 +1896,7 @@ fn a_clone_that_fails_is_a_wait_and_the_next_pass_tries_again() {
         settings: &settings,
         live: &|_: &str| true,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     assert_eq!(serve(&pool).expect("a pass").started, 0, "no reviewer");
@@ -2026,6 +2033,7 @@ fn a_verdict_about_a_tree_that_went_away_is_a_wait_and_says_so() {
         // verdict and a deadline, not about liveness.
         live: &|_: &str| true,
         clones: clones.clone(),
+        reviewer_skills: &[],
         slots: &Vec::new,
     };
     assert_eq!(

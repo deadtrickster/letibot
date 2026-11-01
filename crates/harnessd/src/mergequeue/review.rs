@@ -73,6 +73,9 @@ pub struct Pool<'a> {
     pub settings: &'a dyn Fn(&Path) -> Result<QueueSettings, String>,
     /// Where a VM reviewer's fresh clone is made.
     pub clones: PathBuf,
+    /// **The skills every reviewer is started with**, from `[queue] reviewer_skills` for the
+    /// repository being served. Empty is the ordinary case.
+    pub reviewer_skills: &'a [String],
     /// **What holds each busy VM slot**, one line per tap (`crate::vm_reap::slot_holders`): the
     /// firecracker pid, when its run started, and its owner's handle and state — and the reaper
     /// is asked to look now when an owner is known to be finished or gone. Read when a capacity
@@ -665,6 +668,11 @@ fn start_reviewer(p: &Pool, r: &ReviewRow) -> Result<(String, ReviewRequest), Co
     let mut spec = TaskSpec {
         role: "gatekeeper".into(),
         placement: p.placement.placement(),
+        // **The reviewer's declared skills**, from `[queue] reviewer_skills` — the one seat
+        // nobody types a brief for, so its instructions are configured rather than asked for.
+        // A name nothing answers to is refused by the tool that would spawn it, and this pass
+        // writes a FAILED ATTEMPT on the row rather than a reviewer without its instructions.
+        skills: p.reviewer_skills.to_vec(),
         ..Default::default()
     };
     // **The branch the row is about** — the target itself for a red tip, the child's branch for a
