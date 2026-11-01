@@ -1,5 +1,3 @@
-// TODO: remove this allow and fix the warnings it hides.
-#![allow(clippy::all)]
 //! The seat against a fake node: the delivery contract, end to end, through the
 //! monitor registry the harness wakes on.
 //!
