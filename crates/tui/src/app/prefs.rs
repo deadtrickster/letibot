@@ -221,7 +221,22 @@ impl App {
     pub(crate) fn header_workspace(&self) -> String {
         match &self.git_dir {
             Some(d) => d.display().to_string(),
-            None => self.wiring.workspace.clone(),
+            // **The repository, not the folder that holds it.** A workspace of several
+            // repositories — `stroppy-io` holds stroppy-rust, pg-fuzz, the website, each with
+            // its own session — is one path on the screen if the header draws the workspace:
+            // every session reads `~/Projects/stroppy-io` and none says which tree it is in.
+            // `repo_dir` answers the one the git field is reading (the pinned or followed one,
+            // else the single repository child), and when nothing resolves, the workspace
+            // stands as it is. The operator: *"before the path followed the repo —
+            // ~/Projects/letibot/letibot. now it is ~/Projects/letibot(main)"*.
+            None => {
+                let repo = crate::gitfield::repo_dir(&self.wiring.workspace);
+                if repo.display().to_string() != self.wiring.workspace {
+                    repo.display().to_string()
+                } else {
+                    self.wiring.workspace.clone()
+                }
+            }
         }
     }
 
