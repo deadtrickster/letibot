@@ -494,6 +494,34 @@ mod tests {
         assert!(Policy::new(1).after(&status(503), 1).is_none());
     }
 
+    /// **The budget is the caller's, and `0` means the first failure is the answer.**
+    ///
+    /// The ladder is right for a server that might be reloading and wrong for one that is not
+    /// there, and only the caller knows which. The premise is asserted first: without it this
+    /// passes on a build that stopped retrying altogether.
+    #[test]
+    fn one_attempt_means_no_retry_and_the_default_still_retries() {
+        let e = refused();
+        assert!(
+            Policy::standard().after(&e, 0).is_some(),
+            "the premise: a refused connection is retryable under the default"
+        );
+        assert!(
+            Policy::none().after(&e, 0).is_none(),
+            "no retries means the first failure is the answer"
+        );
+        let mut ladder = Ladder::new(Policy::none());
+        assert!(ladder.failed(&e).is_none());
+        assert_eq!(ladder.attempts(), 1, "one call, and no waiting after it");
+        assert_eq!(ladder.waited(), Duration::ZERO);
+        // **A budget in between is honoured as itself**, so this is a number and not a boolean
+        // wearing one: the field is named for RETRIES, and `1` is one call after the first.
+        assert!(Policy::new(1).after(&e, 0).is_some(), "one retry is one");
+        assert!(Policy::new(1).after(&e, 1).is_none(), "and only one");
+        assert!(Policy::new(3).after(&e, 2).is_some());
+        assert!(Policy::new(3).after(&e, 3).is_none());
+    }
+
     /// **A turn that never reached the network is tried before it is called a failure** — the
     /// report this module opens with.
     #[test]
