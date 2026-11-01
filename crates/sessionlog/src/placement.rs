@@ -25,6 +25,15 @@
 //! finds a different inode at the socket than the record names answers *nothing known* — which
 //! every caller treats as a refusal rather than an answer.
 //!
+//! **The inode alone is not an identity: a rebind can take it back.** A filesystem is free to hand
+//! a freed inode to the next file at the same path, and on ext4 it does, so a daemon killed with
+//! `SIGKILL` followed by a rebind at the same name can leave the successor carrying the recorded
+//! `(dev, ino)` as surely as the socket the record was written beside. So the record also carries
+//! the socket's `ctime`, written by the kernel at the bind and beyond a rebind's reach to repeat,
+//! and a reader that finds either half different answers *nothing known*. A record from a build
+//! that wrote no stamp gets the same answer: it cannot prove which binding it names, and `None`
+//! fails closed.
+//!
 //! **Nothing removes the record on the way out.** The socket's absence is what says nobody is
 //! here, and it is the one fact every reader checks first (`connect`, not `stat` — see
 //! `crates/bridge/src/daemon.rs`'s `is_up`); a file that outlives its daemon can only be read by a
@@ -47,13 +56,16 @@ pub fn path(socket: &Path) -> PathBuf {
 /// Written to a sibling and renamed, so a reader never sees half a record; the sibling is named
 /// after the record so two daemons racing cannot share a temp file.
 pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
-    let (dev, ino) = socket_id(socket)?;
+    let ((dev, ino), (secs, nsec)) = socket_identity(socket)?;
     let target = path(socket);
     let mut tmp = target.clone();
     tmp.set_extension("placement.tmp");
     std::fs::write(
         &tmp,
-        format!("socket {dev}:{ino}\nplacement {}\n", spelling.trim()),
+        format!(
+            "socket {dev}:{ino}\nstamp {secs}.{nsec}\nplacement {}\n",
+            spelling.trim()
+        ),
     )?;
     std::fs::rename(&tmp, &target)
 }
@@ -66,6 +78,7 @@ pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
 pub fn read(socket: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path(socket)).ok()?;
     let mut recorded: Option<(u64, u64)> = None;
+    let mut stamp: Option<(i64, u64)> = None;
     let mut spelling: Option<String> = None;
     for line in text.lines() {
         let Some((key, value)) = line.split_once(' ') else {
@@ -77,6 +90,12 @@ pub fn read(socket: &Path) -> Option<String> {
                     .trim()
                     .split_once(':')
                     .and_then(|(d, i)| Some((d.parse().ok()?, i.parse().ok()?)));
+            }
+            "stamp" => {
+                stamp = value
+                    .trim()
+                    .split_once('.')
+                    .and_then(|(s, n)| Some((s.parse().ok()?, n.parse().ok()?)));
             }
             "placement" => {
                 let value = value.trim();
@@ -92,18 +111,21 @@ pub fn read(socket: &Path) -> Option<String> {
     }
     let recorded = recorded?;
     // The identity check: a record whose socket is not the socket at this path belongs to a
-    // daemon that is gone (see this module's doc).
-    (socket_id(socket).ok()? == recorded).then_some(spelling)?
+    // daemon that is gone (see this module's doc). The stamp is the half a reused inode
+    // cannot fake: a rebind that takes the inode back still binds later than the record.
+    let stamp = stamp?;
+    (socket_identity(socket).ok()? == (recorded, stamp)).then_some(spelling)?
 }
 
-/// The `(dev, ino)` of a path — the pair that says *this file, not another one at the same name*.
+/// The identity of a socket: `(dev, ino)` — the pair that says *this file, not another one at the
+/// same name* — and the `ctime` pair that says *this binding of it*.
 ///
 /// A stat and not a connect: the caller has already established that something is listening, and
 /// what is being asked here is which file the listener is bound to.
-fn socket_id(path: &Path) -> std::io::Result<(u64, u64)> {
+fn socket_identity(path: &Path) -> std::io::Result<((u64, u64), (i64, u64))> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::metadata(path)?;
-    Ok((m.dev(), m.ino()))
+    Ok(((m.dev(), m.ino()), (m.ctime(), m.ctime_nsec() as u64)))
 }
 
 #[cfg(test)]
@@ -170,7 +192,9 @@ mod tests {
         let (socket, first) = a_socket("replaced");
         write(&socket, "host:lab2x1").expect("the record is written");
         assert_eq!(read(&socket).as_deref(), Some("host:lab2x1"));
-        let gone = socket_id(&socket).expect("the socket the record names");
+        let gone = socket_identity(&socket)
+            .expect("the socket the record names")
+            .0;
         // The daemon goes, and a new one takes the same path: same name, a different file.
         let successor = socket.with_file_name("successor.sock");
         let _second =
@@ -185,7 +209,7 @@ mod tests {
             "the fixture needs a real socket at the path, not a file that took its name"
         );
         assert_ne!(
-            socket_id(&socket).expect("the new socket"),
+            socket_identity(&socket).expect("the new socket").0,
             gone,
             "the fixture needs a different file at the path for this to be about identity"
         );
@@ -193,6 +217,63 @@ mod tests {
             read(&socket),
             None,
             "the record names the socket that is gone, so nothing is known about this one"
+        );
+        let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
+    }
+
+    /// **A rebind that takes the recorded inode back is still not this daemon's answer.** On ext4
+    /// the freed inode comes straight back to the next bind at the same path, so the successor can
+    /// carry the recorded `(dev, ino)` — the state a rebind leaves is *same file, later binding*,
+    /// and only the ctime tells the two apart.
+    ///
+    /// A `chmod` stages exactly that state without betting on the allocator: the inode stays and
+    /// the ctime moves, which is what a new bind's own ctime is. Adding a permission bit is the
+    /// one change that cannot disturb the listener.
+    #[test]
+    fn a_rebind_that_takes_the_same_inode_back_is_not_an_answer() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (socket, _l) = a_socket("reused-inode");
+        write(&socket, "host:lab2x1").expect("the record is written");
+        assert_eq!(read(&socket).as_deref(), Some("host:lab2x1"));
+        let recorded = socket_identity(&socket).expect("the socket the record names");
+        let mut perms = std::fs::metadata(&socket)
+            .expect("the socket")
+            .permissions();
+        perms.set_mode(perms.mode() | 0o1);
+        std::fs::set_permissions(&socket, perms).expect("the socket's ctime moves");
+        assert_eq!(
+            socket_identity(&socket).expect("the same file").0,
+            recorded.0,
+            "the fixture needs the inode to stay, or it is only the other test again"
+        );
+        assert_eq!(
+            read(&socket),
+            None,
+            "same inode, another binding: the record cannot name this socket"
+        );
+        let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
+    }
+
+    /// **A record from a build that wrote no stamp is not this socket's answer.** It names an
+    /// inode and cannot prove which binding, so a reader that accepted it would take the inode
+    /// back as the whole check — the hole the stamp exists to close, arriving through a record
+    /// that predates it.
+    #[test]
+    fn a_record_from_a_build_without_the_stamp_is_not_an_answer() {
+        use std::os::unix::fs::MetadataExt;
+
+        let (socket, _l) = a_socket("unstamped");
+        let m = std::fs::metadata(&socket).expect("the socket");
+        std::fs::write(
+            path(&socket),
+            format!("socket {}:{}\nplacement host:lab2x1\n", m.dev(), m.ino()),
+        )
+        .expect("the old build's record");
+        assert_eq!(
+            read(&socket),
+            None,
+            "a record that cannot name a binding is not this socket's answer"
         );
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
