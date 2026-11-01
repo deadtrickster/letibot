@@ -238,7 +238,11 @@ jobs:
       # held up by lint that predates it.
       - name: Clippy (advisory until the tree is clean)
         continue-on-error: true
-        run: cargo clippy --all-targets
+        # Through clippy-gate.sh: cargo's fingerprint ignores the args after `--`,
+        # so a unit restored from the cache built by a plain clippy or check run is
+        # fresh here and the step could pass having linted nothing. The script
+        # touches every workspace member's root first.
+        run: sh scripts/clippy-gate.sh --all-targets
 
       # **THIS GATES, and it took work to earn that.**
       #

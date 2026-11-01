@@ -89,9 +89,15 @@ again; exempting them on the line keeps them **running** - CI's own clippy job s
 one, and the sweep still counts them - while the queue stops demanding them tonight. Making them
 true is a slice of its own. Everything else stays `-D warnings`.
 
+**The clippy step goes through `scripts/clippy-gate.sh` because a warm target dir can answer
+for it.** Cargo's fingerprint for a unit does not include the arguments after `--`, so a unit
+already built by a plain `cargo clippy` or a `cargo check` in the same target dir is fresh for
+`-- -D warnings`, and the step can exit green having linted nothing. The script touches every
+workspace member's root first, which costs the re-lint and nothing else.
+
 ```sh
 sh scripts/check-fmt.sh main
-cargo clippy --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments
+sh scripts/clippy-gate.sh --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
 sh scripts/install-gate-build.sh
