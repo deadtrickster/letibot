@@ -738,6 +738,31 @@ fn the_runtime_names_neither_instruction_file() {
     );
 }
 
+/// **The operator's message when they hand a skill over says whose words those are** — the label
+/// is the fact, and the rest of the line follows it as their own prompt in the same turn.
+#[test]
+fn a_skill_handed_over_is_labelled_and_the_rest_of_the_line_follows_it() {
+    let skill = letibot_tools::builtins::skill::Skill::new(
+        "release",
+        "cut a release",
+        "tag, push, write the notes",
+        letibot_tools::builtins::skill::SkillSource::Project,
+    );
+    let said = crate::harness::skill_message(&skill, "cut 0.5.2 please");
+    assert!(
+        said.starts_with("[skill `release`, from this project"),
+        "{said}"
+    );
+    assert!(said.contains("the words below are the skill's"), "{said}");
+    assert!(said.contains("tag, push, write the notes"), "{said}");
+    assert!(said.ends_with("cut 0.5.2 please"), "{said}");
+    // A bare `/skills release` is the body and nothing else.
+    assert!(
+        crate::harness::skill_message(&skill, "  ").ends_with("[end of the skill `release`]"),
+        "no trailing prose"
+    );
+}
+
 /// **A skill a session was STARTED with arrives whole, and the name it was started with is the
 /// one that is read** — `preloaded` is `task {skills}`'s and `[queue] reviewer_skills`'s landing
 /// place, so a name that resolves to nothing is said rather than dropped.
