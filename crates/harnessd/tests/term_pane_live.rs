@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! **`!term` end to end: the daemon's own driver, a real pty, and a real program in it.**
 //!
 //! # What this file is for, and the gap it closes

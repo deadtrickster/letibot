@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! **One channel between sessions, with three callers** — the operator's ruling, verbatim:
 //! *"well gatekeeper is not a child so we are not doing up"*.
 //!
