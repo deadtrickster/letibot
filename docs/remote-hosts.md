@@ -112,11 +112,15 @@ prompt it cannot answer is a call that hangs until its deadline.
 | who | how |
 |---|---|
 | the operator | `leticode --host lab2x1` — a session whose tools run on lab2x1 (like `--vm`) |
+| the operator, in a VM | `leticode --host lab2x1 --vm` — a guest booted by lab2x1's own `firecode` |
 | a model | `task { where: "host:lab2x1", … }` — a child placed there (like `where: "firecode"`) |
-| Claude Code | `leticode_start { host: "lab2x1", … }` — the bridge passes `--host` |
+| a model, in a VM | `task { where: "host:lab2x1:vm", … }` — a child in a guest on lab2x1 |
+| Claude Code | `leticode_start { host: "lab2x1", vm: true, … }` — the bridge passes both flags |
 
 A child of a remote session runs on the same host unless it asks for another placement (the rule a
-VM's children already follow: *"children live in the same vm"*).
+VM's children already follow: *"children live in the same vm"*) — and a child of a session in a
+guest on that host gets a guest of its own there, for the same reason a VM's children get their own
+VM.
 
 ## The tree: git, both ways
 
@@ -124,7 +128,9 @@ The remote works on a **checkout**, not a copy of the local folder:
 
 1. On placement, the local repository's HEAD (and the branch it is on) is sent with `git bundle` over
    ssh into `root/<repo>.git` (a bare mirror, created on first use) and checked out as a worktree
-   `root/<repo>/<session-short-id>` on a branch `remote/<session-short-id>`.
+   `root/<repo>/<session-short-id>` on a branch `remote/<session-short-id>` — as a **clone** instead
+   when the session is placed in a guest there (§ *A VM on that machine*), because a copy of a linked
+   worktree carries no repository.
 2. The session works and commits there.
 3. When it ends — or when asked — its branch comes back with `git fetch` over ssh into the local
    repository as `remote/<host>/<session-short-id>`. That branch is the result: the parent reviews it
@@ -148,6 +154,49 @@ The remote host is not a boundary the way a VM is: it is the operator's machine 
 files. So a remote session gets the **same gate as a host session** — the modes, the always-ask list,
 the corpus — with the remote host named in every card. A per-host `trust = "allow-all"` in hosts.toml is
 a later decision, not this slice's.
+
+## A VM on that machine: `--host NAME --vm`
+
+The two placements combine, and this is the one thing the pair means: a **firecode guest booted by
+that host's own `firecode`**, reached over the session's existing ssh link, with the guest as the
+boundary. `leticode --host lab2x1 --vm`, `leticode_start { host: "lab2x1", vm: true }`, and
+`where: "host:lab2x1:vm"` are the three spellings of it; either flag alone is what it always was
+(`--host` a session on that machine, `--vm` a VM on this box).
+
+What happens, in order:
+
+1. **The host is asked what it has, once per host per process.** `command -v firecode` in a login
+   shell (that is where `~/bin` and `~/.local/bin` are, on every one of the operator's machines),
+   and `/dev/kvm` readable and writable by this connection's user. A host that has neither, or
+   answers neither, is **refused by name before anything is arranged there** — no bundle, no
+   checkout — with the sentence that says what to do instead. A *probe that did not answer* is not
+   cached: a machine that was briefly unreachable has not told us what it has installed.
+2. The checkout, the mirror and the bundle are arranged exactly as a host placement's are, with one
+   difference forced by the guest: a VM placement checks out a **clone**, not a linked worktree.
+   The guest holds a *copy* of the directory, and a worktree's `.git` is a file naming a directory
+   in the mirror that the copy does not carry — so nothing could commit inside the guest at all. A
+   clone keeps its repository in the tree.
+3. **`firecode up --project <checkout>`** on the host. The guest holds a copy of that checkout at
+   the same path, so a path means the same thing on both sides.
+4. **Every call the session makes is `firecode in --project <checkout> --cwd <checkout> '<script>'`**:
+   a command, a file read, a file write, a job's launcher, a job's status poll, the group kill that
+   ends a cancelled command. Nothing of the session's reaches the host's own shell, which is the
+   whole point of the guest being the boundary.
+5. **On close, `firecode down --project <checkout>`**, and then the guest's work is taken onto the
+   host checkout: `down` leaves the guest's tree in a sibling `<checkout>-<stamp>` when something
+   changed, that copy's branch is fetched into the checkout and fast-forwarded, and the branch then
+   comes home as `remote/<host>/<short id>` exactly as every host placement's does.
+
+**The guest is the boundary, so the session is at `allow-all` inside it** (`Config`'s `in_vm`), the
+way a `--vm` session on this box is: builds and tests run there without a card, and there is no
+`bwrap` probe because there is nothing for `bwrap` to bound. The model, the store and the gate stay
+here.
+
+**What is deliberately still owed, and said rather than implied.** The copy-out is asynchronous and
+has been measured at two minutes behind `down`'s return, so the wait for it is a 30 s quiet window:
+a copy still on its way appears as `<checkout>-<stamp>`, and the close's sentence says so and gives
+the `git fetch` that takes it. Whether a real `firecode down` on lab2x1 delivers inside that window
+is the live proof's question, not this slice's.
 
 ## A remote is an RPC, and the client follows the practices
 

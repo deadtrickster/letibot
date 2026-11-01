@@ -177,6 +177,7 @@ impl Rig {
             // **Asked**, which is production's own value: `None`. The fake remote answers with
             // its `bwrap`, and a rig built without one answers that it has none.
             confine: None,
+            vm: false,
         }
     }
 

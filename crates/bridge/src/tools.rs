@@ -97,6 +97,7 @@ impl Bridge {
         model: Option<&str>,
         mode: &str,
         host: Option<&str>,
+        vm: bool,
     ) -> Result<Value, String> {
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
@@ -106,7 +107,7 @@ impl Bridge {
         // does (`Hosts::refusal`, the sentence `task { where: "host:NAME" }` gives), and no
         // daemon is started for it. The plan's whole point is that a caller can find out it
         // misspelled a machine before a brief runs on the wrong one.
-        let placement = placement_arg(host, &Hosts::load())?;
+        let placement = placement_arg(host, vm, &Hosts::load())?;
         let d = daemon::ensure(Path::new(worktree), model, mode, &placement)?;
         let (session, opened) = if d.started {
             (head::open_default(&d)?, "daemon")
@@ -582,7 +583,8 @@ fn first_line(text: &str) -> String {
 ///
 /// `None` (or an empty string) is [`Placement::Host`] — *this box* is what a caller asked for
 /// when it asked for nothing, and it is a placement, so it is compared against a running
-/// daemon's record like any other.
+/// daemon's record like any other. `vm: true` with no `host` is [`Placement::Firecode`], a VM on
+/// this box, and with a name it is [`Placement::RemoteVm`] — a VM on that machine.
 ///
 /// A name is checked against the operator's `hosts.toml` **here**, with the reader and the
 /// refusal `task { where: "host:NAME" }` uses (`docs/remote-hosts.md`: one rule, whichever
@@ -590,9 +592,15 @@ fn first_line(text: &str) -> String {
 /// difference between a caller that fixes its typo and one that guesses. A daemon started for
 /// a name the file does not declare would fail at its own start, in a log the caller has to go
 /// and read, after this tool had answered that it started one.
-fn placement_arg(host: Option<&str>, hosts: &Hosts) -> Result<Placement, String> {
+fn placement_arg(host: Option<&str>, vm: bool, hosts: &Hosts) -> Result<Placement, String> {
     let Some(name) = host.map(str::trim).filter(|n| !n.is_empty()) else {
-        return Ok(Placement::Host);
+        // **`vm` with no host is a VM on this box**, which is the same placement `--vm` asks
+        // for and needs no name from the operator's file.
+        return Ok(if vm {
+            Placement::Firecode
+        } else {
+            Placement::Host
+        });
     };
     if hosts.get(name).is_none() {
         return Err(format!(
@@ -602,7 +610,11 @@ fn placement_arg(host: Option<&str>, hosts: &Hosts) -> Result<Placement, String>
             hosts.refusal(name)
         ));
     }
-    Ok(Placement::Remote(name.to_string()))
+    Ok(if vm {
+        Placement::RemoteVm(name.to_string())
+    } else {
+        Placement::Remote(name.to_string())
+    })
 }
 
 /// **Where a held session's tools run, as an answer's field.**
@@ -621,13 +633,20 @@ fn placement_json(placement: Option<&Placement>) -> Value {
 /// The same fact as a sentence, for the answer a model reads: where the work happens, and what
 /// stayed on this box.
 fn tools_run(placement: Option<&Placement>) -> String {
-    match placement.and_then(Placement::host) {
-        Some(host) => format!(
-            "on `{host}`: this session's bash, read, write, edit and jobs run there; its model, \
-             the store and the gate stay here. What it commits comes back as the branch \
-             `remote/{host}/<short id>` when the session ends"
+    match placement {
+        Some(Placement::RemoteVm(host)) => format!(
+            "inside a firecode VM on `{host}`: this session's bash, read, write, edit and jobs \
+             run in the guest while its model, the store and the gate stay here. What it commits \
+             comes back as the branch `remote/{host}/<short id>` when the VM stops"
         ),
-        None => "on this box".to_string(),
+        _ => match placement.and_then(Placement::host) {
+            Some(host) => format!(
+                "on `{host}`: this session's bash, read, write, edit and jobs run there; its \
+                 model, the store and the gate stay here. What it commits comes back as the \
+                 branch `remote/{host}/<short id>` when the session ends"
+            ),
+            None => "on this box".to_string(),
+        },
     }
 }
 
@@ -655,7 +674,8 @@ pub fn list() -> Value {
                      "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
                      "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
                      "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
-                     "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." }
+                     "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." },
+                     "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. With `host`, the VM is booted on THAT machine by its own firecode, over this session's ssh link, on a copy of the checkout; the guest is the boundary, so builds and tests run there without asking. Omitted: false. A host with no firecode, or no `/dev/kvm` this connection's user may open, is refused by name." }
                  },
                  "required": ["worktree", "brief"]
              })),
@@ -897,7 +917,15 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let model = arg_opt_str(args, "model")?;
             let mode = arg_opt_str(args, "mode")?.unwrap_or_else(|| DEFAULT_MODE.to_string());
             let host = arg_opt_str(args, "host")?;
-            bridge.start(&worktree, &brief, model.as_deref(), &mode, host.as_deref())
+            let vm = arg_bool(args, "vm", false)?;
+            bridge.start(
+                &worktree,
+                &brief,
+                model.as_deref(),
+                &mode,
+                host.as_deref(),
+                vm,
+            )
         }
         "leticode_attach" => {
             let worktree = arg_str(args, "worktree")?;
@@ -1054,20 +1082,20 @@ mod tests {
     fn an_undeclared_host_is_refused_with_the_names_this_box_has() {
         let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
         assert_eq!(
-            placement_arg(None, &hosts).expect("no host asked for"),
+            placement_arg(None, false, &hosts).expect("no host asked for"),
             Placement::Host,
             "asking for nothing is a placement, and it is this box"
         );
         assert_eq!(
-            placement_arg(Some("  "), &hosts).expect("an empty host is none"),
+            placement_arg(Some("  "), false, &hosts).expect("an empty host is none"),
             Placement::Host
         );
         assert_eq!(
-            placement_arg(Some("lab2x1"), &hosts).expect("a declared host"),
+            placement_arg(Some("lab2x1"), false, &hosts).expect("a declared host"),
             Placement::Remote("lab2x1".into())
         );
         // The typo: `lab2` is not `lab2x1`, and the refusal says so with the list.
-        let e = placement_arg(Some("lab2"), &hosts).expect_err("undeclared");
+        let e = placement_arg(Some("lab2"), false, &hosts).expect_err("undeclared");
         assert!(e.contains("there is no host `lab2`"), "{e}");
         assert!(e.contains("it knows: lab2x1"), "{e}");
         assert!(
@@ -1075,6 +1103,25 @@ mod tests {
             "the caller has to know no daemon was begun on its behalf: {e}"
         );
         assert!(e.contains("hosts.toml"), "{e}");
+    }
+
+    /// **`vm` is the second ask, and each of its three shapes is a different placement.** A VM
+    /// on a host is neither a session on that host nor a VM here, so the flag has to reach the
+    /// daemon as both.
+    #[test]
+    fn the_vm_flag_turns_a_host_into_a_vm_on_that_host() {
+        let hosts = Hosts::parse("[host.lab2x1]\nhostname = \"lab2x1\"\n").expect("a hosts file");
+        assert_eq!(
+            placement_arg(Some("lab2x1"), true, &hosts).expect("a declared host"),
+            Placement::RemoteVm("lab2x1".into())
+        );
+        assert_eq!(
+            placement_arg(None, true, &hosts).expect("a VM here"),
+            Placement::Firecode,
+            "`vm` without a host is a VM on this box"
+        );
+        // A name nobody declared is still refused, whatever `vm` says.
+        assert!(placement_arg(Some("lab2"), true, &hosts).is_err());
     }
 
     /// **The placement an answer carries is the spelling a caller can ask for again**, and

@@ -256,6 +256,7 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshS
         bound: Some(bound),
         egress: Egress::Denied,
         confine: Some(false),
+        vm: false,
     }
 }
 

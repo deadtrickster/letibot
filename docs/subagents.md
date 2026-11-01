@@ -98,37 +98,29 @@ but that is a boundary on the operator's ATTENTION, not a sandbox: it decides wh
 what a command may do once allowed. A project that wants the boundary itself says
 `reviewers = "vm"` and pays the guest exec per read.
 
-### A VM **on** another machine is not built, and the pair is refused by name
+### A VM **on** another machine: built, on branch `firecode-remote`
 
-`--where firecode` and `--host NAME` are two placements, and this build makes one at a time
-(R100, filed 2026-10-28 from the operator's *"how to run those remote letibots in
-firecode"*). What the pair **should** mean is unambiguous — a VM on `NAME`: `firecode up`
-driven over the session's own ssh link (a login shell, so `~/bin` is on the remote `PATH`),
-the guest on `NAME`'s own `/dev/kvm`, the copy made from the remote checkout
-`SshBackend::place` already arranges, and the commits coming back as
-`remote/NAME/<short id>` the way every remote placement's do. `lab2x1` has all of that: the
-CLI, the source in `~/Projects/firecode`, and `/dev/kvm` with an ACL for the operator.
+`--where firecode` and `--host NAME` are two asks, and together they are one placement (R100,
+filed 2026-10-28 from the operator's *"how to run those remote letibots in firecode"*): a VM on
+`NAME`. It is built, and the design that was missing is the point.
 
-What is missing is on this side, and it is not a wiring detail.
-`letibot_tools::firecode::FirecodeBackend` runs a `firecode` binary **on this box** and holds
-**this box's** paths: the CLI (`FirecodeSpec::bin`), the copy under
-`~/.cache/letibot/firecode`, the scratch file a promoted job's output goes to, and the `.git`
-file it reads to decide a worktree is mounted rather than copied. A guest on another machine
-has no transport through any of those, so the combination needs a remote runner for the
-firecode backend — not a flag.
+`letibot_tools::firecode::FirecodeBackend` runs a `firecode` binary **on this box** and holds this
+box's paths (the CLI, the copy under `~/.cache/letibot/firecode`, a promoted job's scratch file,
+the `.git` it reads to decide a worktree is mounted), so a guest on another machine has no
+transport through any of them — a remote runner for that backend would be a second
+implementation of the placement, over a connection this tree already has. What is built instead
+is **the same client, run on the host, over the session's existing ssh link**:
+`firecode up` / `in` / `down` are ordinary remote commands, every call of the session's is
+`firecode in --project <checkout> --cwd <checkout> '<script>'`, and the guest is the boundary.
+`docs/remote-hosts.md` § *A VM on that machine* has the order and what each step owns; the
+placement is `Placement::RemoteVm`, carried into `SshBackend::place` by `SshSpec::vm`.
 
-Until it exists the pair is refused, by name, once the whole command line has been read:
-
-```
-$ leticode --host lab2x1 --where firecode
-harnessd: `--host lab2x1` and `--vm` are two placements and this build can make one at a time. …
-```
-
-The refusal is order-independent, and that is the whole of the fix: the two flags used to
-write one field, so `--host lab2x1 --where firecode` booted a VM **here** on a copy of this
-box's workspace and `--where firecode --host lab2x1` ran on `lab2x1` with no VM at all — the
-operator's other ask dropped without a word, and which one survived decided by argument
-order. Running somewhere nobody asked for and saying nothing is the failure this refuses.
+Two things the pair's own resolution still had to keep, and they are the whole of the fix that
+landed before it: the two flags used to write one field, so `--host lab2x1 --where firecode`
+booted a VM **here** on a copy of this box's workspace and `--where firecode --host lab2x1` ran
+on `lab2x1` with no VM at all — the operator's other ask dropped without a word, and which one
+survived decided by argument order. Both orders are now the same placement, and a host that
+cannot boot a guest is refused by name before anything is arranged there.
 
 ### `--vm`: the session's folder, mounted read-write
 

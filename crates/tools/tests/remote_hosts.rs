@@ -187,6 +187,7 @@ impl Rig {
             // unconfined on a Mac). `remote_confine.rs` is the suite that tests the boundary.
             egress: Egress::Denied,
             confine: Some(false),
+            vm: false,
         }
     }
 
@@ -664,6 +665,7 @@ fn a_plain_folder_is_refused_for_remote_placement() {
         bound: Some(Duration::from_secs(5)),
         egress: Egress::Denied,
         confine: Some(false),
+        vm: false,
     })
     .expect_err("a folder is not a repository");
     let said = refused.to_string();
@@ -976,6 +978,7 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path, bound: Duration) -> SshS
         bound: Some(bound),
         egress: Egress::Denied,
         confine: Some(false),
+        vm: false,
     }
 }
 
@@ -1625,6 +1628,7 @@ fn place_spec_for_test(program: &Path, repo: &Path, paths: &Paths, host: Host) -
         bound: Some(Duration::from_secs(3)),
         egress: Egress::Denied,
         confine: Some(false),
+        vm: false,
     }
 }
 

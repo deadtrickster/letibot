@@ -54,6 +54,9 @@ pub enum Placement {
     /// project's — so the string here is always a name that was checked against that
     /// file at the call.
     Remote(String),
+    /// **A firecode VM on that machine** (`--host NAME --vm`, `where: "host:NAME:vm"`): the
+    /// tools run in a guest booted by the host's own `firecode`, so the boundary is a VM.
+    RemoteVm(String),
 }
 
 /// The handle's `seam:` line for a placement: what the child's work is made of and where it
@@ -77,6 +80,13 @@ fn placement_seam(placement: &Placement) -> String {
             "  seam: the child works on {host} in its own checkout of this repository; what it \
              commits comes back here as the branch `remote/{host}/<its short id>` when it ends. \
              Uncommitted remote edits stay there.\n"
+        ),
+        // The guest is a boundary, but its tree is a copy on the host, so the checkout the
+        // branch comes home from is the host's and a commit has to leave the guest first.
+        Placement::RemoteVm(host) => format!(
+            "  seam: the child works inside a firecode VM on {host}, on a guest copy of its \
+             checkout; what it commits comes back here as the branch `remote/{host}/<its short \
+             id>` when the VM stops. Uncommitted edits inside the guest stay there.\n"
         ),
         Placement::Host => String::new(),
     }
@@ -126,7 +136,7 @@ fn placement_arg(
             ),
         ));
     }
-    if let Placement::Remote(name) = &placement
+    if let Some(name) = placement.host()
         && hosts.get(name).is_none()
     {
         return Err(Invocation::failed(
@@ -170,7 +180,7 @@ fn verify_arg(
 }
 
 impl Placement {
-    /// **`host`, `firecode`, or `host:NAME` for a machine the operator declared.**
+    /// **`host`, `firecode`, `host:NAME`, or `host:NAME:vm` for a VM on that machine.**
     ///
     /// The name keeps its case — a hostname is not a keyword — while the keywords are
     /// matched case-insensitively, because `where: Firecode` is what a model writes.
@@ -189,15 +199,28 @@ impl Placement {
                         .to_string(),
                 );
             }
+            // `host:NAME:vm` is a VM ON that machine: `--host NAME --vm` writes it and
+            // `Placement::as_str` reads it back, so the two spellings are one fact.
+            let base = name.len().saturating_sub(3);
+            if name.len() > 3
+                && name.is_char_boundary(base)
+                && name[base..].eq_ignore_ascii_case(":vm")
+            {
+                let named = name[..base].trim();
+                if named.is_empty() {
+                    return Err("`host::vm` needs a host name between the colons".to_string());
+                }
+                return Ok(Placement::RemoteVm(named.to_string()));
+            }
             return Ok(Placement::Remote(name.to_string()));
         }
         match lower.as_str() {
             "" | "host" | "here" => Ok(Placement::Host),
             "firecode" | "vm" | "firecracker" | "libvirt" => Ok(Placement::Firecode),
             other => Err(format!(
-                "`{other}` is not a placement. There are three: `host` (the default), \
-                 `firecode` (a VM), and `host:NAME` — one of the machines the operator \
-                 declared in ~/.config/letibot/hosts.toml"
+                "`{other}` is not a placement. There are four: `host` (the default), \
+                 `firecode` (a VM), `host:NAME` (one of the machines the operator declared in \
+                 ~/.config/letibot/hosts.toml), and `host:NAME:vm` (a VM on that machine)"
             )),
         }
     }
@@ -209,13 +232,20 @@ impl Placement {
             Placement::Host => "host".to_string(),
             Placement::Firecode => "firecode".to_string(),
             Placement::Remote(name) => format!("host:{name}"),
+            Placement::RemoteVm(name) => format!("host:{name}:vm"),
         }
+    }
+
+    /// **Is this placement a firecode VM**, on this box or on a host, so the question is
+    /// answered once rather than spelled as a `match` in each caller.
+    pub fn is_vm(&self) -> bool {
+        matches!(self, Placement::Firecode | Placement::RemoteVm(_))
     }
 
     /// The machine this placement is on, when it is another one.
     pub fn host(&self) -> Option<&str> {
         match self {
-            Placement::Remote(name) => Some(name),
+            Placement::Remote(name) | Placement::RemoteVm(name) => Some(name),
             _ => None,
         }
     }

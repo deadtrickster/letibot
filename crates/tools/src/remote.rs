@@ -1290,6 +1290,30 @@ static MISE: std::sync::LazyLock<Mutex<BTreeMap<String, Option<String>>>> =
 static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<String, crate::exec::confine::HostProbe>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// **Where a host's `firecode` is, and whether it may open `/dev/kvm`**, per process.
+///
+/// Asked once per host for the reason [`MISE`] is: a machine does not grow a hypervisor under a
+/// running daemon, and a session that asked for a VM must pay one round trip for the answer.
+/// A probe that did **not answer** is not cached, because a host that was briefly unreachable
+/// has told us nothing about what it has installed.
+static FIRECODE: std::sync::LazyLock<Mutex<BTreeMap<String, Result<VmHost, String>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+/// How long one `firecode up` or `down` on the host gets. A cold boot with a layer is minutes
+/// (`docs/cookbook.md` §3), so this is a backstop for a client that lost its reply, not a budget.
+const VM_BOUND: Duration = Duration::from_secs(600);
+
+/// **How long the copy-out of the guest's tree is waited for after `down`.**
+///
+/// The copy-out is asynchronous and has been measured at two minutes behind the command's
+/// return, so this is a quiet window and not a total: a session that changed nothing pays it
+/// once, and one whose copy is still coming is told where to collect it.
+const VM_COPY_OUT_QUIET: Duration = Duration::from_secs(30);
+
+/// The largest file that goes into the guest inside one command's argv. A single argument over
+/// 128 KiB is refused by the far kernel (`MAX_ARG_STRLEN`), and base64 costs a third again.
+const VM_INLINE_WRITE: usize = 48 * 1024;
+
 /// **Where a confined remote command's `$HOME` is** — under the host's own `root`, never the
 /// operator's home.
 ///
@@ -1304,6 +1328,46 @@ static CONFINE: std::sync::LazyLock<Mutex<BTreeMap<String, crate::exec::confine:
 /// command writes survives to the next and nothing of the host's `/tmp` is visible. See
 /// [`crate::exec::confine::TmpView`].
 pub const HOME_DIR: &str = ".letibot-home";
+
+/// **What a host answered about its own firecode**: the program, absolute on that machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VmHost {
+    pub firecode: String,
+}
+
+/// **The guest a session's commands run in**: `firecode in` on the far side is the boundary.
+///
+/// The project is the session's own checkout on the host, and the guest holds a copy of it at
+/// the same path, so a path means the same thing on both sides (`docs/cookbook.md` §3).
+#[derive(Debug, Clone)]
+pub struct RemoteVm {
+    /// The program the host answered with, absolute on that machine.
+    pub firecode: String,
+    /// The guest path the VM was booted on.
+    pub project: String,
+}
+
+impl RemoteVm {
+    /// **The command string `firecode in` runs in the guest**, with the session's script as the
+    /// one argument firecode hands to the guest's `bash -lc`.
+    fn guest_command(&self, script: &str) -> String {
+        format!(
+            "{} in --project {} --cwd {} {}",
+            quote(&self.firecode),
+            quote(&self.project),
+            quote(&self.project),
+            quote(script)
+        )
+    }
+
+    /// **The same client, a control verb on the HOST** — `up`, `down`, `cp`. These are not
+    /// commands in the guest, so they are never wrapped in `in`.
+    fn host_command(&self, verb: &str, rest: &[&str]) -> String {
+        let mut parts = vec![quote(&self.firecode), verb.to_string()];
+        parts.extend(rest.iter().map(|a| quote(a)));
+        parts.join(" ")
+    }
+}
 
 /// **One host's ssh connection**, opened by [`Ssh::connect`] after the two refusals that make
 /// it letibot's own: its identity file, and its host key.
@@ -1341,6 +1405,9 @@ pub struct Ssh {
     /// wrapper must be told which tree. `None` is the remote's home, which is what a probe or a
     /// connection test has.
     dir: Option<String>,
+    /// **The guest this session's commands run in**, once one is booted. `None` on any host
+    /// placement, which is what makes the whole of this file's behaviour unchanged there.
+    vm: Option<RemoteVm>,
 }
 
 impl Ssh {
@@ -1376,6 +1443,7 @@ impl Ssh {
             paths,
             bound: STEP_BOUND,
             dir: None,
+            vm: None,
         })
     }
 
@@ -1414,6 +1482,27 @@ impl Ssh {
     /// The bound this connection's non-command calls carry.
     pub fn bound(&self) -> Duration {
         self.bound
+    }
+
+    /// **Run every command of this session inside `vm`**, the firecode guest booted on this
+    /// host. Set once, after the boot: everything before it (`up` itself, the probe) is the
+    /// host's, and everything after is the guest's.
+    pub fn with_vm(mut self, vm: RemoteVm) -> Ssh {
+        self.vm = Some(vm);
+        self
+    }
+
+    /// **The same connection, reaching the HOST rather than the guest** — for `down` and for
+    /// the copy-out that follows it, which are firecode's own verbs and run outside the VM.
+    pub fn without_vm(&self) -> Ssh {
+        let mut plain = self.clone();
+        plain.vm = None;
+        plain
+    }
+
+    /// The guest this session's commands run in, when it is one.
+    pub fn vm(&self) -> Option<&RemoteVm> {
+        self.vm.as_ref()
     }
 
     /// **The bound on one status poll** — [`POLL_BOUND`], and never longer than the connection's
@@ -1496,6 +1585,16 @@ impl Ssh {
     /// into two pipes. That is [`crate::firecode`]'s trade as well, and it is stated in
     /// [`SshBackend::describe`] rather than left to be discovered.
     pub fn remote_command(&self, script: &str) -> String {
+        // **A VM is the boundary a command runs inside**, so the script is not the host's
+        // command any more: `firecode in` hands it to the guest's `bash -lc`. The login shell
+        // around it is what puts `~/bin` on the host's `PATH`, which is where the operator's
+        // hosts keep `firecode` (`docs/remote-hosts.md`).
+        if let Some(vm) = &self.vm {
+            return format!(
+                "bash -lc {}",
+                quote(&self.host.with_path(&vm.guest_command(script)))
+            );
+        }
         let body = format!("bash -lc {}", quote(&self.host.with_path(script)));
         match self.mise_program() {
             Some(program) => format!("{program} exec -C {} -- {body}", self.dir_arg()),
@@ -1551,6 +1650,92 @@ impl Ssh {
                     .filter(|s| !s.is_empty()),
             ),
             _ => None,
+        }
+    }
+
+    /// **Ask the host whether it could boot a firecode guest**, once per process.
+    ///
+    /// Three answers, and they are kept apart on purpose: the program and `/dev/kvm` are there;
+    /// the host answered and one of them is missing; or the question did not get an answer at
+    /// all, which is not a fact about the machine and so is not remembered (the reason
+    /// [`Ssh::probe_mise`] does not remember a timeout either).
+    fn probe_firecode(&self) -> Option<Result<VmHost, String>> {
+        if let Some(hit) = FIRECODE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&self.host.name)
+        {
+            return Some(hit.clone());
+        }
+        let script = "p=$(command -v firecode 2>/dev/null) || p=\n\
+                      printf 'firecode=%s\\n' \"$p\"\n\
+                      k=${LETIBOT_KVM_DEVICE:-/dev/kvm}\n\
+                      if [ -r \"$k\" ] && [ -w \"$k\" ]; then echo kvm=yes; \
+                      else echo kvm=no; fi";
+        let command = format!("bash -lc {}", quote(&self.host.with_path(script)));
+        let within = self.bound.min(STEP_BOUND);
+        let said = match self.raw("asking the host for its firecode", &command, within) {
+            Some(Ok(Call::Answered(said, _, exit))) if exit == 0 => said,
+            _ => return None,
+        };
+        let mut program = String::new();
+        let mut kvm = false;
+        let mut answered = false;
+        for line in said.lines() {
+            match line.trim().split_once('=') {
+                Some(("firecode", v)) => {
+                    program = v.trim().to_string();
+                    answered = true;
+                }
+                Some(("kvm", v)) => kvm = v.trim() == "yes",
+                _ => {}
+            }
+        }
+        if !answered {
+            return None;
+        }
+        let found = if program.is_empty() {
+            Err(self.no_firecode(
+                "there is no `firecode` on that machine's login-shell PATH, and a guest is \
+                 booted by the host's own client (`~/bin` and `~/.local/bin` are where the \
+                 operator's hosts keep it)",
+            ))
+        } else if !kvm {
+            Err(self.no_firecode(
+                "`/dev/kvm` is not readable and writable by this connection's user on that \
+                 machine, so no guest can boot there (`firecode ls` says so directly; \
+                 $LETIBOT_KVM_DEVICE names another node, and is a test's door)",
+            ))
+        } else {
+            Ok(VmHost { firecode: program })
+        };
+        FIRECODE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(self.host.name.clone(), found.clone());
+        Some(found)
+    }
+
+    /// The refusal `--vm` gets on a host that cannot boot one, naming the host and the fix.
+    fn no_firecode(&self, why: &str) -> String {
+        format!(
+            "{} cannot run this session's tools in a firecode VM{}",
+            self.host.name,
+            if why.is_empty() {
+                String::new()
+            } else {
+                format!(": {why}")
+            }
+        )
+    }
+
+    /// [`Ssh::probe_firecode`] or the refusal, for the one caller that must have an answer.
+    fn firecode_on_host(&self) -> Result<VmHost, String> {
+        match self.probe_firecode() {
+            Some(found) => found,
+            None => Err(self.no_firecode(
+                "it did not answer the question, so nothing is known about what it has",
+            )),
         }
     }
 
@@ -1694,7 +1879,14 @@ impl Ssh {
              fi",
             f = quote(file)
         );
-        let command = format!("bash -lc {}", quote(&self.host.with_path(&script)));
+        let command = match &self.vm {
+            // The group is the GUEST's, so the kill has to be a command in the guest too.
+            Some(vm) => format!(
+                "bash -lc {}",
+                quote(&self.host.with_path(&vm.guest_command(&script)))
+            ),
+            None => format!("bash -lc {}", quote(&self.host.with_path(&script))),
+        };
         let _ = self.raw("ending the remote process group", &command, CANCEL_BOUND);
     }
 
@@ -2888,6 +3080,9 @@ pub struct SshSpec {
     /// line would mean two things. `Some(true)` is the other half: a test that means *this host
     /// confines* says so, and the probe still has to answer.
     pub confine: Option<bool>,
+    /// **Boot a firecode VM on the host and run every command of this session inside it**
+    /// (`--host NAME --vm`). The guest is the boundary, so no `bwrap` is probed for.
+    pub vm: bool,
 }
 
 /// **A session whose tools run on another machine.**
@@ -2929,6 +3124,9 @@ pub struct SshBackend {
     unconfined: Option<String>,
     /// What the placement had to say: the worktree, and the local edits that stayed here.
     notes: Vec<String>,
+    /// **The guest this session's commands run in**, when it was placed in one: `close` brings
+    /// it down and collects its work, and `describe` says so.
+    vm: Option<RemoteVm>,
     /// What [`ExecBackend::close`] found when it brought the branch back, said once.
     brought_back: Mutex<Option<String>>,
 }
@@ -2967,6 +3165,21 @@ impl SshBackend {
         }
         let place =
             |e: BackendError| BackendError::Io(format!("placing this session on {host}: {e}"));
+
+        // **R100: can this machine boot a guest, asked before anything is arranged there.** A
+        // host with no `firecode` or no `/dev/kvm` is a refusal the caller can act on, and it
+        // comes before a bundle is sent and a worktree is made — the same order the key and the
+        // host key are refused in.
+        let firecode = if spec.vm {
+            Some(ssh.firecode_on_host().map_err(|why| {
+                place(BackendError::Io(format!(
+                    "{why}. Leave `--vm` out to run this session's tools on {host} itself, in a \
+                     checkout of the same repository."
+                )))
+            })?)
+        } else {
+            None
+        };
 
         // **The repository, or the refusal that names the fix.** A remote session works
         // on a checkout of a repository, so a folder that is not one cannot carry its
@@ -3174,15 +3387,36 @@ impl SshBackend {
             // add -b` is not idempotent, so a second attempt after a call that may have worked
             // would fail with *already exists* and report a placement that is in fact fine. A
             // timeout here is reported as it is (see [`Ssh::no_answer`]).
-            ssh.must_within(
-                "checking the branch out",
-                &format!(
+            //
+            // **A VM placement gets a CLONE, and that is not a preference.** The guest holds a
+            // *copy* of this directory, and a linked worktree's `.git` is a file naming a
+            // directory in the mirror — which the copy does not carry, so nothing could commit
+            // inside the guest at all. A clone keeps its repository in the tree, so the copy is
+            // a working repository at the same branch.
+            let checkout = if spec.vm {
+                // A clone keeps other branches as `refs/remotes/origin/*`, so the branch the
+                // bundle went over as is named there.
+                let cloned = format!("refs/remotes/origin/letibot/{short}");
+                format!(
+                    "git -C {m} clone -q --no-checkout {m} {wt} >/dev/null && \
+                     git -C {wt} checkout -q -b {br} {st}",
+                    m = quote(&mirror),
+                    br = quote(&branch),
+                    wt = quote(&worktree),
+                    st = quote(&cloned)
+                )
+            } else {
+                format!(
                     "git -C {m} worktree add -b {br} {wt} {st} >/dev/null",
                     m = quote(&mirror),
                     br = quote(&branch),
                     wt = quote(&worktree),
                     st = quote(&staged)
-                ),
+                )
+            };
+            ssh.must_within(
+                "checking the branch out",
+                &checkout,
                 Retry::Never,
                 ssh.bound(),
             )
@@ -3216,6 +3450,17 @@ impl SshBackend {
             ),
         )
         .map_err(place)?;
+
+        // **R100: the combined placement, booted once the checkout exists.** The guest is a copy
+        // of that checkout at the same path, so this step is after every arranging step whose
+        // result the guest has to start with (the exclude file above) and before any command.
+        let mut vm = None;
+        if let Some(found) = firecode {
+            let plain = ssh.without_vm();
+            let booted = vm_up(&plain, &host, &worktree, found).map_err(place)?;
+            ssh = ssh.with_vm(booted.clone());
+            vm = Some(booted);
+        }
 
         // **What stayed here, and it is not carried.** Said with the list, because a
         // session that works on a tree the operator is not looking at must say so.
@@ -3255,7 +3500,18 @@ impl SshBackend {
         // a confinement for the mode's prerequisite or for a card's facts. That claim was the
         // live defect RH3 fixes — the remote arm of `Harness::open` hardcoded it to `true`.
         let mut home = None;
-        let (confine, unconfined) = if !spec.exec {
+        let (confine, unconfined) = if let Some(vm) = &vm {
+            // **The VM is the boundary, and there is nothing for `bwrap` to bound**: the guest
+            // holds a copy of the checkout and none of that machine's filesystem, so a probe
+            // would only measure a confinement nothing runs in.
+            notes.push(format!(
+                "commands run inside a firecode VM on {host}, booted on a copy of {} at that \
+                 same path: the guest is the boundary, and what the session commits is collected \
+                 when the VM stops",
+                vm.project
+            ));
+            (None, None)
+        } else if !spec.exec {
             // **Nothing runs here, so there is nothing to bound.** A downgraded child seats no exec
             // tools, and probing a host for a boundary no command will use is a round trip spent
             // on a question nobody asked.
@@ -3347,6 +3603,7 @@ impl SshBackend {
             confine,
             confined_env,
             unconfined,
+            vm,
             brought_back: Mutex::new(None),
         })
     }
@@ -3354,6 +3611,82 @@ impl SshBackend {
     /// The host's name, for a card, a progress line or a test.
     pub fn host_name(&self) -> &str {
         &self.host
+    }
+
+    /// **The guest this session's commands run in**, when it was placed in one.
+    pub fn vm(&self) -> Option<&RemoteVm> {
+        self.vm.as_ref()
+    }
+
+    /// **The session's end, when its tools ran in a guest**: the VM comes down, the guest's
+    /// commits are taken onto the host checkout, and the branch comes home as it always did.
+    /// Every step is idempotent, so a second call reports what the first found.
+    fn settle(&self) -> String {
+        let mut said: Vec<String> = Vec::new();
+        if let Some(vm) = &self.vm {
+            let plain = self.ssh.without_vm();
+            said.push(
+                match plain.must_within(
+                    "bringing the firecode VM down",
+                    &vm.host_command("down", &["--project", &vm.project]),
+                    Retry::Never,
+                    VM_BOUND,
+                ) {
+                    Ok(_) => format!("the VM on {} was brought down", self.host),
+                    Err(e) => format!("the VM on {} was NOT brought down: {e}", self.host),
+                },
+            );
+            said.push(self.collect_from_guest(&plain, vm));
+        }
+        said.push(self.bring_back());
+        said.retain(|s| !s.is_empty());
+        said.join("; ")
+    }
+
+    /// **The guest's commits, taken onto the host's checkout.**
+    ///
+    /// `firecode down` leaves the guest's tree in a sibling directory of the project, so the
+    /// branch has to be carried from there to the checkout the branch comes home from; without
+    /// this step a session that committed inside the VM would come back empty. The copy-out is
+    /// asynchronous, so the sibling is waited for, and only a commit the checkout can
+    /// fast-forward to is taken — a copy from an earlier run of the same session is skipped.
+    fn collect_from_guest(&self, plain: &Ssh, vm: &RemoteVm) -> String {
+        let br = format!("refs/heads/{}", self.branch);
+        // **A fetch, then a fast-forward** — never a merge of a bare sha: the guest's commit
+        // lives in the guest's own copy and not in this checkout, so the object has to come over
+        // first. `--ff-only` is what refuses a copy that has diverged from the checkout.
+        let script = format!(
+            "i=0\n\
+             while [ $i -lt {n} ]; do\n\
+             \x20 for d in {wt}-*; do\n\
+             \x20   [ -e \"$d/.git\" ] || continue\n\
+             \x20   s=$(git -C \"$d\" rev-parse -q --verify {br}) || continue\n\
+             \x20   [ \"$s\" = \"$(git -C {wt} rev-parse HEAD)\" ] && continue\n\
+             \x20   git -C {wt} fetch -q \"$d\" {br} 2>/dev/null || continue\n\
+             \x20   if git -C {wt} merge --ff-only FETCH_HEAD >/dev/null 2>&1; then\n\
+             \x20     echo \"the guest's commits are on {branch} now\"; exit 0\n\
+             \x20   fi\n\
+             \x20 done\n\
+             \x20 i=$((i+1)); sleep 2\n\
+             done\n\
+             echo \"no copy of the guest landed beside {wt} in {secs} s, so the branch is where it \
+             was. If firecode's copy-out is still running it appears as {wt}-<stamp>, and \
+             `git -C {wt} fetch <that> {br}` takes it\"",
+            n = VM_COPY_OUT_QUIET.as_secs() / 2,
+            wt = quote(&vm.project),
+            br = quote(&br),
+            branch = self.branch,
+            secs = VM_COPY_OUT_QUIET.as_secs()
+        );
+        match plain.must_within(
+            "collecting the guest's commits",
+            &script,
+            Retry::Never,
+            VM_COPY_OUT_QUIET + self.ssh.bound(),
+        ) {
+            Ok(said) => said.trim().to_string(),
+            Err(e) => format!("the guest's commits could NOT be collected: {e}"),
+        }
     }
 
     /// **The boundary this session's commands run inside**, when there is one.
@@ -3476,7 +3809,16 @@ impl SshBackend {
         {
             return said;
         }
-        let url = format!("{}:{}", self.ssh.destination(), self.mirror);
+        let url = format!(
+            "{}:{}",
+            self.ssh.destination(),
+            // **A VM placement's checkout is a CLONE, so the branch is in the checkout.** Every
+            // other placement's is a linked worktree of the mirror, and the mirror has it.
+            match self.vm {
+                Some(_) => &self.worktree,
+                None => &self.mirror,
+            }
+        );
         let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
         // `git fetch` over ssh, with **this backend's ssh**: the same flags, and the **git**
         // ControlMaster — not the one the calls are multiplexed on. git starts that ssh itself, so
@@ -3668,6 +4010,98 @@ fn git_within(repo: &Path, args: &[&str], within: Duration) -> Result<String, Ba
     }
 }
 
+/// **Boot a firecode guest on the host for this session**, or say which step refused.
+///
+/// The host is asked once per process what it has ([`Ssh::probe_firecode`]), because a machine
+/// without `firecode` or without `/dev/kvm` is a refusal a caller can act on rather than a boot
+/// that fails minutes later in a log nobody reads.
+fn vm_up(plain: &Ssh, host: &str, project: &str, found: VmHost) -> Result<RemoteVm, BackendError> {
+    let vm = RemoteVm {
+        firecode: found.firecode,
+        project: project.to_string(),
+    };
+    plain
+        .must_within(
+            "booting the firecode VM",
+            &vm.host_command("up", &["--project", project]),
+            Retry::Never,
+            VM_BOUND,
+        )
+        .map_err(|e| BackendError::Io(format!("booting a firecode VM on {host}: {e}")))?;
+    Ok(vm)
+}
+
+/// **A file into the guest**, which is not the host: `firecode in` does not carry the caller's
+/// stdin, so a small file travels inside the command and a large one is staged on the host and
+/// carried across by `firecode cp` (the split the local VM backend makes for the same reason).
+fn write_into_guest(
+    ssh: &Ssh,
+    vm: &RemoteVm,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), BackendError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+    let n = ATTEMPT.fetch_add(1, Ordering::Relaxed);
+    let dir = match path.rfind('/') {
+        Some(0) => "/".to_string(),
+        Some(i) => path[..i].to_string(),
+        None => ".".to_string(),
+    };
+    let tmp = format!("{path}.letibot-{}-{n}", std::process::id());
+    if bytes.len() <= VM_INLINE_WRITE {
+        let b64 = crate::firecode::encode_base64(bytes);
+        let script = format!(
+            "set -e\n\
+             mkdir -p {dir}\n\
+             printf %s {b64} | base64 -d > {tmp}\n\
+             got=$(wc -c < {tmp} | tr -d ' \\t')\n\
+             [ \"$got\" = {len} ] || {{ echo \"the file arrived as $got bytes, not {len}\" >&2; \
+             exit 41; }}\n\
+             mv -f {tmp} {path}",
+            dir = quote(&dir),
+            b64 = quote(&b64),
+            tmp = quote(&tmp),
+            len = bytes.len(),
+            path = quote(path)
+        );
+        ssh.must(&format!("writing {path} in the VM"), &script)?;
+        return Ok(());
+    }
+    // Above what one argument may carry: onto the host first, where stdin works, then over.
+    let staged = format!(
+        "{}/.letibot-remote/vm-{}-{n}.bin",
+        vm.project.trim_end_matches('/'),
+        std::process::id()
+    );
+    let plain = ssh.without_vm();
+    plain.write_abs(&staged, bytes)?;
+    ssh.must(
+        &format!("making room for {path} in the VM"),
+        &format!("mkdir -p {}", quote(&dir)),
+    )?;
+    let name = staged.rsplit('/').next().unwrap_or("staged.bin");
+    let handed = plain.must_within(
+        "handing the file to the guest",
+        &vm.host_command(
+            "cp",
+            &["--project", &vm.project, &staged, &format!("vm:{dir}/")],
+        ),
+        Retry::Never,
+        VM_BOUND,
+    );
+    let _ = plain.must(
+        "removing the staged file",
+        &format!("rm -f {}", quote(&staged)),
+    );
+    handed?;
+    ssh.must(
+        &format!("renaming {path} into place in the VM"),
+        &format!("mv -f {} {}", quote(&format!("{dir}/{name}")), quote(path)),
+    )
+    .map(|_| ())
+}
+
 impl ExecBackend for SshBackend {
     fn boundary(&self) -> Option<crate::exec::Boundary> {
         self.confinement()
@@ -3740,7 +4174,11 @@ impl ExecBackend for SshBackend {
                 "this subagent was downgraded to no write; nothing on its host changed",
             ));
         }
-        self.ssh.write_abs(&self.in_view(path)?, bytes)
+        let abs = self.in_view(path)?;
+        match &self.vm {
+            Some(vm) => write_into_guest(&self.ssh, vm, &abs, bytes),
+            None => self.ssh.write_abs(&abs, bytes),
+        }
     }
 
     fn processes(&self) -> Option<&dyn ProcessHost> {
@@ -3770,6 +4208,9 @@ impl ExecBackend for SshBackend {
     /// [`Self::workspace_path`] is the other question — *which directory is this session working
     /// in* — and that one has an answer either way.
     fn root_path(&self) -> Option<String> {
+        if self.vm.is_some() {
+            return Some(self.worktree.clone());
+        }
         self.confine.as_ref().map(|_| self.worktree.clone())
     }
 
@@ -3782,7 +4223,10 @@ impl ExecBackend for SshBackend {
     /// tell apart from one on this box — and an operator deciding a `bash` call here is
     /// deciding about another machine.
     fn host_label(&self) -> Option<String> {
-        Some(format!("{} over ssh", self.host))
+        Some(match self.vm {
+            Some(_) => format!("{} in a firecode VM", self.host),
+            None => format!("{} over ssh", self.host),
+        })
     }
 
     /// Where a tool's `cwd` starts: the checkout, not this machine's root.
@@ -3895,6 +4339,15 @@ impl ExecBackend for SshBackend {
         // shape `Boundary::describe`'s own doc warns about: a banner that asserts what it did not
         // measure. `bwrap` was measured on the host, so the first arm prints the view that runs.
         let boundary = match (&self.confine, &self.unconfined) {
+            // A VM is a boundary by construction rather than by measurement, so the sentence
+            // says which it is instead of borrowing `bwrap`'s.
+            _ if self.vm.is_some() => format!(
+                "CONFINED by a firecode VM booted on that machine, holding a copy of {} at the \
+                 same path: no host filesystem, no host process, no host device. What the session \
+                 changes is collected from the guest when the VM comes down, and that is what \
+                 comes home.",
+                self.vm.as_ref().map(|v| v.project.as_str()).unwrap_or("")
+            ),
             (Some(b), _) => format!(
                 "CONFINED, and measured on that machine — {}. Every command and every job runs \
                  inside it: the checkout is writable, the toolchain is read-only, the rest of \
@@ -3931,7 +4384,7 @@ impl ExecBackend for SshBackend {
     }
 
     fn close(&self) -> Option<String> {
-        Some(self.bring_back())
+        Some(self.settle())
     }
 }
 

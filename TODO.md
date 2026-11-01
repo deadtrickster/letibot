@@ -295,7 +295,7 @@ the target byte-identical. **Still open?** `grep -n "ssh-{short}.sock" crates/to
 
 ---
 
-## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **REFUSED BY NAME on branch `agent/the-placement-and-bridge-cluster`; the combination is still not built. Filed 2026-10-28, operator's ask**
+## R100 — A remote session cannot run in a firecode VM: `--host` and `--vm` are two placements, not one — **BUILT on branch `firecode-remote`, live proof pending; filed 2026-10-28, operator's ask**
 
 The operator: *"how to run those remote letibots in firecode"*, and *"lab2x1 has firecode, it even
 has source code for it"*. It does: `~/bin/firecode` (login `PATH`), the source in
@@ -326,9 +326,58 @@ because `FirecodeBackend` runs a `firecode` binary on THIS box and holds THIS bo
 (`FirecodeSpec::bin`, `~/.cache/letibot/firecode`, a promoted job's scratch file, the `.git` it
 reads to decide a worktree is mounted). It needs a remote runner for the firecode backend, not a
 flag. `docs/subagents.md` §2 carries the decision. Tests:
-`crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and
-`cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_refused`.
-**Still open?** the combined placement itself — this entry stays open for it.
+`crates/harnessd/tests/cli_placement.rs` (both flag orders, through `cli::run`) and the pair test in
+`cli::tests`, which now asserts the pair IS the placement (the build below).
+
+**Built (2026-11-01, branch `firecode-remote`): the pair is the placement.** `leticode --host lab2x1
+--vm`, `leticode_start { host: "lab2x1", vm: true }` and `where: "host:lab2x1:vm"` are one
+`Placement::RemoteVm(name)`; either flag alone still means what it did. `SshSpec::vm` carries the
+ask into `SshBackend::place`, and five things follow from it:
+
+1. **The host is asked once per host per process** (`Ssh::probe_firecode`): `command -v firecode` in
+a login shell, and `$LETIBOT_KVM_DEVICE`/`/dev/kvm` readable and writable by this connection's user.
+A host that cannot boot a guest is refused **by name before anything is arranged there** — no
+bundle, no checkout — and a probe that did not answer is not cached.
+2. **The checkout is a CLONE when the ask is a VM**, not the linked worktree every other placement
+gets. The guest holds a *copy* of the directory, and a worktree's `.git` is a file naming a
+directory in the mirror that the copy does not carry — so no commit inside the guest would have
+worked. `bring_back` fetches the branch from the checkout in that case, from the mirror otherwise.
+3. `firecode up --project <checkout>`, and then **every call is `firecode in --project <checkout>
+--cwd <checkout> '<script>'`** — `Ssh::remote_command` wraps every door at once, so a command, a
+file read, a file write, a job's launcher, a poll and the group kill all run in the guest, and the
+cancel path builds its own command for the same reason.
+4. **The guest is the boundary**, so `cfg.placement.is_vm()` puts the session at `allow-all`
+(`Harness::open`'s `in_vm`) and no `bwrap` is probed for.
+5. **On close: `firecode down`, then the guest's work is taken onto the host checkout** — `down`
+leaves a sibling `<checkout>-<stamp>` when something changed, that copy's branch is fetched into
+the checkout and fast-forwarded, and the branch then comes home as `remote/<host>/<short id>` as
+every host placement's does.
+
+**Tests** (`crates/tools/tests/remote_vm.rs`, a fake `firecode` on the fake remote's `PATH` through
+the same fake ssh `remote_hosts.rs` uses): `up`, then `in` for the session's calls, then `down`, in
+that order; a commit made in the guest arrives as the branch that came back; a host with no
+`firecode` is refused by name with nothing arranged there; and a host placement never asks for a
+guest. Plus `cli::tests::a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there`,
+`bridge::tools::tests::the_vm_flag_turns_a_host_into_a_vm_on_that_host` and
+`bridge::daemon::tests::a_vm_on_a_host_is_both_flags`.
+
+**What is NOT proved, and is the live proof's work.** No VM was booted: this sandbox has no
+`/dev/kvm` and the task says not to try. What the live proof has to answer, on `lab2x1`:
+
+1. `leticode --host lab2x1 --vm` boots a guest and a `cargo test` runs inside it **with no card**
+   (the D16 half), and `bash` inside the guest sees the guest's own filesystem rather than lab2x1's.
+2. **Whether the guest can commit at all** — the clone (2 above) is what makes that possible in
+theory; nothing has watched a real `firecode` copy of a clone carry a commit out.
+3. **How long the copy-out actually takes.** The wait after `down` is a **30 s quiet window**
+   (`VM_COPY_OUT_QUIET`); a copy slower than that is named in the close's sentence with the
+   `git fetch` that collects it, rather than being waited for. If lab2x1's copy-out is reliably
+   slower, the bound or firecode's own run record (`runs/<run>/copy_out`, which the local backend
+   already reads) is what should decide it instead.
+4. That a resumed session (a second placement on the same id) keeps its clone rather than
+   re-cloning, and that a file a command writes in the guest is there for the next command.
+
+**Done when**: a package started with `{host: "lab2x1", vm: true}` builds and tests letibot inside a
+guest on lab2x1 at `writes-allowed` without a card, and its commits come back.
 
 ---
 

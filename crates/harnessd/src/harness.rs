@@ -3962,8 +3962,12 @@ impl Harness {
         // gate is built from `cfg.mode`, and disclosed by `placement`.
         // **A session attached to an ancestor's VM is inside that VM too** — the same boundary,
         // the same allow-all inside it (`Config::vm_attach`).
-        let in_vm = cfg.placement == letibot_tools::builtins::task::Placement::Firecode
-            || cfg.vm_attach.is_some();
+        let in_vm = cfg.placement.is_vm() || cfg.vm_attach.is_some();
+        // **A VM on THIS box**, which is the local firecode backend's door. A VM on a declared
+        // host is booted by that host's own `firecode` over ssh, so it goes through the
+        // placement below instead.
+        let local_vm = cfg.vm_attach.is_some()
+            || cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
         if in_vm {
             cfg.mode = letibot_tools::mode::Mode::ALLOW_ALL;
         }
@@ -4004,7 +4008,7 @@ impl Harness {
         // carry for a remote placement — a host whose tools run over ssh confines nothing by
         // itself, and claiming it did made `Prereq::Confinement` (and so `allow-all`) pass for a
         // session that had no boundary at all.
-        let backend: HostBackend = if in_vm {
+        let backend: HostBackend = if local_vm {
             // A placeholder the VM arm below replaces; the host tree is not touched by a
             // session whose tools run elsewhere, and this read-only view is never used.
             HostBackend::new(&cfg.workspace)
@@ -4161,7 +4165,7 @@ impl Harness {
             String,
             bool,
             Option<Arc<Monitors>>,
-        ) = if in_vm {
+        ) = if local_vm {
             // **The tree the VM is booted on, and it is NOT always the workspace.**
             // `Config::vm_copy_source` is the one spelling of the decision: the session's own
             // `vm_source` where the caller that knows named one, the REPOSITORY its workspace is
@@ -4262,6 +4266,10 @@ impl Harness {
                 // per host (cached), and a host that cannot answer runs unconfined with the reason
                 // on the session's own notes — see `SshBackend::place`.
                 confine: None,
+                // **R100: the same placement, with a VM booted on that host.** `--host NAME
+                // --vm` places the tools in a firecode guest there; the probe and the boot are
+                // `SshBackend::place`'s, and a host that cannot boot one is refused by name.
+                vm: cfg.placement.is_vm(),
             };
             let sb = letibot_tools::remote::SshBackend::place(&spec)
                 .map_err(|e| HarnessError::Setup(e.to_string()))?;
@@ -4393,9 +4401,6 @@ impl Harness {
         // one only where a confinement was really measured (`ExecBackend::boundary`). A remote
         // session on a machine whose probe failed is unconfined — every call a decision — which
         // is what its `describe` says and what `Prereq::Confinement` now sees.
-        //
-        // This fixes two things at once, and the second is why RH3 came with a gate clause: before
-        // it, a remote placement passed this test on a hardcoded `true`.
         let backend_confined = in_vm || backend.boundary().is_some();
         let backend_boundary = backend.boundary();
         let backend_boundary_refusal = backend.boundary_refusal();
@@ -22846,7 +22851,12 @@ impl HarnessTaskRunner {
         // (*"children live in the same vm"*). `host` in a remote session's mouth is *"my own
         // boundary"*, which for that parent is that machine.
         let placement = match (spec.placement.clone(), self.base.placement.host()) {
-            (Placement::Host, Some(parent_host)) => Placement::Remote(parent_host.to_string()),
+            // A child of a session whose tools are in a guest on that host gets a guest of its
+            // own there, for the reason a VM's children get their own VM.
+            (Placement::Host, Some(parent_host)) => match &self.base.placement {
+                Placement::RemoteVm(_) => Placement::RemoteVm(parent_host.to_string()),
+                _ => Placement::Remote(parent_host.to_string()),
+            },
             (asked, _) => asked,
         };
         let _ = Placement::Host;
@@ -23208,7 +23218,7 @@ impl HarnessTaskRunner {
             Placement::Firecode => None,
             // A remote child is not inside the parent's VM, and its own checkout is
             // arranged by its `open` (`SshBackend::place`) rather than attached.
-            Placement::Remote(_) => None,
+            Placement::Remote(_) | Placement::RemoteVm(_) => None,
         };
         // A child given a VM of its own copies (or mounts its worktree), as before - only the
         // session `--vm` placed works in the folder itself, and its attached children with it.
@@ -23285,6 +23295,12 @@ impl HarnessTaskRunner {
             Placement::Remote(ref host) => format!(
                 "opening subagent {} on {host}: sending {} over as a checkout, on branch \
                  remote/<its short id>{on_window}",
+                letibot_sessionlog::registry::short_id(&sub_id),
+                sub_cfg.vm_copy_source().display()
+            ),
+            Placement::RemoteVm(ref host) => format!(
+                "opening subagent {} in a firecode VM on {host}: sending {} over as a checkout \
+                 and booting the guest there{on_window}",
                 letibot_sessionlog::registry::short_id(&sub_id),
                 sub_cfg.vm_copy_source().display()
             ),

@@ -362,6 +362,13 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placemen
         args.push("--host".into());
         args.push(host.into());
     }
+    // **A VM ON that machine**, which is the pair `--host NAME --where firecode` and not another
+    // placement: the host's own `firecode` boots the guest over this daemon's ssh link. Spelled
+    // the way harnessd parses it — `--vm` is the launcher's alias, expanded before it gets here.
+    if placement.is_vm() {
+        args.push("--where".into());
+        args.push("firecode".into());
+    }
     if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
         // `deepseek`, `glm`, `grok` are providers (the turns leave the box); anything else
         // is the local binding, which is what the launcher's `--model` means. A
@@ -885,6 +892,35 @@ mod tests {
             !args.iter().any(|a| a == "--host"),
             "a session on this box must not be started with a host: {args:?}"
         );
+    }
+
+    /// **A VM on a host is BOTH asks**, which is the one thing this module has to spell exactly:
+    /// `--host NAME` alone is a session on that machine and `--where firecode` alone is a VM on
+    /// this box, and harnessd reads the pair as a VM on the machine.
+    #[test]
+    fn a_vm_on_a_host_is_both_flags() {
+        let d = a_daemon();
+        let args = daemon_args(
+            &d,
+            None,
+            "writes-allowed",
+            &Placement::RemoteVm("lab2x1".into()),
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--host", "lab2x1"]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--where", "firecode"]),
+            "{args:?}"
+        );
+        // And a VM here is `--where firecode` alone: a host nobody named must not be invented.
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Firecode);
+        assert!(
+            args.windows(2).any(|w| w == ["--where", "firecode"]),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "--host"), "{args:?}");
     }
 
     /// **A daemon already up for the folder is joined only when it says it is placed where
