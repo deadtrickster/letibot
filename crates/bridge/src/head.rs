@@ -93,6 +93,11 @@ pub const SETTLED_KEEP: usize = 8;
 /// is thinking.
 pub const PEEK_PATIENCE: Duration = Duration::from_secs(10);
 
+/// **How long a head waits for the daemon's answer to a `/` line it sent.** The reply is
+/// published on the session's own hub off the worker's queue, and the patience is for a daemon
+/// that has stopped talking, not for one that is thinking.
+pub const SLASH_PATIENCE: Duration = Duration::from_secs(20);
+
 /// **The answer to one request for a mode confirmation** — the point, whether it is in force,
 /// who settled it in one word, and the daemon's own sentence.
 ///
@@ -417,6 +422,34 @@ pub struct Meter {
     pub cost_micros_usd: Option<u64>,
 }
 
+/// **What the daemon said to one `/` line this head sent**: the verb's own answer, kept whole.
+///
+/// The progress ring keeps one clamped line of a warning, and for a `/` reply that line is the
+/// echo of the request rather than what it did. A caller that asked a question needs the answer
+/// underneath it, so this is recorded apart from the ring.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlashSaid {
+    /// The line as it was sent, without the `/` (`models deepseek`).
+    pub line: String,
+    /// The verb's answer, one line per line.
+    pub said: String,
+    /// Whether the verb acted or refused.
+    pub ok: bool,
+}
+
+impl SlashSaid {
+    /// Split the daemon's `detail` (`/<line>\n<the answer>`) into its two halves, with the verdict
+    /// taken from the event's own code.
+    fn of(detail: &str, ok: bool) -> SlashSaid {
+        let (echo, said) = detail.split_once('\n').unwrap_or((detail, ""));
+        SlashSaid {
+            line: echo.trim().trim_start_matches('/').to_string(),
+            said: said.trim().to_string(),
+            ok,
+        }
+    }
+}
+
 /// Everything this head keeps about the session it is attached to.
 ///
 /// Deliberately not the transcript: a head that drew one would be the TUI, and the bridge's
@@ -518,6 +551,11 @@ pub struct State {
     /// The daemon's answer to the last mutating frame, when it refused one. A refusal is a
     /// real answer (`already stopped`, a stale option) and is worth saying back.
     pub rejection: Option<String>,
+    /// **The daemon's answer to the last `/` line this head sent**, whole. See [`SlashSaid`].
+    pub slash: Option<SlashSaid>,
+    /// How many such answers have landed, so a caller can tell the one it is waiting for from
+    /// the one it was already holding when it asked.
+    pub slashes: u64,
 }
 
 /// **One child of this session, as one place or the other reports it** — the `Subagent`
@@ -1010,6 +1048,13 @@ impl State {
                 if code == "daemon_start_failed" {
                     self.boot_failed = Some(detail.clone());
                 }
+                // **A `/` verb's reply, kept whole.** The ring below keeps one clamped line of it,
+                // and for a reply that line is the echo, so a caller that asked a question
+                // (`set_model`) would have the request and not the answer.
+                if code == "slash" || code == "slash_refused" {
+                    self.slash = Some(SlashSaid::of(&detail, code == "slash"));
+                    self.slashes += 1;
+                }
                 self.events.push(
                     Entry::of("warning", "")
                         .coded(code)
@@ -1403,6 +1448,10 @@ impl Head {
             closed: g.closed.clone(),
             boot_failed: g.boot_failed.clone(),
             rejection: g.rejection.clone(),
+            // The last `/` reply is read by the one verb that asked (`set_model`), which holds the
+            // whole `said`; a status copy carries none of it, on the same argument as `peek`.
+            slash: None,
+            slashes: g.slashes,
         }
     }
 
@@ -1532,6 +1581,55 @@ impl Head {
         c.set_mode(0, mode, false)
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// **Put this session on the model the caller named**: the daemon's `/models` verb, which is
+    /// per SESSION. It writes the session's own row, so a restart restores it, and a daemon whose
+    /// first session chose one provider still answers this session's turns on the one asked for.
+    ///
+    /// A refusal is the answer, not a silence: a name this build does not know, or a provider with
+    /// no key, comes back as the daemon's own sentence rather than as a brief that ran on the model
+    /// the caller did not ask for.
+    pub fn set_model(&self, want: &str) -> Result<String, String> {
+        self.may_write()?;
+        let line = format!("models {}", want.trim());
+        let before = {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            g.slashes
+        };
+        {
+            let mut c = self.said_client()?;
+            c.slash(0, &line).map_err(|e| e.to_string())?;
+        }
+        let deadline = Instant::now() + SLASH_PATIENCE;
+        loop {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            if g.slashes > before
+                && let Some(said) = g.slash.clone()
+                && said.line == line
+            {
+                return if said.ok {
+                    Ok(said.said)
+                } else {
+                    Err(said.said)
+                };
+            }
+            if let Some(why) = &g.closed {
+                return Err(format!("the daemon closed this connection: {why}"));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!(
+                    "the daemon did not answer `/{line}` within {SLASH_PATIENCE:?}"
+                ));
+            }
+            let (next, _) = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner());
+            drop(next);
+        }
     }
 
     /// **The session's own rows, as the daemon serves them to a head** — `leticode_transcript`.

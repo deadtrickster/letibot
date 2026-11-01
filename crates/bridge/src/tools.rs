@@ -134,6 +134,32 @@ impl Bridge {
             // move: the model, the store and the gate are this box's.
             "tools_run": tools_run(h.placement.as_ref()),
         });
+        // **Each session's model is its own**, and this is the half that makes it so: the daemon's
+        // `--provider` is the DEFAULT, so a session joining a running daemon would otherwise answer
+        // every turn on whatever the daemon's first session chose. `/models` is per session (the
+        // daemon writes it to that session's row), so this brief runs on the model the caller named;
+        // a refusal is returned before anything is sent rather than being quietly replaced.
+        if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
+            match h.set_model(m) {
+                Ok(said) => {
+                    answer["model"] = json!(m);
+                    answer["model_said"] = json!(said);
+                }
+                Err(why) => {
+                    // Held: the session exists and a caller that wants to ask why must be able to
+                    // reach it by the id it was told, and no brief was sent, so nothing ran on a
+                    // model nobody asked for.
+                    self.hold(&h);
+                    return Err(format!(
+                        "`{session}` was opened, and its model could not be set to `{m}`, so the \
+                         brief was not sent: {why}. \nThe model is a fact of the SESSION, so this \
+                         works over a daemon already serving another provider: pass a provider \
+                         this box has a key for (`deepseek`, `glm`, `grok`), or call \
+                         `leticode_send` on `{session}` and let the daemon's own model answer"
+                    ));
+                }
+            }
+        }
         // Before the brief, so the first tool call already runs at the point the caller
         // asked for: `Mode` is queued like a prompt and takes effect from the next call.
         if let Err(e) = h.set_mode(mode) {
@@ -626,7 +652,7 @@ pub fn list() -> Value {
                  "properties": {
                      "worktree": { "type": "string", "description": "Absolute path to the checkout the work happens in." },
                      "brief": { "type": "string", "description": "The task, in full: what to build, the hard rules, and what to report." },
-                     "model": { "type": "string", "description": "What answers the turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice." },
+                     "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
                      "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
                      "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." }
                  },
