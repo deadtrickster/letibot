@@ -272,6 +272,10 @@ impl World {
             .create(cfg.session_id.clone(), "", Sessions::wiring(&cfg))
             .expect("a fresh registry takes the session");
         let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
+        // **The record a joining bridge reads**: without it the daemon is placed *nowhere it can
+        // see*, and `leticode_start` refuses to join rather than guess where its tools run. This
+        // daemon's tools do run here, so the spelling is the bare `host`.
+        letibot_sessionlog::placement::write(&socket, "host").expect("the placement record");
         let worker_registry = registry.clone();
         let worker = std::thread::spawn(move || {
             let mut sessions = Sessions::open_first(parts, cfg, worker_registry)
