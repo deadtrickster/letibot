@@ -394,7 +394,11 @@ fn a_task_start_child_is_placed_by_its_parent_and_not_by_its_worktree() {
     let mut a = app();
     a.home = HOME.to_string();
     let root = brief("s-root", "the conversation", true);
-    let mut child = brief("s-root-sub-1793000000000000002", "the worktree brief", false);
+    let mut child = brief(
+        "s-root-sub-1793000000000000002",
+        "the worktree brief",
+        false,
+    );
     child.parent_session_id = Some("s-root".into());
     child.wiring = letibot_sessionlog::SessionWiring {
         workspace: "/home/dead/Projects/letibot/worktrees/agent-a-thing".into(),
@@ -445,8 +449,16 @@ fn a_task_start_child_is_placed_by_its_parent_and_not_by_its_worktree() {
 fn a_session_a_person_started_is_a_top_row_whatever_its_id_looks_like() {
     let mut a = app();
     a.home = HOME.to_string();
-    let reopened = brief("s-1793000000000000003", "the session --session reopened", true);
-    let continued = brief("s-1793000000000000004-sub-3", "the newest conversation", false);
+    let reopened = brief(
+        "s-1793000000000000003",
+        "the session --session reopened",
+        true,
+    );
+    let continued = brief(
+        "s-1793000000000000004-sub-3",
+        "the newest conversation",
+        false,
+    );
     a.apply(hello(
         "s-1793000000000000003",
         vec![reopened, continued],
@@ -475,7 +487,11 @@ fn a_child_whose_parent_has_closed_is_drawn_under_the_project() {
     let mut a = app();
     a.home = HOME.to_string();
     let live = brief("s-live", "a conversation", true);
-    let mut orphan = brief("s-gone-sub-1793000000000000005", "a child of a closed session", false);
+    let mut orphan = brief(
+        "s-gone-sub-1793000000000000005",
+        "a child of a closed session",
+        false,
+    );
     orphan.parent_session_id = Some("s-gone".into());
     a.apply(hello(
         "s-live",

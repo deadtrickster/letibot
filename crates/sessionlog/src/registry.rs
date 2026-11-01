@@ -1779,26 +1779,15 @@ impl Registry {
     /// **A session a session started has that session as its parent** — the rule, and the one
     /// place it is decided for every door a session can arrive by.
     ///
-    /// Three sources, in the order of how well each knows:
+    /// Three sources, in the order of how well each knows: `said` (the caller's word, the only one
+    /// that exists before the session does — a `task` spawn mints the id and states the parent),
+    /// this registry's entry (what the door that CREATED it recorded), and `on_disk` (the session's
+    /// own row — what survives a restart, and the repair for a door that recorded nothing).
     ///
-    /// * `said` — the caller's word, for a session that has no row and no entry yet. A `task` or
-    ///   `task_start` spawn is the only thing that knows a child's parent before the child
-    ///   exists: it mints the id, builds the child's config and hands it the parent.
-    /// * **this registry's entry** ([`Registry::parent_of`]) — the door that CREATED the session
-    ///   recorded it there: the daemon's `--session`, a head's `ResumeSession`, a parked child
-    ///   reopened by its parent, a room tag's agent, a reviewer's `adopt`.
-    /// * `on_disk` — the session's own row. It is the fact that survives a restart, and it is the
-    ///   repair for a daemon whose entry was built without it: a session opened by a path that
-    ///   forgot is still a child if its row says so.
-    ///
-    /// # The corollary, which is why this is a function and not a default
-    ///
-    /// A session a PERSON started — a head's `NewSession`, a fresh launcher start — and one the
-    /// launcher resumed as a conversation (`--continue` resolves only rows whose
-    /// `parent_session_id` is NULL) has no parent in any of the three, so it gets `None` and is
-    /// drawn at the top of its project for ever. Nothing here invents one from an id: the
-    /// `-sub-` in a minted id is a convention, and a reader of it would be stating a fact the
-    /// registry never recorded.
+    /// **The corollary is why this is a function and not a default**: a session a PERSON started,
+    /// and one the launcher resumed as a conversation (`--continue` resolves only rows whose
+    /// parent is NULL), has no parent in any of the three and gets none. The `-sub-` in a minted id
+    /// is a convention, and nothing here reads it.
     pub fn parent_for(
         &self,
         session_id: &str,
@@ -2734,8 +2723,13 @@ mod tests {
             Some("s-new".to_string())
         );
         // (2) The registry's entry — the door that created it.
-        r.create_under("s-entry-sub-1", "", SessionWiring::default(), Some("s-entry".into()))
-            .unwrap();
+        r.create_under(
+            "s-entry-sub-1",
+            "",
+            SessionWiring::default(),
+            Some("s-entry".into()),
+        )
+        .unwrap();
         assert_eq!(
             r.parent_for("s-entry-sub-1", None, None),
             Some("s-entry".to_string())
@@ -2750,7 +2744,8 @@ mod tests {
         // The id is deliberately shaped like a minted child's: the `-sub-` is a convention, and a
         // reader that inferred a parent from it would be inventing the fact this function exists
         // to state.
-        r.create("s-mine-sub-3", "", SessionWiring::default()).unwrap();
+        r.create("s-mine-sub-3", "", SessionWiring::default())
+            .unwrap();
         assert_eq!(r.parent_for("s-mine-sub-3", None, None), None);
         // And the caller's word wins when a session is re-registered — a parked child reopened by
         // its parent is the case: the entry may be gone, the row may say something else.

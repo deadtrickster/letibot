@@ -1,5 +1,5 @@
 //! **A session a session started has that session as its parent** — the one place the rule is
-//! decided, and the four doors it has to hold for.
+//! decided, and the doors it has to hold for.
 //!
 //! The rule lives in `Registry::parent_for` and is applied in `Harness::open_with_registry`, which
 //! every open in this crate goes through. These tests are about the *open*, not about a spawner:
@@ -75,7 +75,12 @@ fn open_registered(
     let registry = letibot_sessionlog::registry::Registry::new();
     let hub = registry.new_hub(cfg.session_id.clone());
     registry
-        .adopt(hub.clone(), cfg.session_id.clone(), wiring(&cfg), parent.map(str::to_string))
+        .adopt(
+            hub.clone(),
+            cfg.session_id.clone(),
+            wiring(&cfg),
+            parent.map(str::to_string),
+        )
         .expect("the session is registered");
     cfg.parent_session_id = None;
     let h = Harness::open_with_registry(parts, cfg, hub, None, None, registry.clone())
@@ -271,7 +276,11 @@ fn a_session_the_launcher_reopened_with_session_keeps_the_parent_it_was_born_wit
     let on_disk = registry
         .resumable(&cfg.session_id)
         .and_then(|b| b.parent_session_id);
-    let parent = registry.parent_for(&cfg.session_id, cfg.parent_session_id.clone(), on_disk.as_deref());
+    let parent = registry.parent_for(
+        &cfg.session_id,
+        cfg.parent_session_id.clone(),
+        on_disk.as_deref(),
+    );
     registry
         .create_under(cfg.session_id.clone(), "", wiring(&cfg), parent)
         .expect("the entry the startup door makes");
@@ -284,4 +293,3 @@ fn a_session_the_launcher_reopened_with_session_keeps_the_parent_it_was_born_wit
         "a child reopened by id is still a child: the row said so and the open asks the tree"
     );
 }
-

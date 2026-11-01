@@ -1494,10 +1494,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         (t, _) => t.clone(),
     };
     // **Who this session's parent is, by the tree's one rule** — the caller's `--parent` when it
-    // has one, else its own stored row. `Registry::parent_for` is the rule (a session a session
-    // started has that session as its parent, whatever opened it); this door asks it rather than
-    // keeping a second copy of the two-source `or_else`, and `Harness::open` asks the same
-    // function, so the entry and the session's config cannot disagree.
+    // has one, else its own stored row. `Harness::open` asks the same function, so the registry's
+    // entry and the session's config cannot disagree.
     let parent = registry.parent_for(
         &cfg.session_id,
         cfg.parent_session_id.clone(),
