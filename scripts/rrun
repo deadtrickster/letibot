@@ -54,6 +54,8 @@ PY
 
 rdir="remote-runs/runs/$name"
 "${ssh_[@]}" "mkdir -p ~/$rdir ~/remote-runs/bin && rm -rf ~/$rdir/tree ~/$rdir/step-*.log"
+# A gate must not inherit the host's git config (signing, hooks): one fixed identity, nothing else.
+"${ssh_[@]}" "printf '[user]\\n\\tname = letibot gate\\n\\temail = gate@letibot.invalid\\n[commit]\\n\\tgpgsign = false\\n[tag]\\n\\tgpgsign = false\\n' > ~/remote-runs/gitconfig"
 "${ssh_[@]}" "cat > ~/remote-runs/bin/runner.py" < "$runner"
 "${ssh_[@]}" "cat > ~/$rdir/src.bundle" < "$bundle"; rm -f "$bundle"
 # The checkout: a clone of the bundle (HEAD detached at the branch tip; main for check-fmt).
@@ -73,7 +75,7 @@ printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
   XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --quiet --collect --unit=rrun-$name -p Delegate=yes \
   --working-directory=\$HOME/$rdir -p StandardOutput=file:\$HOME/$rdir/runner.log -p StandardError=file:\$HOME/$rdir/runner.log \
   env -i HOME=\$HOME USER=\$USER LOGNAME=\$USER SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm-256color \
-      XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=\$HOME/remote-runs/target CARGO_INCREMENTAL=0 \
+      XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=\$HOME/remote-runs/target CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=\$HOME/remote-runs/gitconfig \
       CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only \
       PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
   \$HOME/.local/bin/mise exec -C \$HOME/$rdir/tree -- python3 \$HOME/remote-runs/bin/runner.py \$HOME/$rdir \$HOME/$rdir/steps.json && echo started"
