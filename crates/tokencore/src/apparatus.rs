@@ -99,6 +99,7 @@ use std::path::PathBuf;
 ///      was written on, and the RIGHT answer on any other;
 ///   2. the literal path, so a box with neither still gets a concrete name in the
 ///      message rather than an empty string.
+///
 /// **The GLM vocabulary, found the way [`gguf_path`] finds the default one**: under `$HOME`
 /// first, then the Linux box's literal path. Four tests carried that literal as a constant,
 /// so on any other box they could only ever skip — or, under `LETIBOT_REQUIRE_APPARATUS`,
