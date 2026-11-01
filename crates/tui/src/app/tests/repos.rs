@@ -330,8 +330,7 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         .expect("the corner's repository is not a click target");
     let col = drawn.find("(main").expect("the field is drawn");
     assert_eq!(
-        hit.rect.x,
-        col,
+        hit.rect.x, col,
         "the target is not where the field was drawn: {drawn}"
     );
     a.key(Key::Click {

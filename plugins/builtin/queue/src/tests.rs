@@ -518,10 +518,7 @@ fn an_idle_queue_says_so_rather_than_drawing_nothing() {
         .iter()
         .map(|p| p["title"].as_str().unwrap_or_default())
         .collect();
-    assert!(
-        titles.contains(&"the queue is idle"),
-        "{titles:?}"
-    );
+    assert!(titles.contains(&"the queue is idle"), "{titles:?}");
     let text = view.to_string();
     assert!(
         text.contains("nothing is in flight"),
