@@ -14,10 +14,13 @@
 //! next decision, not after the work is done.*
 //!
 //! **`a_claim_is_acknowledged_on_the_room_before_any_work_begins`** — `SessionRoom::call("claim")`
-//! sent one frame and returned. The room's `Claim` has a `waits_on` field and the `waiting` verb
-//! fills it, so *seen, doing X* was available and was nobody's act: a model at work does not think
-//! about the queue's bookkeeping, which is the whole reason firecode's rule exists. From the queue,
-//! a claim with no word on it is indistinguishable from a session that took the item and died.
+//! sent one frame and returned. The room's `Claim` had no field for *what I am doing with it*, so
+//! *seen, doing X* was nobody's act: a model at work does not think about the queue's bookkeeping,
+//! which is the whole reason firecode's rule exists. From the queue, a claim with no word on it is
+//! indistinguishable from a session that took the item and died. It lands in `Claim::said` and NOT
+//! in `Claim::waits_on` — that field is what a reminder reads to decide the holder still has to
+//! act, so an acknowledgement written there made every claim quiet (`crates/room/src/wire.rs`'s
+//! version-5 note).
 //!
 //! # Why these two are here and not in `crates/room`
 //!
@@ -195,13 +198,23 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
         panic!("#1 was claimed before any work began: {item:?}");
     };
     assert_eq!(claim.by, "s-worker", "and by the session that claimed it");
-    let waits_on = claim
-        .waits_on
+    // **`said`, not `waits_on`** — the two are opposite facts and the room keeps them apart. The
+    // acknowledgement is what the holder is DOING; `waits_on` is what it waits on, and it is the
+    // field a reminder reads to decide the holder still has to act. An acknowledgement recorded
+    // there silenced every reminder there was (`crates/room/src/wire.rs`'s version-5 note), so this
+    // test asserts both halves: the words landed, and they did not land as a wait.
+    let said = claim
+        .said
         .as_ref()
         .unwrap_or_else(|| panic!("the claim says what it is for, before the work: {item:?}"));
     assert!(
-        waits_on.text.contains("the 40-minute suite"),
-        "in the claimant's own words: {waits_on:?}"
+        said.text.contains("the 40-minute suite"),
+        "in the claimant's own words: {said:?}"
+    );
+    assert!(
+        claim.waits_on.is_none(),
+        "and it did NOT say the holder is waiting on anything: a claim is the holder's own work, \
+         and `waits_on` is what makes a reminder quiet: {claim:?}"
     );
 
     // **And a claim with nothing to say still says something.** A model that passes no `text` gets
@@ -224,15 +237,18 @@ fn a_claim_is_acknowledged_on_the_room_before_any_work_begins() {
     let Response::Queue { rows, .. } = queue else {
         panic!("a queue read: {queue:?}");
     };
-    let waits_on = match &rows[0].state {
-        State::Claimed { claim } => claim.waits_on.clone(),
+    let (said, waits_on) = match &rows[0].state {
+        State::Claimed { claim } => (claim.said.clone(), claim.waits_on.clone()),
         other => panic!("#1 is claimed again: {other:?}"),
     };
     assert!(
-        waits_on
-            .as_ref()
+        said.as_ref()
             .is_some_and(|w| w.text.contains("working on it")),
-        "a claim with no words of its own still acknowledges: {waits_on:?}"
+        "a claim with no words of its own still acknowledges: {said:?}"
+    );
+    assert!(
+        waits_on.is_none(),
+        "and a bare claim is not a wait either: {waits_on:?}"
     );
     // The observer's own channel is not this test's subject; dropping it closes its socket, which
     // is the room's `note_gone` and the claim's way back — nothing here asserts on it.

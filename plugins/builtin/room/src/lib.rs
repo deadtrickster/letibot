@@ -237,6 +237,10 @@ struct Row {
     stale: bool,
     #[serde(default)]
     waits_on: Option<String>,
+    /// What the holder said it is doing with the row when it took it — the acknowledgement, which
+    /// is NOT a wait: `waits_on` is what it is blocked on, and this is what it is working on.
+    #[serde(default)]
+    doing: Option<String>,
     #[serde(default)]
     abandonments: u32,
     #[serde(default)]
@@ -661,6 +665,9 @@ fn item_row(r: &Row) -> Value {
     }
     if let Some(waits) = &r.waits_on {
         facts.push(Cell::role(format!("waits: {waits}"), Role::Faint));
+    }
+    if let Some(doing) = &r.doing {
+        facts.push(Cell::role(format!("doing: {doing}"), Role::Faint));
     }
     let mut under: Vec<String> = Vec::new();
     under.push(format!(

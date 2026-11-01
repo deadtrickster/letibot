@@ -48,6 +48,12 @@
 //! * **a stopped beat** — the room will take the item back at its next sweep, so the holder has
 //!   one window in which to `beat` or `abandon`.
 //!
+//! And one thing that does NOT, which it took a red `main` to say: **the claim's own
+//! acknowledgement**. A claim writes *seen #1; working on it* as it takes the item, and that is
+//! `Claim::said` — the holder saying *this is mine to do*, which is the opposite of waiting on
+//! something else. It lives in its own field for exactly this reason; a reminder that read it as a
+//! wait went quiet on every claim there was.
+//!
 //! # Top-level sessions only
 //!
 //! The room refuses a subagent at its door and [`super::link`] gives one no connection at all, so
@@ -116,6 +122,12 @@ pub fn rows(me: &str, reminders: &[Reminder]) -> Vec<(u64, TodoItem)> {
 ///
 /// Either one alone is a hold nobody is moving, which is the thing the operator asked to be
 /// reminded about.
+///
+/// **`waits_on` is the only field here that can make a row quiet, and `said` is not it.** A claim
+/// acknowledges itself as it takes the item (`SessionRoom::ack`, firecode's *acknowledge before
+/// acting*), and that word lives in `Claim::said` — *I am on it* — which is the opposite of
+/// *something outside moves this*. A reminder that read the acknowledgement as a wait went quiet
+/// on every claim there was, which is the defect this field split exists to close.
 pub fn the_room_is_working_on(r: &Reminder) -> bool {
     !r.stale && r.holding.waits_on.is_some()
 }
@@ -170,9 +182,20 @@ mod tests {
                     text: t.to_string(),
                     since_ms: 1_500,
                 }),
+                said: None,
             },
             stale,
         }
+    }
+
+    /// The same claim, having acknowledged itself — `seen #3; working on it` in [`Holding::said`],
+    /// which is what a client's claim writes and is **not** a wait.
+    fn acknowledged(mut r: Reminder, words: &str) -> Reminder {
+        r.holding.said = Some(Wait {
+            text: words.to_string(),
+            since_ms: 1_000,
+        });
+        r
     }
 
     /// **The words carry no clock**, and that is the whole of *one row per item, updated not
@@ -262,6 +285,36 @@ mod tests {
             !letibot_tools::builtins::todo::waits_on_the_room(&stale[0].1),
             "a beat that stopped is the holder's to rescue, whatever it was waiting for"
         );
+    }
+
+    /// **An acknowledgement is not a wait** — the defect that made `main` red: a claim writes *seen
+    /// #3; working on it* as it takes the item (`SessionRoom::ack`), and a reminder that read that
+    /// as a declared wait went quiet on every claim there is, so the nag the whole pass exists for
+    /// never fired. The two facts live in two fields and only one of them is a reason to be silent.
+    #[test]
+    fn a_claim_that_acknowledged_itself_is_still_the_holders_own_work() {
+        let acked = acknowledged(reminder("s-me", 3, None, false), "seen #3; working on it");
+        assert!(
+            !the_room_is_working_on(&acked),
+            "the holder said it is doing the work, which is the opposite of waiting on something \
+             else: nothing outside moves this item"
+        );
+        assert_eq!(
+            rows("s-me", &[acked])[0].1.needs,
+            vec![TodoNeed::Room {
+                item: 3,
+                working: false
+            }],
+            "so the edge says so, and the idle check names the row"
+        );
+
+        // And the two together: a holder that said what it is doing AND what it waits on is
+        // waiting — the acknowledgement does not cancel a wait, it simply is not one.
+        let both = acknowledged(
+            reminder("s-me", 3, Some("the suite"), false),
+            "seen #3: the 40-minute suite",
+        );
+        assert!(the_room_is_working_on(&both));
     }
 
     /// **The row is the session's own** — `by: yours`, in progress, with no `when` — so the nag

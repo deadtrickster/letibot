@@ -464,10 +464,16 @@ impl SessionRoom {
     ///
     /// **`claim` acknowledges itself** — firecode's third rule, *acknowledge before acting*, because
     /// silence reads as absence: from the queue, a claim with no word on it is indistinguishable
-    /// from a session that took the item and died. The room already has the field (`Claim::waiting`,
-    /// the shape a reminder is drawn from), so the word is one more frame on a connection that is
-    /// already open — and it is said HERE rather than left to the model, because a model at work is
-    /// precisely the one that will not think about the queue's bookkeeping.
+    /// from a session that took the item and died. The room has a field for exactly that
+    /// (`Claim::said`), so the word is one more frame on a connection that is already open — and it
+    /// is said HERE rather than left to the model, because a model at work is precisely the one that
+    /// will not think about the queue's bookkeeping.
+    ///
+    /// **`said` and not `waiting`.** The obvious field was `Claim::waits_on`, and it was the wrong
+    /// one: `waits_on` is what a reminder reads to decide the holder still has to act, so a claim
+    /// that acknowledged itself through `waiting` made every claim look like *nothing here is mine
+    /// to move* — and the reminder never fired (`crate::room::remind`, `crates/room/src/wire.rs`'s
+    /// version-5 note).
     ///
     /// A refusal of the acknowledgement is not a refusal of the claim: the claim stands, and the
     /// sentence says which half landed. A model told *you hold #7* and then *the room was not told
@@ -503,6 +509,12 @@ impl SessionRoom {
     /// `waiting` verb documents), and a bare *working on it* otherwise: a claim whose holder said
     /// nothing is still better answered than one that never spoke, and the room's reminder shape
     /// wants a sentence either way.
+    ///
+    /// **It is [`Request::Acknowledge`] and not [`Request::Waiting`]** — the two are opposite facts
+    /// and the room keeps them apart. `waiting` writes `Claim::waits_on`, which is what a reminder
+    /// reads to decide the holder still has to act, so an acknowledgement sent as a wait silenced
+    /// every reminder there was: a holder that says *I am on it* was read as *nothing here is my
+    /// work* (`crates/room/src/wire.rs`'s version-5 note).
     fn ack(&self, item: u64, doing: &str) -> Result<String, String> {
         let doing = doing.trim();
         let text = if doing.is_empty() {
@@ -511,7 +523,7 @@ impl SessionRoom {
             format!("seen #{item}: {doing}")
         };
         self.client
-            .request(&Request::Waiting {
+            .request(&Request::Acknowledge {
                 id: request_id(&format!("ack-{item}")),
                 item,
                 text: text.clone(),
@@ -836,6 +848,10 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             "#{} — the room will remind you of this, and whoever is queued behind you can see it",
             item.id
         ),
+        Response::Acknowledged { item, .. } => format!(
+            "#{} — the room has it: whoever is queued behind you can see what it is for",
+            item.id
+        ),
         Response::Finished { item, .. } => {
             format!("#{} is done and `{}` is free", item.id, item.tag)
         }
@@ -870,7 +886,7 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
                 let mut s = format!("`{session}` holds:");
                 for row in rows {
                     s.push_str(&format!(
-                        "\n  #{id} under `{tag}` — {body} — held {held}, last beat {beat}{waiting}",
+                        "\n  #{id} under `{tag}` — {body} — held {held}, last beat {beat}{doing}{waiting}",
                         id = row.item,
                         tag = row.tag,
                         body = row.body,
@@ -878,6 +894,10 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
                         beat = row.beat_ms,
                         waiting = match &row.waits_on {
                             Some(w) => format!(", waiting on `{}`", w.text),
+                            None => String::new(),
+                        },
+                        doing = match &row.said {
+                            Some(w) => format!(", doing `{}`", w.text),
                             None => String::new(),
                         }
                     ));

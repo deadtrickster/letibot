@@ -296,7 +296,12 @@ fn row_of(item: &letibot_room::Item, now: u64, lease_ms: u64, here: &str) -> Val
         // whether this claim is about to be taken back.
         "beat_age_ms": beat_age,
         "stale": beat_age.is_some_and(|age| age > lease_ms),
+        // **Two facts about one claim, and they are opposite ones** — what the holder is waiting
+        // on (which is why a reminder about it is quiet) and what it said it is doing when it took
+        // the row (which is not). Drawn as two, because one column that said *waits: seen #1;
+        // working on it* told a reader the holder was blocked by its own work.
         "waits_on": claim.and_then(|c| c.waits_on.as_ref().map(|w| w.text.clone())),
+        "doing": claim.and_then(|c| c.said.as_ref().map(|w| w.text.clone())),
         "abandonments": item.abandonments(),
         "last_why": item.last_abandonment().map(|a| a.why.to_string()),
         "claimable": item.claimable(),
@@ -370,6 +375,7 @@ mod tests {
                     claim_ms,
                     beat_ms,
                     waits_on: None,
+                    said: None,
                 },
             },
             // **Posted before it was claimed**, which is the only order the room can produce —
