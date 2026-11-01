@@ -204,6 +204,80 @@ fn a_claim_is_a_lock_over_the_socket_and_the_refusal_names_the_holder() {
 }
 
 #[test]
+fn an_acknowledgement_is_not_a_wait_and_the_socket_keeps_them_apart() {
+    let scratch = Scratch::new("ack");
+    let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");
+    let (a, _ea) = client(&server, "s-a");
+    let item = post(&a, "p1", "ram", "8 GB");
+    assert!(matches!(
+        call(
+            &a,
+            Request::Claim {
+                id: "c1".into(),
+                tag: "ram".into()
+            }
+        ),
+        Response::Claimed { .. }
+    ));
+
+    // **What the holder is DOING** — the acknowledgement the daemon's claim writes, on its own
+    // frame.
+    assert!(matches!(
+        call(
+            &a,
+            Request::Acknowledge {
+                id: "k1".into(),
+                item,
+                text: "seen #1; working on it".into(),
+            }
+        ),
+        Response::Acknowledged { .. }
+    ));
+    let held = match call(&a, Request::Holding { session: None }) {
+        Response::Holding { rows, .. } => rows,
+        other => panic!("a holding read: {other:?}"),
+    };
+    assert_eq!(
+        held[0].said.as_ref().map(|w| w.text.as_str()),
+        Some("seen #1; working on it"),
+        "the words are on the claim"
+    );
+    assert!(
+        held[0].waits_on.is_none(),
+        "and they are NOT a wait: `waits_on` is what makes a reminder quiet, and a holder working \
+         on its own item must still be reminded to finish it: {:?}",
+        held[0]
+    );
+
+    // **And what it is WAITING on** goes in the other field, leaving the acknowledgement alone.
+    assert!(matches!(
+        call(
+            &a,
+            Request::Waiting {
+                id: "w1".into(),
+                item,
+                text: "the suite".into(),
+            }
+        ),
+        Response::Waited { .. }
+    ));
+    let held = match call(&a, Request::Holding { session: None }) {
+        Response::Holding { rows, .. } => rows,
+        other => panic!("a holding read: {other:?}"),
+    };
+    assert_eq!(
+        held[0].waits_on.as_ref().map(|w| w.text.as_str()),
+        Some("the suite")
+    );
+    assert_eq!(
+        held[0].said.as_ref().map(|w| w.text.as_str()),
+        Some("seen #1; working on it"),
+        "two facts, two fields: a wait does not erase the acknowledgement"
+    );
+    server.stop();
+}
+
+#[test]
 fn a_bell_goes_to_the_connections_the_event_is_about_and_not_to_a_reader() {
     let scratch = Scratch::new("routing");
     let server = Server::serve(&scratch.socket(), Room::new()).expect("a socket");

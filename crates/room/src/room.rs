@@ -526,6 +526,10 @@ pub struct Holding {
     pub held_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waits_on: Option<Wait>,
+    /// What the holder said it is doing with it, when it took it — [`Claim::said`]. Never a reason
+    /// for a reminder to be quiet: see [`Holding::waits_on`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<Wait>,
 }
 
 /// **One line a session should be reminded of** — a holding, plus whether its beat has gone quiet
@@ -888,6 +892,69 @@ impl Room {
         Ok(out)
     }
 
+    /// **Say what you are doing with it** — the acknowledgement, and the opposite fact from
+    /// [`Room::waiting_on`].
+    ///
+    /// Firecode's third rule is *acknowledge before acting*, because silence reads as absence: from
+    /// the queue, a claim with no word on it is indistinguishable from a session that took the item
+    /// and died. So a client says *seen, doing X* here, and it lands in [`Claim::said`].
+    ///
+    /// **It is not a wait, and it must never be written as one.** [`Claim::waits_on`] is what a
+    /// reminder reads to decide whether the holder still has to act — a holder that says *I am on
+    /// it* has said the opposite of *something else moves this* — so an acknowledgement recorded
+    /// there silences every reminder there is (the defect this verb exists to close). Empty text
+    /// clears it, the same rule as `waiting`.
+    pub fn acknowledge(
+        &mut self,
+        who: &Speaker,
+        request: &str,
+        item: u64,
+        text: &str,
+        now: u64,
+    ) -> Result<Outcome, Refused> {
+        // **Identity before dedupe**: a subagent is refused by name even when it reuses an id.
+        who.may_speak()?;
+        if let Some(o) = self.replayed(who, request)? {
+            return Ok(o);
+        }
+        let it = self
+            .item(item)
+            .ok_or(Refused::UnknownItem { item })?
+            .clone();
+        let claim = it.claim().ok_or(Refused::NotHeld {
+            session: who.session.clone(),
+            item,
+            holder: None,
+        })?;
+        if claim.by != who.session {
+            return Err(Refused::NotHeld {
+                session: who.session.clone(),
+                item,
+                holder: Some(claim.by.clone()),
+            });
+        }
+        let text = text.trim();
+        let it = self.items.get_mut(&item).expect("checked above");
+        if let State::Claimed { claim } = &mut it.state {
+            claim.said = if text.is_empty() {
+                None
+            } else {
+                Some(Wait {
+                    text: text.to_string(),
+                    since_ms: now,
+                })
+            };
+        }
+        let it = it.clone();
+        self.met(who);
+        let out = Outcome {
+            item: it,
+            events: Vec::new(),
+        };
+        self.remember(who, request, &out);
+        Ok(out)
+    }
+
     /// **The work is done.** Only the holder may.
     pub fn done(
         &mut self,
@@ -1119,6 +1186,9 @@ impl Room {
                             claim_ms: now,
                             beat_ms: now,
                             waits_on: None,
+                            // A ruling hands the item to somebody who has not spoken about it, so
+                            // there is nothing they said to record.
+                            said: None,
                         },
                     };
                 }
@@ -1274,6 +1344,7 @@ impl Room {
                     beat_ms: c.beat_ms,
                     held_ms: now.saturating_sub(c.claim_ms),
                     waits_on: c.waits_on.clone(),
+                    said: c.said.clone(),
                 })
             })
             .collect()
@@ -1296,6 +1367,7 @@ impl Room {
                         beat_ms: c.beat_ms,
                         held_ms: now.saturating_sub(c.claim_ms),
                         waits_on: c.waits_on.clone(),
+                        said: c.said.clone(),
                     },
                     stale: now.saturating_sub(c.beat_ms) > self.lease_ms,
                 })
@@ -1350,6 +1422,7 @@ impl Room {
                 claim_ms: now,
                 beat_ms: now,
                 waits_on: None,
+                said: None,
             },
         };
         it.question = None;

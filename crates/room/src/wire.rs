@@ -123,7 +123,22 @@ use crate::room::{
 /// ordinary session counts the gap in the one room it is in, and the arbiter, which every room
 /// addresses, counts the gaps of all of them. It is taken (not read) when a `Hello` is answered, so
 /// a client is told about the gap that has just ended and never about the same one twice.
-pub const ROOM_PROTOCOL_VERSION: u16 = 4;
+///
+/// # 5: a claim says what it is DOING, and that is not what it is WAITING on
+///
+/// Until 5 a holder's only words on the wire were [`Request::Waiting`], and [`crate::Claim`]'s
+/// `waits_on` is the field a reminder reads to decide whether the holder still has to act. A claim
+/// that acknowledged itself through that verb — *seen #1; working on it*, so that a queue read could
+/// tell a claim from a session that took the row and died — therefore read as *nothing outside is
+/// moving this*, and every claim in every room went quiet: the reminder that exists to say *finish
+/// it or release it* never fired.
+///
+/// So the acknowledgement has its own frame and its own field: [`Request::Acknowledge`] writes
+/// [`crate::Claim::said`], and `waits_on` keeps its meaning. Two facts that a claim can carry, and
+/// they are opposite ones — *this is mine to do* and *this is not mine to move* — which is why one
+/// field could not hold both. A client that speaks 4 is refused by name rather than left with a
+/// claim whose acknowledgement is invisible.
+pub const ROOM_PROTOCOL_VERSION: u16 = 5;
 
 /// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
 ///
@@ -186,6 +201,9 @@ pub enum Request {
     Beat { id: String, item: u64 },
     /// Say what you are waiting on; empty text clears it.
     Waiting { id: String, item: u64, text: String },
+    /// **Say what you are DOING with it** — the acknowledgement, which is not a wait. Empty text
+    /// clears it. See [`ROOM_PROTOCOL_VERSION`]'s version-5 note.
+    Acknowledge { id: String, item: u64, text: String },
     /// The work is done.
     Done { id: String, item: u64 },
     /// Give it up on purpose.
@@ -252,6 +270,7 @@ impl Request {
             | Request::ClaimItem { id, .. }
             | Request::Beat { id, .. }
             | Request::Waiting { id, .. }
+            | Request::Acknowledge { id, .. }
             | Request::Done { id, .. }
             | Request::Abandon { id, .. }
             | Request::Dispute { id, .. }
@@ -311,6 +330,10 @@ pub enum Response {
         item: Item,
     },
     Waited {
+        id: String,
+        item: Item,
+    },
+    Acknowledged {
         id: String,
         item: Item,
     },
@@ -523,6 +546,14 @@ impl Room {
             Request::Waiting { id, item, text } => {
                 Answer::verb(id, self.waiting_on(who, id, *item, text, now), |item| {
                     Response::Waited {
+                        id: id.clone(),
+                        item,
+                    }
+                })
+            }
+            Request::Acknowledge { id, item, text } => {
+                Answer::verb(id, self.acknowledge(who, id, *item, text, now), |item| {
+                    Response::Acknowledged {
                         id: id.clone(),
                         item,
                     }

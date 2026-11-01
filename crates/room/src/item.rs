@@ -136,11 +136,23 @@ pub struct Claim {
     pub beat_ms: u64,
     /// What the holder says it is waiting on. The shape a todo reminder needs — the room answers
     /// *what is this session holding, and what is it waiting on* — and not a delivery mechanism.
+    ///
+    /// **This is a declaration that something OUTSIDE moves the item**, which is why it is what
+    /// silences the reminder: a holder waiting on nothing is a holder whose own work this is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub waits_on: Option<Wait>,
+    /// **What the holder said it is doing with it**, when it took the item — firecode's
+    /// *acknowledge before acting*, so a queue read can tell a claim from a session that took the
+    /// row and died. The same shape as [`Claim::waits_on`] and the opposite fact: an
+    /// acknowledgement says *this is mine to do*, and a wait says *this is not mine to move*. They
+    /// are two fields because a claim that acknowledged itself through `waiting` read as a wait,
+    /// and every claim went quiet (see [`crate::ROOM_PROTOCOL_VERSION`]'s version-5 note).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<Wait>,
 }
 
-/// **What a holder is waiting on**, in its own words, and since when.
+/// **A holder's own words, and the moment it said them** — the shape of both [`Claim::waits_on`]
+/// and [`Claim::said`], which are two different facts about one claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wait {
     pub text: String,

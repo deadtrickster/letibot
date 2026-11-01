@@ -1280,14 +1280,14 @@ mod tests {
     /// the point: a wire change that misses a pin is a quiet lie about what two binaries share, so
     /// the pin is a literal a reviewer sees in a diff and every other use is the symbol.
     #[test]
-    fn the_room_speaks_protocol_four() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 4);
+    fn the_room_speaks_protocol_five() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 5);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(3).expect("3 is not 4");
+        let old = crate::wire::protocol_refusal(4).expect("4 is not 5");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(5).expect("5 is not 4");
+        let new = crate::wire::protocol_refusal(6).expect("6 is not 5");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(4), None);
+        assert_eq!(crate::wire::protocol_refusal(5), None);
     }
 
     /// **The pane's read: the room's half from the room, the server's three from the server.**

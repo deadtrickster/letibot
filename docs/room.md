@@ -163,6 +163,7 @@ the sockets:
 | `claim_item {id, item}` | `Claimed {id, item}` | same, and the item must still be the head |
 | `beat {id, item}` | `Beaten {id, item}` | stamping the same claim again is harmless |
 | `waiting {id, item, text}` | `Waited {id, item}` | a set, not an append |
+| `acknowledge {id, item, text}` | `Acknowledged {id, item}` | a set, not an append — and a DIFFERENT field from `waiting`: see *A claim's words* below |
 | `done {id, item}` | `Finished {id, item}` | a second is refused by name once the replay window forgets |
 | `abandon {id, item, why}` | `Abandoned {id, item}` | same |
 | `dispute {id, item, says}` | `Question {id, question}` | one open question per item; asking twice is the same question |
@@ -203,6 +204,22 @@ changed); **one read is not membership** (a `queue` read leaves no subscription 
 that was away is told how much it missed rather than handed a `Welcome` that looks the same as
 never having left); **acknowledge before you act** — a one-line *seen, doing X* before the work,
 because silence reads as absence.
+
+### A claim's words: what it is DOING, and what it is WAITING on
+
+A claim carries two things a holder can say, and they are opposite facts — which is why they are two
+fields and not one (protocol 5):
+
+* **`Claim::said`** — *seen #1; working on it*, written by `acknowledge` when the claim is taken. The
+  holder is saying the item is its own work, so that a queue read can tell a claim from a session
+  that took the row and died.
+* **`Claim::waits_on`** — what the holder is waiting on, written by `waiting`. Something *outside*
+  moves the item, which is why this one is what makes a reminder quiet.
+
+They were one field until 5, and the consequence was silent: every claim acknowledged itself through
+`waiting`, so every claim read as *nothing here is mine to move* and the reminder that exists to say
+*finish it or release it* (`harnessd::room::remind`) never fired. A fact that means *this is mine to
+do* must never be written into the field that means *this is not mine to move*.
 
 ### The bell, per client
 
@@ -424,6 +441,12 @@ no declared wait, or a beat that has stopped and a room about to take the item b
 READY, and the check names it: *"you hold `ram` #3 — 8 GB, ~10 min — yours (in progress) … mark it
 done with `todo_write`'s `update`"*. Two loud facts, and they are different ones: nothing outside is
 going to move the item, or the room is about to take it.
+
+**The claim's own acknowledgement is not one of them.** Every claim writes *seen #1; working on it*
+as it takes the item, and that word is `Claim::said` — the holder saying the item is its own work,
+which is the opposite of *something outside moves this* (`§ A claim's words`). It used to be written
+through `waiting`, and the whole edge went quiet: no room row was ever named by the check. `said` is
+carried in the reminder and read by nobody's decision — the pane and a queue read can show it.
 
 **The edge is on every room row, loud or quiet**, and that is what makes retirement survive a
 restart: `Harness::open` rebuilds the board from the store, so the first pass of a new process has
