@@ -20823,7 +20823,9 @@ impl HarnessTaskRunner {
 
     /// **This session's children the store names and the record does not** — see
     /// [`letibot_tokencore::store::Store::children_without_runs`], whose window is what keeps this
-    /// to the children a record was *due* for.
+    /// to the children a record was *due* for. **The window is not computed here**: the store reads
+    /// it, so this list and [`Self::unrecorded_child`] cannot disagree about it — and a store that
+    /// has never recorded a child lists none rather than every child it holds.
     ///
     /// **The review queue's session is not asked**, for the reason
     /// [`HarnessTaskRunner::record_start`] does not record its children: a reviewer is the queue's
@@ -20839,18 +20841,13 @@ impl HarnessTaskRunner {
         };
         let me = self.base.session_id.clone();
         store
-            .with(|s| {
-                let since = s
-                    .first_subagent_run_ms()
-                    .map_err(|e| e.to_string())?
-                    .unwrap_or(0);
-                s.children_without_runs(&me, since)
-                    .map_err(|e| e.to_string())
-            })
+            .with(|s| s.children_without_runs(&me).map_err(|e| e.to_string()))
             .unwrap_or_default()
     }
 
-    /// [`Self::unrecorded_children`] for one handle — the same gatekeeper rule and the same store.
+    /// [`Self::unrecorded_children`] for one handle — the same gatekeeper rule and the same store,
+    /// and the same window (the store's own): the keyed read answers for a child from before the
+    /// store recorded any, and says which class it is in rather than dropping it.
     fn unrecorded_child(&self, handle: &str) -> Option<letibot_tokencore::store::UnrecordedChild> {
         if self.base.session_id == crate::sessions::gatekeeper::session(&self.base.workspace) {
             return None;
@@ -21384,10 +21381,11 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // a stranger.
                 Some(child) => format!(
                     "`{handle}` is one of this session's children, and there is no record of it to \
-                     resume from: the store refused the row its spawn writes, so the subtask it was \
-                     given and the placement it worked in were never written down. Nothing was \
-                     spawned. Its session `{handle}` and its work in `{}` are still there — \
-                     `transcript` with session=\"{handle}\" reads what it did.",
+                     resume from: {}, so the subtask it was given and the placement it worked in \
+                     were never written down. Nothing was spawned. Its session `{handle}` and its \
+                     work in `{}` are still there — `transcript` with session=\"{handle}\" reads \
+                     what it did.",
+                    crate::subagent_record::no_record_cause(child.why),
                     child.workspace_root
                 ),
                 None => format!(
@@ -21607,11 +21605,14 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         let Some(slot) = slot else {
             // **A child this session HAS, with nothing running it** — its record was never
             // written, so there is no slot and nothing to interrupt. Saying *no subagent in this
-            // session* about a child `task_result` lists is the contradiction this arm removes.
+            // session* about a child `task_result` lists is the contradiction this arm removes,
+            // and the cause is the store's own class rather than a guess: a child older than the
+            // record was never due one.
             return Err(match self.unrecorded_child(handle) {
-                Some(_) => format!(
-                    "nothing is running `{handle}`: no record of it was ever written, so no turn \
-                     of it is live here and there is nothing to stop. Nothing was stopped."
+                Some(child) => format!(
+                    "nothing is running `{handle}`: this daemon holds no turn of it, and {}. \
+                     Nothing was stopped.",
+                    crate::subagent_record::no_record_cause(child.why)
                 ),
                 None => format!(
                     "no subagent `{handle}` in this session; `task_result` with no argument \
@@ -21953,10 +21954,12 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .filter(|r| r.parent_id == me);
         match run {
             Some(run) => crate::subagent_record::recorded_status(&run, self.registry.instance()),
-            // **No record: its own session is the witness.** A spawn whose row the store refused
-            // still opened a session, and that session is the only thing left that says this
-            // child existed — answering `Unknown` made the third door say *"no subagent called
-            // … was started here"* about a child this session started and whose work is on disk.
+            // **No record: its own session is the witness.** A spawn whose row the store refused —
+            // or a child from before the store recorded any — still opened a session, and that
+            // session is the only thing left that says this child existed. Answering `Unknown`
+            // made the third door say *"no subagent called … was started here"* about a child
+            // this session started and whose work is on disk; the sentence it gets now says which
+            // of the two it is ([`crate::subagent_record::no_record_cause`]).
             None => match self.unrecorded_child(handle) {
                 Some(child) => crate::subagent_record::a_child_with_no_record(&child),
                 None => letibot_tools::builtins::task::TaskStatus::Unknown,

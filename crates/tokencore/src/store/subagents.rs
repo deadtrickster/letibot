@@ -133,7 +133,28 @@ pub struct JobContext {
     pub started_ms: u64,
 }
 
-/// **A child the store names and the subagent record does not** — a spawn whose row was lost.
+/// **What the store can say about a child it holds no `subagent_run` row for** — the two classes,
+/// and the reason the window exists at all.
+///
+/// `subagent_run` is schema 26, so every store holds child sessions from before any build
+/// recorded children. A child with no row is therefore either *a record that went missing* or
+/// *a child from before there were records*, and only the window tells them apart: MEASURED
+/// 2026-11-01 on the operator's box, one session had 517 children older than its first record
+/// and exactly one inside it — and that one is the child the daemon lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoRecord {
+    /// **Created at or after this store's first `subagent_run` row** — the store was recording
+    /// children by then, so this child's row was due and is missing.
+    Due,
+    /// **Created before it** — no build was recording children then, so having no row is the
+    /// ordinary state and says nothing about a write. A store that has never recorded a child
+    /// answers this for every child it holds, which is what keeps a fresh box from calling every
+    /// child it ever had lost.
+    BeforeTheStore,
+}
+
+/// **A child the store names and the subagent record does not** — a spawn whose row is missing,
+/// or a child older than the record itself.
 ///
 /// The record is written before a child's thread exists (`harnessd`'s `record_start`), so a
 /// store that refused that write leaves a child with no row at all: nothing lists it, nothing
@@ -147,6 +168,9 @@ pub struct UnrecordedChild {
     /// Where it worked: its worktree, or its parent's tree.
     pub workspace_root: String,
     pub created_ms: i64,
+    /// **Which of the two classes this child is in** — see [`NoRecord`]. A sentence a model reads
+    /// may say *why* the row is missing only for [`NoRecord::Due`].
+    pub why: NoRecord,
     /// **The current transcript's last row**, by [`StoredSession::last_item`]'s rule — an
     /// `Assistant` with no calls after it is a finished turn, anything else is a turn that was
     /// still going when the rows stopped. `None` for a child that wrote no row at all.
@@ -327,11 +351,13 @@ impl Store {
     /// **When this store began recording children** — the oldest `subagent_run` row's start, or
     /// `None` for a store that has never recorded one.
     ///
-    /// The window a reader of [`Store::children_without_runs`] needs: before this instant no
-    /// build recorded children at all, so a child from before it has no row because none was
-    /// ever written for anybody — not because a write was lost. Measured on the operator's box,
-    /// 2026-11-01: one session had 517 child sessions older than its first record and exactly
-    /// one inside the window, and that one is the child the daemon lost.
+    /// **The window, and both readers take it themselves** — [`Store::children_without_runs`] and
+    /// [`Store::child_without_run`] each call this rather than being handed a number, so a list
+    /// and a keyed read cannot disagree about it. Before this instant no build recorded children
+    /// at all, so a child from before it has no row because none was ever written for anybody —
+    /// not because a write was lost. Measured on the operator's box, 2026-11-01: one session had
+    /// 517 child sessions older than its first record and exactly one inside the window, and that
+    /// one is the child the daemon lost.
     pub fn first_subagent_run_ms(&self) -> Result<Option<u64>> {
         let at: Option<i64> =
             self.conn()
@@ -340,79 +366,103 @@ impl Store {
     }
 
     /// **The children of `parent_id` the store names and no `subagent_run` row does**, newest
-    /// first, and only those created at or after `since_ms` (see
-    /// [`Store::first_subagent_run_ms`] for what that window means).
+    /// first — the ones whose record was DUE, i.e. created at or after
+    /// [`Store::first_subagent_run_ms`].
     ///
     /// The read is the *second witness*: a spawn whose record was lost still opened a session,
     /// and that session's row says it is this parent's child, where it worked, and — from its
     /// current transcript's last row — how its last turn ended.
     ///
-    /// **The window is what keeps this small.** Children from before this store recorded any
-    /// are not this reader's subject, and on the operator's box they are the overwhelming
-    /// majority: 517 of one session's 573 child sessions predate its first record.
-    pub fn children_without_runs(
-        &self,
-        parent_id: &str,
-        since_ms: u64,
-    ) -> Result<Vec<UnrecordedChild>> {
-        // `as i64` on a `u64` past `i64::MAX` wraps NEGATIVE, which would make the window
-        // everything rather than nothing — the direction that hides a bug behind a wall of rows.
-        let since = i64::try_from(since_ms).unwrap_or(i64::MAX);
-        self.children_without_runs_matching(
-            "s.parent_session_id = ?1 AND s.created_at >= ?2",
-            &[&parent_id, &since],
-        )
+    /// **The window is what keeps this small**, and it is the same one [`Store::child_without_run`]
+    /// reads: children from before this store recorded any are not this reader's subject, and on
+    /// the operator's box they are the overwhelming majority: 517 of one session's 573 child
+    /// sessions predate its first record. A store that has never recorded a child lists NOTHING —
+    /// every child it holds is from before it, so no row of theirs was ever due.
+    pub fn children_without_runs(&self, parent_id: &str) -> Result<Vec<UnrecordedChild>> {
+        self.unrecorded_of(parent_id, None, true)
     }
 
     /// [`Store::children_without_runs`] for one id — `None` unless it is a child of `parent_id`
     /// the record does not hold. Keyed, so reading one child does not list its siblings.
+    ///
+    /// **It answers for both classes**, because the caller named the child: a child from before
+    /// this store recorded any is still one this session started, and what it is told is which
+    /// class it is in ([`UnrecordedChild::why`]) rather than a cause nobody measured.
     pub fn child_without_run(
         &self,
         parent_id: &str,
         child_id: &str,
     ) -> Result<Option<UnrecordedChild>> {
         Ok(self
-            .children_without_runs_matching(
-                "s.parent_session_id = ?1 AND s.id = ?2",
-                &[&parent_id, &child_id],
-            )?
+            .unrecorded_of(parent_id, Some(child_id), false)?
             .into_iter()
             .next())
     }
 
-    fn children_without_runs_matching(
+    /// **The one read both doors take** — every child of `parent_id` the store names and no
+    /// `subagent_run` row does, each carrying the class [`Store::first_subagent_run_ms`] puts it
+    /// in.
+    ///
+    /// `due_only` is the LIST's filter, and it is applied in SQL so a store with years of child
+    /// sessions does not pay to read them; the keyed read asks for one child and reports its
+    /// class instead.
+    fn unrecorded_of(
         &self,
-        filter: &str,
-        args: &[&dyn rusqlite::ToSql],
+        parent_id: &str,
+        child_id: Option<&str>,
+        due_only: bool,
     ) -> Result<Vec<UnrecordedChild>> {
+        // **`None` is "nothing is due", not "everything is".** A store that has never recorded a
+        // child is bound as `i64::MAX`, which puts every child it holds on the
+        // before-the-store side — the other reading is the one that manufactures a wall of lost
+        // children on exactly the stores that never lost one.
+        let since = match self.first_subagent_run_ms()? {
+            // `u64` past `i64::MAX` wraps NEGATIVE, which would make the window everything rather
+            // than nothing.
+            Some(at) => i64::try_from(at).unwrap_or(i64::MAX),
+            None => i64::MAX,
+        };
         // The last row is read with the same "newest transcript, then highest seq" rule
         // `sessions_matching` uses, and for the same reason: a compaction fork is written in the
         // same millisecond as the transcript it forked from, so the rowid is what breaks the tie.
         let conn = self.conn();
-        let mut st = conn.prepare(&format!(
+        let mut st = conn.prepare(
             "SELECT s.id, s.title, s.role, s.workspace_root, s.created_at,
+                    CASE WHEN s.created_at >= ?2 THEN 1 ELSE 0 END,
                     (SELECT i.item_json FROM transcript_item i
                       WHERE i.transcript_id = (SELECT t.id FROM transcript t
                           WHERE t.session_id = s.id
                           ORDER BY t.created_at DESC, t.rowid DESC LIMIT 1)
                       ORDER BY i.seq DESC LIMIT 1)
                FROM session s
-              WHERE {filter}
+              WHERE s.parent_session_id = ?1
+                -- the same `?2` the CASE reads: the list keeps only the children a row was due
+                -- for, the keyed read takes whichever class the child it was asked about is in
+                AND (?3 = 1 OR s.created_at >= ?2)
+                AND (?4 IS NULL OR s.id = ?4)
                 AND NOT EXISTS (SELECT 1 FROM subagent_run r WHERE r.child_id = s.id)
-              ORDER BY s.created_at DESC, s.rowid DESC"
-        ))?;
-        let rows = st.query_map(args, |r| {
-            Ok(UnrecordedChild {
-                id: r.get(0)?,
-                title: r.get(1)?,
-                role: r.get(2)?,
-                workspace_root: r.get(3)?,
-                created_ms: r.get(4)?,
-                last_item: r
-                    .get::<_, Option<String>>(5)?
-                    .and_then(|j| serde_json::from_str(&j).ok()),
-            })
-        })?;
+              ORDER BY s.created_at DESC, s.rowid DESC",
+        )?;
+        let rows = st.query_map(
+            params![parent_id, since, if due_only { 0i64 } else { 1 }, child_id],
+            |r| {
+                Ok(UnrecordedChild {
+                    id: r.get(0)?,
+                    title: r.get(1)?,
+                    role: r.get(2)?,
+                    workspace_root: r.get(3)?,
+                    created_ms: r.get(4)?,
+                    why: if r.get::<_, i64>(5)? != 0 {
+                        NoRecord::Due
+                    } else {
+                        NoRecord::BeforeTheStore
+                    },
+                    last_item: r
+                        .get::<_, Option<String>>(6)?
+                        .and_then(|j| serde_json::from_str(&j).ok()),
+                })
+            },
+        )?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -656,13 +706,15 @@ mod tests {
                 vocab_source: "/models/x.gguf".into(),
             })
             .unwrap();
-        // A child the record holds, and two the record does not.
+        // A child the record holds, two the record does not, and one that is older than the
+        // record itself — this store began recording children at 5 000.
         let mut kept = run("s-1-sub-kept", "s-1");
         kept.started_ms = 5_000;
         store.put_subagent_run(&kept).unwrap();
         for (id, workspace) in [
             ("s-1-sub-lost", "/w/agent-lost"),
             ("s-1-sub-answer", "/w/agent-answer"),
+            ("s-1-sub-old", "/w/agent-old"),
         ] {
             store
                 .put_session(&crate::store::SessionRecord {
@@ -681,6 +733,15 @@ mod tests {
                 .put_transcript(&format!("t-{id}"), id, &prefix)
                 .unwrap();
         }
+        // **`put_session` stamps `created_at` with the clock**, and this child is from before the
+        // store recorded anything at all — the state 517 of one session's 573 children are in.
+        store
+            .connection()
+            .execute(
+                "UPDATE session SET created_at = 1 WHERE id = ?1",
+                ["s-1-sub-old"],
+            )
+            .unwrap();
         // One of them got as far as an answer; the other wrote no row at all.
         let answer = TranscriptItem::Assistant {
             text: "the sweep is in".into(),
@@ -703,22 +764,26 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.first_subagent_run_ms().unwrap(), Some(5_000));
-        let all = store.children_without_runs("s-1", 0).unwrap();
+        let all = store.children_without_runs("s-1").unwrap();
         let ids: Vec<&str> = all.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["s-1-sub-answer", "s-1-sub-lost"], "{all:?}");
+        assert!(all.iter().all(|c| c.why == NoRecord::Due), "{all:?}");
         assert_eq!(all[0].last_item, Some(answer));
         assert_eq!(all[1].last_item, None, "a child that wrote nothing");
         assert_eq!(all[1].workspace_root, "/w/agent-lost");
         assert_eq!(all[1].role.as_deref(), Some("coder"));
 
-        // **The window**: nothing created before this store began recording children is this
-        // reader's subject, and a window past every child finds none of them.
-        assert!(
-            store
-                .children_without_runs("s-1", u64::MAX)
-                .unwrap()
-                .is_empty()
-        );
+        // **The window, and it is ONE rule in both doors** — `s-1-sub-old` predates this store's
+        // first record, so the LIST does not carry it (a list that ignored the window would, and
+        // that is the wall of rows this class used to be) while the keyed read still answers for
+        // it and says WHICH class it is in, which is what keeps a model from being told a write
+        // was refused about a child whose row was never due.
+        assert!(!ids.contains(&"s-1-sub-old"), "{all:?}");
+        let old = store
+            .child_without_run("s-1", "s-1-sub-old")
+            .unwrap()
+            .expect("the keyed read answers for a child older than the record");
+        assert_eq!(old.why, NoRecord::BeforeTheStore);
 
         // Keyed: the record wins, a stranger's id is not this parent's child, and the lost one
         // answers on its own.
@@ -742,10 +807,35 @@ mod tests {
             Some("s-1-sub-lost".into())
         );
 
-        // And a store that has never recorded a child says so, which is the window a fresh box
-        // reads as "everything".
+        // **A store that has never recorded a child has no window, and that means NOTHING is
+        // due** — not that every child it holds is lost. Read the other way it turned a fresh
+        // box's whole history into a wall of children carrying a cause nobody measured.
         let fresh = Store::open_in_memory().unwrap();
         assert_eq!(fresh.first_subagent_run_ms().unwrap(), None);
+        fresh
+            .put_session(&crate::store::SessionRecord {
+                id: "s-2-sub-only".into(),
+                title: None,
+                model_id: "qwen".into(),
+                dialect_sha: "aa".repeat(32),
+                workspace_root: "/w/agent-only".into(),
+                owner: "deadtrickster".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: Some("s-2".into()),
+            })
+            .unwrap();
+        assert!(
+            fresh.children_without_runs("s-2").unwrap().is_empty(),
+            "a store that never recorded a child has no child whose record was due"
+        );
+        assert_eq!(
+            fresh
+                .child_without_run("s-2", "s-2-sub-only")
+                .unwrap()
+                .map(|c| c.why),
+            Some(NoRecord::BeforeTheStore)
+        );
     }
 
     /// The record's whole life: started, settled, delivered — and an orderly stop that leaves a

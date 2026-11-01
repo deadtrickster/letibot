@@ -974,6 +974,14 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
 /// session row. That row is the second witness, and this is the test that reads it: the store is
 /// staged as a lost spawn leaves it (a child session, no `subagent_run` row, a turn that never
 /// ended), the parent is opened, and every door a model has is asked about the child.
+///
+/// **And one child from before the store recorded any**, which is the other class and the one that
+/// is not a loss at all: 517 of that session's 573 children predate its first `subagent_run` row.
+/// The recorded child's row is a minute old, so the window is a real instant in this store's life
+/// — and the older child, staged a minute before it, must be ABSENT from the list and must be told
+/// *this child is from before this store recorded any child* rather than *the store refused the row
+/// its spawn writes*. A reader that dropped the window lists it and hands it the refused-write
+/// sentence, which is what this test now fails on.
 #[test]
 fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -990,8 +998,8 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     ));
     let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
-    // **One recorded child, so the store has a window** — it began recording children at this
-    // row, and a reader that ignored the window would list every child this store ever had.
+    // **One recorded child, so the store has a window** — it began recording children a minute
+    // ago, and a reader that ignored the window would list every child this store ever had.
     // **The daemon that loses it, and then a restart** — the reported sequence. The child was
     // spawned by the first one; the list is read by the second.
     let one = a_daemon(&parts, &cfg);
@@ -1008,6 +1016,12 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     );
     kept.outcome = Some("kept is in".into());
     kept.delivered = true;
+    // **The window is a real instant in this store's life, not `run`'s 1 ms.** The store has been
+    // recording children for a minute, so a child created inside that minute had a row due and a
+    // child created before it never did — which is the only staging in which an unwindowed reader
+    // and a windowed one answer differently, and so the only one that proves the window at all.
+    let began = letibot_sessionlog::registry::now_ms() - 60_000;
+    kept.started_ms = began;
     store.put_subagent_run(&kept).unwrap();
     // **And the child the store refused the row for**: its session, and nothing else.
     let lost = "s-restart-parent-sub-lost";
@@ -1028,6 +1042,32 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         store.subagent_run(lost).unwrap().is_none(),
         "the state this test is about: a child with no record"
     );
+    // **And a child from BEFORE this store recorded any child** — the other class, and on the
+    // operator's box the overwhelming one (517 of one session's 573 child sessions). It ran, it
+    // settled, and its having no row says nothing about a write: no row of it was ever due.
+    let old = "s-restart-parent-sub-old";
+    store
+        .put_session(&letibot_tokencore::store::SessionRecord {
+            id: old.into(),
+            title: Some("the old sweep".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/wt/agent-old".into(),
+            owner: "deadtrickster".into(),
+            role: Some("coder".into()),
+            approvers: vec![],
+            parent_session_id: Some(PARENT.into()),
+        })
+        .unwrap();
+    // `put_session` stamps `created_at` with the clock, so the one row this test has to move is
+    // the child's own: a minute before the store began recording children.
+    store
+        .connection()
+        .execute(
+            "UPDATE session SET created_at = ?1 WHERE id = ?2",
+            (began as i64 - 60_000, old),
+        )
+        .unwrap();
 
     let d = a_daemon(&parts, &cfg);
     // **Listed** — by its handle, marked as a child with no record rather than silently missing.
@@ -1044,6 +1084,13 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     assert!(
         listed.contains("s-restart-parent-sub-kept") && listed.contains("answered"),
         "the recorded child reads as it always did: {listed}"
+    );
+    // **The window, and this is the assertion an unwindowed reader fails** — a child older than
+    // the store's first record was never due one, so the list does not carry it. A reader that
+    // dropped the window lists it here, which is the wall of rows this class used to be.
+    assert!(
+        !listed.contains(old),
+        "a child from before the store recorded any was never due a row: {listed}"
     );
 
     // **Readable** — the single-handle answer says it is gone, where its work is, and how to read
@@ -1102,6 +1149,58 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             .contains("there is no record of it to resume from"),
         "{}",
         resumed.payload
+    );
+    assert!(
+        resumed
+            .payload
+            .contains("the store refused the row its spawn writes"),
+        "its record was due and went missing, so the cause is the write: {}",
+        resumed.payload
+    );
+
+    // **The child older than the record, through the two doors that answer by id** — it is not in
+    // the list (above), and `task_result` and `task_resume` still answer for it because the model
+    // named it, saying which class it is in and never a cause nobody measured.
+    //
+    // `job_kill` is not one of them: it resolves a handle against the LIST, and a child the list
+    // does not carry falls through to this session's job table — so it answers *"this session has
+    // started 0 jobs"* rather than anything about the child. That is a true sentence about the
+    // table it was asked about, and it is the arm `route_subagent` has always had for a handle
+    // nobody lists.
+    let before = task_result(&d, old);
+    eprintln!(
+        "--- what task_result says about the older child ---\n{}",
+        before.payload
+    );
+    assert!(
+        before
+            .payload
+            .contains("this child is from before this store recorded any child"),
+        "{}",
+        before.payload
+    );
+    assert!(
+        !before.payload.contains("refused the row"),
+        "no write of it was refused, so no sentence may say one was: {}",
+        before.payload
+    );
+    assert!(
+        before.payload.contains("/wt/agent-old"),
+        "it still says where the child worked: {}",
+        before.payload
+    );
+    let before_resume = d.call("task_resume", serde_json::json!({"task": old}));
+    assert!(
+        before_resume
+            .payload
+            .contains("this child is from before this store recorded any child"),
+        "{}",
+        before_resume.payload
+    );
+    assert!(
+        !before_resume.payload.contains("refused the row"),
+        "{}",
+        before_resume.payload
     );
     d.stop(None);
 }

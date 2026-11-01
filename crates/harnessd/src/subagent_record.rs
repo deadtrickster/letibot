@@ -574,6 +574,21 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
     }
 }
 
+/// **Why the store holds no row for a child, in the words a model is given** — and the two
+/// classes are the whole point of the window: one is a write that went missing, the other is a
+/// store that was not writing yet, and only one of them is something that went wrong.
+///
+/// MEASURED 2026-11-01: the operator's box had one session with 517 children older than its first
+/// `subagent_run` row and one inside it. Told *"the store refused the row its spawn writes"*, the
+/// 517 would have been handed a cause nobody measured about children that ran and settled.
+pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str {
+    use letibot_tokencore::store::NoRecord;
+    match why {
+        NoRecord::Due => "the store refused the row its spawn writes",
+        NoRecord::BeforeTheStore => "this child is from before this store recorded any child",
+    }
+}
+
 /// **What a child with NO record reads as** — the second witness, and the answer that used to be
 /// *nothing at all*.
 ///
@@ -582,6 +597,9 @@ pub fn recorded_status(run: &SubagentRun, instance: &str) -> TaskStatus {
 /// a child that no door can see: not in `task_result`'s list, refused by `task_resume` as never
 /// started, and absent from the restart's own restore. Its session row is a different write —
 /// made by the child when it opens — so it is usually still there, and it is all a reader has.
+///
+/// **Which of the two it is comes from the store** ([`no_record_cause`]): a child older than the
+/// store's first record never had a row due, so it is not told that a write was refused.
 ///
 /// **Two readings, and the difference is the child's last row.** An `Assistant` with no call
 /// after it is a finished turn (`StoredSession::last_item`'s rule, the one the subagents pane
@@ -604,12 +622,14 @@ pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild)
     }
     TaskStatus::Failed {
         why: format!(
-            "nothing is running it, and no record of it was ever written: the store refused the \
-             row its spawn writes (it was busy), so no settlement of it was collected and \
-             `task_resume` cannot bring it back — the spawn's own description is what it would \
-             need, and that is the row that is missing. Its last row is {}. Its session `{id}` \
-             and its transcript hold everything it did — `transcript` with session=\"{id}\" reads \
-             it — and it worked in `{}`.{}",
+            "nothing is running it, and no record of it was ever written — {}. No settlement of \
+             it was collected and `task_resume` cannot bring it back: the spawn's own description \
+             is what it would need, and that is the row that is missing. Its last row is {}. Its \
+             session `{id}` and its transcript hold everything it did — `transcript` with \
+             session=\"{id}\" reads it — and it worked in `{}`.{}",
+            // **The one clause the store decides** — a child older than the store's first record
+            // is not told a write was refused, because none was due for it.
+            no_record_cause(child.why),
             ended_in(child.last_item.as_ref()),
             child.workspace_root,
             // **Its brief, so a parent can recognise which child this was** — the one thing left
@@ -786,6 +806,7 @@ pub fn utc(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use letibot_tokencore::store::NoRecord;
 
     fn run(state: &str) -> SubagentRun {
         SubagentRun {
@@ -1225,20 +1246,24 @@ mod tests {
     /// four commits, and no row).
     #[test]
     fn a_child_with_no_record_reads_its_own_last_row() {
-        let child = |last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
+        let child = |why, last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
             id: "s-1-sub-lost".into(),
             title: Some("the-notices-stay-collapsed".into()),
             role: Some("coder".into()),
             workspace_root: "/wt/agent-lost".into(),
             created_ms: 1,
+            why,
             last_item: last,
         };
         // An answer with no call after it is a finished turn: its text IS the answer.
-        let answered = a_child_with_no_record(&child(Some(TranscriptItem::Assistant {
-            text: "the sweep is in".into(),
-            tool_calls: vec![],
-            truncated: false,
-        })));
+        let answered = a_child_with_no_record(&child(
+            NoRecord::Due,
+            Some(TranscriptItem::Assistant {
+                text: "the sweep is in".into(),
+                tool_calls: vec![],
+                truncated: false,
+            }),
+        ));
         assert_eq!(
             answered,
             TaskStatus::Done {
@@ -1248,15 +1273,18 @@ mod tests {
         );
         // A turn that was still going when the rows stopped has NO answer, and the sentence says
         // where the child was and where its work still is.
-        let gone = a_child_with_no_record(&child(Some(TranscriptItem::ToolResult {
-            call_id: "c1".into(),
-            name: "bash".into(),
-            outcome: letibot_transcript::ToolOutcome::Ok,
-            payload: "ok".into(),
-            edit: None,
-            origin: None,
-            media: None,
-        })));
+        let gone = a_child_with_no_record(&child(
+            NoRecord::Due,
+            Some(TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "bash".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: "ok".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            }),
+        ));
         let TaskStatus::Failed { why } = gone else {
             panic!("a child mid-turn has no answer: {gone:?}");
         };
@@ -1272,10 +1300,54 @@ mod tests {
             "nothing can resume it: {why}"
         );
         // And a child that wrote no row of its own at all.
-        let TaskStatus::Failed { why } = a_child_with_no_record(&child(None)) else {
+        let TaskStatus::Failed { why } = a_child_with_no_record(&child(NoRecord::Due, None)) else {
             panic!("a child that wrote nothing has no answer");
         };
         assert!(why.contains("it wrote no row of its own at all"), "{why}");
+    }
+
+    /// **A child older than the store's first record is not told a write was refused** — the
+    /// class the window exists for, and the sentence a model reads about it.
+    ///
+    /// MEASURED 2026-11-01: 517 of one session's 573 children predate the store's first
+    /// `subagent_run` row. Every one of them ran and settled, and every one of them was being
+    /// told *"the store refused the row its spawn writes"* — a cause nobody measured, about rows
+    /// that were never due.
+    #[test]
+    fn a_child_from_before_the_record_is_told_that_and_not_a_refused_write() {
+        let old = letibot_tokencore::store::UnrecordedChild {
+            id: "s-1-sub-old".into(),
+            title: Some("the sweep".into()),
+            role: Some("coder".into()),
+            workspace_root: "/wt/agent-old".into(),
+            created_ms: 1,
+            why: NoRecord::BeforeTheStore,
+            last_item: None,
+        };
+        let TaskStatus::Failed { why } = a_child_with_no_record(&old) else {
+            panic!("a child with no answer is not an answer");
+        };
+        assert!(
+            why.contains("this child is from before this store recorded any child"),
+            "{why}"
+        );
+        assert!(
+            !why.contains("refused the row"),
+            "no write of it was refused, so the sentence may not say one was: {why}"
+        );
+        // The rest of what a parent needs is still there: where it worked, how to read it, and
+        // what it was asked.
+        assert!(why.contains("/wt/agent-old"), "{why}");
+        assert!(
+            why.contains("`transcript` with session=\"s-1-sub-old\""),
+            "{why}"
+        );
+        assert!(why.contains("it was asked: the sweep"), "{why}");
+        // And the class that IS a lost write still says so.
+        assert_eq!(
+            no_record_cause(NoRecord::Due),
+            "the store refused the row its spawn writes"
+        );
     }
 
     #[test]
