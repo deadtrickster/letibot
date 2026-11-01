@@ -1753,6 +1753,7 @@ impl EventSink for CompactionSink<'_> {
 ///
 /// `half` and `halves` are what the caller knows and this cannot: the local plan runs
 /// two of these, the cloud plan one.
+#[allow(clippy::too_many_arguments)] // the slice and its place among the halves are the caller's facts
 fn summarise_one(
     engine: &mut TurnEngine,
     prefix: &StablePrefix,

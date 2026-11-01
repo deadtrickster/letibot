@@ -1312,6 +1312,7 @@ impl TurnEngine {
     /// An urgent steering message closes the connection mid-stream and the
     /// turn is `Guard`-shaped: nothing is committed, the next attempt re-sends
     /// the same messages.
+    #[allow(clippy::too_many_arguments)] // a turn's own facts: session, sink, steering and backend are one argument each
     pub fn run_turn_messages(
         &mut self,
         session: &mut Session,
@@ -1673,6 +1674,7 @@ impl TurnEngine {
     /// Metrics for a messages turn: the provider's figures where it gave them,
     /// zero where the field is a llama.cpp fact that has no cloud counterpart,
     /// and a prefix check that says it did not run.
+    #[allow(clippy::too_many_arguments)] // one argument per figure the metrics row carries
     fn messages_metrics(
         &self,
         turn_id: &str,
@@ -1722,6 +1724,7 @@ impl TurnEngine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)] // the prompt rides in two forms by construction; the rest is one argument per fact
     fn stream_turn(
         &self,
         turn_id: &str,
