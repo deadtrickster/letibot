@@ -1,6 +1,3 @@
-// TODO: remove this allow and fix the warnings it hides. The gate now treats
-// warnings as errors; this is the bridge to green while the crate is cleaned up.
-#![allow(clippy::all)]
 //! **Reading an opencode conversation into this head's rows.**
 //!
 //! R6. `letibot --session oc-<opencode-session-id>` opens the UI immediately and
@@ -207,6 +204,7 @@ pub struct Scrap {
 
 /// What [`Source::read_tree`] hands its sink, in order.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // taken once and dropped, so a boxed row buys nothing
 pub enum Event {
     /// **The importer's own counter** — parts read, against the count from
     /// `count(*)`. Not derived from what has not arrived: *an indicator must be the
