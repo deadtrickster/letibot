@@ -54,6 +54,11 @@ pub const STUCK_AFTER_MS: u64 = 15 * 60 * 1000;
 /// is a different fact — the number grew by two hours — rather than the same news said again. A
 /// ladder on top of a growing number would be two mechanisms doing one job. This is a number to
 /// tune against a real queue rather than a property of the mechanism.
+///
+/// **And since the census became a TURN (`Door::Census`) this is also the model-call budget**: one
+/// call per project per interval while a row is stuck, so five over a ten-hour night. The plan's
+/// own ladder (60 s doubling to the 30-minute cap) would spend about twenty over the same night,
+/// and it is not borrowed here for that reason as well as for the schedule's.
 pub const STUCK_REPEAT_MS: u64 = 2 * 60 * 60 * 1000;
 
 /// **A landing row that is stuck** — nobody is on it and no pass will move it. The non-open half of
