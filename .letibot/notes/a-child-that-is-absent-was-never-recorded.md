@@ -58,3 +58,44 @@ That rule is the whole of `subagent_record::a_child_with_no_record`: `Done` with
 * `TranscriptItem::ToolResult`'s fields are `edit`, `origin`, `media` — `who` is gone.
 * `session` has **no index on `parent_session_id`**, so the query is a scan of the table
   (1690 rows here, sub-millisecond). Fine now; a store with 100k sessions would want one.
+
+## UPDATE 2026-11-01 — the review refused the first cut: the window was on the list only
+
+The reviewer found three things, all of them about the window rather than the measurement:
+
+* **The keyed read had no window at all.** `children_without_runs` filtered on
+  `created_at >= since`; `child_without_run` — the one `task_result task=<handle>`,
+  `task_resume` and `job_kill` call — did not. So every child older than the store's first
+  `subagent_run` row (517 of that session's 573) was told *"the store refused the row its spawn
+  writes"* and *"…were never written down. Nothing was spawned."* None of them was lost, no
+  write was refused, and they ran and settled.
+* **`first_subagent_run_ms() == None` was mapped to `0`**, so on a store that had never written a
+  `subagent_run` row every child of the parent was "lost", each carrying the same false cause.
+* **The integration test's window was `1 ms`** — the staged record came from `run()`, whose
+  `started_ms` is 1 — so an unwindowed reader passed every assertion.
+
+What the tree does now:
+
+* **One read, both doors.** `Store::children_without_runs(parent)` and
+  `Store::child_without_run(parent, child)` both call the private `unrecorded_of`, which takes
+  the window from `first_subagent_run_ms` itself — no caller is handed a number, so a list and a
+  keyed read cannot disagree.
+* **`None` is "nothing is due", not "everything is".** The window binds as `i64::MAX`; a store
+  that has never recorded a child lists none of its children.
+* **The class travels with the row.** `UnrecordedChild::why: NoRecord::{Due, BeforeTheStore}`,
+  and `subagent_record::no_record_cause` is the ONE place the model-facing clause is worded —
+  `Due` keeps *the store refused the row its spawn writes*, `BeforeTheStore` says *this child is
+  from before this store recorded any child*. The keyed read still answers for a pre-record child
+  (the model named it); it is the LIST that carries only the due class.
+* **The test stages the window.** The recorded child's `started_ms` is a minute old and the
+  older child's `created_at` a minute before that (`put_session` stamps `now`, so the test moves
+  that one row with an `UPDATE`). MEASURED: with the window removed the list grows to three and
+  the test fails on *"a child from before the store recorded any was never due a row"*.
+* **What is still open**: `job_kill` on a pre-record child answers *"this session has started 0
+  jobs"*, because `route_subagent` resolves a handle against the LIST and its `Unknown` arm drops
+  a runner refusal. A true sentence about the table it was asked about, not a claim about the
+  child — but it is the same shape the branch fixed for a listed child.
+
+Numbers, this worktree (`/data/letibot-target-lostchild`): `-p letibot-tokencore --lib` 141
+passed; `-p letibot-harnessd --lib` 959 passed, 2 ignored; `--test restart_restore` 21 passed;
+`-p letibot-tools --lib` 1326 passed.
