@@ -296,6 +296,7 @@ impl Bell {
 /// `Idle` is not an error and not a shutdown — it is *the deadline passed and there was
 /// nothing to do*, which is the state the daemon acts on. See
 /// [`Registry::next_work_until`].
+#[allow(clippy::large_enum_variant)] // a thin wrapper over Work; the size is Work's, allowed once there
 pub enum WorkOrIdle {
     Work(Work),
     Idle,
@@ -1198,6 +1199,7 @@ pub struct Registry {
 /// dialect refusal and its republished transcript all live. A head that resumed a
 /// session and then attached to it would find an empty screen and no error, which is
 /// the shape of failure this whole strand exists to remove.
+#[allow(clippy::large_enum_variant)] // one queued command per item by value; the small variants are the common case
 pub enum Work {
     /// Open this session before anything else happens in it.
     Open(String),

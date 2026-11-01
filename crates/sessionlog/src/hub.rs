@@ -771,6 +771,7 @@ pub struct SessionStatus {
 /// holds, said to the thread that holds this one instead. See
 /// [`Hub::wake_its_own_reader`].
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // one queued command rides the queue by value; the unit variants cost nothing
 pub enum OwnWork {
     /// A command somebody submitted: a head's prompt, a parent's kill, a relayed message.
     Command(QueuedCommand),

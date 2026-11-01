@@ -228,6 +228,7 @@ pub struct CallView {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // Finished carries the outcome by value once per call; the others are unit
 pub enum CallState {
     Proposed,
     /// Running, with **no partial output**. See the module note.

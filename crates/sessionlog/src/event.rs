@@ -1316,6 +1316,7 @@ pub struct Citation {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // events are built once and matched by every head and sink; boxing payloads would touch them all
 pub enum SessionEvent {
     TurnStarted {
         turn_id: String,

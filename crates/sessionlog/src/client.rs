@@ -1051,6 +1051,7 @@ impl HeadClient {
 /// can only lose the connection, while a head reading a stream it mostly understands
 /// should keep the stream and say what it could not read.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // the frame is the protocol's whole vocabulary; boxing one variant taxes every receive
 pub enum Inbound {
     Frame(ServerFrame),
     /// One line of the stream that did not parse, kept so the head can say what it

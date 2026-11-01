@@ -2760,6 +2760,7 @@ pub struct Ack {
 /// Daemon → head.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // the wire's own enum; a boxed variant changes every head and daemon match site
 pub enum ServerFrame {
     /// The answer to ATTACH. Always first, and **once per attachment**.
     ///
