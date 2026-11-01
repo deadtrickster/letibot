@@ -1086,6 +1086,14 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         "{}",
         by_name.payload
     );
+    // **And `job_kill` does not call it a stranger either** — it is in the list above, so *no
+    // subagent in this session* would contradict the list.
+    let stopped = d.call("job_kill", serde_json::json!({"job": lost}));
+    assert!(
+        stopped.payload.contains("nothing is running"),
+        "{}",
+        stopped.payload
+    );
     // **And `task_resume` says why it cannot come back** rather than calling it a stranger.
     let resumed = d.call("task_resume", serde_json::json!({"task": lost}));
     assert!(

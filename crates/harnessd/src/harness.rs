@@ -21605,10 +21605,19 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .find(|(h, _)| h == handle)
             .map(|(_, s)| s.clone());
         let Some(slot) = slot else {
-            return Err(format!(
-                "no subagent `{handle}` in this session; `task_result` with no argument \
-                 lists the ones there are"
-            ));
+            // **A child this session HAS, with nothing running it** — its record was never
+            // written, so there is no slot and nothing to interrupt. Saying *no subagent in this
+            // session* about a child `task_result` lists is the contradiction this arm removes.
+            return Err(match self.unrecorded_child(handle) {
+                Some(_) => format!(
+                    "nothing is running `{handle}`: no record of it was ever written, so no turn \
+                     of it is live here and there is nothing to stop. Nothing was stopped."
+                ),
+                None => format!(
+                    "no subagent `{handle}` in this session; `task_result` with no argument \
+                     lists the ones there are"
+                ),
+            });
         };
         let Some(hub) = self.registry.get(handle) else {
             return Err(format!(

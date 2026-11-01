@@ -1090,6 +1090,17 @@ impl JobKill {
                     .ok()
                     .map(|said| Invocation::ok(format!("{said}\n")))
             }
+            // **An exact child's handle: the runner's answer IS the answer, refusal included.**
+            // A refused `kill` used to be dropped here and the call went on to the host's job
+            // table, so stopping a child that was already gone answered *"this session has
+            // started 0 jobs"* — a sentence about a table the caller never asked about, and one
+            // that contradicts `task_result`'s own list of that child.
+            PickedChild::One(handle) => Some(match self.kill_subagent(&handle) {
+                Ok(said) => Invocation::ok(format!("{said}\n")),
+                Err(why) => {
+                    Invocation::failed(format!("`{id}` was not stopped"), format!("{why}\n"))
+                }
+            }),
             _ => self
                 .kill_subagent(id)
                 .ok()
@@ -1685,6 +1696,8 @@ mod tests {
                     ("s-1-sub-1", "fix-login"),
                     ("s-1-sub-2", "bench"),
                     ("s-1-sub-3", "bench"),
+                    // A child this runner knows and will not stop — see `kill`.
+                    ("s-1-sub-4", "settled"),
                 ]
                 .into_iter()
                 .map(|(h, s)| ChildName {
@@ -1696,6 +1709,12 @@ mod tests {
                 .collect()
             }
             fn kill(&self, handle: &str) -> Result<String, String> {
+                if handle == "s-1-sub-4" {
+                    return Err(format!(
+                        "nothing is running `{handle}`: its turn has ended, so there is nothing \
+                         to stop"
+                    ));
+                }
                 if !self.children().iter().any(|c| c.handle == handle) {
                     return Err(format!("no subagent `{handle}` in this session"));
                 }
@@ -1731,6 +1750,24 @@ mod tests {
         );
         // A name no child carries goes on to the host's jobs.
         assert!(kill.route_subagent("release-build", &[]).is_none());
+        // **A handle this runner knows, refused, is the refusal** — not the host's job table.
+        // MEASURED 2026-11-01: `job_kill` on a child whose record was never written answered
+        // *"this session has started 0 jobs"*, about a child `task_result` was listing.
+        let refused_handle = kill
+            .route_subagent("s-1-sub-4", &[])
+            .expect("a child's own handle is answered here, whatever the answer is");
+        assert!(
+            matches!(refused_handle.outcome, ToolOutcome::Failed { .. }),
+            "{:?}",
+            refused_handle.outcome
+        );
+        assert!(
+            refused_handle
+                .payload
+                .contains("nothing is running `s-1-sub-4`"),
+            "{}",
+            refused_handle.payload
+        );
         // A name a child and a job of this session share names neither.
         let both = kill
             .route_subagent("fix-login", &[view("j7", Some("fix-login"))])
