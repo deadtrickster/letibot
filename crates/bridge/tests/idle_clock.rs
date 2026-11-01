@@ -2,7 +2,7 @@
 //! work to be over instead of for a clock.
 //!
 //! This file exists because the instrument it tests decided a red on the merge gate and nobody
-//! could tell what the number meant. Three facts, in one test and in this order, because each
+//! could tell what the number meant. Four facts, in one test and in this order, because each
 //! depends on the process being quiet at the start of the next:
 //!
 //! 1. **The two readings are one number.** `/proc/<pid>/stat`'s `utime + stime` and
@@ -15,14 +15,18 @@
 //!    delta of the whole machine — answers *the box is busy* for every process on it, which is
 //!    what the gate's three reds had in common. So a real burner is started BESIDE this process,
 //!    and this process's own reading must not move: measured with a child at a full core,
-//!    **under a quarter of a millisecond of a 250 ms slice**. The burner's own reading is taken
-//!    too, so the test cannot pass by the burner having failed to start.
+//!    **4–18 µs of a one-second span**. The burner's own reading is taken too, so the test cannot
+//!    pass by the burner having failed to start.
 //! 3. **The settle waits for a burn to end.** [`cpu::wait_until_idle`] is the half that was
 //!    missing on 2026-11-01: a fixed `sleep(500 ms)` after a daemon's start opened the measured
 //!    window on the daemon's opening, so the number was a function of how fast the box got
 //!    through 260 ms of fixed work (1.3 ms quiet, 178 ms loaded). Here a burn runs for a second
 //!    inside this process, and the settle must not return until it is over — which a fixed pause
 //!    cannot do.
+//! 4. **And a process that never goes quiet is reported as one.** The failure path is the half
+//!    that has to work: a daemon that spins never settles, so the ceiling is what turns it into a
+//!    red, and the red has to name the defect. Proved against a one-second ceiling rather than
+//!    [`cpu::CEILING`]'s two minutes.
 //!
 //! **The load this file does not need to be run under**, and why: the instrument's whole claim is
 //! that the number is the same on a quiet box and on a busy one. `no_spin.rs`'s report is where
@@ -110,22 +114,19 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
         ),
         "the burner never got going, so nothing below would have been proved either way"
     );
-    let mine = cpu::over_one_slice();
+    let mine = cpu::over(cpu::SPAN);
     println!(
-        "  beside a child at a full core: this process spent {:?} then {:?} over {:?} slices",
-        mine.0,
-        mine.1,
-        cpu::SLICE
+        "  beside a child at a full core: this process spent {mine:?} over a {:?} span",
+        cpu::SPAN
     );
     assert!(
-        mine.0 < cpu::slice_budget() && mine.1 < cpu::slice_budget(),
-        "a child burning a core beside this process moved this process's own reading to {:?} and \
-         {:?} against a {:?} line. That is the defect the instrument exists to avoid: a sampled \
-         percentage — `ps`, `top`, a delta of the whole machine — answers for the box, and the \
-         box was busy.",
-        mine.0,
-        mine.1,
-        cpu::slice_budget()
+        mine < cpu::settle_budget(),
+        "a child burning a core beside this process moved this process's own reading to {mine:?} \
+         against a {:?} line over {:?}. That is the defect the instrument exists to avoid: a \
+         sampled percentage — `ps`, `top`, a delta of the whole machine — answers for the box, and \
+         the box was busy.",
+        cpu::settle_budget(),
+        cpu::SPAN
     );
     drop(burner);
 
@@ -149,17 +150,51 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
          daemon's opening instead of on its idleness (178 ms of CPU against a 300 ms budget on \
          the gate's box, 1.3 ms on a quiet one — the same daemon)."
     );
-    let after = cpu::over_one_slice();
+    let after = cpu::over(cpu::SPAN);
     assert!(
-        after.0 < cpu::slice_budget(),
-        "and the window after the settle is loud too ({:?} over {:?}): the settle returned while \
-         the burn was still going",
-        after.0,
-        cpu::SLICE
+        after < cpu::settle_budget(),
+        "and the window after the settle is loud too ({after:?} over {:?}): the settle returned \
+         while the burn was still going",
+        cpu::SPAN
     );
     // A write to stdout, so a run under `--nocapture` shows the numbers even when it is green.
     let _ = writeln!(
         std::io::stdout(),
         "  the idle clock reads one child and waits for the work"
+    );
+
+    // --- 4. a process that never goes quiet is reported as one ------------
+    // **The failure path, which is the half that has to work.** The daemon this instrument was
+    // written for spent a whole core per stopped session; a settle that waited for that process to
+    // go quiet would wait for ever, so the ceiling is what turns the spin into a red. Proved here
+    // with a ceiling of two seconds against a burn of three, so the proof costs a couple of seconds
+    // rather than [`cpu::CEILING`]'s two minutes.
+    let until = Instant::now() + Duration::from_secs(3);
+    let burning = std::thread::spawn(move || {
+        while Instant::now() < until {
+            std::hint::spin_loop();
+        }
+    });
+    std::thread::sleep(Duration::from_millis(50));
+    // The panic is the instrument working, so its message is captured and printed rather than left
+    // to the default hook, which would print it as though this test had failed.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let caught = std::panic::catch_unwind(|| {
+        cpu::wait_until_idle_within("a burn that never ends", Duration::from_secs(2))
+    });
+    std::panic::set_hook(hook);
+    let _ = burning.join();
+    let payload = caught.expect_err("a process at a full core must not settle");
+    let said = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default();
+    println!("  the ceiling said: {said}");
+    assert!(
+        said.contains("has not been quiet") && said.contains("a thread looping"),
+        "the ceiling fired with words that do not name the defect, so a red it produced would send \
+         the next reader hunting something else: {said}"
     );
 }

@@ -90,9 +90,10 @@ const CTRL_C_BUDGET: Duration = Duration::from_secs(15);
 /// the daemon has parsed the tool call, run it past the gate and spawned it. A pause after
 /// `rounds()` is a bet on how fast the box does that, and the number the bet is placed against is
 /// measured — request read to command running: **0.13 s** alone, **0.18 s** under four hundred
-/// busy processes, **0.16 s** with those and `TMPDIR` on a real disk. So the old 1500 ms pause had
-/// a factor of eight on this box and no more; a factor is not a condition, and the fact this test
-/// needs is *the command is running*. The command says so itself.
+/// busy processes, **0.16 s** with those and `TMPDIR` on a real disk, and **0.28 s** with the box
+/// at load 141. So the old 1500 ms pause had a factor of five at the worst of those and no more; a
+/// factor is not a condition, and the fact this test needs is *the command is running*. The command
+/// says so itself.
 const MARKER: &str = "the-command-started";
 
 struct TempDir {

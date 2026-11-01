@@ -65,37 +65,40 @@ pub fn procs_reading() -> Option<Duration> {
     of_pid(std::process::id())
 }
 
-/// What one reading of a settled process costs, and what a slice may cost to count as settled.
+/// What one reading of a settled process costs, and what a settle measures over.
 ///
-/// The slice is a quarter second — long enough that the 20 ms poll of a waiting accept loop is a
-/// rounding error in it, short enough that the settle is not most of a test's wall clock.
+/// [`SLICE`] is a quarter second — long enough that the 20 ms poll of a waiting accept loop is a
+/// rounding error in it, short enough that a settle is not most of a test's wall clock. [`SPAN`] is
+/// the stretch a settle adds up, and it is four slices long for a measured reason: a *total* over a
+/// second cannot be fooled by the phase of a bursty tail the way a run of short slices can.
 pub const SLICE: Duration = Duration::from_millis(250);
 
-/// **The settle's line: 2% of a core** — [`SLICE`] / 50, i.e. 5 ms of CPU in a 250 ms slice.
+/// The stretch a settle measures — see [`SPAN`](self::SPAN).
+pub const SPAN: Duration = Duration::from_secs(1);
+
+/// **The settle's line: 1% of a core** — [`SPAN`] / 100, i.e. 10 ms of CPU in a second.
 ///
-/// Two numbers decide it, and the first is the one that was wrong first (MEASURED 2026-11-01):
+/// Two numbers decide it, and both were wrong in a first cut (MEASURED 2026-11-01):
 ///
 /// * **It must be low enough that the rate it admits cannot breach the budget of the window that
-///   follows.** The settle is not the assertion — it only says *start measuring here* — so
-///   anything it lets through is added to the window. At 10% of a core (the window's own line) a
-///   daemon whose opening is being spent slowly sits *just under* the settle and just over the
-///   window: measured under four hundred busy processes, the settle returned after a 4 ms lull
-///   and the window then read **144 ms against a 300 ms budget**. At 2% the most a settle can
-///   contribute to a 3 s window is 60 ms, a fifth of that budget.
+///   follows.** The settle is not the assertion — it only says *start measuring here* — so anything
+///   it lets through is added to the window. At 10% of a core (the window's own line) a daemon whose
+///   opening is being spent slowly sits *just under* the settle and just over the window: measured
+///   under four hundred busy processes, a **4 ms lull** in a 250 ms slice ended the settle and the
+///   window then read **144 ms against a 300 ms budget**. At 2% the same thing happened more subtly
+///   — a settle that ended after 5.5 s left **68 ms** in the window. At 1%, over a full second, the
+///   most a settle can contribute to a 3 s window is 30 ms, a tenth of that budget.
 /// * **It must be high enough that a genuinely waiting daemon is under it by a wide margin.**
-///   Measured: **0.3% of a core** on a quiet box and **0.4%** under four hundred busy processes
-///   (the accept loop's 20 ms poll, and nothing else) — a factor of five below the line.
+///   Measured: **0.19 ms in a 250 ms slice** on a quiet box, and the six 3 s windows of
+///   `no_spin.rs` read **0.57–1.49 ms** (0.02–0.05% of a core) both alone and under four hundred
+///   busy processes — the accept loop's 20 ms poll and nothing else, twenty times below the line.
 ///
-/// And one quiet slice is not enough, which is the same lesson from the other side: a stretched
-/// opening has lulls, and a 4 ms lull in a 250 ms slice passes any line. So [`wait_until_idle`]
-/// wants [`QUIET_SLICES`] of them in a row.
-pub fn slice_budget() -> Duration {
-    SLICE / 50
+/// And the span is why this is a total and not a run of slices: a tail that spends 22 ms a second
+/// puts a few 250 ms slices under 5 ms each, so *two quiet slices in a row* was satisfied while the
+/// work went on. A second's total cannot be — 22 ms is 22 ms wherever the bursts land.
+pub fn settle_budget() -> Duration {
+    SPAN / 100
 }
-
-/// How many consecutive quiet slices make a settle — half a second of a tenth-of-a-percent
-/// process, which no burst of start-up work survives.
-pub const QUIET_SLICES: u32 = 2;
 
 /// **Wait until this process has nothing left to do, and say how long that took.**
 ///
@@ -104,43 +107,43 @@ pub const QUIET_SLICES: u32 = 2;
 /// ninety other processes settle at the same point: the same fixed work, done. How long that
 /// takes is the box's business, which is exactly why it is waited for rather than assumed.
 ///
-/// [`QUIET_SLICES`] quiet slices in a row, not one: see [`slice_budget`] for the lull that cost
-/// the first cut of this function.
+/// One [`SPAN`] under [`settle_budget`], and see that function for the two ways a shorter or
+/// looser condition was measured failing.
 ///
 /// The ceiling is [`CEILING`] and only a real hang (or a real spin) trips it — and a spin trips it
-/// with the words for what it is, because a process that never spends under 2% of a core over a
-/// quarter second is not settling.
+/// with the words for what it is, because a process that never spends under 1% of a core over a
+/// second is not settling.
 pub const CEILING: Duration = Duration::from_secs(120);
 
 pub fn wait_until_idle(what: &str) -> Duration {
+    wait_until_idle_within(what, CEILING)
+}
+
+/// The same settle with the ceiling handed in, so a test can prove **the ceiling fires** without
+/// spending [`CEILING`] on it — the failure path is the one that has to work, because a daemon
+/// that spins never settles and this is the assertion that has to say so.
+pub fn wait_until_idle_within(what: &str, ceiling: Duration) -> Duration {
     let started = Instant::now();
-    let mut quiet = 0;
     loop {
-        let before = this_process();
-        std::thread::sleep(SLICE);
-        let last = this_process().saturating_sub(before);
-        quiet = if last < slice_budget() { quiet + 1 } else { 0 };
-        if quiet >= QUIET_SLICES {
+        let last = over(SPAN);
+        if last < settle_budget() {
             return started.elapsed();
         }
         assert!(
-            started.elapsed() < CEILING,
-            "{what}: this process has not been quiet for {QUIET_SLICES} {SLICE:?} slices in \
-             {CEILING:?} — the last one cost {last:?} of CPU (the line is {:?}). A daemon with \
-             nothing to do blocks; one that keeps spending a share of a core is a thread looping \
-             rather than waiting, and no window opened later would say anything different.",
-            slice_budget()
+            started.elapsed() < ceiling,
+            "{what}: this process has not been quiet for one {SPAN:?} in {ceiling:?} — the last \
+             one cost {last:?} of CPU (the line is {:?}). A daemon with nothing to do blocks; one \
+             that keeps spending a share of a core is a thread looping rather than waiting, and no \
+             window opened later would say anything different.",
+            settle_budget()
         );
     }
 }
 
-/// **How much CPU this process burns over one [`SLICE`], twice over** — the raw reading, for a
-/// test that wants the numbers rather than the settle.
-pub fn over_one_slice() -> (Duration, Duration) {
+/// **How much CPU this process spends over `span`** — the one reading every window here is built
+/// from.
+pub fn over(span: Duration) -> Duration {
     let before = this_process();
-    std::thread::sleep(SLICE);
-    let first = this_process().saturating_sub(before);
-    let before = this_process();
-    std::thread::sleep(SLICE);
-    (first, this_process().saturating_sub(before))
+    std::thread::sleep(span);
+    this_process().saturating_sub(before)
 }

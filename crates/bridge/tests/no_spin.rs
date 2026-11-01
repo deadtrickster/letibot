@@ -35,8 +35,10 @@
 //! how much of the opening the box had got through.
 //!
 //! So every window here opens on a CONDITION — the process has gone quiet, read off its own
-//! accounting ([`cpu::wait_until_idle`]) — and not at a fixed moment after an act. A settle can
-//! never be looser than the assertion it precedes: both draw the line at a tenth of a core.
+//! accounting ([`cpu::wait_until_idle`]) — and not at a fixed moment after an act. The settle's
+//! line is a tenth of the window's own (1% of a core over a second, against 10% over three), so
+//! whatever it lets through cannot be what breaches the budget; see [`cpu::settle_budget`] for the
+//! two looser versions that were measured letting a stretched opening through.
 //!
 //! Every phase is a shape the field produced: a daemon nobody has attached to, a session stopped
 //! after a turn, two sessions with one of them stopped, a stop repeated, and a stop of a session
@@ -119,8 +121,8 @@ impl Drop for TempDir {
 /// Two numbers and both are reported: how long the process took to go quiet (the box's business,
 /// and the reason this window is not opened at a fixed moment) and what it then spent (the
 /// daemon's). The settle's ceiling is [`cpu::CEILING`], and only a real hang or a real spin trips
-/// it — with its own words, because a process that never spends under a tenth of a core is not a
-/// process that is waiting.
+/// it — with its own words, because a process that never spends under 1% of a core over a second
+/// is not a process that is waiting.
 fn assert_idle(what: &str) -> Duration {
     let settled = cpu::wait_until_idle(what);
     let before = cpu::this_process();
