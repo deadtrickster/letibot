@@ -129,9 +129,10 @@ fn a_denial_is_history_too_and_sits_beside_the_approvals() {
 fn a_history_of_approvals_cannot_move_an_always_ask_action() {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    // What the adjudicator was asked: the tier and the option ids it was offered.
+    type Seen = Vec<(String, Vec<String>)>;
     let n = AtomicUsize::new(0);
-    let seen: std::sync::Arc<Mutex<Vec<(String, Vec<String>)>>> =
-        std::sync::Arc::new(Mutex::new(Vec::new()));
+    let seen: std::sync::Arc<Mutex<Seen>> = std::sync::Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
     let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
         let i = n.fetch_add(1, Ordering::Relaxed);

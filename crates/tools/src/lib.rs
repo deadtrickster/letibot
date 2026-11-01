@@ -1,6 +1,3 @@
-// TODO: remove this allow and fix the warnings it hides. The gate now treats
-// warnings as errors; this is the bridge to green while the crate is cleaned up.
-#![allow(clippy::all)]
 //! The tool runtime and the built-ins (W9, W10): §8.
 //!
 //! # What this crate is

@@ -1167,6 +1167,7 @@ pub trait CallHook: Send + Sync {
 }
 
 /// What [`ToolRuntime::plugin_patch`] resolved to.
+#[allow(clippy::large_enum_variant)] // Done already owns its ToolResult by value; boxing adds an alloc per patch
 enum Patch {
     /// Nothing said: run the call as the model proposed it.
     None,
@@ -4028,16 +4029,17 @@ mod tests {
         }
     }
 
-    /// A runtime over one `probe` tool, a recording gate, and a hook that answers `answer`.
-    fn hooked(
-        answer: Option<letibot_plugin::tool_call::ToolCallOut>,
-    ) -> (
+    /// What `hooked` hands back: the runtime plus the registers its gate and hook record into.
+    type Hooked = (
         ToolRuntime,
         std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         std::sync::Arc<std::sync::Mutex<Vec<letibot_plugin::Call>>>,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         crate::backend::tempdir::TempDir,
-    ) {
+    );
+
+    /// A runtime over one `probe` tool, a recording gate, and a hook that answers `answer`.
+    fn hooked(answer: Option<letibot_plugin::tool_call::ToolCallOut>) -> Hooked {
         let d = crate::backend::tempdir::TempDir::new();
         let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut reg = Registry::new();

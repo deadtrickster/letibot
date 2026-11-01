@@ -1199,6 +1199,7 @@ impl Tool for HostConfigTool {
 /// (a change with no `why` never runs, a record whose `before` is a read, a setting this platform
 /// has not got refused by name) is its contract, and a clock a test can choose is what makes the
 /// record's age assertable.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn dispatch(
     scope: Option<&dyn ChangelogScope>,
     platform: &dyn Platform,
@@ -1223,6 +1224,7 @@ pub fn dispatch(
 }
 
 /// **What this platform has**, with each value read now — the answer to *which knob is it here*.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn settings(platform: &dyn Platform) -> Result<String, Invocation> {
     let settings = platform.settings();
     if settings.is_empty() {
@@ -1264,6 +1266,7 @@ fn settings(platform: &dyn Platform) -> Result<String, Invocation> {
     Ok(out)
 }
 
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn read(platform: &dyn Platform, args: &Value) -> Result<String, Invocation> {
     let Some(setting) = text(args, "setting") else {
         return Err(Invocation::failed(
@@ -1298,6 +1301,7 @@ fn read(platform: &dyn Platform, args: &Value) -> Result<String, Invocation> {
 }
 
 /// **The three acts**: read, apply, record — and the checks that come before any of them.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn set(
     scope: Option<&dyn ChangelogScope>,
     platform: &dyn Platform,
@@ -1457,6 +1461,7 @@ fn set(
 }
 
 /// The setting, by the name the caller used — with the platform's own refusal when it has none.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn find<'a>(platform: &'a dyn Platform, asked: &str) -> Result<&'a Setting, Invocation> {
     let wanted = asked.trim();
     if let Some(s) = platform.settings().iter().find(|s| s.name == wanted) {

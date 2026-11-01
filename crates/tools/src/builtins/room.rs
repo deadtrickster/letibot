@@ -188,6 +188,7 @@ impl Tool for RoomTool {
 ///
 /// Split out from [`Tool::invoke`] because the check *a verb without its field never reaches the
 /// room* is the contract this tool has, and an `InvokeCtx` cannot be built outside the runtime.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn dispatch(link: &dyn RoomLink, args: &Value) -> Result<String, Invocation> {
     let verb = args
         .get("verb")

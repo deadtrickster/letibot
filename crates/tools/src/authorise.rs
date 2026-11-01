@@ -2140,6 +2140,10 @@ impl Adjudicator for Budgeted {
 // The model adjudicator
 // ---------------------------------------------------------------------------
 
+/// Says the guard is deciding, before the wait starts; installed by whoever has a
+/// place to say it.
+pub type NoticeFn = Box<dyn Fn(&AdjudicationRequest, &str) + Send + Sync>;
+
 /// **The seam a real model plugs into.** An [`Adjudicator`] built out of layer A's
 /// baseline and layer B's oracle.
 ///
@@ -2202,7 +2206,7 @@ pub struct ModelAdjudicator {
     ///
     /// A closure because this type must not learn what a session log is. `None`
     /// says nothing, which is what a caller with nowhere to say it should do.
-    notice: Box<dyn Fn(&AdjudicationRequest, &str) + Send + Sync>,
+    notice: NoticeFn,
 }
 
 impl ModelAdjudicator {

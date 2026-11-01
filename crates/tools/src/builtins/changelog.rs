@@ -371,6 +371,7 @@ impl Tool for HostChangelogTool {
 /// Split out of [`Tool::invoke`] for the same reason `room`'s is: the checks this tool has (*a
 /// record without `why` never reaches the file*, *a second revert is refused*) are its contract,
 /// and a clock a test can choose is what makes an age assertable.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn dispatch(
     scope: &dyn ChangelogScope,
     args: &Value,
@@ -392,6 +393,7 @@ pub fn dispatch(
     }
 }
 
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
     // **The five facts, and two of them are the whole feature.** `before` may be empty — *it was
     // not set* is a fact and the one a revert needs — but the field itself is not optional.
@@ -474,6 +476,7 @@ fn record(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<Strin
     ))
 }
 
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn list(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
     let path = scope.path();
     let log = read(&path);
@@ -531,6 +534,7 @@ fn list(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String,
     Ok(out)
 }
 
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn revert(scope: &dyn ChangelogScope, args: &Value, now_ms: u64) -> Result<String, Invocation> {
     let Some(n) = args
         .get("change")

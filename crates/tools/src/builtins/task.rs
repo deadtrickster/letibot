@@ -95,6 +95,7 @@ fn placement_seam(placement: &Placement) -> String {
 /// host's own answer (`$FIRECODE_BIN`, else `firecode` on PATH). The hosts are passed in for
 /// the same reason: a test says which file, production says
 /// [`crate::remote::Hosts::load`].
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn placement_arg(
     args: &serde_json::Value,
     firecode: Option<&std::path::Path>,
@@ -144,6 +145,7 @@ fn placement_arg(
 /// The `verify` argument: an acceptance check firecode runs after a VM-placed child finishes
 /// ([`TaskSpec::vm_verify`]). Refused off a VM, where nothing would run it — taking it silently
 /// would leave the caller believing in a gate that does not exist.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn verify_arg(
     args: &serde_json::Value,
     placement: &Placement,
@@ -603,11 +605,13 @@ pub fn pick_child(children: &[ChildName], asked: &str) -> PickedChild {
 /// that is neither a handle nor a name of a child here is handed on **unchanged**: the runner's own
 /// refusal names it as it was asked, and `task_message` may address a peer session that is no
 /// child of this one at all.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn resolve_child(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
     resolve_child_in(&runner.children(), asked)
 }
 
 /// [`resolve_child`] over a list already in hand.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub fn resolve_child_in(children: &[ChildName], asked: &str) -> Result<String, Invocation> {
     match pick_child(children, asked) {
         PickedChild::One(handle) => Ok(handle),
@@ -2248,6 +2252,7 @@ pub const PARENT_HANDLE: &str = "parent";
 /// The order is the whole of the rule: `parent` is reserved, so it is answered by
 /// [`TaskRunner::parent`] and by nothing else, and only a handle that is not that word goes on to
 /// [`resolve_child`]'s handles-and-slugs resolution.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn addressed(runner: &dyn TaskRunner, asked: &str) -> Result<String, Invocation> {
     if asked.trim() != PARENT_HANDLE {
         return resolve_child(runner, asked);

@@ -1833,6 +1833,11 @@ pub const NEVER_WRITE: &[&str] = &[
     ".config/Bitwarden",
 ];
 
+/// Where an *Always allow* answer is written down; see
+/// [`AdjudicatedGate::with_permission_sink`].
+pub type PermissionSink =
+    std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>;
+
 /// The gate that consults an adjudicator.
 ///
 /// Constructed with one; the default one is [`NoAdjudicator`] and it refuses.
@@ -1886,9 +1891,7 @@ pub struct AdjudicatedGate {
     /// Where an *Always allow* answer is written down so it outlives the process
     /// — the daemon hands in `~/.config/letibot/permission.json`. Without one the
     /// answer holds for the session and the row says so.
-    permission_sink: Option<
-        std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>,
-    >,
+    permission_sink: Option<PermissionSink>,
     /// **The boundary this session's commands run inside**, read off the backend at open — see
     /// [`AdjudicatedGate::with_boundary`]. `None` is *no boundary*, and `boundary_refusal` says
     /// whether that is a choice or a host that could not confine.
@@ -2174,10 +2177,7 @@ impl AdjudicatedGate {
     }
 
     /// Where *Always allow* writes its rule. See the field.
-    pub fn with_permission_sink(
-        mut self,
-        sink: std::sync::Arc<dyn Fn(&crate::permission::Rule) -> Result<(), String> + Send + Sync>,
-    ) -> Self {
+    pub fn with_permission_sink(mut self, sink: PermissionSink) -> Self {
         self.permission_sink = Some(sink);
         self
     }

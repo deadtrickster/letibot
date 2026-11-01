@@ -878,6 +878,7 @@ pub enum MemoryCap {
 }
 
 impl Job {
+    #[allow(clippy::too_many_arguments)] // one argument per SpawnRequest field the Job records
     pub fn new(
         id: JobId,
         command: String,

@@ -277,6 +277,7 @@ impl ReviewVerdictTool {
 /// One field's worth of a list argument: a list of strings, or one string for the case a model
 /// writes a single item without wrapping it. Anything else is refused by name, because a field
 /// silently dropped is how a verdict comes to claim evidence it never had.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn list(args: &Value, field: &str) -> Result<Vec<String>, Invocation> {
     let Some(v) = args.get(field) else {
         return Ok(Vec::new());

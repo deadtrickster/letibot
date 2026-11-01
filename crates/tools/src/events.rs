@@ -18,6 +18,7 @@ use crate::edit::ToolEditExcerpt;
 use crate::schema::Access;
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // the payload rides the Finished event once per call; boxing it spreads over every constructor
 pub enum ToolEvent {
     Started {
         /// **Not in W8's shape.** Every other turn-scoped event in §4.5 carries

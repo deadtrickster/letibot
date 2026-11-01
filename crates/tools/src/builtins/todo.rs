@@ -3519,6 +3519,7 @@ fn title_why() -> String {
 /// field rather than saying it does not know it turns a wrong write into a silent one. With
 /// `target` the same check refuses a smuggled `by` — the author is the daemon's to stamp, never
 /// the call's to claim.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>, Invocation> {
     let mut rows = Vec::with_capacity(list.len());
     for (i, t) in list.iter().enumerate() {
@@ -3608,6 +3609,7 @@ fn parse_rows(list: &[Value]) -> Result<Vec<(String, TodoStatus, Vec<TodoNeed>)>
 /// **Nothing here can add or remove a row**: an entry has `content` and `status` and nothing else,
 /// which is the whole of what this field means, and an unknown key is refused by name rather than
 /// ignored — the same rule `parse_rows` keeps one level down.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus)>, Invocation> {
     let Some(v) = v else {
         return Ok(Vec::new());
@@ -3684,6 +3686,7 @@ fn parse_moves(v: Option<&Value>, field: &str) -> Result<Vec<(String, TodoStatus
 ///
 /// `None` is a backend with no process host: there is no table to read, and nothing is changed —
 /// the [`parse_need`] rule that this layer does not check what it cannot see.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn resolve_job_needs(
     rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
     jobs: Option<&[crate::exec::JobView]>,
@@ -3745,6 +3748,7 @@ fn resolve_job_needs(
 /// of this session and IS one of this session's children becomes a `child` need, because a
 /// subagent settles through the same sink and the model may well have called it a job. A session
 /// id is never touched: it is the handle, and the board's readers answer for it.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn resolve_child_needs(
     rows: &mut [(String, TodoStatus, Vec<TodoNeed>)],
     children: Option<&dyn ChildTodos>,
@@ -3816,6 +3820,7 @@ fn job_handle_shaped(name: &str) -> bool {
 /// one here would need a fact this layer does not hold, and a refusal invented from a guess is worse
 /// than the sentence the daemon writes. What IS refused here is a name that is EMPTY, because an
 /// empty name waits for nothing while saying it waits — a thing this layer can see for itself.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation> {
     let where_ = format!("entry {}'s need {}", entry + 1, at + 1);
     let named = |content: &str| -> Result<TodoNeed, Invocation> {

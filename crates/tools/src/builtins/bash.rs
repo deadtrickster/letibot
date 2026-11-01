@@ -313,6 +313,7 @@ fn slug_arg(args: &Value) -> Option<String> {
 /// and a caller's `wait` holds on the job until it ends. `now` is *tell me the moment it ends*.
 /// `later` is the model PARKING it (a server left running): the result still reaches the model at
 /// its next turn, and a `wait` does not hold for it. Anything else is refused by name.
+#[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
 pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     match args.get("wake") {
         None | Some(Value::Null) => Ok(None),
@@ -1238,6 +1239,7 @@ impl Tool for Bash {
 
 /// How a foreground wait ended: the command's own state, or a head's Ctrl+B moving
 /// it to the background mid-flight.
+#[allow(clippy::large_enum_variant)] // one Promotion per move; boxing it buys nothing
 enum Foreground {
     State(JobState),
     /// A person moved the command to the background from a head. The promotion is

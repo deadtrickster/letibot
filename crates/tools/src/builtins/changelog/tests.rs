@@ -38,6 +38,7 @@ impl Fixture {
         }
     }
 
+    #[allow(clippy::result_large_err)] // Invocation is the failed row the caller shows; boxing it reshapes the tool API
     fn call(&self, args: Value, now: u64) -> Result<String, Invocation> {
         dispatch(self, &args, now)
     }

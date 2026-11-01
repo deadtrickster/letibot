@@ -808,6 +808,7 @@ impl Monitors {
     /// `job` must be the live handle rather than an id, so that a monitor cannot
     /// be declared against a job that does not exist — see [`Probe`]. `repeat`
     /// makes it **continuous**: it re-arms after each firing instead of settling.
+    #[allow(clippy::too_many_arguments)] // a watch is declared in one call; a builder would hide which half is optional
     pub fn declare(
         self: &Arc<Self>,
         name: &str,
