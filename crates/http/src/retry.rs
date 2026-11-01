@@ -348,9 +348,7 @@ impl Ladder {
             );
         }
         if self.policy.retries() == 0 {
-            return format!(
-                "{e} — {what}, and this daemon retries nothing (`--http-retries 0`)",
-            );
+            return format!("{e} — {what}, and this daemon retries nothing (`--http-retries 0`)",);
         }
         if self.failed <= 1 {
             return format!("{e} — {what}, and the ladder stopped after one call");
@@ -419,7 +417,10 @@ mod tests {
         }
         assert_eq!(p.class(&dns()), Class::Transport);
         assert_eq!(p.class(&refused()), Class::Transport);
-        assert_eq!(p.class(&HttpError::Malformed("truncated".into())), Class::Transport);
+        assert_eq!(
+            p.class(&HttpError::Malformed("truncated".into())),
+            Class::Transport
+        );
         // Not retryable: what was sent, was refused.
         for code in [400, 401, 403, 404, 422] {
             assert_eq!(p.class(&status(code)), Class::Refused, "{code}");
@@ -452,7 +453,10 @@ mod tests {
         ] {
             let e = said(429, body);
             assert_eq!(p.class(&e), Class::Refused, "{body}");
-            assert!(p.after(&e, 0).is_none(), "a billing refusal was retried: {body}");
+            assert!(
+                p.after(&e, 0).is_none(),
+                "a billing refusal was retried: {body}"
+            );
             let mut ladder = Ladder::new(p);
             assert!(ladder.failed(&e).is_none());
             let ending = ladder.ending(&e);
@@ -464,7 +468,10 @@ mod tests {
         }
         // The case the 429 exception exists for: requests-per-minute, which is transient by
         // construction.
-        let limit = said(429, r#"{"error":{"type":"requests","message":"Rate limit reached"}}"#);
+        let limit = said(
+            429,
+            r#"{"error":{"type":"requests","message":"Rate limit reached"}}"#,
+        );
         assert_eq!(p.class(&limit), Class::TryAgain);
         assert!(p.after(&limit, 0).is_some());
     }
@@ -530,7 +537,10 @@ mod tests {
         assert!(ladder.failed(&e).is_none());
         let ending = ladder.ending(&e);
         assert!(ending.starts_with("http 401: invalid api key"), "{ending}");
-        assert!(ending.contains("a refusal is not retried (1 call, no waiting)"), "{ending}");
+        assert!(
+            ending.contains("a refusal is not retried (1 call, no waiting)"),
+            "{ending}"
+        );
 
         // And a ladder switched off says so rather than claiming it gave up.
         let mut ladder = Ladder::new(Policy::none());

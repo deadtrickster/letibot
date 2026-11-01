@@ -13746,10 +13746,9 @@ impl Harness {
         let out = (|| -> Result<ReseatReport, HarnessError> {
             let mut sink = CapturingSink::new(self.hub.clone());
             let answerer = Self::answerer(&self.provider, &self.prefix);
-            let mut ladder =
-                letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
-                    self.cfg.http_retries,
-                ));
+            let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
+                self.cfg.http_retries,
+            ));
             let outcome = Self::run_summary_turn(
                 &self.hub,
                 &mut self.engine,
@@ -13974,10 +13973,9 @@ impl Harness {
                     });
                 }
                 let answerer = Self::answerer(&self.provider, &self.prefix);
-                let mut ladder =
-                    letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
-                        self.cfg.http_retries,
-                    ));
+                let mut ladder = letibot_http::retry::Ladder::new(
+                    letibot_http::retry::Policy::new(self.cfg.http_retries),
+                );
                 let outcome = Self::run_summary_turn(
                     &self.hub,
                     &mut self.engine,
@@ -16783,15 +16781,14 @@ impl Harness {
         // failure is said the same way, with the count in it. A compaction that failed on a
         // blip used to end the session's only chance to fold, and the operator read
         // `compaction FAILED: http io: …` with no way to tell one attempt from six.
-        let outcome = run_compaction(engine, session, sink, answerer, ladder).map_err(|e| {
-            match e {
+        let outcome =
+            run_compaction(engine, session, sink, answerer, ladder).map_err(|e| match e {
                 TurnFailure::Http(e) => HarnessError::Endpoint {
                     said: ladder.ending(&e),
                     cause: e,
                 },
                 other => HarnessError::Turn(other),
-            }
-        })?;
+            })?;
         let added: Vec<TranscriptItem> = session.items[mark..].to_vec();
         reconcile_rows(hub, sink, &added);
         Ok(outcome)

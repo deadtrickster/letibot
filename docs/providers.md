@@ -32,9 +32,11 @@ seconds into the first turn as a 401 that names neither.
 
 ### When the model you are on is OUT
 
-A 429 that names a quota, or a 5xx, is not weather: no backoff lifts it, and the
-retry ladder that exists for a server reloading spends a minute finding that out.
-`[fallback]` says where else this box may go, in the order to try:
+A 429 that names money — a quota, a credit balance — is not weather: no backoff
+lifts it, so the retry policy (`crates/http/src/retry.rs`) classes it as a refusal
+and asks once. A 5xx *is* weather, and is waited out. When the model is out and the
+ladder has nothing left to wait for, `[fallback]` says where else this box may go,
+in the order to try:
 
 ```toml
 [fallback]
@@ -44,9 +46,11 @@ models = ["deepseek/deepseek-flash", "dense78"]
 Names are the ones `/models` takes (`provider/model`, a `[model."…"]` fleet name,
 `local`), resolved through the same door the verb uses, so a name here cannot be
 one `/models` would refuse. When the model refuses a round and the ladder has
-nothing left to wait for, the session moves to the first name that can answer and
-the round is taken again there — announced, written to the session row, and shown
-in the header, exactly as `/models` would have done it. `/models` moves it back.
+nothing left to wait for, the session moves to the first name that can answer —
+announced, written to the session row, and shown in the header, exactly as
+`/models` would have done it. **The round is not re-issued there**: a model's first
+request has to follow a user message, so this turn ends with the refusal and the
+next one starts on the model the list names. `/models` moves it back.
 
 **The list is the whole policy.** Empty or absent is the old behaviour: the turn
 fails. Nothing is compiled in, and no second model is guessed at.

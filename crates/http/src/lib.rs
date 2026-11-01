@@ -161,11 +161,11 @@ impl Body {
                             .into(),
                     ));
                 }
-                let size =
-                    usize::from_str_radix(self.size_line.trim().split(';').next().unwrap_or(""), 16)
-                        .map_err(|_| {
-                            HttpError::Malformed(format!("chunk size {:?}", self.size_line))
-                        })?;
+                let size = usize::from_str_radix(
+                    self.size_line.trim().split(';').next().unwrap_or(""),
+                    16,
+                )
+                .map_err(|_| HttpError::Malformed(format!("chunk size {:?}", self.size_line)))?;
                 if size == 0 {
                     self.done = true;
                     return Ok(false);

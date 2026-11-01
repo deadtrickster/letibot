@@ -971,7 +971,13 @@ pub struct Config {
     pub max_tool_rounds: usize,
     /// **How many times a round is RE-attempted when the model endpoint fails**,
     /// after the first try. `0` is none. See `harness::MAX_HTTP_RETRIES`, which is
-    /// the default: six, doubling from a second, about a minute of waiting.
+    /// the default: five, doubling from a second — six calls, 31 seconds of waiting.
+    ///
+    /// **The count is the ladder's length, not its rule.** *What* is retryable lives in
+    /// `letibot_http::retry::Policy` (transport failures, and the statuses a provider uses to
+    /// say *not now*); a refusal — a 400, a 401, a 403, a 404, a 429 that names money — is
+    /// never retried however large this number is. So raising this is a decision about
+    /// patience, and it can no longer turn a permanent refusal into a minute of waiting.
     ///
     /// Retries and not attempts, because the first version of this field was
     /// called `http_attempts` and `1` still retried once — the guard reads

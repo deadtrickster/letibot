@@ -137,8 +137,12 @@ fn endpoint() -> Endpoint {
                         let _ = conn.shutdown(std::net::Shutdown::Both);
                         continue;
                     }
-                    Refusal::Unavailable => answer(&mut conn, 503, "Service Unavailable", UNAVAILABLE),
-                    Refusal::Unauthorized => answer(&mut conn, 401, "Unauthorized", "invalid api key"),
+                    Refusal::Unavailable => {
+                        answer(&mut conn, 503, "Service Unavailable", UNAVAILABLE)
+                    }
+                    Refusal::Unauthorized => {
+                        answer(&mut conn, 401, "Unauthorized", "invalid api key")
+                    }
                     Refusal::NoCredit => answer(&mut conn, 429, "Too Many Requests", NO_CREDIT),
                 }
                 continue;
@@ -445,7 +449,10 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         "a credential the provider refused was asked for again"
     );
     let said = &rec.failed[0];
-    assert!(said.starts_with("http 401: "), "the status reads as itself: {said}");
+    assert!(
+        said.starts_with("http 401: "),
+        "the status reads as itself: {said}"
+    );
     assert!(
         said.contains("a refusal is not retried (1 call, no waiting)"),
         "and the sentence says there were no attempts: {said}"

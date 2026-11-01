@@ -3524,6 +3524,21 @@ in the list now, and the case that fails without them is in
 `a_billing_refusal_is_not_taken_again_and_a_rate_limit_still_is`. The interrupt half above is still
 open.
 
+**The billing half was NOT fixed on the provider path — MEASURED 2026-11-01** (branch
+`agent/what-is-retryable`). The list matches on the body the *policy* is handed, and the provider hands
+it only half of one: `openai.rs` projected `{"error":{"code":"insufficient_quota","message":"You
+exceeded your current quota…"}}` down to the message, so the one machine-readable word naming the case
+was gone one layer above the classifier. A 429 in that shape was taken **six times** on this tree,
+measured through a loopback stub: `crates/harnessd/tests/retry_policy.rs`'s scenario D counted six
+calls before the fix and one after. `openai.rs` now keeps the provider's `code` beside its message, and
+`crates/provider/tests/fake_provider.rs`'s `a_refusal_keeps_the_code_that_says_what_it_is` pins it.
+
+The rule itself moved out of `harnessd` the same day: `letibot_http::retry` (`crates/http/src/retry.rs`)
+is now the one answer to *what is retryable, and for how long* — three classes, one bounded ladder (five
+retries, 1/2/4/8/16 s, six calls, 31 s), and a sentence for each ending, so `FAILED — ` carries the
+count. `refused_for_want_of_credit` and `http_retry_after` no longer exist. The interrupt half is still
+open, and it is now a question about `sleep_unless_closed` rather than about the ladder.
+
 ## R18 — every hand-rolled lexer replaced by rano + tree-sitter — **given 2026-09-20**
 
 > lets extend todo with this task - completely replace handrolled code with rano and
