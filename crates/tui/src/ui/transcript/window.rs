@@ -7,6 +7,10 @@ use crate::ui::*;
 use letibot_sessionlog::view::{CallState, TurnState};
 use letibot_transcript::TranscriptItem;
 
+/// A note's row in the window, and the popup a click on it opens: the popup's text with the
+/// title and role it carries.
+type DrawnNote = (Vec<String>, Option<(String, (String, rano::style::Role))>);
+
 impl App {
     /// **The conversation while a switch is in flight** — the wait, and nothing of the session
     /// being left.
@@ -921,6 +925,8 @@ impl App {
     /// destructure below deliberately leaves `turn` out (the pane later needs it whole),
     /// so this is the one place the walk can see it — and it must, because a call in
     /// flight is not a row and the counts have to carry it.
+    // The walk's inputs are the frame's own, each read once before the disjoint borrow it takes.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn walk_history(
         &mut self,
         cfg: &RenderConfig,
@@ -1025,10 +1031,7 @@ impl App {
                     // `app::burst_at` for the window and `ui::panes::notes::burst_card` for the
                     // words.
                     let burst = crate::app::burst_at(notes, dismissed, read_marks, *note_upto);
-                    let drawn: Option<(
-                        Vec<String>,
-                        Option<(String, (String, rano::style::Role))>,
-                    )> = match &burst {
+                    let drawn: Option<DrawnNote> = match &burst {
                         crate::app::Burst::Drawn => None,
                         // **Every note but a pane's ending is a card's one line** (R89); a
                         // click on it opens the text whole: where it is, kept for the click

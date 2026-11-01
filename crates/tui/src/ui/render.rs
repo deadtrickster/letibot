@@ -208,15 +208,15 @@ pub fn user_image(item_id: &str, part: usize) -> Option<(u32, Option<u32>, Optio
         .copied()
 }
 
+/// **A picture placed in cells**: its image id, the box it occupies, and the pixels it was cut
+/// from, absent when the upload pass could not measure them.
+pub(crate) type PlacedPicture = (u32, u32, u32, (Option<u32>, Option<u32>));
+
 /// **The cell box of a user row's picture at this width** — the thumbnail under the chip, the
 /// enlarged picture in the popup, and the same function the upload pass places it with, so the rows
 /// a renderer draws always match the placement the terminal holds. The pixels come back with it
 /// because the popup's box is cut from them and re-cutting needs the aspect.
-pub(crate) fn user_picture_box(
-    item_id: &str,
-    part: usize,
-    width: usize,
-) -> Option<(u32, u32, u32, (Option<u32>, Option<u32>))> {
+pub(crate) fn user_picture_box(item_id: &str, part: usize, width: usize) -> Option<PlacedPicture> {
     let (id, w, h) = user_image(item_id, part)?;
     let (cols, rows) =
         rano::term::graphics::image_cells(w, h, rano::term::graphics::image_box(width));

@@ -921,6 +921,8 @@ impl<'a> Said<'a> {
 /// else the pane has not already said, and then the REASON, which is what the row is for. The
 /// reason is placed after the fixed fields and given every column they leave, so a long one is
 /// cut at the pane's edge rather than crowding the row out of the pane.
+// A row's parts are its caller's own facts; grouping them would name a shape nothing else uses.
+#[allow(clippy::too_many_arguments)]
 fn row_line(
     picked: bool,
     mark: &str,

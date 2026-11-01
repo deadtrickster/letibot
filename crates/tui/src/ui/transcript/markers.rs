@@ -952,6 +952,8 @@ pub(crate) fn marker_painted(
     crate::ui::render::row(&marker.line(), cfg.palette())
 }
 
+// A marker is drawn from the run's own facts, each already computed by the caller that owns it.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hidden_run_marker(
     items: &[SnapshotItem],
     start: usize,

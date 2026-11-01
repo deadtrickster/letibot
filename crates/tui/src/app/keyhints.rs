@@ -37,6 +37,10 @@ pub(crate) struct KeyHint {
     pub(crate) command: bool,
 }
 
+/// One key inside a hint segment: its column, its width, the bytes a press sends, and whether
+/// the whole word is a command.
+type Piece = (usize, usize, Vec<u8>, bool);
+
 /// **One frame row, and the key hints read off it** — the cache [`App::scan_hints`] keeps so an
 /// unchanged row is not read twice. `key` is whether the row was skipped and whether it is the
 /// editor's frame, which can change while the text does not.
@@ -243,7 +247,7 @@ pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
             continue;
         };
         // `↑↓` and `pgup/pgdn`: a run of keys packed into one word.
-        let pieces = |w: &str, at: usize| -> Vec<(usize, usize, Vec<u8>, bool)> {
+        let pieces = |w: &str, at: usize| -> Vec<Piece> {
             if let Some((l, r)) = w.split_once('/')
                 && !w.starts_with('/')
                 && let (Some(lb), Some(rb)) = (key_bytes(l), key_bytes(r))
@@ -278,8 +282,7 @@ pub(crate) fn scan_row(y: usize, cs: &[char]) -> Vec<KeyHint> {
         if letter {
             letters.push(out.len());
         }
-        let keys_only: Vec<Vec<(usize, usize, Vec<u8>, bool)>> =
-            words.iter().map(|(at, w)| pieces(w, *at)).collect();
+        let keys_only: Vec<Vec<Piece>> = words.iter().map(|(at, w)| pieces(w, *at)).collect();
         if keys_only.iter().all(|p| !p.is_empty()) || first_keys.len() > 1 {
             for (at, w, bytes, command) in keys_only.into_iter().flatten() {
                 out.push(KeyHint {

@@ -6,6 +6,10 @@ use crate::ui::render::{RenderConfig, visible_width};
 use letibot_sessionlog::view::{CallState, SnapshotItem, TurnState, Warned};
 use letibot_transcript::{TranscriptItem, UserPart};
 
+/// One row the backward walk built: its index, its class, its lines, the marker it introduced,
+/// and whether that marker joins the prose above rather than standing alone.
+type Built = (usize, RowClass, Vec<String>, Option<Marker>, bool);
+
 impl App {
     /// Throw the rendered history away; it is rebuilt from `items` and `notes`
     /// on the next frame. One place, because forgetting one of the two cursors
@@ -329,12 +333,12 @@ impl App {
         // own sentence introduces it. Two facts rather than one, because a marker that stands
         // alone still needs the separator's blank — which is the operator's *"add an empty
         // line between them"* — and a marker that joins must not have it.
-        let mut built: Vec<(usize, RowClass, Vec<String>, Option<Marker>, bool)> = Vec::new();
+        let mut built: Vec<Built> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
         let newest_payload = self.newest_payload_row();
         let mut k = self.hist_floor;
-        let covered = |built: &[(usize, RowClass, Vec<String>, Option<Marker>, bool)]| {
+        let covered = |built: &[Built]| {
             self.hist_lines.len()
                 + built
                     .iter()

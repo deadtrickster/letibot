@@ -502,7 +502,10 @@ pub(crate) enum Note {
     /// §13.2b: a settled decision *"renders as its outcome, not as an open
     /// prompt"* — and not as nothing either, which is what it rendered as before.
     /// A tool that was refused has to look refused.
-    Decided(SettledDecision),
+    ///
+    /// Boxed because a decision is the widest thing a note carries and a session keeps every
+    /// note it has ever filed.
+    Decided(Box<SettledDecision>),
     /// **A question the person answered** — a faint line, and not a verdict.
     ///
     /// [`Note::Decided`] is rano's decision note, and its four words are a
@@ -577,7 +580,7 @@ impl Note {
     /// permission words live.
     pub(crate) fn settled(d: SettledDecision) -> Note {
         if d.kind != "question" {
-            return Note::Decided(d);
+            return Note::Decided(Box::new(d));
         }
         // `kind identity`, or the kind alone: `gate:timeout` has an identity and a
         // bare `subagent` does not, and an empty quoted name is worse than no name.

@@ -313,7 +313,9 @@ fn a_row_number_marks_the_ask_and_the_quit_card_and_enter_answers() {
 /// rather than on somebody's screen.
 #[test]
 fn no_pane_lets_the_wheel_through_to_the_conversation() {
-    let panes: [(&str, fn(&mut App)); 9] = [
+    /// One pane: the name the failure prints, and how a test opens it.
+    type Pane = (&'static str, fn(&mut App));
+    let panes: [Pane; 9] = [
         ("help", |a| a.push_surface(Surface::Help)),
         ("picker", |a| a.push_surface(Surface::Picker)),
         ("mode_picker", |a| a.pick = Some(Pick::Mode)),

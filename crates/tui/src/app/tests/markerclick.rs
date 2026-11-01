@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// One chord under test: its label and the two keys (forward, back) it stands for.
+type Chord<'a> = (&'a str, Box<dyn Fn() -> Key>, Box<dyn Fn() -> Key>);
+
 /// The shape of `a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence`: prose ending in
 /// a colon, one reasoning row, four tool results — at the conversation rung, one marker.
 fn a_run() -> App {
@@ -260,7 +263,7 @@ fn opened_run_scrolls(clause: &str, shown: &str) {
     } else {
         "CONTENTS-3"
     };
-    let mut keys: Vec<(&str, Box<dyn Fn() -> Key>, Box<dyn Fn() -> Key>)> = vec![
+    let mut keys: Vec<Chord> = vec![
         (
             "the wheel",
             Box::new(move || Key::Wheel {
