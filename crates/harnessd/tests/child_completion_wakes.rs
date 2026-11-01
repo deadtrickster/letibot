@@ -281,10 +281,11 @@ impl Parent {
     /// note. `None` until the round that made the call has landed.
     fn spawned(&self) -> Option<String> {
         self.harness().items().iter().find_map(|i| match i {
-            TranscriptItem::ToolResult { name, outcome, .. } if name == "task" => match outcome {
-                ToolOutcome::Backgrounded { handle, .. } => Some(handle.clone()),
-                _ => None,
-            },
+            TranscriptItem::ToolResult {
+                name,
+                outcome: ToolOutcome::Backgrounded { handle, .. },
+                ..
+            } if name == "task" => Some(handle.clone()),
             _ => None,
         })
     }

@@ -99,7 +99,13 @@ use std::path::PathBuf;
 ///      was written on, and the RIGHT answer on any other;
 ///   2. the literal path, so a box with neither still gets a concrete name in the
 ///      message rather than an empty string.
-///
+pub fn gguf_path() -> PathBuf {
+    gguf_path_from(
+        std::env::var_os("LETIBOT_VOCAB_GGUF"),
+        std::env::var_os("HOME"),
+    )
+}
+
 /// **The GLM vocabulary, found the way [`gguf_path`] finds the default one**: under `$HOME`
 /// first, then the Linux box's literal path. Four tests carried that literal as a constant,
 /// so on any other box they could only ever skip — or, under `LETIBOT_REQUIRE_APPARATUS`,
@@ -113,13 +119,6 @@ pub fn glm_gguf_path() -> PathBuf {
         .map(|h| PathBuf::from(h).join(UNDER_HOME))
         .filter(|p| p.is_file())
         .unwrap_or_else(|| PathBuf::from(LITERAL))
-}
-
-pub fn gguf_path() -> PathBuf {
-    gguf_path_from(
-        std::env::var_os("LETIBOT_VOCAB_GGUF"),
-        std::env::var_os("HOME"),
-    )
 }
 
 /// [`gguf_path`] with `LETIBOT_VOCAB_GGUF` and `HOME` handed in rather than read, so its test

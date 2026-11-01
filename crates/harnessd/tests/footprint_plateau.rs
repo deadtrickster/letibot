@@ -707,9 +707,8 @@ fn the_full_probe() {
     let heap_grew = (heap_end.saturating_sub(heap0)) as f64;
     let heap_per_row = heap_grew / appended.max(1.0);
     println!(
-        "VERDICT 1 — the heap holds the work and nothing else ({} of heap per byte of row, and \
+        "VERDICT 1 — the heap holds the work and nothing else ({heap_per_row:.2} of heap per byte of row, and \
          1.75× is the CI tolerance): {}",
-        format!("{heap_per_row:.2}"),
         if heap_per_row <= 1.75 {
             "yes"
         } else {

@@ -2010,23 +2010,25 @@ pub(crate) const CELLS_OPEN: &str = "\u{27e6}screen ";
 pub(crate) const CELLS_MARK_END: &str = "\u{27e7}";
 pub(crate) const CELLS_CLOSE: &str = "\u{27e6}end screen\u{27e7}";
 
-/// **Every verb the dispatcher acts on, checked against [`SLASH_COMMANDS`].**
-///
-/// # Why a test and not a derivation
-///
-/// The requirement is that the completion table and the dispatcher must not be two lists
-/// that agree by maintenance. In Rust a `match` is not reflectable, so the two possible
-/// mechanisms are *one derived from the other* (unavailable) and *a test that fails when
-/// they diverge* (this). It reads the source of [`App::command`] and names every verb it
-/// finds, so adding an arm without listing it fails the suite rather than becoming a verb
-/// nobody is offered.
-///
-/// **What it deliberately does not check.** The one-letter and short spellings (`?`, `h`,
-/// `q`, `r`, `s`, `t`, `v`, `i`) are *aliases*: the table's own comment says offering both
-/// spellings doubles the list to teach the same actions, and the dispatcher keeps taking
-/// them. And the daemon's verbs are not this head's to enumerate — they arrive on a
-/// `SettingRow` (`daemon.verbs`), because a head that guessed at them is precisely how
-/// `/gate` and `/flowy` came to be missing while working perfectly.
+// **Every verb the dispatcher acts on, checked against [`SLASH_COMMANDS`].**
+//
+// # Why a test and not a derivation
+//
+// The requirement is that the completion table and the dispatcher must not be two lists
+// that agree by maintenance. In Rust a `match` is not reflectable, so the two possible
+// mechanisms are *one derived from the other* (unavailable) and *a test that fails when
+// they diverge* (this). It reads the source of [`App::command`] and names every verb it
+// finds, so adding an arm without listing it fails the suite rather than becoming a verb
+// nobody is offered.
+//
+// **What it deliberately does not check.** The one-letter and short spellings (`?`, `h`,
+// `q`, `r`, `s`, `t`, `v`, `i`) are *aliases*: the table's own comment says offering both
+// spellings doubles the list to teach the same actions, and the dispatcher keeps taking
+// them. And the daemon's verbs are not this head's to enumerate — they arrive on a
+// `SettingRow` (`daemon.verbs`), because a head that guessed at them is precisely how
+// `/gate` and `/flowy` came to be missing while working perfectly.
+//
+// The test itself is `tests::commands`'s, and it is where the same reasoning lives now.
 
 impl App {
     pub fn new(cfg: RenderConfig) -> Self {
@@ -2447,63 +2449,64 @@ impl App {
     pub const GUTTER: usize = 2;
 }
 
-/// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
-///
-/// The operator, having seen it built: *"I also now understand i wat to keep only `[<n> tool
-/// calls, <m> thinking lines]`, right after `:`"*. So the verbs, the distinct targets and the
-/// whole question of a summary line are **superseded** — they were a question asked and
-/// answered, and the answer is that a marker with prose on both sides needs to carry
-/// neither. The turn's shape is narration → work → report, and the counts are the only fact
-/// the two neighbours do not already give.
-///
-/// # It is punctuation inside a sentence, not an entry in a list
-///
-/// The same message: *"so I do want to read it as a prose … in a way … but structured."*
-/// Its position is therefore fixed — **glued to the end of the narration line that points at
-/// the work**, with a space between the colon and the bracket:
-///
-/// ```text
-/// …and the one where R22's arithmetic has to give: [11 tool calls, 246 thinking lines]
-/// ```
-///
-/// The structure is what the brackets and the counts GIVE that sentence; it is not something
-/// imposed on it by a row. **A marker drawn as its own row fails this test even when its
-/// text is correct** — which is exactly what the eight-marker screen was. So the two walks
-/// do not emit this as a line of its own; they append it to the last line of the row above,
-/// and only when that row is [`RowClass::Speech`] — the class this file already has for
-/// *prose the reader can see*. A run with no prose above it (the first row of a transcript, a
-/// tail walk that starts inside one) has nothing to continue, and then it stands alone:
-/// counts with no sentence are still the fact, and a marker that vanished would be the
-/// elision this document refuses.
-///
+// **The marker: the two counts, and nothing else** — R37 AMENDED, final shape.
+//
+// The operator, having seen it built: *"I also now understand i wat to keep only `[<n> tool
+// calls, <m> thinking lines]`, right after `:`"*. So the verbs, the distinct targets and the
+// whole question of a summary line are **superseded** — they were a question asked and
+// answered, and the answer is that a marker with prose on both sides needs to carry
+// neither. The turn's shape is narration → work → report, and the counts are the only fact
+// the two neighbours do not already give.
+//
+// # It is punctuation inside a sentence, not an entry in a list
+//
+// The same message: *"so I do want to read it as a prose … in a way … but structured."*
+// Its position is therefore fixed — **glued to the end of the narration line that points at
+// the work**, with a space between the colon and the bracket:
+//
+// ```text
+// …and the one where R22's arithmetic has to give: [11 tool calls, 246 thinking lines]
+// ```
+//
+// The structure is what the brackets and the counts GIVE that sentence; it is not something
+// imposed on it by a row. **A marker drawn as its own row fails this test even when its
+// text is correct** — which is exactly what the eight-marker screen was. So the two walks
+// do not emit this as a line of its own; they append it to the last line of the row above,
+// and only when that row is [`RowClass::Speech`] — the class this file already has for
+// *prose the reader can see*. A run with no prose above it (the first row of a transcript, a
+// tail walk that starts inside one) has nothing to continue, and then it stands alone:
+// counts with no sentence are still the fact, and a marker that vanished would be the
+// elision this document refuses.
+//
+// The drawing that this describes is `ui::transcript`'s; the note stays here because the
+// decision is about the row model rather than about a painter.
 
-/// The user's own message: an accent bar, a raised block, and the time it was sent.
-///
-/// The three things opencode and grok-build both do and this head did not. It used
-/// to be `› {line}` in bold, which is a *prefix* rather than a block: at a glance
-/// down a long conversation the operator's own words had the same shape as
-/// everything else, and finding "what did I actually ask" meant reading.
-///
-/// - **The bar** (`▌`) is the signal that survives with no colour at all and
-///   survives a copy-paste, which is the same argument the reasoning rail makes.
-/// - **The block** sets a background *and* a foreground. The head's own note on
-///   the composer rejects a raised background because "a dark block is either
-///   invisible or unreadable depending on which half of the pair lands" — which is
-///   true of a background set alone, and is fixed by setting both.
-/// - **The timestamp** is right-aligned, from the log's own clock, and is
-///   **omitted entirely when the row carries no `ts`** — a snapshot from a log
-///   recorded before the field existed. The same rule as a replayed tool call
-///   showing no duration.
+// The user's own message: an accent bar, a raised block, and the time it was sent.
+//
+// The three things opencode and grok-build both do and this head did not. It used
+// to be `› {line}` in bold, which is a *prefix* rather than a block: at a glance
+// down a long conversation the operator's own words had the same shape as
+// everything else, and finding "what did I actually ask" meant reading.
+//
+// - **The bar** (`▌`) is the signal that survives with no colour at all and
+//   survives a copy-paste, which is the same argument the reasoning rail makes.
+// - **The block** sets a background *and* a foreground. The head's own note on
+//   the composer rejects a raised background because "a dark block is either
+//   invisible or unreadable depending on which half of the pair lands" — which is
+//   true of a background set alone, and is fixed by setting both.
+// - **The timestamp** is right-aligned, from the log's own clock, and is
+//   **omitted entirely when the row carries no `ts`** — a snapshot from a log
+//   recorded before the field existed. The same rule as a replayed tool call
+//   showing no duration.
 
-/// What kind of row this is, for the one question the layout asks about its
-/// neighbours: does a blank line belong between them.
-///
-/// Activity rows **pack**. A run of tool cards is one block and reads as one; a
-/// blank line between each of them was costing a third of the vertical budget to
-/// separate things that are already separated by a glyph in the first column. Air
-/// goes where the *kind* changes — around the question, around the answer, around
-/// a warning — because that is where the reader's attention has to move.
-///
+// What kind of row this is, for the one question the layout asks about its
+// neighbours: does a blank line belong between them.
+//
+// Activity rows **pack**. A run of tool cards is one block and reads as one; a
+// blank line between each of them was costing a third of the vertical budget to
+// separate things that are already separated by a glyph in the first column. Air
+// goes where the *kind* changes — around the question, around the answer, around
+// a warning — because that is where the reader's attention has to move.
 
 /// Visible width of a rendered screen line. Re-exported so a test can assert the
 /// screen fits.

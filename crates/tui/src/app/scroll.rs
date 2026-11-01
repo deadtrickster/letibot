@@ -1115,11 +1115,11 @@ impl App {
     /// What it cannot do is cover a deep park against a stream that keeps arriving,
     /// which is where the operator sat: *"scrolled up and couldnt scroll back with mouse
     /// - stuck at 190 lines lol. Esc worked"*, and the narrowing — *"to trigger
-    /// conversation must be scrolled up far enough"*. Two mechanisms measured on the
-    /// failing fixture: a notch landing between an arrival and the next frame found the
-    /// span table wiped and moved **nothing** (fixed in [`App::render_held`]); and with
-    /// the spans live, three lines a notch is outrun by two arriving rows — the notch
-    /// moved every time and the count still grew, 191 to 319 over thirty-two notches.
+    ///   conversation must be scrolled up far enough"*. Two mechanisms measured on the
+    ///   failing fixture: a notch landing between an arrival and the next frame found the
+    ///   span table wiped and moved **nothing** (fixed in [`App::render_held`]); and with
+    ///   the spans live, three lines a notch is outrun by two arriving rows — the notch
+    ///   moved every time and the count still grew, 191 to 319 over thirty-two notches.
     ///
     /// So the walk and the run are separated by the one fact that makes the difference:
     /// **whether the transcript moved under the reader**. On a still transcript the

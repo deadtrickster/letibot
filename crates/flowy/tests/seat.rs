@@ -534,8 +534,10 @@ fn a_session_tag_routes_to_exactly_one_session_and_the_others_count_it() {
     let node = FakeNode::start();
     let d = tmp("tag");
     let seat = Seat::open(creds(&node, None), Some(&d), Some(&d)).unwrap();
-    let mut all = Attention::default();
-    all.default = Level::All;
+    let all = Attention {
+        default: Level::All,
+        ..Default::default()
+    };
     let a = seat.attach_as("s-1", "planner", all.clone());
     let b = seat.attach_as("s-2", "coder", all);
 

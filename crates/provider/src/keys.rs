@@ -411,9 +411,9 @@ pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unre
 /// every attempt, the ladder took the round again six times over 63 s, and the turn
 /// was then recorded as FAILED. Their ruling on it — *"it is a standard thing to do
 /// - limits, 5xx, etc. we must be able to change models like for the main session"*
-/// — is the behaviour this key exists for, and there was nowhere to write it: the
-/// file has a key per provider, a `[default]`, prices and per-model profiles, and
-/// **nothing that says what to do when the model you are on cannot answer**.
+///   — is the behaviour this key exists for, and there was nowhere to write it: the
+///   file has a key per provider, a `[default]`, prices and per-model profiles, and
+///   **nothing that says what to do when the model you are on cannot answer**.
 ///
 /// # Why a list, and why not in code
 ///

@@ -4315,9 +4315,9 @@ impl Store {
             .optional()?)
     }
 
-    /// Escape hatch for the tests below and for `EXPLAIN`. Read-only by
-    /// convention only, which is why the append-only guarantees live in triggers
-    /// rather than in whoever holds this reference.
+    // Escape hatch for the tests below and for `EXPLAIN`. Read-only by
+    // convention only, which is why the append-only guarantees live in triggers
+    // rather than in whoever holds this reference.
     // ----------------------------------------------------------- adjudication
     ///
     /// Record one decision. Called when the gate acts, not when the operator

@@ -318,8 +318,10 @@ mod tests {
 
     #[test]
     fn mentions_turns_the_broadcast_clause_off() {
-        let mut a = Attention::default();
-        a.default = Level::Mentions;
+        let a = Attention {
+            default: Level::Mentions,
+            ..Default::default()
+        };
         assert!(
             !a.wakes_for(&me(), &chat("general", "OP", "user", "", "hello all"))
                 .wakes()
@@ -332,16 +334,20 @@ mod tests {
 
     #[test]
     fn the_broadcast_clause_is_a_switch_not_a_property_of_addressed() {
-        let mut a = Attention::default();
-        a.wake_on_human_broadcast = false;
+        let a = Attention {
+            wake_on_human_broadcast: false,
+            ..Default::default()
+        };
         let e = chat("general", "OP", "user", "", "who is here?");
         assert!(!a.wakes_for(&me(), &e).wakes());
     }
 
     #[test]
     fn your_own_messages_never_wake_you() {
-        let mut a = Attention::default();
-        a.default = Level::All;
+        let a = Attention {
+            default: Level::All,
+            ..Default::default()
+        };
         assert!(
             !a.wakes_for(&me(), &chat("general", "A1", "agent", "", "me"))
                 .wakes()
@@ -413,8 +419,10 @@ mod tests {
 
     #[test]
     fn outside_the_focus_only_what_names_you() {
-        let mut a = Attention::default();
-        a.default = Level::All;
+        let mut a = Attention {
+            default: Level::All,
+            ..Default::default()
+        };
         a.focus = Some("Lab".into());
         let mut e = chat("general", "OP", "user", "", "flowy's general");
         e.project = Some("flowy".into());
@@ -431,8 +439,10 @@ mod tests {
         assert_eq!(a.loosest(), Level::Addressed);
         a.set_room("general", Level::All);
         assert_eq!(a.loosest(), Level::All);
-        let mut m = Attention::default();
-        m.default = Level::Mentions;
+        let mut m = Attention {
+            default: Level::Mentions,
+            ..Default::default()
+        };
         m.threads.insert("T".into());
         assert_eq!(m.loosest(), Level::All);
         assert_eq!(Level::Off.server_filter(), Level::Mentions.server_filter());

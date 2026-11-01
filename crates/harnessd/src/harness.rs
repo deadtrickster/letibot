@@ -3520,11 +3520,6 @@ fn latest_box_stop(store: &Store) -> crate::restart::Stopped {
     }
 }
 
-/// **The most recent daemon stop in the store, whatever session's rows named it.**
-///
-/// The down time is a fact about the BOX: three restarts in an hour — the operator's
-/// *"i restarted immediately"* — measured 1 h 11 m because the notice asked only the
-
 impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools,
     /// render the stable prefix, and record all of it.
@@ -7720,13 +7715,13 @@ impl Harness {
         self.runtime.gate.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Point this session's guard at `endpoint`, build it and attach it.
-    ///
-    /// For `/supervise HOST:PORT`, which is the override and not the normal path —
-    /// the normal path is `[gatekeeper] endpoint` in the operator's config, read at
-    /// daemon start. Nothing is written here: config is the operator's file to edit,
-    /// and a harness that rewrote it behind them would make a one-off override
-    /// permanent without being asked.
+    // Point this session's guard at `endpoint`, build it and attach it.
+    //
+    // For `/supervise HOST:PORT`, which is the override and not the normal path —
+    // the normal path is `[gatekeeper] endpoint` in the operator's config, read at
+    // daemon start. Nothing is written here: config is the operator's file to edit,
+    // and a harness that rewrote it behind them would make a one-off override
+    // permanent without being asked.
 
     /// **Close out tool calls no round owns any more, and look in the logs to say why.**
     ///
@@ -7773,10 +7768,9 @@ impl Harness {
         let mut results: Vec<TranscriptItem> = Vec::new();
         for (call_id, name) in abandoned {
             let payload = format!(
-                "**no result — the executor is gone.**\n\n{}                 \n\nThe call was dispatched and nothing ever answered it. The daemon's tool thread \
+                "**no result — the executor is gone.**\n\n`{name}` (call `{call_id}`)                 \n\nThe call was dispatched and nothing ever answered it. The daemon's tool thread \
                  and the call's process were both gone by the time this was noticed, and the round \
                  had already ended, so there was nothing left to interrupt.\n\n{tail}",
-                format!("`{name}` (call `{call_id}`)"),
             );
             results.push(TranscriptItem::ToolResult {
                 call_id: call_id.clone(),
@@ -22394,6 +22388,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
 ///   "settled" cannot mean "gone". A child whose thread has ended is skipped: there is no
 ///   reader left for an interrupt, and a stop reported for one would be a claim with nothing
 ///   behind it.
+///
 /// **The children `me` started that have not answered yet** — still on their task. Not
 /// [`stoppable_children`]: a child that has answered and sits idle between turns has not exited,
 /// and holding for it would hold for ever. What the hold waits on (a child with live children is

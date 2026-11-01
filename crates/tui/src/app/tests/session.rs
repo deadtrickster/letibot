@@ -2151,7 +2151,7 @@ fn the_header_follows_a_mid_session_model_switch() {
 /// Two honesty rules, both the same rules the greening keeps:
 /// * **No ask when the daemon did not name the keyless row** (`models.keys` absent is *no
 ///   greening*, never *no keys*), so an older daemon never has its switches blocked behind
-/// a prompt for a key the box may hold.
+///   a prompt for a key the box may hold.
 /// * **`local` never asks** — it needs no credential, and `choice_ready` says so.
 #[test]
 fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {

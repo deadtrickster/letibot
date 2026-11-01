@@ -99,7 +99,7 @@ fn workspace(tag: &str) -> PathBuf {
 /// This is the line `crates/harnessd/src/cli.rs` runs at startup, with the same `Weak` — the
 /// registry owns the driver and the driver reads the registry's wiring, so an `Arc` here would
 /// be the cycle `Terminals`' own field comment names.
-fn daemon(session: &str, workspace: &PathBuf) -> Arc<Registry> {
+fn daemon(session: &str, workspace: &std::path::Path) -> Arc<Registry> {
     let registry = Registry::new();
     registry
         .create(

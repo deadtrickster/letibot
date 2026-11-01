@@ -466,10 +466,10 @@ pub trait Reviewer {
     ///
     /// The operator's argument for it, verbatim: *"even if gatekeeper session dies or didnt start
     /// - the queue tooling can send a message back to the main project session and projects will
-    /// gate and merge on their own"*, *"because their code lives inside them in worktrees
-    /// anyway"*. So the interface between the two halves is a BRANCH and not a session: the
-    /// gatekeeper's contribution is a verdict, and the gate and the merge are git and a shell —
-    /// which a project can run itself, from the worktree it already has.
+    ///   gate and merge on their own"*, *"because their code lives inside them in worktrees
+    ///   anyway"*. So the interface between the two halves is a BRANCH and not a session: the
+    ///   gatekeeper's contribution is a verdict, and the gate and the merge are git and a shell —
+    ///   which a project can run itself, from the worktree it already has.
     ///
     /// `why` is the queue's own words for what happened (never started, died, or an ask that
     /// failed), and it is passed rather than re-derived: the door does not read the queue's

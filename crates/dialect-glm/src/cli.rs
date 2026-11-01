@@ -23,7 +23,7 @@
 //!     caller decides whether the process ends. A library that exits takes the
 //!     decision away from whoever called it, and the dispatcher has its own exit
 //!     convention to honour.
-
+//!
 //! (moved) `letibot-render` — the seam between the Rust renderers and the Python fidelity
 //! gate.
 //!

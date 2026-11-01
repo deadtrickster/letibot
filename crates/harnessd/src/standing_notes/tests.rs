@@ -443,16 +443,16 @@ fn carried_reads_the_section_off_a_composed_prompt() {
 ///
 /// The operator's ruling, 2026-10-09: *"The read tool should carry a short note
 /// - 'it is a historical note, might be outdated'"* — and the injected block is
-/// the highest-traffic read of all, delivered at session open and every base
-/// rebuild whether or not the tool is ever called. The envelope also had to
-/// change for a second reason: the project's `.letibot/notes/` is now writable
-/// by sessions through the `notes` tool, so a blanket "the operator maintains
-/// these" stopped being true. The authorship split is by directory — the tell
-/// that keeps a note the model wrote from reading as an instruction the operator
-/// gave — and the caveat says what a note is: a record of what was true when
-/// written, not a fact about now. The last sentence is the third reason: the
-/// block is now verbatim *and* indexed at once, and a reader who does not know
-/// what `indexed` means will read a heading as the file's whole content.
+///   the highest-traffic read of all, delivered at session open and every base
+///   rebuild whether or not the tool is ever called. The envelope also had to
+///   change for a second reason: the project's `.letibot/notes/` is now writable
+///   by sessions through the `notes` tool, so a blanket "the operator maintains
+///   these" stopped being true. The authorship split is by directory — the tell
+///   that keeps a note the model wrote from reading as an instruction the operator
+///   gave — and the caveat says what a note is: a record of what was true when
+///   written, not a fact about now. The last sentence is the third reason: the
+///   block is now verbatim *and* indexed at once, and a reader who does not know
+///   what `indexed` means will read a heading as the file's whole content.
 #[test]
 fn the_envelope_splits_authorship_and_carries_the_historical_caveat() {
     let ws = dir("envelope");

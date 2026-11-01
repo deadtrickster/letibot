@@ -352,8 +352,10 @@ fn a_click_on_the_header_or_a_seam_acts_on_nothing() {
 fn a_drag_over_the_window_selects_and_copies_its_lines() {
     let mut a = long_result(97);
     // The terminal that speaks OSC 52 — the copy's door, and the reason a drag is a copy at all.
-    let mut features = rano::term::Features::default();
-    features.clipboard = true;
+    let features = rano::term::Features {
+        clipboard: true,
+        ..Default::default()
+    };
     a.set_features(features);
     a.key(Key::CtrlV);
     let screen = a.screen(100, 47).join("\n");

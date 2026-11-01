@@ -430,10 +430,10 @@ mod tests {
     /// **Starting a background job is progress**, and the operator's own session is where it
     /// was measured: four rounds in a row, each backgrounding one job, scored as four STALLED
     /// rounds and drew the nudge —
-
+    ///
     ///     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
     ///     not already seen (4 backgrounded)
-
+    ///
     /// Four jobs started, and the turn one round from being stopped for looping.
     ///
     /// The cause was `is_effect`, which is the intent ledger's predicate and answers a

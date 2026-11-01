@@ -215,10 +215,10 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
     }
 }
 
-/// **The half of §3.1 that is easy to get wrong** now lives with the functions, in
-/// `letibot_ui::text`'s own tests — a single-line sanitiser applied to a document
-/// collapses every paragraph, and the pair of functions is where that is pinned. It
-/// used to be duplicated here.
+// **The half of §3.1 that is easy to get wrong** now lives with the functions, in
+// `letibot_ui::text`'s own tests — a single-line sanitiser applied to a document
+// collapses every paragraph, and the pair of functions is where that is pinned. It
+// used to be duplicated here.
 
 /// **R13: the number beside a running call comes from a clock that keeps moving.**
 ///

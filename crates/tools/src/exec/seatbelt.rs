@@ -1069,8 +1069,8 @@ fn snippet(s: &str) -> String {
     }
 }
 
-/// The `Piece` form is unneeded by a local spawn — a policy has no far side — and the
-/// [`Confinement`] default is exactly right for it, so nothing here overrides it.
+// The `Piece` form is unneeded by a local spawn — a policy has no far side — and the
+// [`Confinement`] default is exactly right for it, so nothing here overrides it.
 
 #[cfg(test)]
 mod tests {

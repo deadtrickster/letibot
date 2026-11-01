@@ -1202,11 +1202,11 @@ fn a_session_may_send_a_peer_it_names() {
 /// The operator's model of this queue, in their words: *"gatekeeper reviews and drives
 /// subagents to completion by nagging them via messages. so it gets queue item - reviews if ok
 /// - puts into merge queue ... and if it is not happy - it sends a message with complaints to
-/// original subagent"*. This is the refusing half, end to end and with no socket: a REAL
-/// child (spawned through `task`, its own thread and its own hub), a real gatekeeper child that
-/// **hands its own verdict in** (a real `review_verdict` call through its own runtime),
-/// `Harness::serve_reviews` writing what it handed in, and the complaints arriving on the
-/// CHILD's log as another session's words — with the child's turn running on them.
+///   original subagent"*. This is the refusing half, end to end and with no socket: a REAL
+///   child (spawned through `task`, its own thread and its own hub), a real gatekeeper child that
+///   **hands its own verdict in** (a real `review_verdict` call through its own runtime),
+///   `Harness::serve_reviews` writing what it handed in, and the complaints arriving on the
+///   CHILD's log as another session's words — with the child's turn running on them.
 ///
 /// **The recipient is `entry.id`, and not the review row's `session_id`.** The review's own
 /// `session_id` is the session that HOSTED the review — the one whose agent was told to judge

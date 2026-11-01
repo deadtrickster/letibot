@@ -108,19 +108,19 @@
 //! ## What the framing cannot do, said now rather than discovered
 //!
 //! * **It frames a *command*, not a *session*.** A full-screen program — `mc`, `top`, `vim` —
-//!    never returns to the shell, so its trailer never arrives and [`ShellSession::run`] waits
-//!    out its deadline. The pane's live view of such a program needs the streaming path
-//!    (bytes forwarded as they arrive, the trailer only when the line *ends*), which is a
-//!    named TODO below and is why the refusal in [`super::terminal`] is still in place.
+//!   never returns to the shell, so its trailer never arrives and [`ShellSession::run`] waits
+//!   out its deadline. The pane's live view of such a program needs the streaming path
+//!   (bytes forwarded as they arrive, the trailer only when the line *ends*), which is a
+//!   named TODO below and is why the refusal in [`super::terminal`] is still in place.
 //! * **A timeout desynchronises the session.** The trailer for the line that timed out is
-//!    still coming, so the *next* `run` would read it and attribute it to the wrong line.
-//!    [`ShellSession::run`] therefore refuses after a timeout rather than answering wrongly,
-//!    and [`ShellSession::resync`] is the way back. A wrong answer here would look exactly
-//!    like a right one.
+//!   still coming, so the *next* `run` would read it and attribute it to the wrong line.
+//!   [`ShellSession::run`] therefore refuses after a timeout rather than answering wrongly,
+//!   and [`ShellSession::resync`] is the way back. A wrong answer here would look exactly
+//!   like a right one.
 //! * **The echo of the line is part of the output**, and that is deliberate: a terminal shows
-//!    what was typed at it, and the pane is a terminal. Only the echo of the *trailer's* line
-//!    is removed, because that line is this module's machinery and not something anybody
-//!    typed — see [`strip_echo`].
+//!   what was typed at it, and the pane is a terminal. Only the echo of the *trailer's* line
+//!   is removed, because that line is this module's machinery and not something anybody
+//!   typed — see [`strip_echo`].
 //!
 //! # The daemon owns the process, and the vocabulary is tonight's
 //!

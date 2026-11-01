@@ -4186,10 +4186,12 @@ mod tests {
     fn only_main_model_is_checked_against_this_daemons_own_server() {
         use crate::leticode_config::LeticodeConfig;
         let cfg = Config::for_this_box("/tmp");
-        let mut files = LeticodeConfig::default();
-        files.main_model = Some("no-such-alias".into());
-        files.subagent_model = Some("also-not-served".into());
-        files.gatekeeper_model = Some("qwen-3.8-27b".into());
+        let files = LeticodeConfig {
+            main_model: Some("no-such-alias".into()),
+            subagent_model: Some("also-not-served".into()),
+            gatekeeper_model: Some("qwen-3.8-27b".into()),
+            ..Default::default()
+        };
         let found = unreachable_models(&cfg, &files, Some("qwen-3.8-flash-next"));
         assert_eq!(
             found.len(),

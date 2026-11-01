@@ -1068,8 +1068,10 @@ fn a_click_on_a_key_hint_is_that_key() {
 fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     let ws = workspace("pointer");
     let mut a = edited(&ws);
-    let mut features = rano::term::Features::default();
-    features.clipboard = true;
+    let features = rano::term::Features {
+        clipboard: true,
+        ..Default::default()
+    };
     a.set_features(features);
     let _screen = a.screen(100, 40);
     let (y, _) = a.file_rows[0].clone();
@@ -1208,8 +1210,10 @@ fn a_selected_code_block_copies_without_its_frame() {
     );
     let mut a = app();
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
-    let mut features = rano::term::Features::default();
-    features.clipboard = true;
+    let features = rano::term::Features {
+        clipboard: true,
+        ..Default::default()
+    };
     a.set_features(features);
     let screen = a.screen(100, 30);
     let top = screen

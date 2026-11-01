@@ -1714,6 +1714,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
 ///   QUALIFIED values the daemon writes — `allow-all (this box, consented)`, `local (qwen-3.8-27b)`
 ///   — where the qualifier follows a space and the name itself has none, which is why the old
 ///   first-word rule happened to survive them.
+///
 /// A whitespace boundary and not a list of separators: the daemon writes `name (note)` and
 /// `name --flag`, and inventing a grammar for the qualifier would be a rule about a spelling this
 /// head does not own. If a future row qualifies a name with something that is not whitespace-

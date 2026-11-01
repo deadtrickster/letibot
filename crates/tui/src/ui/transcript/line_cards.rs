@@ -6,8 +6,8 @@
 //! all this: … a one-line similar to job - with a popup"* (`red_card`). Then, pasting a review
 //! that could not decide — dozens of lines of the reviewer's reasons — *"same story about reviews
 //! - … one line + popup"* (`review_card`). And, pasting a stale-prompt note, a restart note and
-//! the restart notice the model got, each a wrapped paragraph: *"these gray walls are hilarious
-//! … make them the usual one liners"* (`stale_card`, `restart_card`).
+//!   the restart notice the model got, each a wrapped paragraph: *"these gray walls are hilarious
+//!   … make them the usual one liners"* (`stale_card`, `restart_card`).
 //!
 //! # The registry
 //!

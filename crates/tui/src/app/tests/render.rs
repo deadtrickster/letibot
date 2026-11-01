@@ -1051,16 +1051,18 @@ fn a_users_own_message_is_a_block_with_a_bar_and_the_time_it_was_sent() {
     assert_eq!(line_width(row), 80 - App::GUTTER, "{row:?}");
 }
 
-/// **The model picker greens the rows this box can actually take** — the operator's ask of
-/// 2026-10-04: *"model peeker should green models we have keys for."*
-///
-/// The fact is the daemon's (`MODEL_KEYS_KEY`), because whether a preset resolves a key is a
-/// fact about this box's files and environment — a head that guessed would green exactly the
-/// rows that refuse at the first turn. Beyond the colour, two honesty rules are asserted:
-/// **`local` is green for a reason of its own** (nothing to authenticate, and an uncoloured
-/// `local` would read as *no key* about the one row that never wanted one), and **the meaning
-/// is said in words**, because `Palette::None` is the `--replay`, pipe and CI case where a
-/// colour says nothing at all.
+// **The model picker greens the rows this box can actually take** — the operator's ask of
+// 2026-10-04: *"model peeker should green models we have keys for."*
+//
+// The fact is the daemon's (`MODEL_KEYS_KEY`), because whether a preset resolves a key is a
+// fact about this box's files and environment — a head that guessed would green exactly the
+// rows that refuse at the first turn. Beyond the colour, two honesty rules are asserted:
+// **`local` is green for a reason of its own** (nothing to authenticate, and an uncoloured
+// `local` would read as *no key* about the one row that never wanted one), and **the meaning
+// is said in words**, because `Palette::None` is the `--replay`, pipe and CI case where a
+// colour says nothing at all.
+//
+// The greening tests are `session.rs`'s now.
 
 /// **A declared local model is ready, and the daemon is what says so.**
 ///

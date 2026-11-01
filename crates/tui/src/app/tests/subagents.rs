@@ -297,8 +297,8 @@ fn the_running_subagent_is_drawn_above_the_folded_finished_ones() {
 /// switching session with just one piece of info - a Label that it is a subagent and Esc
 /// going up in the subagents tree"*, and *"so after o I couldnt just Esc from the subagent
 /// - had to switch back here via session"*. One keystroke down, one keystroke up, the
-/// parent's list on the screen when you land, and the label saying whose child you were in
-/// while you were there.
+///   parent's list on the screen when you land, and the label saying whose child you were in
+///   while you were there.
 #[test]
 fn enter_into_a_subagent_and_one_esc_goes_back_up_to_the_list_it_came_from() {
     let mut a = app();

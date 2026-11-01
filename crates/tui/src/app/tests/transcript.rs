@@ -3324,14 +3324,16 @@ fn two_renders_of_one_state_are_the_same_frame() {
     assert_eq!(second, third, "the third differs from the second");
 }
 
-/// **R38: a setting with more than one value is CHOSEN from a card, never cycled.**
-///
-/// The operator's own shape: `/verbosity` bare used to walk the rung, so the reader learnt
-/// the list by changing it and discovered the current value the same way. With R37's fourth
-/// rung that was up to three presses and three repaints to learn four words that fit on one
-/// card. The card states every value **and what it means** — `conversation`, `terse`,
-/// `normal`, `loud` are names, and a reader choosing between them is choosing between *what
-/// will be on my screen*, which the name does not say.
+// **R38: a setting with more than one value is CHOSEN from a card, never cycled.**
+//
+// The operator's own shape: `/verbosity` bare used to walk the rung, so the reader learnt
+// the list by changing it and discovered the current value the same way. With R37's fourth
+// rung that was up to three presses and three repaints to learn four words that fit on one
+// card. The card states every value **and what it means** — `conversation`, `terse`,
+// `normal`, `loud` are names, and a reader choosing between them is choosing between *what
+// will be on my screen*, which the name does not say.
+//
+// The card and its tests are `ui::panes::picker`'s (R38).
 
 /// **R37 AMENDED: a run of hidden rows is ONE line, and it is the sentence's
 /// continuation.**

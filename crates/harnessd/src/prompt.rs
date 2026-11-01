@@ -53,10 +53,10 @@
 //!   opposite of a reading: **it could not look** — a process of the run belongs to another
 //!   uid, which is every `! sudo …` that reaches a program running as root. The sentence that
 //!   says so is still here, and beside it now stands the **offer**: a card raised on the fact
-//! that a run of the operator's own is in flight — not on a reading — whose text says it
-//! cannot tell whether the run is asking and that a line sent goes into it either way. See
-//! the method: the operator's own report is the state this exists for, and their correction
-//! (*"sudo can get input from here so can others"*) is what the card answers to.
+//!   that a run of the operator's own is in flight — not on a reading — whose text says it
+//!   cannot tell whether the run is asking and that a line sent goes into it either way. See
+//!   the method: the operator's own report is the state this exists for, and their correction
+//!   (*"sudo can get input from here so can others"*) is what the card answers to.
 //! * [`PromptDriver::send`] comes from the **server's reader thread**, because the answer is
 //!   not an act on the session's timeline — it is the second half of one already in flight.
 //!   See the trait for why the queue cannot carry it.
