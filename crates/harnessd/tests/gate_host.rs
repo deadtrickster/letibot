@@ -402,18 +402,18 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let run = within(
         "the gate never returned from a step that only its deadline could end: the step is still \
          running and its own end is 120 s away, so the gate is waiting for the far side",
-        || rig.gate(&[step], 2),
+        || rig.gate(&[step], 15),
     );
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::TimedOut);
-    // **The sentence names the step's own bound** — the gate's deadline, here two seconds, and not
-    // any poll's: a step is minutes and a question about the host is seconds, and a verdict that
+    // **The sentence names the step's own bound** — the gate's deadline, here fifteen seconds, and
+    // not any poll's: a step is minutes and a question about the host is seconds, and a verdict that
     // does not say which clock ran out cannot be acted on.
     let GateVerdict::TimedOut(why) = &run.verdict else {
         unreachable!()
     };
     assert!(
-        why.contains("the gate's own deadline passed (2 s)"),
+        why.contains("the gate's own deadline passed (15 s)"),
         "{why}"
     );
     let out = &run.steps[0].output;

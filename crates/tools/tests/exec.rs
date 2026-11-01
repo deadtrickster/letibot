@@ -380,7 +380,11 @@ fn the_reap_log_reaches_the_model_through_job_list() {
     // forking records one process, and the count below is about the record, not the race.
     let host = h.processes.clone().unwrap();
     let job = letibot_tools::JobId(id.clone());
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // **Thirty seconds, and it is a hang detector rather than a bet on the box.** Five was the
+    // number and it lost on the merge gate: a shell forking one child inside five seconds is a
+    // hundred times what a quiet box needs and not enough beside 227 test binaries, and the count
+    // assertion below then failed about a race rather than about the record.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while host.job_pids(&job).len() < 2 && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
