@@ -258,15 +258,18 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
             "[letibot (6)]",
             "the habr article",
             "[system (3)]",
-            "[gatekeepers (1)]",
-            "[reviewers (1)]",
-            "[keepers (1)]",
             "[rano (1)]",
-            "the rano rewrite",
         ],
-        "the tree, with every session's children and every group folded"
+        "the tree, folded: the two project lines, the `system` branch's own line, and the one \
+         session of the project this head is standing in"
+    );
+    assert_eq!(
+        a.session_rows()[2].open,
+        Some(false),
+        "`system` starts closed — a head in an ordinary conversation is not standing in it"
     );
     // **The rows themselves**: opened, and each in its own group and nowhere else.
+    a.set_row_fold(&format!("{LETIBOT}/system"), true);
     for group in ["gatekeepers", "reviewers", "keepers"] {
         a.set_row_fold(&format!("{LETIBOT}/system/{group}"), true);
     }
@@ -363,7 +366,7 @@ fn the_fold_works_at_every_level() {
     assert_eq!(a.key(Key::Left), None);
     assert_eq!(
         rows(&a),
-        vec!["[letibot (6)]", "[rano (1)]", "the rano rewrite"],
+        vec!["[letibot (6)]", "[rano (1)]"],
         "a closed project draws its line and nothing else"
     );
     assert_eq!(
@@ -378,13 +381,20 @@ fn the_fold_works_at_every_level() {
         "{:?}",
         rows(&a)
     );
-    // `system` folds too, and it is a level of its own.
+    // `system` folds too, and it is a level of its own. It starts CLOSED, so the key that puts its
+    // groups on the list is `→`.
     let sys = a
         .session_rows()
         .iter()
         .position(|r| r.idx.is_none() && r.node.title() == "system (3)")
         .expect("the system line");
     a.picker_sel = sys;
+    a.key(Key::Right);
+    assert!(
+        rows(&a).iter().any(|r| r.starts_with("[gatekeepers")),
+        "`→` on `system` puts its groups on the list: {:?}",
+        rows(&a)
+    );
     a.key(Key::Left);
     assert!(
         !rows(&a).iter().any(|r| r.starts_with("[gatekeepers")),
@@ -417,8 +427,15 @@ fn a_click_selects_the_row_it_points_at() {
     );
     assert_eq!(
         a.picker_folds.get(&format!("{LETIBOT}/system")).copied(),
+        Some(true),
+        "and acted on it: a node's line is the one row a click folds, and a closed one opens"
+    );
+    // The same click again, and the branch shuts — the state is the drawn one either way.
+    a.key(Key::Click { x: 6, y });
+    assert_eq!(
+        a.picker_folds.get(&format!("{LETIBOT}/system")).copied(),
         Some(false),
-        "and acted on it: a node's line is the one row a click folds"
+        "and a second click closes it"
     );
 }
 
@@ -437,6 +454,8 @@ fn enter_still_switches_to_the_row_under_the_cursor() {
 #[test]
 fn a_number_is_the_nth_session_and_a_nodes_line_has_none() {
     let mut a = a_daemon_with_two_projects();
+    // `system` starts closed, so the branch is opened before its group can be.
+    a.set_row_fold(&format!("{LETIBOT}/system"), true);
     a.set_row_fold(&format!("{LETIBOT}/system/gatekeepers"), true);
     let numbers: Vec<(String, Option<usize>)> = a
         .picker_rows()
@@ -486,6 +505,7 @@ fn the_bar_follows_the_cursor_onto_a_nodes_line() {
         "an open project says what Enter does to it: {}",
         a.hint_bar(200)
     );
+    a.set_row_fold(&format!("{LETIBOT}/system"), true);
     a.set_row_fold(&format!("{LETIBOT}/system/gatekeepers"), true);
     let at = a
         .session_rows()
@@ -497,6 +517,78 @@ fn the_bar_follows_the_cursor_onto_a_nodes_line() {
         a.hint_bar(200).contains("enter folds it away"),
         "{}",
         a.hint_bar(200)
+    );
+}
+
+/// **A box with several projects draws every project's line, and no session under the one this head
+/// is not standing in** — the operator's *"make sessions tree collapsed by default"*, in the head's
+/// own drawing (the built-in layer's copy is
+/// `plugins/builtin/sessions`' `every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in`).
+#[test]
+fn every_project_line_is_drawn_and_the_others_are_shut() {
+    let mut a = a_daemon_with_two_projects();
+    assert_eq!(
+        projects(&a),
+        vec!["letibot (6)", "rano (1)"],
+        "every project is a line, and the count is what it holds"
+    );
+    assert_eq!(
+        rows(&a),
+        vec![
+            "[letibot (6)]",
+            "the habr article",
+            "[system (3)]",
+            "[rano (1)]"
+        ],
+        "the project the head is in draws its rows; the other is a line"
+    );
+    // **And it opens on its own**, by the person's key, and draws only its own rows.
+    a.set_row_fold(RANO, true);
+    assert!(
+        rows(&a).contains(&"the rano rewrite".to_string()),
+        "opening `rano` draws its session: {:?}",
+        rows(&a)
+    );
+    assert_eq!(
+        a.session_rows()
+            .iter()
+            .filter(|r| r.idx.is_some())
+            .count(),
+        2,
+        "and nothing else's"
+    );
+}
+
+/// **The two exceptions a closed default must keep**, in the head's drawing: the project holding
+/// the session this head is in, and the chain down to it — *a list that hides where you are cannot
+/// answer where am I*.
+#[test]
+fn the_project_holding_here_is_open_and_the_chain_to_it_is_drawn() {
+    let mut a = a_daemon_with_two_projects();
+    let at = a
+        .session_rows()
+        .iter()
+        .position(|r| r.idx.is_none() && r.node.title() == "letibot (6)")
+        .expect("the project's line");
+    assert_eq!(
+        a.session_rows()[at].open,
+        Some(true),
+        "the project this head is standing in is open, folded by nobody"
+    );
+    assert_eq!(
+        a.picker_folds.get(LETIBOT),
+        None,
+        "and by rule, not by a fold entry: the person has said nothing about it"
+    );
+    // The chain: `s-sub-1` is a child of the row the head is in, so the row above it says `-` the
+    // moment its parent is opened — and `here` is never hidden.
+    a.set_row_fold("s-habr", true);
+    let habr = row_of(&a, "s-habr");
+    assert_eq!(a.session_rows()[habr].open, Some(true));
+    assert!(
+        rows(&a).contains(&"read the repo".to_string()),
+        "{:?}",
+        rows(&a)
     );
 }
 

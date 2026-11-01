@@ -107,8 +107,13 @@ fn golden(name: &str, now: String) -> String {
     })
 }
 
-/// **The picker as it opens** — the project's line, its conversations, and the `system` branch
-/// with one folded line per group.
+/// **The picker as it opens** — the project's line, its conversations, and the `system` branch as
+/// one closed line.
+///
+/// The operator, on this pane: *"make sessions tree collapsed by default"*. So the golden is the
+/// folded picture, and it is the one a person sees on `ctrl-s` — a project holding the session they
+/// are in (open, because a list that hides where you are cannot answer *where am I*), the rows of
+/// that project, and every other branch as a line.
 #[test]
 fn the_session_list_looks_like_this_as_it_opens() {
     let a = the_daemon();
@@ -118,7 +123,9 @@ fn the_session_list_looks_like_this_as_it_opens() {
     // pass for ever.
     assert!(now.contains("the habr article"), "{now}");
     assert!(now.contains("system ("), "{now}");
-    assert!(now.contains("reviewers (1)"), "{now}");
+    // **And no group under it** — the branch is closed, so `system`'s own line is the whole of it.
+    assert!(!now.contains("reviewers ("), "the folded picture: {now}");
+    assert!(!now.contains("gatekeepers ("), "{now}");
 }
 
 /// **The same daemon with every fold opened** — the rows a reader sees after pressing → on each
@@ -146,6 +153,7 @@ fn the_session_list_looks_like_this_with_every_fold_open() {
     assert_eq!(golden("sessions-list-open.txt", now.clone()), now);
     assert!(now.contains("read the repo"), "{now}");
     assert!(now.contains("review it"), "{now}");
+    assert!(now.contains("reviewers (1)"), "{now}");
 }
 
 /// **The drawn picture does not depend on the runner's `HOME`.** The rows say `~/Projects/letibot`

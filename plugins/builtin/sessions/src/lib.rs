@@ -27,6 +27,10 @@
 //! takes (so `/switch N` and the drawn number agree), and one `enter` act per row — `switch` or
 //! `fold` — that the host performs.
 //!
+//! **Every line starts CLOSED** (`Ctx::node_open`), and the two exceptions are the ones a list has
+//! to make: the project this head is standing in, and the chain to the session it is standing in
+//! (`Ctx::on_the_way`, `Ctx::child_on_path`). Everything else is opened by the person.
+//!
 //! # This file repeats rules on purpose
 //!
 //! The shape of the tree and the wording of a row are the head's `session_rows` and
@@ -172,8 +176,13 @@ impl Ctx<'_> {
     }
 
     /// **Whether a node's rows are on the list** — the person's answer, then whether this head is
-    /// standing in it, then the node's own default: a project and its `system` branch are open, a
-    /// group inside `system` is folded.
+    /// standing in it, then the node's own default.
+    ///
+    /// **Every node's default is CLOSED**, the project's line included. The operator, on the pane
+    /// they use most: *"make sessions tree collapsed by default"* — a box with a hundred sessions
+    /// drew a hundred rows because a project and its `system` branch were open, and the one row a
+    /// person was looking for was somewhere in the middle of them. What a closed list must still
+    /// answer is *where am I*, and that is [`Ctx::on_the_way`]'s job, not the default's.
     fn node_open(&self, key: &str, default: bool) -> bool {
         match self.opened(key) {
             Some(open) => open,
@@ -184,18 +193,24 @@ impl Ctx<'_> {
     /// **Whether a node is on the chain to where this head is standing** — the project, the
     /// `system` branch and the group of the session `here`. A list that hides where you are cannot
     /// answer *where am I*.
+    ///
+    /// **The `system` branch is on the chain only when `here` is drawn in it.** A head standing in
+    /// an ordinary conversation is not standing in `system`, and opening the branch anyway drew a
+    /// group line per kind for a branch the person is nowhere near — which is the same over-broad
+    /// default this file just stopped taking at the project's line.
     fn on_the_way(&self, key: &str) -> bool {
         let Some(here) = self.at(self.here) else {
             return false;
         };
         let s = &self.sessions[here];
         let project = s.project.as_str();
-        if key == project || key == format!("{project}/system") {
+        if key == project {
             return true;
         }
-        s.system
-            .as_deref()
-            .is_some_and(|g| key == format!("{project}/system/{g}"))
+        let Some(group) = s.system.as_deref() else {
+            return false;
+        };
+        key == format!("{project}/system") || key == format!("{project}/system/{group}")
     }
 
     /// Whether session `i`'s parent is on this feed **and drawn in this branch** — the rule that
@@ -307,7 +322,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             .filter(|&i| ctx.sessions[i].project == project)
             .collect();
         let key = project.to_string();
-        let open = ctx.node_open(&key, true);
+        let open = ctx.node_open(&key, false);
         out.push(node_row(
             key,
             0,
@@ -346,7 +361,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             continue;
         }
         let skey = format!("{project}/system");
-        let open = ctx.node_open(&skey, true);
+        let open = ctx.node_open(&skey, false);
         out.push(node_row(
             skey,
             1,

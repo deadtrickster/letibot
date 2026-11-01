@@ -12,12 +12,8 @@ sessions in this daemon
       s-pkg-1  ~/Projects/letibot
       5  one prompt, one answer                                6 rows · 1 head · qwen-3.8-flash-next
       s-shot-1  ~/Projects/letibot
-   - system (2)
+   + system (2)
       the sessions the harness runs for itself
-     + gatekeepers (1)
-      the review queue's own session, one per project
-     + reviewers (1)
-      a review's own child, and anything it spawned
 
   enter folds it away · ↑↓ moves · or type a number or part of a name and press enter · /new [title…
   switching does not stop anything: a turn keeps running in the session you left, and it is still t…

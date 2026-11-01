@@ -725,13 +725,18 @@ impl App {
 
     /// **The nodes on the way to where this head is standing** — the project, its `system` branch
     /// and the group, so a list that hides where you are cannot happen.
+    ///
+    /// **`system` is on the chain only when `here` is drawn in it**: a head standing in an ordinary
+    /// conversation is not standing in the harness's branch, and opening it anyway drew a group
+    /// line per kind for a branch the person is nowhere near.
     fn here_nodes(&self, place: &[Placement]) -> Vec<String> {
         let Some(i) = self.index_of(&self.session_id) else {
             return Vec::new();
         };
         let p = &place[i];
-        let mut out = vec![p.project.clone(), system_key(&p.project)];
+        let mut out = vec![p.project.clone()];
         if let Some(kind) = p.system {
+            out.push(system_key(&p.project));
             out.push(group_key(&p.project, kind));
         }
         out
@@ -1959,11 +1964,19 @@ impl Node {
         }
     }
 
-    /// **How a node stands before anybody has folded it** — a project and its `system` branch are
-    /// open (the tree is what the operator asked to see), a group inside `system` is folded, which
-    /// is what keeps twelve reviewers from burying the work.
+    /// **How a node stands before anybody has folded it** — CLOSED, every one of the four.
+    ///
+    /// The operator, on the pane they use most: *"make sessions tree collapsed by default"*. A
+    /// project's line and its `system` branch used to be open, which on a box with a hundred
+    /// sessions drew a hundred rows and buried the one being looked for.
+    ///
+    /// **A default is not the whole rule.** A list that hides where you are standing cannot answer
+    /// *where am I*, so [`App::node_open`] opens the nodes on the chain to `here`
+    /// ([`App::here_nodes`]) and [`App::children_open`] opens the chain of parents down to the
+    /// session this head is in, whatever anybody folded. Those two are the exceptions, and they are
+    /// the reason a closed default is affordable.
     pub(crate) fn default_open(&self) -> bool {
-        !matches!(self, Node::Group { .. })
+        false
     }
 }
 

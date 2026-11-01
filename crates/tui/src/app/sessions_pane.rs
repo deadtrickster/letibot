@@ -720,9 +720,11 @@ impl App {
             RowAct::Switch { session } => self.switch_to(session.clone()),
             RowAct::Fold { .. } => {
                 // **The new state is the opposite of what is DRAWN**, not of what the fold map
-                // holds: a project and its `system` branch open by default and have no entry
-                // until somebody folds one, so reading the map alone turned the first click into
-                // a second "open".
+                // holds: a node closed by DEFAULT (every node, now) has no entry in the map until
+                // somebody opens one, so reading the map alone turned the first click into a
+                // second "open". The drawn answer is the only one that knows about the two
+                // exceptions a default cannot cover — the project holding `here`, and the chain
+                // down to it.
                 let open = !matches!(self.drawn_open(id), Some(Fold::Open));
                 self.set_row_fold(id, open);
                 None

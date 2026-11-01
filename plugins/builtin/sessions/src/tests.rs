@@ -106,7 +106,8 @@ fn a_projects_line_and_its_conversations_under_it() {
     );
     assert_eq!(draw(&f, &[])[0].depth, 0, "the project is the top");
     assert_eq!(draw(&f, &[])[1].depth, 1, "a session is one step in");
-    // **A project is open by default** — the tree is what the operator asked to see.
+    // **A project's line is CLOSED by default** — except this one, which holds the session the head
+    // is standing in: a list that hides where you are cannot answer *where am I*.
     assert_eq!(draw(&f, &[])[0].open, Some(Fold::Open));
     assert_eq!(draw(&f, &[])[0].enter, Some(Act::fold()));
 }
@@ -143,6 +144,15 @@ fn the_system_branch_is_one_folded_line_per_group() {
     let f = feed(vec![session("s-a", "a"), gatekeeper, reviewer], "s-a");
     assert_eq!(
         words(&draw(&f, &[])),
+        vec!["[letibot (3)]", "s-a", "[system (2)]"],
+        "`system` starts closed, and a closed branch draws its own line and nothing under it"
+    );
+    // **A group is folded until the person opens it** — that is what keeps twelve reviewers from
+    // burying the work — and so is the branch above it.
+    let key = format!("{PROJECT}/system");
+    let branch = draw(&f, &[(&key, true)]);
+    assert_eq!(
+        words(&branch),
         vec![
             "[letibot (3)]",
             "s-a",
@@ -152,12 +162,9 @@ fn the_system_branch_is_one_folded_line_per_group() {
         ],
         "two groups, and no `keepers` line for a group the daemon has nothing in"
     );
-    // **A group is folded until the person opens it** — that is what keeps twelve reviewers from
-    // burying the work.
-    let folded = draw(&f, &[]);
-    assert_eq!(folded[3].open, Some(Fold::Closed));
+    assert_eq!(branch[3].open, Some(Fold::Closed));
     let key = format!("{PROJECT}/system/reviewers");
-    let open = draw(&f, &[(&key, true)]);
+    let open = draw(&f, &[(&format!("{PROJECT}/system"), true), (&key, true)]);
     assert!(
         open.iter().any(|r| r.id.ends_with("-sub-1")),
         "the reviewer is drawn once its group is opened: {:?}",
@@ -181,6 +188,7 @@ fn a_reviewer_nests_inside_its_group() {
     let open = draw(
         &f,
         &[
+            (format!("{PROJECT}/system").as_str(), true),
             (format!("{PROJECT}/system/reviewers").as_str(), true),
             (format!("{PROJECT}/system/gatekeepers").as_str(), true),
         ],
@@ -358,6 +366,83 @@ fn a_row_under_is_the_id_and_a_shortened_path() {
     assert_eq!(draw(&f, &[])[1].under[0], "s-a  ~/Projects/letibot");
 }
 
+/// **A box with several projects draws every project's line and NO session row under the ones the
+/// head is not standing in** — the operator's *"make sessions tree collapsed by default"*, at the
+/// top level.
+///
+/// The list is a map of the box first: which projects there are, and how many sessions each holds.
+/// A person opens the one they are working on; the others cost one line each instead of every
+/// session they contain.
+#[test]
+fn every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in() {
+    let mut here = session("s-here", "the one i am in");
+    here.project = "/home/dead/Projects/one".into();
+    here.project_name = "one".into();
+    let mut two = session("s-two", "a session of project two");
+    two.project = "/home/dead/Projects/two".into();
+    two.project_name = "two".into();
+    let mut three = session("s-three", "a session of project three");
+    three.project = "/home/dead/Projects/three".into();
+    three.project_name = "three".into();
+    let f = feed(vec![here, two, three], "s-here");
+    assert_eq!(
+        words(&draw(&f, &[])),
+        vec!["[one (1)]", "s-here", "[two (1)]", "[three (1)]"],
+        "every project is a line; the sessions of the two the head is not in are behind them"
+    );
+    // **And each opens on its own** — the person's answer, one project at a time.
+    let opened = draw(&f, &[("/home/dead/Projects/two", true)]);
+    assert_eq!(
+        words(&opened),
+        vec![
+            "[one (1)]",
+            "s-here",
+            "[two (1)]",
+            "s-two",
+            "[three (1)]"
+        ],
+        "opening one project draws its rows and nothing else's"
+    );
+}
+
+/// **The chain to `here` is drawn whatever the folds say** — the second exception a closed default
+/// must keep. A head standing two levels down draws the family it is in, and the row it stands in
+/// is one of them: *a list that hides where you are cannot answer where am I*.
+#[test]
+fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
+    let mut grandchild = session("s-gc", "the one i am in");
+    grandchild.parent = Some("s-child".into());
+    let mut child = session("s-child", "the middle");
+    child.parent = Some("s-root".into());
+    let f = feed(
+        vec![session("s-root", "the root"), child, grandchild],
+        "s-gc",
+    );
+    // **The family view, and the fold map has no say in it** — the person shut the middle row and
+    // the row the head is standing in is still on the list, one step under it.
+    assert_eq!(
+        ids(&draw(&f, &[("s-child", false)])),
+        vec!["s-child".to_string(), "s-gc".to_string()],
+        "the parent, and the row between it and the session the head is standing in"
+    );
+    let rows = draw(&f, &[("s-child", false)]);
+    assert_eq!(
+        rows[0].open,
+        Some(Fold::Open),
+        "and the row above says `-`, because the row it holds is on the screen"
+    );
+    assert_eq!(rows[1].depth, 1, "drawn at its depth, not promoted to the top");
+    // **And the project's own exception**: the line holding `here` is open, so the sessions of the
+    // project the head is working in are on the list while every other project's are behind their
+    // line (see `every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in`).
+    let alone = feed(vec![session("s-a", "a")], "s-a");
+    assert_eq!(
+        words(&draw(&alone, &[])),
+        vec!["[letibot (1)]", "s-a"],
+        "the project holding `here` is open"
+    );
+}
+
 /// **The head's own project's line says where you are** when two projects would read alike — the
 /// name is the head's to resolve, and this layer draws whatever it was handed.
 #[test]
@@ -368,6 +453,12 @@ fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
     let f = feed(vec![session("s-a", "a"), other], "s-a");
     assert_eq!(
         words(&draw(&f, &[])),
+        vec!["[letibot (1)]", "s-a", "[~/Projects/other/letibot (1)]"],
+        "the project this head is standing in is open, and the other one is a closed line"
+    );
+    let opened = draw(&f, &[("/home/dead/Projects/other/letibot", true)]);
+    assert_eq!(
+        words(&opened),
         vec![
             "[letibot (1)]",
             "s-a",
