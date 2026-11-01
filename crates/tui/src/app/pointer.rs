@@ -279,6 +279,10 @@ impl App {
                         .collect(),
                 })
             }
+            // **A finished child's line lights alone** — one row, one child. Unlike a notice,
+            // whose rows all open the same popup, each of these rows is a different session, so
+            // lighting the block would say that two children are one door.
+            Target::TaskAgent => Some(Hovered::one(row, None)),
             // A notice and a note card are one hit a row, and every row of one opens it: the
             // block is every row recorded for the same one. **A picture's rows are the same**: the
             // hover lights the whole box, and a click anywhere on it opens the picture.

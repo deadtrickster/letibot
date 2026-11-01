@@ -576,7 +576,7 @@ impl App {
             .and_then(|p| self.index_of(p))
     }
 
-    fn index_of(&self, id: &str) -> Option<usize> {
+    pub(crate) fn index_of(&self, id: &str) -> Option<usize> {
         self.sessions.iter().position(|s| s.session_id == id)
     }
 

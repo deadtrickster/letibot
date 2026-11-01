@@ -81,6 +81,37 @@ pub(crate) fn session_row_lines(
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
 ) -> Vec<String> {
+    session_row(text, ts, cfg, subagents, job_tails).0
+}
+
+/// **The child each drawn line of a session row is about** — one entry per line
+/// [`session_row_lines`] draws, `Some(id)` where that line is a finished subagent's settlement.
+///
+/// A click on such a line goes to that child's session, and the two lists have to be the same
+/// list or a click lands on the wrong child. So they are not two functions: [`session_row`] is
+/// one drawing that hands back its lines and, beside them, the child each line names.
+///
+/// **An empty answer is no switch**, never a guess — a caller that finds this list a different
+/// length from what was drawn (a line that wrapped after all) falls back to the popup.
+pub(crate) fn session_row_children(
+    text: &str,
+    ts: u64,
+    cfg: &crate::ui::render::RenderConfig,
+    subagents: &[crate::app::SubagentState],
+    job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+) -> Vec<Option<String>> {
+    session_row(text, ts, cfg, subagents, job_tails).1
+}
+
+/// **A session row drawn, and who each line of it is about** — the one drawing behind
+/// [`session_row_lines`] and [`session_row_children`].
+fn session_row(
+    text: &str,
+    ts: u64,
+    cfg: &crate::ui::render::RenderConfig,
+    subagents: &[crate::app::SubagentState],
+    job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
+) -> (Vec<String>, Vec<Option<String>>) {
     // **A job's completion notice is two lines a job** — the operator: *"i dont need
     // job completion card that huge - first line is j<id> - slug - truncated cmd and
     // second line is truncated output"*. The whole card is a click away (the notice
@@ -93,16 +124,18 @@ pub(crate) fn session_row_lines(
     // popup"*. The whole notice is the same click away the job card's is; see
     // `line_cards`, `red_card` and `review_card`.
     if let Some(lines) = compact_cards(text, subagents, job_tails, cols) {
-        return session_card_block(&lines, ts, cfg);
+        let none = vec![None; lines.len()];
+        return (session_card_block(&lines, ts, cfg), none);
     }
     if let Some(lines) = compact_notice(text, subagents, job_tails, cols) {
-        return session_block(&lines.join("\n"), ts, cfg);
+        let none = vec![None; lines.len()];
+        return (session_block(&lines.join("\n"), ts, cfg), none);
     }
     // **A completion notice is folded; anything else is drawn as it arrived.**
     // The row this replaces carried R7's promise to the model in the operator's
     // reading line — see [`folded_notice`], which folds only what it can
     // account for completely and hands back everything else untouched.
-    match folded_notice(text, subagents) {
+    match folded_notice_rows(text, subagents) {
         // **A settlement line is a LINE, however long the fact in it is.** One of
         // the facts `folded_notice` folds in is the child's own task, and a head
         // that starts subagents with a brief has tasks of thousands of
@@ -114,41 +147,55 @@ pub(crate) fn session_row_lines(
         // end in `trim_to`). What is dropped is on the pane and in the child's
         // own session, which is where a reader goes for the whole of it.
         Some(folded) => {
+            let children = folded.iter().map(|(_, c)| c.clone()).collect();
             let folded = folded
-                .lines()
-                .map(|l| trim_to(l, cols))
+                .into_iter()
+                .map(|(l, _)| trim_to(&l, cols))
                 .collect::<Vec<_>>()
                 .join("\n");
-            session_block(&folded, ts, cfg)
+            (session_block(&folded, ts, cfg), children)
         }
         // **And anything else is ONE line a notice** (R89) — the operator's standing rule, *"make
         // them the usual one liners"*. A row no card and no fold accounts for used to be drawn as
         // it arrived: a plan check, a parent's brief, a length cap's 6,902 lines. Each notice in
         // it is now a line (`notice_card`), the whole row a click away.
-        None => session_card_block(&notice_lines(text, subagents, job_tails, cols), ts, cfg),
+        None => {
+            let parts = notice_parts(text, subagents, job_tails, cols);
+            let children = parts.iter().map(|(_, c)| c.clone()).collect();
+            let lines = parts.into_iter().map(|(l, _)| l).collect::<Vec<_>>();
+            (session_card_block(&lines, ts, cfg), children)
+        }
     }
 }
 
 /// **A row's notices, one line each** — a card's, a job's two, a fold's, or `notice_card`'s
 /// line for a notice nothing else reads. Never empty, never a wall.
-pub(crate) fn notice_lines(
+///
+/// **With the child each line is about**, which is [`session_row_children`]'s half of a row
+/// holding several notices: a `[task]` group beside a plan check is still a settlement whose
+/// line is a door to that child.
+fn notice_parts(
     text: &str,
     subagents: &[crate::app::SubagentState],
     job_tails: &std::collections::HashMap<String, crate::ui::transcript::job_card::JobTail>,
     cols: usize,
-) -> Vec<crate::ui::transcript::line_cards::CardLine> {
+) -> Vec<(crate::ui::transcript::line_cards::CardLine, Option<String>)> {
     use crate::ui::transcript::line_cards::CardLine;
     use crate::ui::transcript::notice_card::{notices, session_notice};
     let mut out = Vec::new();
     for part in notices(text) {
         if let Some(lines) = compact_cards(part, subagents, job_tails, cols) {
-            out.extend(lines);
+            out.extend(lines.into_iter().map(|l| (l, None)));
         } else if let Some(lines) = compact_notice(part, subagents, job_tails, cols) {
-            out.extend(lines.into_iter().map(CardLine::plain));
-        } else if let Some(folded) = folded_notice(part, subagents) {
-            out.extend(folded.lines().map(|l| CardLine::plain(trim_to(l, cols))));
+            out.extend(lines.into_iter().map(|l| (CardLine::plain(l), None)));
+        } else if let Some(folded) = folded_notice_rows(part, subagents) {
+            out.extend(
+                folded
+                    .into_iter()
+                    .map(|(l, c)| (CardLine::plain(trim_to(&l, cols)), c)),
+            );
         } else {
-            out.push(session_notice(part).cut(cols));
+            out.push((session_notice(part).cut(cols), None));
         }
     }
     out

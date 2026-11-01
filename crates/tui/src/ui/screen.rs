@@ -1006,6 +1006,11 @@ impl App {
         self.edit_area = crate::ui::editor::editor_inner(x, y, w, room).into();
         self.file_rows.clear();
         self.notice_rows.clear();
+        // **And a finished child's lines with them** — a frame with no conversation on it draws no
+        // settlement, and a click measured against the last frame's rows would switch to a child
+        // from under whatever is covering it now.
+        self.task_rows.clear();
+        self.task_switches.clear();
         self.card_rows.clear();
         // **And a picture's rows go with them** — a frame with no conversation on it draws no
         // thumbnail, and a click measured against the last frame's rows would open a picture under

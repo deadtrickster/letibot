@@ -181,6 +181,28 @@ pub(crate) const PLAIN_LINE_MAX: usize = 512;
 /// are looking at, not deleted from it. Opening it on demand is the half leticl has and this head
 /// does not; it is **not** in this change (see TODO.md, the notice-fold row).
 pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<String> {
+    let rows = folded_notice_rows(text, subagents)?;
+    Some(
+        rows.into_iter()
+            .map(|(line, _)| line)
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+/// **The same fold, with the child each line is about** — the line and, for a `[task]`
+/// settlement's bullet, the session id the bullet names.
+///
+/// **The id is carried, not recovered.** A click on a finished child's line goes to that child's
+/// session, and the operator's rule for it is the one this tree keeps everywhere: an act names
+/// what it acts on, so it does not re-read the drawn line to find it. The id here is the bullet's
+/// own handle — the string the daemon wrote and the one `task_result` takes — carried out of the
+/// same parse that drew the line, so the row and the switch cannot disagree about which child a
+/// click is for. A row this head does not fold is no ids at all, and the click stays the popup's.
+pub(crate) fn folded_notice_rows(
+    text: &str,
+    subagents: &[SubagentState],
+) -> Option<Vec<(String, Option<String>)>> {
     /// **The sentences that prove the rest of a row is advice TO THE MODEL rather than a fact
     /// about the thing reported.** One per opening, because a nag's advice is not a completion's
     /// — and named as phrases rather than by position, so a row whose shape changed under this
@@ -204,7 +226,7 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
         // the two folds agree about it.
         "This session is told because the one that started it cannot be:",
     ];
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
     for group in text.split("\n\n") {
         // **R79's held batch opens with one line of its own** — `[meanwhile] N results arrived
         // while you were busy — …` — and the groups under it are the ordinary ones. Folded to
@@ -219,7 +241,7 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                 .next()
                 .unwrap_or(said)
                 .trim_end_matches(':');
-            out.push(format!("Meanwhile: {said}"));
+            out.push((format!("Meanwhile: {said}"), None));
             continue;
         }
         let (head, rest) = group.split_once('\n')?;
@@ -251,7 +273,7 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                     return None;
                 }
                 settlements += 1;
-                let body = match sep {
+                let (body, child) = match sep {
                     Some(sep) => {
                         // **The handle is everything between the backticks**, not the bullet's
                         // first word. Since jobs got names it can be `release-build · j65`,
@@ -289,20 +311,23 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
                                 Some(s) => format!("{} · {said}", subagent_asked(s)),
                                 None => said.to_string(),
                             };
-                            format!("{name}{sep}{said}")
+                            // **The handle is the session**, whatever the line is called: a named
+                            // child is drawn by its name and its short id, and the id is what a
+                            // click has to name.
+                            (format!("{name}{sep}{said}"), Some(id.to_string()))
                         } else {
-                            format!("{handle}{sep}{said}")
+                            (format!("{handle}{sep}{said}"), None)
                         }
                     }
-                    None => bullet.trim().to_string(),
+                    None => (bullet.trim().to_string(), None),
                 };
-                out.push(format!("{who}{body}"));
+                out.push((format!("{who}{body}"), child));
             } else if PROMISES.iter().any(|p| line.contains(p)) {
                 promised = true;
             } else if promised && super::job_card::is_waiting_line(line) {
                 // **The plan rows that wait on this completion**, which the daemon writes after
                 // the promise: kept, without its instruction to the model.
-                out.push(super::job_card::folded_waiting(line));
+                out.push((super::job_card::folded_waiting(line), None));
             } else {
                 return None;
             }
@@ -313,7 +338,7 @@ pub(crate) fn folded_notice(text: &str, subagents: &[SubagentState]) -> Option<S
             return None;
         }
     }
-    (!out.is_empty()).then(|| out.join("\n"))
+    (!out.is_empty()).then_some(out)
 }
 
 /// **A child's label split back into its name and handle** — `fix-login · s-1-sub-3` is

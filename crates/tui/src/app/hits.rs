@@ -54,6 +54,20 @@ pub(crate) enum Target {
     /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
     /// opens its change.
     Notice,
+    /// **One line of a finished subagent's settlement** (`task_rows`); its one stop is the index
+    /// of that child in [`App::task_switches`].
+    ///
+    /// A click **goes to the child's session** — the operator: *"when subagent finished main
+    /// session gets notification and it is clickable. but the card shown is completely useless -
+    /// i want the click to bring me to the subagent session instead, so i can read its
+    /// conclusions"*. It is the same act the session list and a plugin pane's `switch` row
+    /// perform (`App::switch_to`), so `esc` comes back up to the parent exactly as it does from
+    /// `ctrl-s`.
+    ///
+    /// **It is recorded over the notice row, not instead of it.** The line is still a notice —
+    /// its text is the daemon's and `alt-n` opens it whole — and a card whose child this head can
+    /// no longer name is not in `task_rows` at all, so its click is the popup it always was.
+    TaskAgent,
     /// **One warning drawn as a card's line** (`line_cards`); its one stop is the card's
     /// index in `note_cards`. A click opens the detail whole, in the same popup.
     NoteCard,
@@ -319,6 +333,21 @@ impl App {
                             h: 1,
                         },
                         target: Target::Notice,
+                        stops: vec![(y, k)],
+                    });
+                }
+                // **A finished child's line, over the notice it is** — recorded after it, so it
+                // is the target a click on that row finds: the line is a door to the child, and
+                // the popup behind it is the secondary reading (`alt-n`).
+                for (y, k) in self.task_rows.clone() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::TaskAgent,
                         stops: vec![(y, k)],
                     });
                 }

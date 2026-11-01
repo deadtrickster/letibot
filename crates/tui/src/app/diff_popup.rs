@@ -361,6 +361,76 @@ impl App {
         out
     }
 
+    /// **Which rows of the window are a finished subagent's line, and which child each names** —
+    /// `(row of the window, the child's session id)`.
+    ///
+    /// [`App::notice_rows_in`]'s walk, for the one act a notice row has that is not the popup: a
+    /// click on a settlement's line goes to that child's session, which is where its conclusions
+    /// are. The operator: *"when subagent finished main session gets notification and it is
+    /// clickable. but the card shown is completely useless - i want the click to bring me to the
+    /// subagent session instead, so i can read its conclusions"*.
+    ///
+    /// **The id is the drawing's, not a second read of the row.** [`session_row_children`] is the
+    /// same function that drew the line, so the id beside line `n` is the child line `n` names —
+    /// and a list that does not match the row's drawn height (a line that wrapped after all) is
+    /// refused outright rather than shifting every line after it onto a neighbour's child.
+    ///
+    /// **A child this head cannot go to is not a row here.** The daemon's list is the answer to
+    /// *does that session exist* — a child the head still knows is switchable even when it has
+    /// finished (`switch_to` resumes it from the store) — and a card whose child is gone keeps the
+    /// popup its click always had rather than switching to nothing.
+    pub(crate) fn task_rows_in(&self, start: usize, end: usize) -> Vec<(usize, String)> {
+        let end = end.min(self.hist_lines.len());
+        let mut out = Vec::new();
+        let mut last: Option<(usize, Vec<Option<String>>)> = None;
+        for line in start..end {
+            let i = self.spans.partition_point(|sp| sp.at <= line);
+            let Some(sp) = i.checked_sub(1).map(|i| self.spans[i]) else {
+                continue;
+            };
+            if line >= sp.at + sp.lines {
+                continue;
+            }
+            let ids = match &last {
+                Some((row, ids)) if *row == sp.row => ids.clone(),
+                _ => {
+                    let item = self.items.get(sp.row);
+                    let text = item.and_then(agent_row_text);
+                    let mut ids = match (item, text) {
+                        // **Only a row that holds a `[task]` group can name a child**, and the
+                        // check is a substring because a held batch (`[meanwhile]`) and a
+                        // restart's deliveries carry their groups inside a bigger notice. A
+                        // frame of the conversation is mostly rows that hold none, and this is
+                        // the difference between re-folding every row and the ones that could
+                        // answer.
+                        (Some(it), Some(t)) if t.contains("[task] ") => session_row_children(
+                            &t,
+                            it.ts,
+                            &self.cfg,
+                            &self.subagents,
+                            &self.job_tails,
+                        ),
+                        _ => Vec::new(),
+                    };
+                    // **One list or none** — see this function's docstring.
+                    if ids.len() != sp.lines {
+                        ids.clear();
+                    }
+                    last = Some((sp.row, ids.clone()));
+                    ids
+                }
+            };
+            let Some(Some(id)) = ids.get(line - sp.at) else {
+                continue;
+            };
+            if self.index_of(id).is_none() {
+                continue;
+            }
+            out.push((line - start, id.clone()));
+        }
+        out
+    }
+
     /// **The notice popup's rows at `width`**: the notice as the model read it, wrapped — the
     /// paragraph addressed to the model included, because this is the full card the compact
     /// rows stand for — and under it, for each job, the end of what it wrote.

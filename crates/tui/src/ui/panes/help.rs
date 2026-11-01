@@ -110,8 +110,10 @@ pub(crate) fn help_lines(cfg: &RenderConfig, w: usize) -> Vec<String> {
             "moves the cursor to the row under the pointer — in every pane with rows, the \
              session list, a setting card, the decision card's answers and the quit card; enter \
              still acts. On an edit or write row it opens the change in a popup, the whole file \
-             with the edit inline: esc closes it, ctrl-] takes it to the editor. On a notice line \
-             (`click for details`) it opens the notice whole; alt-n opens the newest. On the subagents \
+             with the edit inline: esc closes it, ctrl-] takes it to the editor. On a finished \
+             subagent's line it goes to that child's session, so its answer can be read where it \
+             is — esc comes back up. On any other notice line (`click for details`) it opens the \
+             notice whole; alt-n opens the newest. On the subagents \
              or jobs count in the prompt's top edge, it opens that pane. A click on nothing is \
              nobody's",
         ),

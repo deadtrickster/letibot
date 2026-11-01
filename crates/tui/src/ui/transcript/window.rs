@@ -665,6 +665,15 @@ impl App {
         // **And which are a job's completion notice**, for a click to open whole (see
         // `notice_rows`) — the same walk, the same window.
         self.notice_rows = self.notice_rows_in(start, end);
+        // **And which of them are a finished subagent's line**, for a click to go to that child
+        // (`task_rows`) — the same walk, and the ids it carries are the drawing's own.
+        let tasks = self.task_rows_in(start, end);
+        self.task_switches = tasks.iter().map(|(_, s)| s.clone()).collect();
+        self.task_rows = tasks
+            .iter()
+            .enumerate()
+            .map(|(k, (y, _))| (*y, k))
+            .collect();
         // **And which are a red target's warning, drawn as one line** (`red_card`).
         self.card_rows = self.card_rows_in(start, end);
         // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
@@ -700,6 +709,7 @@ impl App {
             out[0] = pin;
             self.file_rows.retain(|(r, _)| *r != 0);
             self.notice_rows.retain(|(r, _)| *r != 0);
+            self.task_rows.retain(|(r, _)| *r != 0);
             self.card_rows.retain(|(r, _)| *r != 0);
             self.marker_rows.retain(|m| m.y != 0);
             self.picture_rows.retain(|(r, _)| *r != 0);
@@ -714,6 +724,7 @@ impl App {
             // The banner took that row, so it is no longer a row of any file.
             self.file_rows.retain(|(r, _)| *r != last);
             self.notice_rows.retain(|(r, _)| *r != last);
+            self.task_rows.retain(|(r, _)| *r != last);
             self.card_rows.retain(|(r, _)| *r != last);
             self.marker_rows.retain(|m| m.y != last);
             self.picture_rows.retain(|(r, _)| *r != last);

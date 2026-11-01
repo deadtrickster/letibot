@@ -1444,6 +1444,7 @@ mod standing;
 mod statusrow;
 mod subagents;
 mod surfaces;
+mod taskcard;
 mod todo_layer;
 mod todos;
 mod tools;

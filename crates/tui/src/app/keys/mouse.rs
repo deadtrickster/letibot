@@ -30,6 +30,9 @@ impl App {
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
                 self.drawn() == Drawn::Conversation
             }
+            // **A finished child's line is a row of the conversation** — the same test, and for
+            // the same reason: a key earlier in the same read can have put a pane over it.
+            Target::TaskAgent => self.drawn() == Drawn::Conversation,
             // **A line of the window is a line only while the window is open** — a key earlier in
             // the same read can have closed it (Esc, `ctrl-v`, a prompt sent), and the rows the
             // last frame recorded are then text again.
@@ -148,6 +151,25 @@ impl App {
             (Target::Notice, Some(k)) => {
                 self.open_notice_popup(k);
                 return ControlFlow::Break(None);
+            }
+            // **A finished child's line takes you to the child** — the operator: *"when subagent
+            // finished main session gets notification and it is clickable. but the card shown is
+            // completely useless - i want the click to bring me to the subagent session instead,
+            // so i can read its conclusions"*. The popup restated the notice the model had already
+            // been given; the child's own conversation is where its conclusions are.
+            //
+            // **The act is `ctrl-s`'s**, through the one door that switches (`App::switch_to`):
+            // so a session this daemon holds is a `Switch`, one it has finished but still knows is
+            // resumed from the store, and a child that is a subagent gets its parent back on `esc`
+            // — the same way out the session list has.
+            //
+            // A stop the frame no longer holds switches to nothing rather than to a guess; the
+            // row's id was recorded with the frame that drew it.
+            (Target::TaskAgent, Some(k)) => {
+                let Some(session) = self.task_switches.get(k).cloned() else {
+                    return ControlFlow::Break(None);
+                };
+                return ControlFlow::Break(self.switch_to(session));
             }
             // **And a red target's warning opens whole** — the operator: *"a one-line similar
             // to job - with a popup"*.
@@ -272,12 +294,14 @@ impl App {
             // A window, not an open run — a run is the conversation's own rows and the
             // conversation scrolls under it (see [`App::run_is_open`]).
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
+            | Target::TaskAgent
             | Target::PayloadLine
                 if self.payload_window_open() =>
             {
                 self.page_payload(up, NOTCH)
             }
-            Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture => {
+            Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
+            | Target::TaskAgent => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

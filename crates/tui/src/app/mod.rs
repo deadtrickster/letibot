@@ -144,6 +144,22 @@ pub struct App {
     /// the row in `items`)`, rebuilt with [`App::file_rows`] and by the same rule. A click on
     /// one opens the notice's whole card (`app::diff_popup`, [`PopupBody::Notice`]).
     pub(crate) notice_rows: Vec<(usize, usize)>,
+    /// **Which screen rows of the last frame are a finished subagent's line**, as `(row, index
+    /// into [`App::task_switches`])` — rebuilt with [`App::notice_rows`] and by the same walk.
+    ///
+    /// A click on one goes to that child's session (the operator: *"when subagent finished main
+    /// session gets notification and it is clickable. but the card shown is completely useless -
+    /// i want the click to bring me to the subagent session instead, so i can read its
+    /// conclusions"*). It is recorded **after** the notice rows, so it is the target a click
+    /// finds on those lines; every other notice row keeps the popup.
+    ///
+    /// A row is here only when the child it names is one this head can go to — see
+    /// [`App::task_rows_in`]. A card whose child is gone is not in this list at all, and its click
+    /// is the popup it always was.
+    pub(crate) task_rows: Vec<(usize, usize)>,
+    /// **The child each of those rows names** — the session id, carried out of the fold that
+    /// drew the line rather than recovered by reading it back.
+    pub(crate) task_switches: Vec<String>,
     /// **The notes the walk drew as a card's one line** — a `target_red` warning — with where
     /// their line is in `hist_lines` and the detail the popup shows whole. Kept with the history
     /// it indexes: truncated where the history is, shifted where a fill prepends to it.
@@ -2026,6 +2042,8 @@ impl App {
             edit_area: rano::editor::Area::default(),
             file_rows: Vec::new(),
             notice_rows: Vec::new(),
+            task_rows: Vec::new(),
+            task_switches: Vec::new(),
             note_cards: Vec::new(),
             card_rows: Vec::new(),
             payload_rows: Vec::new(),
