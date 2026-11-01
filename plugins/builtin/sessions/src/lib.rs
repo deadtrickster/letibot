@@ -252,7 +252,7 @@ impl Ctx<'_> {
     fn child_on_path(&self, id: &str) -> bool {
         self.sessions
             .iter()
-            .any(|s| s.parent.as_deref() == Some(id) && self.path.iter().any(|p| *p == s.id))
+            .any(|s| s.parent.as_deref() == Some(id) && self.path.contains(&s.id))
     }
 
     /// A session's fold state — **the chain to `here` first**, then the person's answer.
@@ -473,7 +473,7 @@ fn children(
         if !ctx.in_branch(i, branch) {
             continue;
         }
-        if !open && !ctx.path.iter().any(|p| *p == s.id) {
+        if !open && !ctx.path.contains(&s.id) {
             continue;
         }
         // **The number is the n-th SESSION DRAWN**, carried through the whole walk: a subtree that
