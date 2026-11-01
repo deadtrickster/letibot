@@ -408,10 +408,7 @@ impl App {
         // same place a click on the landed row opens, so the two cannot disagree about what a
         // change's door is. The gate is `change_of_row`'s: a verb that is an edit, and an
         // excerpt to show.
-        if let Some(e) = edit
-            .as_ref()
-            .filter(|_| card::Verb::of(&name).is_an_edit())
-        {
+        if let Some(e) = edit.as_ref().filter(|_| card::Verb::of(&name).is_an_edit()) {
             let f = FileRef::of(e);
             self.open_diff_popup(&f);
             return;

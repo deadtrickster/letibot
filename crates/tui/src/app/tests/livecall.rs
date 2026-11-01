@@ -31,7 +31,11 @@ fn a_call_in_flight(name: &str) -> App {
         vec![brief("s", "one", false)],
         Hub::new("s").snapshot(),
     ));
-    a.apply(ServerFrame::Event(env_at(1, 1_000, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_000,
+        testing::turn_started("t1"),
+    )));
     a.apply(ServerFrame::Event(env(2, testing::appended("s.0", "user"))));
     a.apply(ServerFrame::Event(env(
         3,
@@ -144,9 +148,7 @@ fn clause_on(a: &App, y: u16) -> Option<&crate::app::runclick::MarkerHit> {
         .find(|h| h.target == Target::Conversation)?
         .rect
         .y;
-    a.marker_rows
-        .iter()
-        .find(|m| m.y == usize::from(y) - top)
+    a.marker_rows.iter().find(|m| m.y == usize::from(y) - top)
 }
 
 /// **The counter with nothing under it is a door** — the operator's *"running tool call rendered
@@ -259,7 +261,9 @@ fn a_running_calls_card_is_a_target_and_says_there_is_nothing_yet() {
     let screen = a.screen(120, 30);
     let (x, y) = find(&screen, "Running");
     assert!(
-        a.call_rows.iter().any(|(r, id)| *r == y as usize && id == "c0"),
+        a.call_rows
+            .iter()
+            .any(|(r, id)| *r == y as usize && id == "c0"),
         "the card is drawn and not in the click map: {:?}",
         a.call_rows
     );
@@ -304,7 +308,10 @@ fn a_cards_change_opens_the_popup_its_landed_row_opens() {
     a.key(Key::Esc);
     assert!(a.diff_popup.is_none());
     // The round returns and the row lands, with the same change on it.
-    a.apply(ServerFrame::Event(env(9, testing::appended("s.2", "tool_result"))));
+    a.apply(ServerFrame::Event(env(
+        9,
+        testing::appended("s.2", "tool_result"),
+    )));
     a.apply(ServerFrame::Event(env(
         10,
         SessionEvent::TranscriptContent {
@@ -373,7 +380,9 @@ fn the_target_follows_the_call_and_not_its_words() {
     let after = a.screen(120, 30);
     let (x2, y2) = find(&after, "Ran");
     assert!(
-        a.call_rows.iter().any(|(r, id)| *r == y2 as usize && id == "c0"),
+        a.call_rows
+            .iter()
+            .any(|(r, id)| *r == y2 as usize && id == "c0"),
         "the record follows the call to its new words: {:?}",
         a.call_rows
     );
