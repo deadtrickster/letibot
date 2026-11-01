@@ -112,6 +112,25 @@ integration green with the four live-model targets unrun.
 
 ---
 
+## R109 - Skills are proposed, chosen by the operator, and handed to subagents - **BUILT 2026-11-01, not landed**
+
+The operator's design (2026-11-01), in four parts plus six refinements, and what each became. **Status: built on a branch, not landed** — this entry is the record of what the tree now does and of what it deliberately does not.
+
+1. **Propose.** The skills *index* — name, one line and where it came from — is injected into the prompt in the same block and under the same rules as the standing notes, and re-read at the same two moments (session open, every base rebuild). A body is never in the prompt. Sources are shown and derived: `this project` (`.letibot/skills`, `.claude/skills`), `the operator's` (`~/.config/letibot/skills`), `installed` or `installed from …` (`~/.claude/skills`, where an installer writes: the origin a `.origin` file or the frontmatter names, else `installed`, and never the operator's words), `this build` (compiled in), `the fabric` (the shelf), `written by a model` (`<data dir>/skills`). The index is capped three ways — `INDEX_MAX_ROWS` (60), `INDEX_MAX_BYTES` (4000) and `INDEX_BUDGET_TOKENS` (800, the session's own counter) — in source-priority order, and its tail says how many more `skill list` holds.
+2. **`/skills` and `/skills NAME rest`.** The pane lists what the box can hand over (name, source, one line); Enter, or `/skills NAME`, hands that skill's body to the session as the operator's message, labelled (`skill_message`), and the rest of the line goes on as their prompt in the same turn. The DAEMON injects — it loads the body (a fabric one is a read only it may make), writes the row and runs the turn. `ClientFrame::ListSkills`/`LoadSkill` and `ServerFrame::Skills`, `PROTOCOL_VERSION` 55.
+3. **Subagents.** `task` and `task_start` take `skills: [names]`; each name is checked against the same corpus `skill list` answers from, refused by name (with the names there are) before anything spawns, and the bodies are preloaded into the child's prompt. A child that names none inherits its parent's list, and the list rides the child's record so a resumed child boots with it too.
+4. **Declared seats (C).** `Config::skills` is a session's declared list; the reviewer gets `[queue] reviewer_skills` from its project file (`Pool::reviewer_skills` → `TaskSpec::skills`), the one seat nobody types a brief for. The other places it applies: a `task` child's spec, the review queue's reviewer, and a child's inheritance. **Not wired**: a per-role table, a monitor's or a plugin condition's wake (a wake runs a turn in a session that already has the index and its own bodies).
+5. **The query door (A).** `skill {query}` (or `action: "find"`) ranks the index with `letibot_tools::similarity` — `Corpus::ranked`, the notes' own arithmetic and not a new matcher — answers the nearest body and names the next two; below `QUERY_FLOOR` (0.15) it says so and loads nothing.
+6. **`allowed-tools` may only narrow (D).** Parsed from the frontmatter (names, lowercased, `(...)` qualifiers dropped); for a session STARTED with declared skills, the union of their `allowed-tools` restricts the tools seated (`Registry::only_tools`), and the narrowing is said on the open notes. A skill loaded mid-conversation narrows nothing (message zero is frozen), and a skill with no `allowed-tools` restricts nothing.
+
+**Where the tests are**: `builtins::skill` (sources, installed origin, the index's labels and cap, the query's floor, `tool_ceiling`), `builtins::task::tests::a_task_that_names_skills_carries_them_and_refuses_an_unknown_one`, `runtime::tests::only_tools_narrows_to_the_declared_names`, `standing_notes::tests` (the index and no bodies, a declared body whole, the handed-over message's label), `tui::app::tests::skills` (`/skills` opens and asks, the rows carry their sources, `NAME rest` carries the rest, Enter on a row).
+
+**Left open, on purpose**: nothing writes `<data dir>/skills` yet (the model-written source is a seam with no writer); a reopened child inherits `cfg.skills` through the spawn's clone only, so a child whose parent named none and which was named in its record is the one case where a resume re-reads it from the record and nothing else; and the fabric's rows in the index are read on every base rebuild (one node call), which is the same shape the fabric block already has at open.
+
+**Still open?** `/skills` on a box with skills in `.letibot/skills/`, and `task {skills: [...]}` on one of them.
+
+---
+
 ## R94 — What the parser still cannot read, and the parts of it a parser can fix — **OPEN, filed 2026-10-27**
 
 After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
