@@ -69,6 +69,16 @@ pub enum Door {
     /// it as said before the clock is re-armed (the metronome rule: the same notice is not sent
     /// again every window).
     Nag(Option<String>),
+    /// **The queue's stuck-row census, as a turn** — the clock's second subject, and it carries
+    /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words, because
+    /// the sentence names the AGE of the oldest row and so changes at every delivery. A door that
+    /// had to be recorded by its text would be a new notice every time and a metronome at the base
+    /// window.
+    ///
+    /// **It is a door of its own rather than a [`Door::Nag`] for one reason beyond the metrics**:
+    /// the owner's arm records a nag against the PLAN's ladder, and a census written into
+    /// `TodoNagClock::nagged` would tell that ladder the plan's notice had been sent.
+    Census,
     /// The turn after the operator's own `!` line.
     OperatorShell,
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
@@ -93,6 +103,7 @@ impl Door {
             Door::Message => "message",
             Door::Wake => "wake",
             Door::Nag(_) => "nag",
+            Door::Census => "census",
             Door::OperatorShell => "bang",
             Door::Reseat => "reseat",
             Door::Fallback => "fallback",

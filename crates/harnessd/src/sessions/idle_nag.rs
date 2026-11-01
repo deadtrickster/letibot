@@ -1060,11 +1060,11 @@ fn a_paused_clock_arms_nothing_but_the_pause_s_end() {
 // TOTAL and the AGE. `mergequeue::stuck` counts them; these tests are about when the daemon says
 // so, and — the half that matters — when it stops.
 //
-// **One clock, two schedules, and no turn.** The census is a NOTICE (`Sessions::note_due_censuses`
-// → `Harness::note_to_model`), so it has a deadline of its own (`census_due`) paced by
-// `STUCK_REPEAT` rather than the plan's ladder: a stuck queue is not a stalled plan, and a notice
-// that costs no model call has no reason to inherit the rate a turn needs. `QueueNews` is what the
-// clock is handed, exactly as `NagHold` is.
+// **One clock, two schedules.** The census is a TURN of its own (`Door::Census`,
+// `Sessions::deliver_due_censuses`), so it has a deadline of its own (`census_due`) paced by
+// `STUCK_REPEAT` rather than the plan's ladder: a stuck queue is not a stalled plan, and the rate
+// is chosen against the queue's own units rather than against a stalled plan's. `QueueNews` is what
+// the clock is handed, exactly as `NagHold` is.
 
 /// **Rows stuck long enough to be news**, as the harness hands them in.
 fn news() -> super::QueueNews {
@@ -1074,7 +1074,7 @@ fn news() -> super::QueueNews {
     }
 }
 
-/// **One delivery of the census, as `note_due_censuses` performs one**: the deadline spent, the
+/// **One delivery of the census, as `deliver_due_censuses` performs one**: the deadline spent, the
 /// delivery recorded (which arms the repeat), the clock re-armed from the store as it now is.
 fn deliver(clock: &mut super::TodoNagClock, at: std::time::Instant) {
     assert!(clock.census_due_now(at), "the census was due at {at:?}");

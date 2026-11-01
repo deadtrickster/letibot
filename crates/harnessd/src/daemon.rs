@@ -329,16 +329,18 @@ impl Daemon {
                             eprintln!("  todo check -> {ran} session(s)");
                         }
                         // **And the queue's stuck-row census, on the same idle arm and as a
-                        // NOTICE** — `Harness::note_to_model`, a transcript row and no turn, so
-                        // it costs no model call. The clock is the plan-check's own
-                        // (`TodoNagClock::census_due_at`), because the daemon's clock is the only
-                        // clock; what it says is `mergequeue::stuck`'s, and how often is
-                        // `STUCK_REPEAT_MS`. See `Sessions::note_due_censuses`.
+                        // TURN** — one model call per interval per project while a row is stuck,
+                        // because a notice reached nobody: a row sat in `conflict` for eight hours
+                        // while the census wrote its sentence into a session that was not running.
+                        // The clock is the plan-check's own (`TodoNagClock::census_due_at`),
+                        // because the daemon's clock is the only clock; what it says is
+                        // `mergequeue::stuck`'s, and how often is `STUCK_REPEAT_MS`. See
+                        // `Sessions::deliver_due_censuses`.
                         let pass = std::time::Instant::now();
-                        let noted = sessions.note_due_censuses();
-                        crate::instruments::worker_pass("queue-census", pass, noted);
-                        if noted > 0 {
-                            eprintln!("  queue census -> {noted} session(s)");
+                        let rang = sessions.deliver_due_censuses();
+                        crate::instruments::worker_pass("queue-census", pass, rang);
+                        if rang > 0 {
+                            eprintln!("  queue census -> {rang} session(s)");
                         }
                         // **And a reopened subagent idle past its window goes back to the store**
                         // (R68's idle-child policy, `Config::child_park_after`). On this pass for the

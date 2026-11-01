@@ -216,8 +216,9 @@ pub(crate) const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 ///
 /// Two hours: two review deadlines (`REVIEW_DEADLINE_MS`) pass between two notices, so a repeat
 /// can never arrive before the queue has had a real chance to move the rows, and eight rows stuck
-/// for a night produce at most five notices rather than the plan ladder's twenty. It is NOT the
-/// plan's ladder: a census is a notice and not a turn, so the rate that bounds it is its own.
+/// for a night produce at most five TURNS — five model calls — rather than the plan ladder's
+/// twenty. It is NOT the plan's ladder: a stuck queue is not a stalled plan, and this rate was
+/// chosen against the queue's own units.
 const STUCK_REPEAT: Duration = Duration::from_millis(crate::mergequeue::stuck::STUCK_REPEAT_MS);
 
 /// **Whether a row is work the idle plan-check may speak about.**
@@ -546,8 +547,8 @@ impl QueueNews {
 /// own must not push its own reminder back for ever.
 ///
 /// **The queue's census is the clock's second subject, and it is scheduled differently on
-/// purpose.** It is a NOTICE and not a turn (`Harness::note_to_model`), so the rate that bounds it
-/// is not the model's — it is `mergequeue::stuck::STUCK_REPEAT_MS`, a number of its own chosen
+/// purpose.** It is a TURN (`Door::Census`, `Sessions::deliver_due_censuses`), so what bounds it
+/// is the price of a model call — `mergequeue::stuck::STUCK_REPEAT_MS`, a number of its own chosen
 /// against the queue's own units, anchored to `census_said_at`. It is not on the plan's ladder and
 /// its text is not compared to anything: the sentence carries the AGE of the oldest row, so a text
 /// comparison would read every delivery as a new notice, and the plan's ladder would make a stuck
@@ -1410,12 +1411,13 @@ fn court_main(
                 let pass = Instant::now();
                 let ran = s.deliver_due_nags();
                 crate::instruments::worker_pass("todo-check", pass, ran);
-                // **And the queue's census, on the same idle arm and as a NOTICE** — no turn, no
-                // model call. `daemon.rs`'s pass runs the same line for a daemon that never armed
-                // the threads.
+                // **And the queue's census, on the same idle arm and as a TURN** — one model call
+                // per interval while a row is stuck, because the notice it used to be reached
+                // nobody. `daemon.rs`'s pass runs the same line for a daemon that never armed the
+                // threads.
                 let pass = Instant::now();
-                let noted = s.note_due_censuses();
-                crate::instruments::worker_pass("queue-census", pass, noted);
+                let rang = s.deliver_due_censuses();
+                crate::instruments::worker_pass("queue-census", pass, rang);
                 let pass = Instant::now();
                 let parked = s.park_idle_children();
                 crate::instruments::worker_pass("park", pass, parked);
@@ -3873,6 +3875,15 @@ impl<'a> Sessions<'a> {
         }
     }
 
+    /// **When this session's census is next due** — the tests' door to ONE clock, for
+    /// [`Sessions::sweep_due_at`]'s reason: [`Sessions::next_nag_at`] is the minimum over every
+    /// clock the daemon keeps, and since the census became a TURN every delivery arms the sweep
+    /// ([`SWEEP_AFTER`]), so after the first census `next_nag_at` answers `Some` for ever and
+    /// cannot say whether the census is still armed.
+    pub fn census_due_at(&self, session_id: &str) -> Option<Instant> {
+        self.nags.get(session_id).and_then(|c| c.census_due_at())
+    }
+
     /// **Sweep every session for a tool call nothing will ever answer.**
     ///
     /// Called from the daemon's own idle arm, which is the same place the todo check is delivered —
@@ -4216,20 +4227,27 @@ impl<'a> Sessions<'a> {
         self.open.get(session_id)
     }
 
-    /// **Say the queue's census to every project session whose clock has come due** — a NOTICE and
-    /// not a turn, and that is the whole of what this door is for.
+    /// **Say the queue's census to every project session whose clock has come due** — as a TURN,
+    /// which is what makes it a bell rather than a note.
     ///
-    /// The brief's third bullet: it costs no model call. `Harness::note_to_model` is the tree's
-    /// door for exactly this (`crate::plugins`' `plugin_tick` is its other caller) — a transcript
-    /// row the model reads at its next turn, drawn by the head for the person, and no round. A
-    /// nag TURN for the same sentence would have been about twenty model calls over a night for
-    /// one stuck set, which is what a census must never cost.
+    /// It was `Harness::note_to_model` and it cost no model call: a transcript row the model reads
+    /// at its next turn. MEASURED 2026-11-01 — a row sat in `conflict` from 02:37 to 10:52 while
+    /// the census wrote its sentence every interval into a session that was not running, and the
+    /// operator saw none of it: *"probably doesnt even reach you"*. A notice is a mailbox, and a
+    /// session with nothing to do has no next turn to read it at.
+    ///
+    /// **What it costs is one model call per interval per project while a row is stuck** —
+    /// `mergequeue::stuck::STUCK_REPEAT_MS` (two hours), the rate that module argues for, against
+    /// eight hours of a row nobody saw. The sentence is unchanged and is composed at the moment it
+    /// is said (`Harness::stuck_census_text`), so a row that recovered between the arming and the
+    /// clock is not announced as stuck — and a door that finds nothing to say runs no turn at all
+    /// (`Ok(None)`), so a quiet tree costs nothing.
     ///
     /// It runs on the daemon's idle pass, beside [`Sessions::deliver_due_nags`] and
     /// `sweep_abandoned_calls`, because that is where a clock is read and where the harness is in
-    /// hand. Answers how many rows were written, for the log line.
-    pub fn note_due_censuses(&mut self) -> usize {
-        let mut wrote = self.ask_courts(|s| s.note_due_censuses());
+    /// hand. Answers how many turns ran, for the log line.
+    pub fn deliver_due_censuses(&mut self) -> usize {
+        let mut ran = self.ask_courts(|s| s.deliver_due_censuses());
         let now = Instant::now();
         let due: Vec<String> = self
             .nags
@@ -4237,30 +4255,30 @@ impl<'a> Sessions<'a> {
             .filter_map(|(id, clock)| clock.census_due_now(now).then(|| id.clone()))
             .collect();
         for session_id in due {
-            // **The sentence is composed here, from the store, at the moment it is said** — so a
-            // row that recovered between the arming and the clock is not announced as stuck.
-            let said = match self.open.get(&session_id) {
-                Some(h) => h.stuck_census_text(),
-                None => None,
-            };
-            if let (Some(text), Some(h)) = (said, self.open.get_mut(&session_id)) {
-                // **Recorded as said before the outcome is known**, for `said`'s reason: a row
-                // that could not be written must not come back at every pass.
-                if let Some(clock) = self.nags.get_mut(&session_id) {
-                    clock.census_said(Instant::now());
-                }
-                match h.note_to_model(&text) {
-                    Ok(()) => wrote += 1,
-                    Err(e) => {
-                        eprintln!("  {session_id} · the queue census could not be written: {e}")
-                    }
-                }
+            // A session a court holds is not in `open` — its own thread runs its own copy of this
+            // pass, which `ask_courts` above has already done.
+            if !self.open.contains_key(&session_id) {
+                continue;
             }
-            // **And re-armed from the store as it is now** — a session whose rows are gone arms
-            // nothing, which is how the alarm stops in the other direction too.
-            self.rearm_todo_nag(&session_id);
+            // **The sentence is composed here, from the store, at the moment it is said** — so a
+            // row that recovered between the arming and the clock is not announced as stuck, and
+            // `Ok(None)` is that answer: no row, no turn, no model call.
+            let out = self.turn(&session_id, Door::Census, |h| match h.stuck_census_text() {
+                Some(text) => h.census_turn(&text).map(Some),
+                None => Ok(None),
+            });
+            match out {
+                Some(Ok(_)) => ran += 1,
+                Some(Err(e)) => eprintln!("  {session_id} · the queue census -> {e}"),
+                // **A door that ran no turn owes the clock a re-arm**, and nothing else will make
+                // one: the deadline was spent by `census_due_now`, and a turn's end is what
+                // otherwise re-arms it. A row that recovered is the common reason to be here —
+                // and a store that could not answer is the other, which must not silence the
+                // alarm for the rest of the daemon's life.
+                None => self.rearm_todo_nag(&session_id),
+            }
         }
-        wrote
+        ran
     }
 
     /// Compact a session: the summary turn, then the transcript fork.
@@ -5928,13 +5946,19 @@ impl TurnOwner for DaemonTurn<'_, '_, '_> {
     }
 
     /// **Every turn ends here, so this is where the idle clocks start** — the plan-check (with a
-    /// spent nag recorded as said first: the metronome rule) and, for a subagent the worker
-    /// holds, its park window.
+    /// spent nag recorded as said first: the metronome rule), the queue's census (recorded the
+    /// same way, against its own anchor) and, for a subagent the worker holds, its park window.
     fn turn_ended(&mut self, h: &mut Harness, door: &Door) {
-        if let Door::Nag(notice) = door
-            && let Some(clock) = self.sessions.nags.get_mut(self.session_id)
-        {
-            clock.said(notice.clone(), Instant::now());
+        if let Some(clock) = self.sessions.nags.get_mut(self.session_id) {
+            match door {
+                Door::Nag(notice) => clock.said(notice.clone(), Instant::now()),
+                // **The census is recorded by its DELIVERY, not by its words** — the sentence names
+                // the age of the oldest row, so a text identity would read every delivery as new.
+                // Before the re-arm, which reads the anchor: armed after it, the next deadline
+                // would be *now* and the census would run a turn at every pass.
+                Door::Census => clock.census_said(Instant::now()),
+                _ => {}
+            }
         }
         self.sessions.rearm_todo_nag_on(self.session_id, h);
         if self.sessions.registry.parent_of(self.session_id).is_some() {

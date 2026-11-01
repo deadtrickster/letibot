@@ -323,7 +323,7 @@ pub fn parked(r: &ReviewRow) -> String {
 }
 
 /// **`stuck_census`** — the count and the age, on the daemon's idle pass
-/// (`mergequeue::stuck`, `Harness::stuck_census`, `Sessions::note_due_censuses`).
+/// (`mergequeue::stuck`, `Harness::stuck_census`, `Sessions::deliver_due_censuses`).
 ///
 /// Every other sentence in this file is about ONE row and says so when that row MOVES. This one is
 /// the only place a project is told how many rows are bad at once, and the only place any of them
@@ -331,8 +331,9 @@ pub fn parked(r: &ReviewRow) -> String {
 /// with every transition already said. The verbs are the same two the transitions name, because a
 /// count with no verb is a statistic.
 ///
-/// It is a NOTICE and not a turn (`Harness::note_to_model`), so the rate that paces it is its own
-/// (`stuck::STUCK_REPEAT_MS`) and not the plan-check's.
+/// It is a TURN and not a notice (`Door::Census`, `Harness::census_turn`), so the rate that paces
+/// it is its own (`stuck::STUCK_REPEAT_MS`) and not the plan-check's — and it reaches a session that
+/// is doing nothing, which a transcript row does not.
 pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     format!(
         "[queue stuck] {} row(s) of this project's merge queue are stuck and no pass will move \

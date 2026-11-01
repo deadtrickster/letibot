@@ -23,7 +23,9 @@
 //!
 //! **And a clock, because a row STAYING bad is not an event.** `is_news` is what makes the census
 //! the idle pass's business: a row that went bad a minute ago was the transition's to announce,
-//! and a row that has been bad for a quarter of an hour is nobody's but this.
+//! and a row that has been bad for a quarter of an hour is nobody's but this — so the census is a
+//! TURN (`Sessions::deliver_due_censuses`, `Door::Census`), and the two numbers below are what
+//! bound the model calls it costs.
 
 use letibot_tokencore::store::{MergeRow, MergeState, Store};
 

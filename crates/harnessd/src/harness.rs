@@ -10632,11 +10632,11 @@ impl Harness {
     /// of an unchanged plan, so every check after it came due at the base window — the metronome
     /// the ladder exists to prevent. The delivery doors record this instead of the text they send.
     ///
-    /// **The queue's census is NOT in here** — it is a notice and not a turn, so it does not ride
-    /// this sentence at all (`Sessions::note_due_censuses` writes it through
-    /// `Harness::note_to_model`). What this returns is the plan's sentence, which is what the
-    /// ladder counts repeats of; `None` is the right answer for a project with nothing on its
-    /// board and eight rows stuck in its queue.
+    /// **The queue's census is NOT in here** — it is a door of its own (`Door::Census`,
+    /// `Sessions::deliver_due_censuses`), recorded against its own anchor because its sentence names
+    /// the age of the oldest row and so is a different notice at every delivery. What this returns
+    /// is the plan's sentence, which is what the ladder counts repeats of; `None` is the right
+    /// answer for a project with nothing on its board and eight rows stuck in its queue.
     pub fn nag_said_as(&self) -> Option<String> {
         let board = self.todos.snapshot();
         let children = self.child_sessions();
@@ -11089,15 +11089,37 @@ impl Harness {
     /// **The census as a sentence, when there is one to say** — `None` for a queue with nothing
     /// stuck, or one whose oldest row is still too young to be news.
     ///
-    /// Read by `Sessions::note_due_censuses`, which writes it through `note_to_model` — a
-    /// transcript row and no turn. It is composed from the store AT THE MOMENT IT IS SAID and not
-    /// held from the arming, so a row that recovered between the two is not announced as stuck.
+    /// Read by `Sessions::deliver_due_censuses`, which hands it to [`Harness::census_turn`]. It is
+    /// composed from the store AT THE MOMENT IT IS SAID and not held from the arming, so a row that
+    /// recovered between the two is not announced as stuck.
     pub fn stuck_census_text(&self) -> Option<String> {
         let now = letibot_sessionlog::registry::now_ms();
         let census = self.stuck_census()?;
         census
             .is_news(now)
             .then(|| crate::mergequeue::notices::stuck_census(&census, now))
+    }
+
+    /// **The census as a TURN** — the sentence [`Harness::stuck_census_text`] composed, said by the
+    /// harness and answered by the model.
+    ///
+    /// It was a NOTICE and it cost no model call, and it reached nobody for eight hours. MEASURED
+    /// 2026-11-01 on the operator's daemon: a row sat in `conflict` from 02:37 to 10:52 while the
+    /// census wrote its sentence every interval into a session that was not running — a mailbox,
+    /// read at the model's next turn, and a quiet session has none. Their verdict on it names the
+    /// defect: *"probably doesnt even reach you"*.
+    ///
+    /// So it goes through the door every turn goes through (`submit_spoken`, and the shared tail
+    /// around it), which is what makes it a bell rather than a note: the model is woken, reads the
+    /// count and the age, and can act. **What it costs is one model call per interval per project
+    /// while a row is stuck** — `mergequeue::stuck::STUCK_REPEAT_MS` (two hours), against eight
+    /// hours of a row nobody saw.
+    ///
+    /// **The held batch rides in with it**, as R79 gives it to every turn a break ends: the
+    /// sentences delivered while nothing was running are the reason a quiet session has turns to
+    /// take at all.
+    pub fn census_turn(&mut self, text: &str) -> Result<Reply, HarnessError> {
+        self.submit_spoken(Speaker::Agent, text)
     }
 
     pub fn queue_notices(&mut self) -> Vec<String> {
@@ -19857,9 +19879,19 @@ impl crate::turn_tail::TurnOwner for ChildTurns {
         // **Said even when the turn failed** — the metronome rule: a check the model never
         // answered must not come back every window, it is the same notice and the plan has not
         // moved. Recorded BEFORE the re-arm, which reads it.
-        if let crate::turn_tail::Door::Nag(notice) = door {
-            self.nag.queue(h.queue_news());
-            self.nag.said(notice.clone(), std::time::Instant::now());
+        match door {
+            crate::turn_tail::Door::Nag(notice) => {
+                self.nag.queue(h.queue_news());
+                self.nag.said(notice.clone(), std::time::Instant::now())
+            }
+            // A child is never told a census (`Harness::stuck_census` answers `None` for anything
+            // but the project's root), so this arm exists for the clock's sake and not the
+            // child's: the door is in the tail's vocabulary and the owner answers every door.
+            crate::turn_tail::Door::Census => {
+                self.nag.queue(h.queue_news());
+                self.nag.census_said(std::time::Instant::now())
+            }
+            _ => {}
         }
         self.rearm(h, true);
     }
