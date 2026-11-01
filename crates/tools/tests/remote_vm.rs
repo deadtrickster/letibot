@@ -5,10 +5,12 @@
 //!
 //! The `ssh` is a script this file writes: it takes the flags the backend hands it, ignores
 //! them, and runs the last argument locally with `HOME` set to a temporary directory standing
-//! in for the far machine's home. The `firecode` is a second script on that home's `bin`, which
-//! records what it was asked and behaves like the client: `in` runs the command it was given,
-//! `up` and `down` succeed, and `down` leaves the guest's tree in a sibling directory the way
-//! the real one does when something changed.
+//! in for the far machine's home — **and with a login `PATH` written by that home's own
+//! `.bash_profile`**, so nothing the box has installed (a real `firecode`, a toolchain) can
+//! answer a question this suite is asking of a fixture. The `firecode` is a second script on
+//! that home's `bin`, which records what it was asked and behaves like the client: `in` runs the
+//! command it was given, `up` and `down` succeed, and `down` leaves the guest's tree in a sibling
+//! directory the way the real one does when something changed.
 //!
 //! What that proves is the placement's own shape — the order of `up`, `in` and `down`, that a
 //! command of the session's reaches the guest and nothing of it reaches the host, that a commit
@@ -58,6 +60,21 @@ impl Rig {
         let home = dir.join("home");
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
+        // **The login shell's PATH is the FIXTURE's, and there is nothing else on it.** `bash -lc`
+        // reads `/etc/profile` first and that file is the BOX's: on a machine with a real
+        // `firecode` in `~/bin`, `command -v firecode` found it and the refusal this suite tests
+        // never happened (MEASURED on the gate, 2026-11-01). A `~/.bash_profile` runs after
+        // `/etc/profile`, so this replaces whatever the box put there with the fixture's own
+        // `bin` and the system directories — and a test's answer cannot depend on what is
+        // installed on the machine running it.
+        std::fs::write(
+            home.join(".bash_profile"),
+            format!(
+                "PATH={bin}:/usr/bin:/bin\nexport PATH\n",
+                bin = bin.display()
+            ),
+        )
+        .expect("the fake home's login profile");
         let asked = dir.join("firecode.log");
 
         // **The device node the probe asks about.** A box has one or it does not, and this
