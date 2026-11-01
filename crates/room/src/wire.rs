@@ -138,6 +138,12 @@ use crate::room::{
 /// they are opposite ones — *this is mine to do* and *this is not mine to move* — which is why one
 /// field could not hold both. A client that speaks 4 is refused by name rather than left with a
 /// claim whose acknowledgement is invisible.
+///
+/// # The number moves at RELEASE POINTS, not on every change
+///
+/// A frame added mid-series rides the next number with whatever else lands before it: the room has
+/// no users outside this tree, so a version is a line between this build and a released one, and
+/// paying for N-1 compatibility would be code spent on an audience that does not exist yet.
 pub const ROOM_PROTOCOL_VERSION: u16 = 5;
 
 /// **The sentence a protocol mismatch is refused with**, or `None` when the two agree.
