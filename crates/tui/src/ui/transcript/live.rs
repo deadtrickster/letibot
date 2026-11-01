@@ -22,7 +22,12 @@ pub(crate) fn push_turn_pane<'a>(
     live_joins: bool,
     walk_carried_live: bool,
     lifted: Option<Show>,
-) {
+) -> Vec<(usize, String)> {
+    // **Every row of every call card this pane draws, and the call it belongs to** — the record a
+    // click is answered from (`App::call_rows`). A card is drawn here and nowhere else, so this is
+    // the one place that knows where it landed; `before` is the body line it starts on, counted
+    // off the `Seg`s already pushed, because the window is taken from their concatenation.
+    let mut cards: Vec<(usize, String)> = Vec::new();
     // **What a click on the live marker lifted** (`App::live_open`): that kind is drawn open while
     // the turn runs, whatever the rung hides.
     let show_thinking = lifted == Some(Show::Thinking);
@@ -150,6 +155,11 @@ pub(crate) fn push_turn_pane<'a>(
             })
             .collect();
         if !live_calls.is_empty() {
+            // **Where these cards land in the body**, so each row of one can be a click target
+            // (see `App::call_rows`). The pane pushes whole `Seg`s and the window is taken off
+            // their concatenation, so the only honest line number is the one counted here — the
+            // same rule the frame's other records keep.
+            let before: usize = segs.iter().map(Seg::len).sum();
             let mut owned: Vec<String> = Vec::new();
             for c in live_calls.iter().copied() {
                 // **A running call is timed against the clock that was running
@@ -168,7 +178,11 @@ pub(crate) fn push_turn_pane<'a>(
                 } else {
                     now_ms
                 };
-                owned.extend(step_in(call_card(c, cfg, card_now, tool, diff_split), ind));
+                let lines = step_in(call_card(c, cfg, card_now, tool, diff_split), ind);
+                for i in 0..lines.len() {
+                    cards.push((before + owned.len() + i, c.call_id.clone()));
+                }
+                owned.extend(lines);
             }
             owned.push(String::new());
             segs.push(Seg::Owned(owned));
@@ -245,4 +259,5 @@ pub(crate) fn push_turn_pane<'a>(
     if let Some(s) = state {
         segs.push(Seg::Owned(turn_footer(cfg, s)));
     }
+    cards
 }

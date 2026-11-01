@@ -54,6 +54,17 @@ pub(crate) enum Target {
     /// notice's index in `items`. A click opens the notice whole, as a click on an edit row
     /// opens its change.
     Notice,
+    /// **A row of a call the turn is still drawing** — the live pane's card ([`App::call_rows`]);
+    /// its one stop is the index of that row in the record, and the call it names is carried
+    /// beside it.
+    ///
+    /// A click performs exactly what the same call's row performs once it lands
+    /// (`Target::Conversation` → `file_rows`): a card carrying a change opens its diff popup, and
+    /// one carrying none says so. It exists because the card is the working's own row and the
+    /// click map heard about nothing below the history — so the operator's *"why running tool
+    /// call rendered in yellow is no longer clickable?"* was a click that fell through the
+    /// conversation's rectangle and answered nothing.
+    LiveCall,
     /// **One line of a finished subagent's settlement** (`task_rows`); its one stop is the index
     /// of that child in [`App::task_switches`].
     ///
@@ -386,6 +397,23 @@ impl App {
                             h: 1,
                         },
                         target: Target::Picture,
+                        stops: vec![(y, k)],
+                    });
+                }
+                // **The turn's own call cards, over the rows they were drawn in** — the live
+                // pane's rows are the conversation's too, and until this record they were the one
+                // part of it no click could reach (see [`App::call_rows`]). Pushed after the
+                // conversation's own rectangle so a click on a card is the card's, and before
+                // nothing else: the pane is below the history, where no notice or picture is.
+                for (k, (y, _)) in self.call_rows.clone().into_iter().enumerate() {
+                    self.hits.push(Hit {
+                        rect: Rect {
+                            x: 0,
+                            y,
+                            w: term_w,
+                            h: 1,
+                        },
+                        target: Target::LiveCall,
                         stops: vec![(y, k)],
                     });
                 }

@@ -33,6 +33,9 @@ impl App {
             // **A finished child's line is a row of the conversation** — the same test, and for
             // the same reason: a key earlier in the same read can have put a pane over it.
             Target::TaskAgent => self.drawn() == Drawn::Conversation,
+            // **And so is a call the turn is still drawing** — it is below the history, inside
+            // the conversation's own rectangle, and a pane over it is a pane over that.
+            Target::LiveCall => self.drawn() == Drawn::Conversation,
             // **A line of the window is a line only while the window is open** — a key earlier in
             // the same read can have closed it (Esc, `ctrl-v`, a prompt sent), and the rows the
             // last frame recorded are then text again.
@@ -164,6 +167,16 @@ impl App {
             // to diff click - popup with full card"*.
             (Target::Notice, Some(k)) => {
                 self.open_notice_popup(k);
+                return ControlFlow::Break(None);
+            }
+            // **A call the turn is still drawing opens what its own row will** — the diff popup
+            // for a card carrying a change, and a sentence for one that has nothing behind it
+            // yet (`App::open_call`). The record is keyed by the call, so the click answers about
+            // the call even though the card's words changed since the frame was drawn.
+            (Target::LiveCall, Some(k)) => {
+                if let Some((_, call)) = self.call_rows.get(k).cloned() {
+                    self.open_call(&call);
+                }
                 return ControlFlow::Break(None);
             }
             // **A finished child's line takes you to the child** — the operator: *"when subagent
@@ -310,12 +323,16 @@ impl App {
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
             | Target::TaskAgent
             | Target::PayloadLine
+            | Target::LiveCall
                 if self.payload_window_open() =>
             {
                 self.page_payload(up, NOTCH)
             }
             Target::Conversation | Target::Notice | Target::NoteCard | Target::Picture
-            | Target::TaskAgent => {
+            | Target::TaskAgent
+            // **A wheel over a live call's card scrolls the conversation** — the card is a row of
+            // it, and a notch that stopped dead over one would read as a frozen head.
+            | Target::LiveCall => {
                 let k = if up { Key::WheelUp } else { Key::WheelDown };
                 self.scroll_conversation(&k, up, NOTCH);
             }

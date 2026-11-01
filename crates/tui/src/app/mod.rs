@@ -135,6 +135,21 @@ pub struct App {
     /// **The conversation's rectangle in the last frame**, in terminal cells — what a pane
     /// opened between frames is given before it draws, so it opens centred on its change.
     pub(crate) edit_area: rano::editor::Area,
+    /// **Which screen rows of the last frame are a call the turn is still drawing**, as `(row,
+    /// call id)` — the live pane's cards, rebuilt with [`App::file_rows`] and by the same rule.
+    ///
+    /// The operator, 2026-11-01: *"why running tool call rendered in yellow is no longer
+    /// clickable? it is similar degradation that happened to git status"*. It is the same shape:
+    /// the card is drawn by a path that recorded no rectangle at all, so a click on it fell
+    /// through the conversation's own target and nothing happened — while the same call, once its
+    /// row landed, opened its change.
+    ///
+    /// **Keyed by the call, never by the card's words.** A card says `Running · 12s` and then
+    /// `ok · 800ms`, and the two are different strings: a target registered against the text
+    /// would point at a row that no longer says it. The ids come out of the function that drew
+    /// the lines (`push_turn_pane`), so the record and the drawing cannot disagree about how many
+    /// rows a card took.
+    pub(crate) call_rows: Vec<(usize, String)>,
     /// **Which screen rows of the last frame are about a file**: `(row, place)` for every row
     /// of a finished edit or write the transcript drew. Rebuilt every frame the conversation is
     /// drawn and emptied when anything else is, so a click is only ever measured against rows
@@ -2053,6 +2068,7 @@ impl App {
             term: None,
             edit_pane: None,
             edit_area: rano::editor::Area::default(),
+            call_rows: Vec::new(),
             file_rows: Vec::new(),
             notice_rows: Vec::new(),
             task_rows: Vec::new(),

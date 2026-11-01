@@ -32,6 +32,7 @@ impl App {
         self.file_rows.clear();
         self.notice_rows.clear();
         self.card_rows.clear();
+        self.call_rows.clear();
         self.picture_rows.clear();
         self.payload_rows.clear();
         self.marker_rows.clear();
@@ -542,8 +543,11 @@ impl App {
             }
         }
 
+        // **The call cards this frame draws, and the call each row belongs to** — recorded here
+        // and turned into window rows below, with every other `*_rows` record.
+        let mut cards: Vec<(usize, String)> = Vec::new();
         if let Some(t) = turn {
-            push_turn_pane(
+            cards = push_turn_pane(
                 &mut segs,
                 t,
                 &cfg,
@@ -744,6 +748,15 @@ impl App {
             .collect();
         // **And which are a red target's warning, drawn as one line** (`red_card`).
         self.card_rows = self.card_rows_in(start, end);
+        // **And which of them are rows of a call the turn is still drawing** — the live pane's
+        // cards, keyed by the CALL and not by their text: a card's words change as the call goes
+        // from `Running` to `Finished`, and a target registered against the words would point at
+        // a row that no longer says them (`App::call_rows`).
+        self.call_rows = cards
+            .into_iter()
+            .filter(|(line, _)| *line >= start && *line < end)
+            .map(|(line, id)| (line - start, id))
+            .collect();
         // **And the clauses of the run markers**, for a click to open that kind (`runclick`).
         self.marker_rows = self.marker_rows_in(start, end);
         // **And which of them are a picture's thumbnail rows**, for a click — or Enter — to open
@@ -779,6 +792,7 @@ impl App {
             self.notice_rows.retain(|(r, _)| *r != 0);
             self.task_rows.retain(|(r, _)| *r != 0);
             self.card_rows.retain(|(r, _)| *r != 0);
+            self.call_rows.retain(|(r, _)| *r != 0);
             self.marker_rows.retain(|m| m.y != 0);
             self.picture_rows.retain(|(r, _)| *r != 0);
             self.payload_rows.retain(|(r, _)| *r != 0);
@@ -794,6 +808,7 @@ impl App {
             self.notice_rows.retain(|(r, _)| *r != last);
             self.task_rows.retain(|(r, _)| *r != last);
             self.card_rows.retain(|(r, _)| *r != last);
+            self.call_rows.retain(|(r, _)| *r != last);
             self.marker_rows.retain(|m| m.y != last);
             self.picture_rows.retain(|(r, _)| *r != last);
             self.payload_rows.retain(|(r, _)| *r != last);

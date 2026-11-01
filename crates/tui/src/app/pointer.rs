@@ -283,6 +283,22 @@ impl App {
             // whose rows all open the same popup, each of these rows is a different session, so
             // lighting the block would say that two children are one door.
             Target::TaskAgent => Some(Hovered::one(row, None)),
+            // **A live call's card lights whole**, every row it was drawn in — one card is one
+            // door, like a notice, and the pointer over any line of it says so. The record is
+            // keyed by the CALL rather than by a card index, so the rows of one card are the rows
+            // that name one call.
+            Target::LiveCall => {
+                let k = hit.stop_at(row)?;
+                let id = self.call_rows.get(k)?.1.clone();
+                Some(Hovered {
+                    rows: self
+                        .call_rows
+                        .iter()
+                        .filter(|(_, i)| *i == id)
+                        .map(|(rr, _)| (*rr, None))
+                        .collect(),
+                })
+            }
             // A notice and a note card are one hit a row, and every row of one opens it: the
             // block is every row recorded for the same one. **A picture's rows are the same**: the
             // hover lights the whole box, and a click anywhere on it opens the picture.

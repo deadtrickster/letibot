@@ -33,6 +33,7 @@
 //! it **never** quits the head.
 
 use super::*;
+use letibot_sessionlog::view::CallState;
 use rano::editor::{Area, Editor as Rano, KeyOutcome};
 use rano::keymap::Keymap;
 use rano::review::Change;
@@ -371,6 +372,59 @@ impl App {
             return None;
         }
         edit.map(FileRef::of)
+    }
+
+    /// **Open what a call the turn is still drawing has behind it** — the click on a live card
+    /// (`Target::LiveCall`), and it is deliberately the same act the call's own row performs once
+    /// it lands: a change opens the diff popup, and a call with no change says there is nothing
+    /// to open.
+    ///
+    /// **Why the second arm exists at all.** The brief that found this asked whether the click
+    /// should be inert on purpose. It should not: a row drawn in the working's register is a row
+    /// a person points at, and a click that answers nothing reads as a head that stopped
+    /// listening — which is the operator's report. But a call that has not returned has no body
+    /// (`call_card`'s own note: `ToolFinished` carries digests and byte counts, never a payload),
+    /// so the honest answer for the running case is a sentence, not a popup.
+    pub(crate) fn open_call(&mut self, call_id: &str) {
+        // **The call, copied out** — the frame's record names it by id, and everything below
+        // writes to the head.
+        let (name, state) = match self
+            .turn
+            .as_ref()
+            .and_then(|t| t.calls.iter().find(|c| c.call_id == call_id))
+        {
+            Some(c) => (c.name.clone(), c.state.clone()),
+            // The call this frame drew is not in the turn any more — a new turn started between
+            // the frame and the click. Nothing to open and nothing to explain.
+            None => return,
+        };
+        let edit = match &state {
+            CallState::Finished { edit, .. } => edit.clone(),
+            _ => None,
+        };
+        // The verb the card was DRAWN as, so this asks the same question the drawing did.
+        let name = crate::ui::drawn_as(&name, edit.as_ref()).to_string();
+        // **The change is on the card already, and the popup is the whole file with it** — the
+        // same place a click on the landed row opens, so the two cannot disagree about what a
+        // change's door is. The gate is `change_of_row`'s: a verb that is an edit, and an
+        // excerpt to show.
+        if let Some(e) = edit
+            .as_ref()
+            .filter(|_| card::Verb::of(&name).is_an_edit())
+        {
+            let f = FileRef::of(e);
+            self.open_diff_popup(&f);
+            return;
+        }
+        match state {
+            CallState::Proposed | CallState::Running => self.say(&format!(
+                "nothing to open yet — `{name}` is still running, and a call's body arrives when \
+                 it returns"
+            )),
+            CallState::Finished { .. } => {
+                self.say(&format!("nothing to open — `{name}` changed no file"))
+            }
+        }
     }
 
     /// **How long the head's loop may wait for input** before rano wants another tick — `None`

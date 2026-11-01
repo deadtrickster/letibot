@@ -1047,6 +1047,10 @@ impl App {
         self.task_rows.clear();
         self.task_switches.clear();
         self.card_rows.clear();
+        // **And the turn's call cards go with them** — a frame with no conversation on it draws
+        // no live pane, and a click measured against the last frame's rows would open a call
+        // under whatever is covering it now.
+        self.call_rows.clear();
         // **And a picture's rows go with them** — a frame with no conversation on it draws no
         // thumbnail, and a click measured against the last frame's rows would open a picture under
         // whatever is covering it now.
@@ -1294,6 +1298,12 @@ impl App {
                     *row += y;
                 }
                 for (row, _) in &mut self.picture_rows {
+                    *row += y;
+                }
+                // **And the turn's own call cards**, which live below the history and are rows of
+                // this same window — the shift is the same one, and a record that forgot it is
+                // the whole defect this list's note describes.
+                for (row, _) in &mut self.call_rows {
                     *row += y;
                 }
                 rows
