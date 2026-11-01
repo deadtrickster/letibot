@@ -309,21 +309,21 @@ fn slug_arg(args: &Value) -> Option<String> {
 
 /// **`wake: "now" | "later"`** — R79's optional argument on `bash` (background) and `task`.
 ///
-/// `later`, the default, is `None`: the completion is the daemon's to deliver by its rules —
-/// at once when the plan waits on it, otherwise held and batched into the next break. `now` is
-/// the caller saying what the plan's structure does not capture: *tell me the moment it ends*.
-/// Anything else is refused by name rather than read as either, because a misspelt `now` that
-/// silently meant `later` is a result the model waits for and never gets.
+/// Absent is the default and says nothing: the daemon delivers the completion by its own rules
+/// and a caller's `wait` holds on the job until it ends. `now` is *tell me the moment it ends*.
+/// `later` is the model PARKING it (a server left running): the result still reaches the model at
+/// its next turn, and a `wait` does not hold for it. Anything else is refused by name.
 pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     match args.get("wake") {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::String(w)) if w == "later" => Ok(None),
+        Some(Value::String(w)) if w == "later" => Ok(Some(WantedNow::WakeLater)),
         Some(Value::String(w)) if w == "now" => Ok(Some(WantedNow::WakeNow)),
         Some(other) => Err(Invocation::failed(
             format!("`wake` is `now` or `later`, not {other}"),
             "`wake: \"now\"` delivers the completion the moment it ends, even into a running \
-             turn; `later` (the default) holds a result nothing in your plan waits on for your \
-             next break. Nothing was started.",
+             turn; `wake: \"later\"` says you do not need waking for it, so the result is shown at \
+             your next turn and a `wait` does not hold on it, which is what a server left running \
+             wants; absent is the default. Nothing was started.",
         )),
     }
 }
@@ -413,7 +413,7 @@ impl Tool for Bash {
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
                     "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting."},
-                    "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: when its completion reaches you. `later` (the default): when your current turn ends, or at once if a todo row needs it. `now`: the moment it ends, even mid-turn."},
+                    "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: `later` says you do not need waking for it, so the result is shown at your next turn and a `wait` does not hold on it; use it for a server you leave running. `now`: the moment it ends, even mid-turn. Absent (the default): its end wakes you."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
                     "scope": {"type": "string", "description": "Which scope owns the process: `turn` (dies at the end of this turn), `session` (dies with the session), or `explicit` (survives the session; requires `scope_name`)."},
                     "scope_name": {"type": "string", "description": "Names an `explicit` scope so it can be listed and ended later."},
@@ -1660,15 +1660,16 @@ mod tests {
         );
     }
 
-    /// **`wake` is `now`, `later` or absent, and anything else is refused** (R79) — a misspelt
-    /// `now` that silently meant `later` would be a result the model waits for and never gets.
-    /// The result's sentence says which rule applies.
+    /// **`wake` is `now`, `later` or absent, and anything else is refused**: a misspelt `now` that
+    /// silently meant the default would be a result the model waits for and never gets, and `later`
+    /// is a declaration rather than the default's own spelling.
     #[test]
     fn wake_is_now_or_later_and_the_result_says_which() {
         assert_eq!(wake_arg(&serde_json::json!({})).ok(), Some(None));
         assert_eq!(
             wake_arg(&serde_json::json!({"wake": "later"})).ok(),
-            Some(None)
+            Some(Some(WantedNow::WakeLater)),
+            "`later` is the model parking the job, not the default"
         );
         assert_eq!(
             wake_arg(&serde_json::json!({"wake": "now"})).ok(),

@@ -322,8 +322,9 @@ impl Bridge {
                 "predicted": s.spent.predicted_tokens,
                 "rounds": s.rounds,
             },
-            // The model's own background jobs still running: each will wake it again, so an
-            // idle session with any of these is waiting, not done.
+            // The model's own background jobs still running: each ends in a turn that says so, so an
+            // idle session holding one is waiting rather than done, unless the model parked it with
+            // `wake: "later"`; the daemon's `activity` answers that and this list does not.
             "jobs_open": s.jobs_open.iter().collect::<Vec<_>>(),
             // **What the DAEMON says the session is waiting on** (`PROTOCOL_VERSION` 52) — the
             // replacement for the settle windows this verb used to time. `waiting_on` is the

@@ -278,7 +278,11 @@ fn write_sse(mut stream: TcpStream, answer: &Answer) -> std::io::Result<()> {
             ));
         }
         Answer::StartJob => {
-            let arguments = json!({ "command": SLOW_COMMAND, "background": true }).to_string();
+            // **`wake: "later"` is the model PARKING it**, and this fixture needs it: the job is
+            // still running when the waits below are called, and a `wait` that held on it would sit
+            // there until it settled and then be handed a turn nobody scripted.
+            let arguments =
+                json!({ "command": SLOW_COMMAND, "background": true, "wake": "later" }).to_string();
             body.push_str(&format!(
                 "data: {}\n\n",
                 json!({"choices":[{"delta":{"tool_calls":[{

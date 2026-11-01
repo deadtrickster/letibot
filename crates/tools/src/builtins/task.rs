@@ -1258,9 +1258,9 @@ impl TaskTool {
 
 /// The `wake` argument's description, the same for `task` and `task_start` (R93.F22: `task_start`
 /// had none, while its result promised a delivery `wake` decides).
-const WAKE_ARG: &str = "When the child's answer reaches you. `later` (the default): when your \
-     current turn ends, or at once if a todo row needs it. `now`: the moment it finishes, even \
-     mid-turn.";
+const WAKE_ARG: &str = "`later` says you do not need waking for it: the answer is shown at your \
+     next turn and a `wait` does not hold on it. `now`: the moment it finishes, even mid-turn. \
+     Absent (the default): its end wakes you.";
 
 impl Tool for TaskTool {
     fn schema(&self) -> ToolSchema {

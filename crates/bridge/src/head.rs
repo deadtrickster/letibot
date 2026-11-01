@@ -592,10 +592,10 @@ impl State {
     ///
     /// This used to be a guess built here: an unfinished todo row that `needs` a handle in
     /// `jobs_open`, plus a `wake_due` flag. It is read from the daemon now, and the rule behind the
-    /// entries is `delivery::decide`'s — a job counts only when its settlement is one the model is
-    /// WOKEN by, not every open handle, because a server left running must not hold a later turn
-    /// open for ever. Kept as a method so a reader of `leticode_status` asks the same question it
-    /// always did.
+    /// entries is the daemon's: **every running job or child holds the session, because its
+    /// settlement is said to the model as a turn of its own**, except the one the model parked with
+    /// `wake: "later"`, which is what a server left running is. Kept as a method so a reader of
+    /// `leticode_status` asks the same question it always did.
     pub fn waiting_on_jobs(&self) -> bool {
         self.activity
             .waiting_on()
@@ -1798,7 +1798,10 @@ impl Head {
     ///   daemon's [`Waiting::Ask`] entries ends the wait with exit 10;
     /// * a **failure** is terminal and is reported as one;
     /// * otherwise **the daemon's own [`Activity`] says when the session is quiet** — nothing
-    ///   running, nothing owed, nobody asked — and that is `0`, the turn ended;
+    ///   running, nothing owed, nobody asked: that is `0`, the turn ended. A job or a child holds
+    ///   that answer while it runs, because its settlement wakes the model and the turn it starts is
+    ///   what this wait is waiting for; the one the model PARKED (`wake: "later"`) does not, so a
+    ///   server left running is not a reason to wait;
     /// * and a session that is quiet **when the wait starts** is answered with what it looks like
     ///   after [`START_GRACE`], but **only on a session that has run a turn before**: the first
     ///   real `leticode_start` was followed by a `wait` that exited `0 — the turn ended` in three
@@ -1843,11 +1846,17 @@ impl Head {
         // session's turn would otherwise answer `0` the moment the worker took it off the queue, with
         // the previous turn's words. What that queue is for is the *quiet-from-the-start* case
         // below, where the activity is not quiet and the wait keeps waiting.
-        let mut armed = g
-            .activity
-            .waiting_on()
-            .iter()
-            .any(|w| matches!(w, Waiting::Turn | Waiting::Calls));
+        //
+        // **A job or a child counts too**: its settlement wakes the model, so a session holding one
+        // is about to act and this wait will see the turn it starts. Without it the wait sat out its
+        // grace and then polled for a quiet that was not coming, and a job that outlived the caller's
+        // patience was answered with a timeout about a session that had been working the whole time.
+        let mut armed = g.activity.waiting_on().iter().any(|w| {
+            matches!(
+                w,
+                Waiting::Turn | Waiting::Calls | Waiting::Job(_) | Waiting::Child(_)
+            )
+        });
         let grace = Instant::now() + START_GRACE;
         loop {
             if let Some(a) = g.asks.first() {
@@ -1894,12 +1903,12 @@ impl Head {
                         message: g.last_message().to_string(),
                     };
                 }
-            } else if g
-                .activity
-                .waiting_on()
-                .iter()
-                .any(|w| matches!(w, Waiting::Turn | Waiting::Calls))
-            {
+            } else if g.activity.waiting_on().iter().any(|w| {
+                matches!(
+                    w,
+                    Waiting::Turn | Waiting::Calls | Waiting::Job(_) | Waiting::Child(_)
+                )
+            }) {
                 armed = true;
             }
             if now >= deadline {
@@ -2236,13 +2245,13 @@ mod tests {
     }
 
     /// **A turn that ended to wait on its own job is not the end of the work** — and whether a job
-    /// holds the work open is the DAEMON's answer now (R79's rule: a settlement the model is woken
-    /// by), not an edge this head derives off the todo board.
+    /// holds the work open is the DAEMON's answer now, not an edge this head derives off the todo
+    /// board.
     ///
     /// QA's case is the first half: a turn ended *waiting on the last probe target*, and a `wait`
     /// that answered there handed the orchestrator a package with an hour of work left. The second
-    /// half is the correction that makes the first usable: a server left running, or the test's own
-    /// `sleep 30`, is not something the work waits on and must not hold a later turn open for ever.
+    /// half is what keeps the first usable: the job the model PARKED with `wake: "later"` (a
+    /// server left running) is not something the work waits on and must not hold a later turn open.
     #[test]
     fn a_job_the_work_waits_on_keeps_the_session_busy_and_a_server_does_not() {
         let mut state = State::default();
@@ -2272,14 +2281,15 @@ mod tests {
             ),
         );
         feed(&mut state, testing::turn_finished("t1"));
-        // **An open job nothing waits on** — a dev server, the test's `sleep 30`: the daemon says
-        // the session is quiet, and this head says exactly what the daemon said.
+        // **An open job the model PARKED** (`bash {background: true, wake: "later"}`), which is
+        // what a dev server left running is: the daemon says the session is quiet, and this head
+        // says exactly what the daemon said.
         feed(&mut state, activity(Vec::new()));
         assert_eq!(state.word(), "idle");
         assert!(state.jobs_open.contains("j9"), "the job is still running");
         assert!(
             !state.waiting_on_jobs(),
-            "an open job the work does not wait on holds nothing open"
+            "a job the model parked holds nothing open"
         );
 
         // **The work waits on it now.** The daemon re-reads the board and says `job j9`.

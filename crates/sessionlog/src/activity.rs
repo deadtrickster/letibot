@@ -39,19 +39,16 @@
 //! | [`Waiting::Child`] | **yes**, on the same rule as a job | a child is a background job (`jobwatch`'s own words) |
 //! | [`Waiting::Ask`] | **no** | the session is stopped on a card. This is the ONE that waits for a person |
 //!
-//! **A job is counted when its settlement is one the session's own work will act on.** That is not
-//! "every job": `crate::delivery`'s decision is the same one the delivery path makes, and it is
-//! `Delivery::Immediate` — a row of the plan `needs` it or has a `when: job` condition on it, the
-//! session asked for it (`job_wait`), or it was started with `wake: "now"` — against
-//! `Delivery::Held`, which is a result the model is *shown* at its next break and is not waiting
-//! for. A session with a dev server left running in the background is not *busy* for the life of
-//! the daemon: the server's ending is not what the work is about, and a caller told to wait for it
-//! would wait for ever. What keeps a settlement that is merely held from slipping through is
-//! [`Waiting::Delivery`]: the moment it is queued the session is owed a turn, and the delivery
-//! window — measured, and the bug `478f415a` was written for — is a `Delivery` and not a silence.
+//! **A running job or child is counted, because its settlement reaches the model.** The daemon
+//! queues every settlement, rings the session's bell, and the turn that says it is the session
+//! acting again on its own, so a session holding one is not *done*, whatever its plan says. The
+//! former rule asked only about the jobs the plan named, and `wait` exited on sessions a
+//! settlement was about to wake: the false *done* that costs an orchestrator a run.
 //!
-//! A long-running job whose settlement the work waits on therefore counts for as long as it runs,
-//! which is the point: that is what the model is blocked on.
+//! **The one exception is the job the model PARKED** (`bash {background: true, wake: "later"}`),
+//! which is what a dev server left running is: the model said it does not need waking for it, so a
+//! caller told to wait for it would wait out its whole deadline for a settlement that comes when
+//! the session ends. Its result is still delivered; it just does not hold anybody's wait.
 //!
 //! # Why a value and not a question
 //!
@@ -81,8 +78,9 @@ pub enum Waiting {
     /// settlement queued or held, a monitor that has fired, a message or a prompt waiting for the
     /// worker. This is the window every timer in `crates/bridge` was invented for.
     Delivery,
-    /// A background job of this session's whose settlement the work waits on — see the module
-    /// header for the rule (it is `delivery::decide`'s, not a second one).
+    /// A background job of this session's, running: its settlement is said to the model, and the
+    /// turn that says it is the session acting again. Absent for the one the model parked with
+    /// `wake: "later"`, whose ending it said it does not need waking for.
     Job(String),
     /// A monitor this session armed. A firing is immediate, so this always ends in a turn.
     Monitor(String),

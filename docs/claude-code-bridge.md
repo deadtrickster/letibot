@@ -155,11 +155,14 @@ false wake and left the next, and the operator's question is the whole argument 
 *"it is easy to see if any jobs are running, etc etc, why timeouts?"* — the daemon holds the jobs,
 the calls, the monitors, the children and the cards, so the daemon answers.
 
-A job counts when its settlement is one the model is **woken** by (R79's `delivery::decide`: an
-open row needs it or has a `when:` condition on it, a wait asked for it, `wake: "now"`), not every
-open handle — a dev server left running would otherwise hold every `wait` for its whole life. What
-keeps a merely-held settlement from slipping through is `Delivery`: the moment the result is queued
-the session is owed a turn, and that is the window a `wait` used to exit in.
+A running job or child holds that answer **because its settlement reaches the model**: the daemon
+queues it, rings the session's bell, and the turn that says it is the session acting again on its
+own (`delivery`'s `Rule::Idle` between turns, `Rule::TurnEnd` for a batch). The one exception is the
+job the model PARKED (`bash {background: true, wake: "later"}`), which is what a server left
+running is: the model said it does not need waking for it, so `wait` does not hold on it and the
+settlement is shown at the model's next turn. That is the whole of the `wake` argument: absent,
+the session's own end wakes it; `now`, the completion comes the moment it ends; `later`, the model
+is not waiting.
 
 #### A daemon that never started is exit 20, not an hour of waiting (R103)
 

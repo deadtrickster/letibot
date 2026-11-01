@@ -6662,7 +6662,6 @@ impl Harness {
             h.job_watch.clone(),
             h.monitors.clone(),
             h.monitor_cursor.clone(),
-            h.todos.clone(),
             h.prompt_in_flight.clone(),
         ));
         h.publish_activity();

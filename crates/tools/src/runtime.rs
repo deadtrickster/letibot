@@ -263,6 +263,11 @@ pub enum WantedNow {
     Awaited,
     /// The work was started with `wake: "now"`.
     WakeNow,
+    /// **The model said it does not need waking for it** (`wake: "later"`), so a caller's `wait`
+    /// does not hold on it. The result is delivered by the plan's own rules as before; what this
+    /// says is that the session will not act on its account, which is what a server left running
+    /// is.
+    WakeLater,
 }
 
 impl WantedNow {
@@ -271,6 +276,7 @@ impl WantedNow {
         match self {
             WantedNow::Awaited => "awaited",
             WantedNow::WakeNow => "wake_now",
+            WantedNow::WakeLater => "wake_later",
         }
     }
 }

@@ -220,7 +220,10 @@ pub fn decide(f: &Facts) -> Delivery {
     match f.wanted {
         Some(WantedNow::Awaited) => Delivery::Immediate(Why::Awaited),
         Some(WantedNow::WakeNow) => Delivery::Immediate(Why::WakeNow),
-        None => Delivery::Held,
+        // **`wake: "later"` is a declaration about the WAIT, not about the delivery**: the model
+        // said it does not need waking for it, so the result is held and batched like any other.
+        // A caller's `wait` does not hold on the job either, which is the other half of the word.
+        Some(WantedNow::WakeLater) | None => Delivery::Held,
     }
 }
 

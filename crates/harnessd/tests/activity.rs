@@ -92,7 +92,6 @@ fn said(a: &Activity) -> String {
 fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     let hub = Hub::new("s-activity");
     let watch = watchers(&hub);
-    let board = Arc::new(TodoBoard::new(Vec::new()));
     let cursor = Arc::new(AtomicUsize::new(0));
     // **The prompt's own span**, which the harness sets and clears around a turn. This test drives it
     // by hand because there is no harness here; the real-turn test below is where it is set by
@@ -102,7 +101,6 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
         Some(watch.clone()),
         None,
         cursor.clone(),
-        board.clone(),
         prompt.clone(),
     ));
 
@@ -291,21 +289,23 @@ fn the_activity_follows_a_session_through_a_turn_a_card_and_a_settlement() {
     );
 }
 
-/// **A child the plan waits on keeps the session busy, and a child it does not is not counted** —
-/// through the real watcher set, whose thread really is blocked on the runner.
+/// **A running child is an entry, and the one the model PARKED is not**, through the real watcher
+/// set, whose thread really is blocked on the runner.
+///
+/// The plan no longer decides this: a child's settlement reaches the model as a turn of its own, so a
+/// session holding one is not done. The old rule read it quiet unless a todo row named it, and a
+/// `wait` exited on a session a settlement was about to wake.
 #[test]
-fn a_child_the_plan_waits_on_is_an_entry_and_one_it_does_not_is_not() {
+fn a_running_child_is_an_entry_and_one_the_model_parked_is_not() {
     let hub = Hub::new("s-activity-child");
     let runner: Arc<dyn TaskRunner> = Arc::new(NeverFinishes {
         handle: "s-kid".into(),
     });
     let watch = watchers(&hub).with_tasks(&runner);
-    let board = Arc::new(TodoBoard::new(Vec::new()));
     hub.set_activity_source(activity::source(
         Some(watch.clone()),
         None,
         Arc::new(AtomicUsize::new(0)),
-        board.clone(),
         Arc::new(AtomicBool::new(false)),
     ));
 
@@ -324,29 +324,26 @@ fn a_child_the_plan_waits_on_is_an_entry_and_one_it_does_not_is_not() {
     );
 
     hub.refresh_activity();
-    assert!(
-        hub.activity().is_quiet(),
-        "a child nothing waits on is not work this session is blocked on (got {})",
-        said(&hub.activity())
-    );
-
-    // The plan says it waits on the child.
-    board.upsert_model(&[(
-        "land the fix".into(),
-        TodoStatus::InProgress,
-        vec![TodoNeed::Child { id: "s-kid".into() }],
-    )]);
-    hub.refresh_activity();
     assert_eq!(
         hub.activity(),
         Activity::of(vec![Waiting::Child("s-kid".into())]),
-        "{:?}",
-        hub.activity()
+        "the answer a settlement will end (got {})",
+        said(&hub.activity())
     );
     assert_eq!(
         hub.activity().line(),
         "waiting on: child s-kid",
         "the words a head draws and a caller reads"
+    );
+
+    // **The model said it does not need waking for it** (`task {wake: "later"}`), so it holds
+    // nothing: that is the dev server of this fixture.
+    watch.want_now("s-kid", letibot_tools::runtime::WantedNow::WakeLater);
+    hub.refresh_activity();
+    assert!(
+        hub.activity().is_quiet(),
+        "a child the model parked is not work this session is blocked on (got {})",
+        said(&hub.activity())
     );
 }
 
@@ -379,7 +376,6 @@ fn a_publish_returns_while_the_settlement_queue_is_held() {
         Some(watch.clone()),
         None,
         Arc::new(AtomicUsize::new(0)),
-        Arc::new(TodoBoard::new(Vec::new())),
         Arc::new(AtomicBool::new(false)),
     ));
     // A settlement in the queue, so the value the publisher re-derives is not the empty one.
@@ -449,7 +445,6 @@ fn a_session_closing_itself_does_not_wedge_a_publisher() {
         Some(watch.clone()),
         None,
         Arc::new(AtomicUsize::new(0)),
-        Arc::new(TodoBoard::new(Vec::new())),
         Arc::new(AtomicBool::new(false)),
     ));
     watch.hold(vec![child_settlement("s-stopping", "j9001")]);
@@ -540,7 +535,6 @@ fn the_line_is_right_while_a_watcher_lives_and_after_it_has_gone() {
         Some(watch.clone()),
         None,
         Arc::new(AtomicUsize::new(0)),
-        board.clone(),
         Arc::new(AtomicBool::new(false)),
     ));
     board.upsert_model(&[(
