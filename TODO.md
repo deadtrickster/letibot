@@ -75,10 +75,25 @@ A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-
 
 ---
 
-## R108 - sessionlog's placement test rests on inode reuse - **OPEN, filed 2026-10-27**
+## R108 - sessionlog's placement test rests on inode reuse - **CLOSED on branch `inode-test`, filed 2026-10-27**
 
 `placement::tests::a_record_of_a_socket_that_is_gone_is_not_an_answer` assumes a re-bound unix socket gets a new inode; ext4 on lab2x1 reuses it. The record's identity needs something a rebind cannot repeat, or the fixture's premise made true without sleeping. See `.letibot/notes/sessionlogs-placement-test-rests-on-inode-reuse.md`.
-**Still open?** run that test 20 times on lab2x1 inside a placement.
+**Landed (2026-11-01, branch `inode-test`): both halves, and the identity is the one in code.** The
+fixture's premise had already stopped depending on the allocator on `main` (`bae4ae44`): the successor
+is bound beside the old socket and renamed onto the name, so *two files at one moment cannot share an
+inode* is the fixture's own guarantee. The record now also carries what a rebind cannot repeat: a
+`stamp <ctime>.<nsec>` line beside `socket <dev>:<ino>`, and `read` answers nothing unless BOTH halves
+match the socket at the path, the ctime being set by the kernel at the bind and out of a rebind's
+reach. MEASURED on this ext4 placement (wt-b3): 30 of 30 close-unlink-rebind rounds handed the same
+inode back, and the ctime differed in every one. A record from a build that wrote no stamp gets the
+same refusal (it cannot prove which binding it names), which costs the same edge as the record's own
+introduction: a bridge from a newer build refuses an older daemon until it is restarted. Tests,
+`crates/sessionlog/src/placement.rs`: `a_rebind_that_takes_the_same_inode_back_is_not_an_answer` (a
+chmod stages the state a reusing rebind leaves, the inode staying and the ctime moving, so no bet on
+the allocator) and `a_record_from_a_build_without_the_stamp_is_not_an_answer`; the gone-socket test
+is green 20 of 20 here, and `cargo test --offline -p letibot-sessionlog` is 188 lib and 61
+integration green with the four live-model targets unrun.
+**Still open?** nothing.
 
 ---
 
