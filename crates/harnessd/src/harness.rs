@@ -277,8 +277,12 @@ impl Parts {
                 )
             }
         };
-        let skills =
-            std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_default());
+        let skills = std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::load_for(
+            &letibot_tools::builtins::skill::SkillDirs::for_this_box(
+                Some(&cfg.workspace),
+                crate::mergequeue::git::letibot_data_dir().as_deref(),
+            ),
+        ));
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(
             crate::tasks::default_state_path(),
@@ -2342,6 +2346,10 @@ pub struct Harness {
     ///
     /// See [`Harness::install_notes_source`], the only reader.
     note_vocab: Arc<Vocab>,
+    /// **The skills this daemon loaded**, which the prompt's index is composed from and the page's
+    /// rows are read off — the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
+    /// prompt cannot list two different corpora.
+    skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
     session: Session,
     /// **Shared, because the operator's run does not run on this harness's thread.**
     ///
@@ -5815,11 +5823,12 @@ impl Harness {
         // **Named `standing` and not `notes`**: there is a `let mut notes: Vec<String>` alive in
         // this function from the resume-report path, and a local called `notes` here shadows it
         // for every later use in the body.
-        let standing = crate::standing_notes::section(
+        let standing = crate::standing_notes::section_with_skills(
             &cfg.workspace,
             &crate::standing_notes::global_dir(),
             &crate::leticode_config::BoxDirs::for_this_box(),
             parts.vocab.as_ref(),
+            Some(parts.skills.as_ref()),
         );
         // **And the base prompt is composed HERE when the session asked for it**
         // (`Config::seat_prompt`): for the tools just seated, with the notes, the
@@ -6559,6 +6568,7 @@ impl Harness {
             cfg,
             engine,
             note_vocab: parts.vocab.clone(),
+            skills: parts.skills.clone(),
             session,
             runtime,
             hub,
@@ -13466,11 +13476,12 @@ impl Harness {
     /// (the standing notes are still taken up then, as they always were), or when there is no
     /// store to record a new one in.
     fn reseat_candidate(&mut self) -> Option<StablePrefix> {
-        let notes = crate::standing_notes::section(
+        let notes = crate::standing_notes::section_with_skills(
             &self.cfg.workspace,
             &crate::standing_notes::global_dir(),
             &crate::leticode_config::BoxDirs::for_this_box(),
             self.engine.vocab(),
+            Some(self.skills.as_ref()),
         );
         let system = crate::standing_notes::replace(&self.cfg.system, notes.as_deref());
         let next = StablePrefix {

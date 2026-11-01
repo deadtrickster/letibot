@@ -737,3 +737,34 @@ fn the_runtime_names_neither_instruction_file() {
         "these names belong to the seat's config layer and to no file in the runtime: {hits:?}"
     );
 }
+
+/// **The skills index rides the same section, and no body comes with it** — the operator's
+/// design: the names and their sources reach the prompt; the text arrives only when asked.
+#[test]
+fn the_section_carries_the_skills_index_and_never_a_body() {
+    let ws = dir("skills");
+    let g = dir("skills-global");
+    let r = letibot_tools::builtins::skill::SkillRegistry::new(vec![
+        letibot_tools::builtins::skill::Skill::new(
+            "release",
+            "cut a release",
+            "THE BODY NOBODY IS GIVEN UNASKED",
+            letibot_tools::builtins::skill::SkillSource::Project,
+        ),
+    ]);
+    let s = section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&r)).expect("a section");
+    assert!(
+        s.contains("- release  [this project]  cut a release"),
+        "{s}"
+    );
+    assert!(!s.contains("THE BODY NOBODY IS GIVEN UNASKED"), "{s}");
+    // And the section says what the labels mean, so a model cannot take a model's skill for
+    // the operator's instruction.
+    assert!(s.contains("only a skill labelled"), "{s}");
+    // The pane and the prompt are the same rule: a box with neither notes nor skills has no
+    // section at all rather than an empty one.
+    let empty = letibot_tools::builtins::skill::SkillRegistry::new(Vec::new());
+    assert!(section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&empty)).is_none());
+    let _ = std::fs::remove_dir_all(&ws);
+    let _ = std::fs::remove_dir_all(&g);
+}

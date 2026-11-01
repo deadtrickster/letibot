@@ -299,6 +299,26 @@ impl Corpus {
         weigh(&tf, &self.idf, self.unseen)
     }
 
+    /// **The documents most like `text`, best first** — [`Corpus::best`]'s arithmetic, with the
+    /// ranking kept instead of the winner: a caller that wants the top match's body and the next
+    /// two names needs the order, not the maximum.
+    pub fn ranked(&self, text: &str, most: usize) -> Vec<(&Path, f64)> {
+        let q = self.weigh(text);
+        let mut all: Vec<(&Path, f64)> = self
+            .notes
+            .iter()
+            .map(|n| (n.path.as_path(), similarity(&q, &n.weights)))
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+        all.sort_by(|(pa, sa), (pb, sb)| {
+            sb.partial_cmp(sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| pa.cmp(pb))
+        });
+        all.truncate(most);
+        all
+    }
+
     /// The note this text is most alike — the read hint's question. `None` only
     /// when the corpus is empty, or when nothing shares a single term with it.
     ///

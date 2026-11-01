@@ -12,7 +12,7 @@
 //! this seat may read — the node's permission filter, not a claim. A node that
 //! is away is reported as unreadable, never as an empty shelf.
 
-use letibot_tools::builtins::skill::{ShelfEntry, Skill, SkillShelf};
+use letibot_tools::builtins::skill::{ShelfEntry, Skill, SkillShelf, SkillSource};
 
 use crate::seat::Seat;
 
@@ -80,6 +80,7 @@ impl SkillShelf for FabricShelf {
             art.title,
             format!("{} · {} · updated {}", art.id, art.visibility, art.updated),
             art.body,
+            SkillSource::Fabric,
         ))
     }
 }
