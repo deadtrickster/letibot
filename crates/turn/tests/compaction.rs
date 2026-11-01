@@ -21,8 +21,16 @@ use letibot_tokencore::Vocab;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
 use letibot_turn::{Endpoint, RecordingSink, Session, TurnEngine, TurnFailure};
 
-use support::canned::{Canned, Frame};
+use support::canned::{Canned, Frame, Reply};
 use support::chatml::{ChatMlParser, ChatMlRenderer};
+
+/// **The summary turn with the ladder switched off** — the shape every test in this file
+/// wants: a canned server answers on the first call, and a fixture that waited would be
+/// measuring the policy rather than the compaction. `retry_policy.rs` in `harnessd` is where
+/// the ladder on this call is measured, through a real daemon.
+fn no_retries() -> letibot_http::retry::Ladder {
+    letibot_http::retry::Ladder::new(letibot_http::retry::Policy::none())
+}
 
 // Qwen's own ids, so the fixture and the vocabulary agree (same values the
 // engine-decision tests pin).
@@ -169,6 +177,7 @@ fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
         &mut session,
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
     )
     .unwrap();
 
@@ -258,6 +267,7 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
         &mut session,
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
     )
     .unwrap();
     assert_eq!(outcome.tool_calls, 1, "{outcome:?}");
@@ -312,6 +322,7 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         &mut session,
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
     )
     .unwrap_err();
     match err {
@@ -420,6 +431,7 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
         &mut session,
         &mut sink,
         &letibot_turn::compaction::Answerer::Local,
+        &mut no_retries(),
     )
     .expect("the salvage takes the turn again, and the retry answers");
 
@@ -603,8 +615,14 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         system: "you are a summariser",
         tools_json: &tools,
     };
-    let outcome =
-        letibot_turn::run_compaction(&mut engine, &mut session, &mut sink, &answerer).unwrap();
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &answerer,
+        &mut no_retries(),
+    )
+    .unwrap();
 
     assert_eq!(
         backend.calls.load(Ordering::Relaxed),
@@ -638,4 +656,69 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         "the summary sent a different tool list from the session's"
     );
     assert_eq!(outcome.summary, summary);
+}
+
+/// **A summary turn that meets a `503` is taken again** — the compaction is a provider call
+/// like any other, and it used to be the one nothing retried.
+///
+/// MEASURED through `harnessd`'s `retry_policy.rs`: the same failure on a TURN is taken again.
+/// Here it is the compaction, and the two facts that matter are the stub's own count (two
+/// requests, not one) and that the second one produced the summary — a ladder that retried and
+/// then threw the answer away would be the same failure with more waiting.
+///
+/// The retry is safe because the INSTRUCTION was appended once, before the salvage loop: this
+/// is why the ladder lives inside `run_compaction` rather than around it, where a caller would
+/// append a second instruction per attempt.
+#[test]
+fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
+    let Some(_) = letibot_tokencore::apparatus::present_gguf() else {
+        return;
+    };
+    let _lock = serial();
+
+    let summary_text = "decided: the fold landed on the second try; no files changed";
+    let frames = a_summary_turn(&ids_of("gather the record"), &ids_of(summary_text), 40, 39);
+    // The endpoint answers `503 Loading model` once — the status a server reloading a
+    // sharded GGUF answers — and the summary on the second call.
+    let canned = Canned::serve_replies(
+        vec![
+            Reply::Status {
+                code: 503,
+                body: "Loading model".into(),
+            },
+            Reply::Frames(frames),
+        ],
+        2,
+    );
+    let mut engine = engine(canned.endpoint.clone());
+    let mut session = session(&engine, "compact-retry");
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("count the things")], &mut sink)
+        .unwrap();
+
+    let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(1));
+    let outcome = letibot_turn::run_compaction(
+        &mut engine,
+        &mut session,
+        &mut sink,
+        &letibot_turn::compaction::Answerer::Local,
+        &mut ladder,
+    )
+    .expect("the second call answered");
+    assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
+    assert_eq!(ladder.attempts(), 1, "one call failed, and one was retried");
+    // The instruction is in the transcript ONCE — the retry re-ran the turn, not the whole
+    // function.
+    let instructions = session
+        .items
+        .iter()
+        .filter(|i| {
+            matches!(i, TranscriptItem::System { text, .. } if text == letibot_turn::SUMMARY_INSTRUCTION)
+        })
+        .count();
+    assert_eq!(
+        instructions, 1,
+        "a retried summary turn appended its instruction twice"
+    );
 }

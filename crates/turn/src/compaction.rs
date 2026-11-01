@@ -442,6 +442,7 @@ pub fn run_compaction(
     session: &mut Session,
     sink: &mut dyn EventSink,
     answerer: &Answerer<'_>,
+    ladder: &mut letibot_http::retry::Ladder,
 ) -> Result<CompactionOutcome, TurnFailure> {
     let instruction = TranscriptItem::System {
         text: SUMMARY_INSTRUCTION.to_string(),
@@ -480,10 +481,30 @@ pub fn run_compaction(
                     let notice = empty_length_notice(reason);
                     append_salvage_notice(session, engine, sink, &notice)?;
                 }
+                // **An endpoint that failed is the RETRY POLICY's, not the salvage's.**
+                //
+                // The summary turn is a provider call like any other, and it used to be the
+                // one that nothing retried: a DNS blip or a reset during the single call a
+                // session makes when its window is nearly full ended the compaction, and the
+                // operator read `compaction FAILED: http io: provider unreachable: …` with no
+                // count and no second attempt. MEASURED through `retry_policy.rs`: the same
+                // failure on a TURN is taken again.
+                //
+                // The retry is safe here for the same reason the salvage's is: a failed turn
+                // commits nothing, and the INSTRUCTION was appended once, before this loop —
+                // which is why the ladder is inside `run_compaction` rather than around it. A
+                // caller that looped would append a second instruction per attempt.
+                Err(TurnFailure::Http(e)) => match ladder.failed(&e) {
+                    // The wait is the policy's own. A stop that lands inside it waits for it:
+                    // bounded by the policy's longest step, and the alternative is a summary
+                    // turn nobody tried twice.
+                    Some(wait) => std::thread::sleep(wait),
+                    None => return Err(TurnFailure::Http(e)),
+                },
                 // SalvageExhausted lands here, and so does everything that is not a
-                // say-nothing turn: a guard trip, a socket error, a spent budget.
-                // Propagating is the honest answer — a compaction that did not run
-                // must say so, not disappear into a retry that never ends.
+                // say-nothing turn: a guard trip, a spent budget. Propagating is the
+                // honest answer — a compaction that did not run must say so, not
+                // disappear into a retry that never ends.
                 Err(e) => return Err(e),
             }
         }
