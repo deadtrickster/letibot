@@ -908,6 +908,18 @@ pub trait TaskRunner: Send + Sync {
         self.collect(handle, timeout)
     }
 
+    /// **Whether this child has no record, and how far it got** — the class the listing and the
+    /// single-handle answer both carry. `None` for a recorded child and for a runner that keeps no
+    /// store.
+    ///
+    /// **A keyed question, and that is the point.** The listing can only carry the children a row
+    /// was DUE for (`children_without_runs`), while a model may name any of its children — on the
+    /// operator's box 517 of one session's 573 predate the store's first record. Answering from the
+    /// list would leave exactly those children's answers bare, which is the defect this closes.
+    fn lost(&self, _handle: &str) -> Option<LostChild> {
+        None
+    }
+
     /// **This child's settlement has been read** — by `task_result`, which hands the answer to
     /// the model, or by the tool that started a helper and waited for it (`digest`). A runner
     /// that records children marks the record delivered, so a daemon restart does not hand the
@@ -1883,20 +1895,15 @@ impl Tool for TaskResultTool {
         };
         // **The handle, or the child's name** — the job rule: the id wins, a name two children
         // carry is refused naming them, and anything else goes on as it was written.
-        //
-        // The list is read ONCE and used twice: to resolve the name, and to find out whether the
-        // child it named has a record — which is the fact the answer below has to carry. One
-        // reading, so the two cannot disagree about the same child.
-        let kids = self.runner.children();
-        let handle = match resolve_child_in(&kids, handle) {
+        let handle = match resolve_child(self.runner.as_ref(), handle) {
             Ok(h) => h,
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
-        let lost = kids
-            .iter()
-            .find(|c| c.handle == handle)
-            .and_then(|c| c.lost.clone());
+        // **Asked BY HANDLE, not looked up in the list.** The list carries only the children a
+        // record was due for; a child from before the store recorded any is one a model may still
+        // name, and its answer needs the same caveat.
+        let lost = self.runner.lost(handle);
         let label = self.runner.label_of(handle);
         // A deadline always applies, and its expiry is its own outcome rather
         // than being reported as completion — `job_wait`'s rule, for the same

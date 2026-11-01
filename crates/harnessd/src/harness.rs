@@ -21993,6 +21993,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         }
     }
 
+    /// **Whether this child has no record, and how far it got** — asked BY HANDLE, because that is
+    /// the question `task_result` has when a model names a child, and the answer must be right for
+    /// a child the LIST does not carry: the list is the children a record was due for, while a
+    /// child from before the store recorded any is one a model may still name.
+    fn lost(&self, handle: &str) -> Option<letibot_tools::builtins::task::LostChild> {
+        self.unrecorded_child(handle)
+            .as_ref()
+            .map(crate::subagent_record::how_far)
+    }
+
     fn started(&self) -> Vec<String> {
         self.slots
             .lock()

@@ -1,4 +1,4 @@
-<!-- abstract: MEASURED 2026-11-01: `ended_in` was computed for the single-handle door only, so every lost child that did not end on an answer printed one sentence in the list; and a caveat a reader must see belongs at the START of a tool payload, because a spill keeps the head half and a settlement notice keeps `first_line`. -->
+<!-- abstract: MEASURED 2026-11-01: `ended_in` was computed for the single-handle door only, so every lost child that did not end on an answer printed one sentence in the list; the caveat belongs at the START of a tool payload (a spill keeps the head half, a notice keeps `first_line`); and the class must be asked BY HANDLE, because the list carries only the children a record was DUE for. -->
 
 # A second-hand answer must say so, and the caveat belongs at the head of the payload
 
@@ -25,7 +25,15 @@ Rake: **a bool that marks a row "second-hand" is not the class.** If a list row 
 about one thing both have to say how far it got, the class belongs on the row, not in whichever
 door happens to compute it.
 
-## 2. Where a caveat goes is decided by the truncation, not by taste
+## 2. The class must be asked BY HANDLE, and where a caveat goes is the truncation's decision
+
+**By handle, because the two reads are windowed differently.** `ChildName.lost` is built from
+`children_without_runs`, which is the children a record was **due** for; `look` /
+`child_without_run` answer for any child. So a child from before the store's first record — 517 of
+one session's 573 on the operator's box — is *not in the list*, and reading the caveat's class off
+the list left exactly that class's answers bare. `TaskRunner::lost(handle)` is the keyed question
+the answer door asks instead, and the integration test stages a pre-record child with an answer to
+pin it.
 
 A child with no record's last `Assistant` row is returned as `Done { answer: text }` — and
 `SubagentRecord::settled`'s own comment says why that is not an answer: *during a shutdown an

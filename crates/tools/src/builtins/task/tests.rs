@@ -1941,21 +1941,20 @@ fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
         fn started(&self) -> Vec<String> {
             vec!["s-1-sub-lost".into(), "s-1-sub-kept".into()]
         }
+        // **The lost child is deliberately NOT in the list** — the list is the children a record
+        // was due for, and a child from before the store recorded any is one a model may still
+        // name (517 of one session's 573 on the operator's box). Reading the class out of the list
+        // would leave exactly those children's answers bare.
         fn children(&self) -> Vec<ChildName> {
-            vec![
-                ChildName {
-                    handle: "s-1-sub-lost".into(),
-                    slug: None,
-                    own: true,
-                    lost: Some(LostChild::Answered),
-                },
-                ChildName {
-                    handle: "s-1-sub-kept".into(),
-                    slug: Some("kept".into()),
-                    own: true,
-                    lost: None,
-                },
-            ]
+            vec![ChildName {
+                handle: "s-1-sub-kept".into(),
+                slug: Some("kept".into()),
+                own: true,
+                lost: None,
+            }]
+        }
+        fn lost(&self, handle: &str) -> Option<LostChild> {
+            (handle == "s-1-sub-lost").then_some(LostChild::Answered)
         }
     }
 

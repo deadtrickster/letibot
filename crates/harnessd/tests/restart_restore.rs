@@ -1142,6 +1142,27 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             truncated: false,
         },
     );
+    // **And one from BEFORE the store recorded any child, whose last row is an answer.** It is not
+    // in the list (a row was never due for it), and a model may still name it — so the caveat must
+    // come from the keyed read rather than from the list, or the 517-of-573 class on the
+    // operator's box is exactly the class whose answers are handed over bare.
+    let old_answer = "s-restart-parent-sub-old-answer";
+    a_child_that_stopped_at(
+        old_answer,
+        "the old child that answered",
+        TranscriptItem::Assistant {
+            text: "the old sweep is in".into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    );
+    store
+        .connection()
+        .execute(
+            "UPDATE session SET created_at = ?1 WHERE id = ?2",
+            (began as i64 - 60_000, old_answer),
+        )
+        .unwrap();
 
     let d = a_daemon(&parts, &cfg);
     // **Listed** — by its handle, marked as a child with no record rather than silently missing.
@@ -1228,6 +1249,29 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     assert!(
         !listed.contains(old),
         "a child from before the store recorded any was never due a row: {listed}"
+    );
+    assert!(
+        !listed.contains(old_answer),
+        "and the same window holds for the one that answered: {listed}"
+    );
+    // **The caveat does not depend on the list.** A child the list does not carry, named by
+    // handle, still gets it — which is the only way the 517-of-573 class is covered.
+    let old_not_an_answer = task_result(&d, old_answer);
+    eprintln!(
+        "--- what task_result says about the old child that answered ---\n{}",
+        old_not_an_answer.payload
+    );
+    assert!(
+        old_not_an_answer
+            .payload
+            .starts_with("whatever it had written when it stopped, not a finished answer"),
+        "a child the list does not carry is not handed over bare: {}",
+        old_not_an_answer.payload
+    );
+    assert!(
+        old_not_an_answer.payload.contains("the old sweep is in"),
+        "{}",
+        old_not_an_answer.payload
     );
 
     // **Readable** — the single-handle answer says it is gone, where its work is, and how to read
