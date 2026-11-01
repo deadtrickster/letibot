@@ -1,6 +1,3 @@
-// TODO: remove this allow and fix the warnings it hides. The gate now treats
-// warnings as errors; this is the bridge to green while the crate is cleaned up.
-#![allow(clippy::all)]
 //! Cloud providers — GLM (Zhipu), DeepSeek, Grok (xAI) — as a
 //! [`MessagesBackend`]: one OpenAI-shaped chat-completions client, three
 //! presets. D10's mode 3, built on the seam it reserved.
