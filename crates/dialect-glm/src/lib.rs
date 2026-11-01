@@ -1,6 +1,3 @@
-// TODO: remove this allow and fix the warnings it hides. The gate now treats
-// warnings as errors; this is the bridge to green while the crate is cleaned up.
-#![allow(clippy::all)]
 //! GLM-5.3-Flash: the spec that drives the template renderer, a parser, and a
 //! second renderer kept as a cross-check.
 //!
