@@ -43,6 +43,21 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R111 - Revisit read-before-edit: an edit should only touch what the model was shown - **OPEN, filed 2026-11-02, operator's ask**
+
+The operator, 2026-11-02: *"add that file not read back to todo. i think we might want to revisit it"*.
+
+`edit` had two gates and lost both in `4a2341a3` (2026-09-17), on the operator's reading:
+- read-before-write was redundant where it worked (an edit that lands has already matched `old_string` exactly once in the current bytes) and broken where it was not (over the paste ceiling it showed an excerpt, marked the file seen and let the retry through);
+- the staleness refusal compared a digest of the whole file, so a formatter touching line 900 refused an edit at line 12.
+
+What was left open then (board item 01M2RFDXW33CPJHNDX0KMYPN92) is the version worth building: track the lines the model was actually shown (`read` ranges, grep and search hits, its own earlier edits), and refuse an edit whose target region it never saw or that changed since it saw it. Open question from that time: how near to a shown line counts as seen.
+
+**Done when**: an edit to a region the session never saw, or saw before it changed, is refused with the lines it should read; an edit inside shown lines is never refused for a change elsewhere in the file.
+**Still open?** `git log --oneline -1 -- crates/tools/src/builtins/edit.rs` has no such gate.
+
+---
+
 ## R105 - The work order after the 2026-11-01 review, folded with the open list - **OPEN, filed 2026-11-01**
 
 Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
