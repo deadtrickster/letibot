@@ -17,14 +17,14 @@
 //! answered by a flag would let a door that asked the wrong session pass. That the seam IS the
 //! session's queue — a message a model reads — is `harness::queue_e2e`'s half.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{
     MergePriority, Move, NewReview, ReviewKind, ReviewState, SessionRecord, Store,
 };
-use letibot_tools::builtins::task::{TaskRunner, TaskSpec, TaskStatus};
+use letibot_tools::builtins::task::{Placement, TaskRunner, TaskSpec, TaskStatus};
 use letibot_tools::builtins::verdict::ReviewDesk;
 use letibot_tools::gatekeeper::{Decision, LookedAt, ReviewRequest, Submission};
 
@@ -1216,6 +1216,146 @@ fn a_reviewer_on_this_machine_works_in_a_checkout_of_the_head_it_judges() {
     assert!(
         prompt.contains(&tree.display().to_string()),
         "the prompt sends the reviewer's `bash` to the same tree it works in: {prompt}"
+    );
+}
+
+/// **A project that asks for VMs still gets one**: the isolated arm, which no test of its own was
+/// left guarding when the host became the default.
+///
+/// **Nothing is booted.** What is asserted is the placement the daemon DERIVES from the project's
+/// file and the spec the spawn is handed, and both are decided before any child exists, so the
+/// arm cannot rot for want of a hypervisor to exercise it on.
+#[test]
+fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
+    use crate::mergequeue::serve::tests::{branch, repo, sh};
+
+    let dir = TempDir::new("review-vm");
+    let repo = repo(&dir.0);
+    let (_wt, base, head) = branch(&repo, "the-work", "b.txt");
+    // **The project says it in the file the daemon reads**: so what is under test is the answer
+    // the daemon itself would act on, not a placement this test builds and then believes.
+    std::fs::write(repo.join("leticode.toml"), "[queue]\nreviewers = \"vm\"\n")
+        .expect("the project file");
+    let cfg = crate::config::Config::for_the_daemon(&repo);
+    assert_eq!(
+        cfg.reviewers,
+        crate::config::Reviewers::Vm,
+        "the daemon's own constructor reads the project's answer"
+    );
+    // This box can boot one; a box that cannot is `ReviewerPlacement::NoVm`, asserted in
+    // `gatekeeper`'s tests, where the box is an argument rather than a race on `$FIRECODE_BIN`.
+    let placement = crate::sessions::gatekeeper::reviewer_placement(
+        cfg.reviewers == crate::config::Reviewers::Vm,
+        Ok(PathBuf::from("/usr/bin/firecode")),
+    );
+    assert_eq!(
+        placement,
+        ReviewerPlacement::Vm,
+        "a project that asks for the isolation is placed in a VM, not quietly on the host"
+    );
+
+    let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+    store
+        .enqueue_review(
+            &NewReview {
+                id: "the-review".into(),
+                repository: repo.display().to_string(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: CHILD.into(),
+                branch: "agent/the-work".into(),
+                worktree: None,
+                base_sha: base.clone(),
+                head_sha: head.clone(),
+                brief: "do the work".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: "enqueued".into(),
+            },
+            "test",
+            1,
+        )
+        .expect("the review row");
+    assert!(
+        store
+            .move_review(
+                "the-review",
+                ReviewState::Waiting,
+                ReviewState::Reviewing,
+                &Move::new(ME, "claimed").set("owner", ME),
+                2,
+            )
+            .unwrap(),
+        "the fixture must really have claimed the row"
+    );
+
+    let started = Arc::new(Started::default());
+    let runner = Recorder {
+        started: started.clone(),
+    };
+    let desk = ReviewDesk::new();
+    let deliver = |_: &str, _: &str| -> Result<String, String> { Err("nobody here".into()) };
+    let events = |_: SessionEvent| {};
+    let settings = |_: &Path| Ok(QueueSettings::default());
+    let clones = dir.0.join(CLONES_DIR);
+    let pool = Pool {
+        store: &store,
+        runner: &runner,
+        desk: &desk,
+        host: HOST,
+        me: ME,
+        placement,
+        events: &events,
+        warn: &|_: &str, _e| {},
+        deliver: &deliver,
+        live: &|_: &str| false,
+        settings: &settings,
+        clones: clones.clone(),
+        slots: &Vec::new,
+    };
+    assert_eq!(
+        serve(&pool).expect("a pass").started,
+        1,
+        "the claimed row's reviewer is started"
+    );
+
+    let (prompt, spec) = started.one();
+    assert_eq!(
+        spec.placement,
+        Placement::Firecode,
+        "what the spawn carries is a VM, which is the whole of what `[queue] reviewers` chose"
+    );
+    let source = spec
+        .vm_source
+        .as_ref()
+        .expect("a VM is booted on the clone of the head the row names");
+    assert!(
+        source.starts_with(&clones),
+        "and on the queue's own clone, under {}: {}",
+        clones.display(),
+        source.display()
+    );
+    assert_eq!(
+        sh(source, &["rev-parse", "HEAD"]),
+        head,
+        "the clone the VM copies is at the head the row names"
+    );
+    assert!(
+        spec.worktree.is_none(),
+        "a VM works on its own copy, so there is no worktree in this machine for it to hold"
+    );
+    // **`cwd` is empty for this arm**: inside the VM the clone is the guest's project, and an
+    // absolute path from here names nothing there.
+    let open = desk.open(HOST);
+    assert_eq!(open.len(), 1, "one reviewer, one desk entry");
+    assert!(
+        open[0].req.cwd.is_empty(),
+        "the reviewer's `cwd` names no path outside the VM: {:?}",
+        open[0].req.cwd
+    );
+    assert!(
+        !prompt.contains(&source.display().to_string()),
+        "and the prompt sends it nowhere absolute either: {prompt}"
     );
 }
 

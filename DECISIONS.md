@@ -438,3 +438,34 @@ As built (`docs/plugins-plan.md` §2.5):
 4. **`/plugin trust NAME` is the operator's door and not a model's**: the `plugin` tool has no
    `trust` verb, and the book lives in `$XDG_CONFIG_HOME/letibot/plugin-trust.json` rather than
    beside the layer it is about. A pin a model can write is not a pin.
+
+## D18: a reviewer runs on this machine by default, **SETTLED 2026-10-29**
+
+The operator's ruling, after a night of watching reviews: placing a reviewer in a firecode VM is
+too much for what a review is. Every reviewer paid a guest exec per file read (a `grep` over the
+firecode backend is one `firecode in` per candidate), one lost its request between `socat`'s `OK`
+and the guest's first read with both ends waiting for ever, and a review therefore took 30 to 60
+minutes holding one of two slots, to isolate a READER more than the subagent that WROTE the
+branch, which already runs here with the operator's credentials.
+
+So `[queue] reviewers = "host"` is the default, `--reviewers vm` overrides it for one daemon, and
+a project that wants the isolation says `"vm"` in its own `leticode.toml`. The key is named for
+what it chooses, not for the mechanism.
+
+1. **A host reviewer works in a clone of the head it judges.** Not the operator's checkout, and
+   not the daemon's workspace: `mergequeue::review::start_reviewer` makes one clone per attempt at
+   the row's `head_sha` and hands it over as `TaskSpec::worktree`, so the tree the reviewer reads
+   and the `cwd` its prompt names are one path. A reviewer that judges the wrong tree is worse
+   than a slow one.
+2. **The VM arm stays, and stays tested.** `Reviewers::Vm` is still a placement a project can ask
+   for, and the isolation a VM buys is the reason it exists. `mergequeue/review/tests.rs`'s
+   `a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one` builds the placement from a
+   project file that says `vm`, all the way through `Config::for_the_daemon` and
+   `reviewer_placement`, and asserts the spec the spawn carries is a `Firecode` placement on the
+   clone with no worktree. Nothing boots: what a default makes untrodden is the arm itself, not
+   the hypervisor.
+3. **What the default gives up, said plainly.** A reviewer here is a `gatekeeper`-seated child with
+   `bash`, and nothing but the seat and the permission cards stands between it and this machine. It
+   can run anything the operator can and read their credentials, and a branch under review may
+   carry a test that does something destructive. That is a boundary on ATTENTION, not a sandbox,
+   and a project that wants a real one says `reviewers = "vm"`.
