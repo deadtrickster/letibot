@@ -301,6 +301,16 @@ impl App {
     /// window — the same walk over `spans` that [`App::file_rows_in`] makes. A marker is drawn on
     /// the run's own first row, or glued to the prose row just before it; either way the run is
     /// the hidden stretch starting at the first hidden row from there.
+    ///
+    /// **And a marker with no hidden row under it stands for the work in flight** — `[1 tool
+    /// call]` glued to the sentence that introduced a call (`live_joins`), while that call has no
+    /// row at all. That is the one state where the counter is drawn and there is nothing to name:
+    /// a round's result rows are appended only after every call in it has run, so the very first
+    /// call of a round is counted by a marker with no run behind it. This used to drop the clause
+    /// (`continue`), which is a counter drawn in the working's register that answers nothing —
+    /// the operator, 2026-11-01: *"why running tool call rendered in yellow is no longer
+    /// clickable?"*. The address is [`LIVE_RUN`], the same one the pane's own counter carries,
+    /// and [`App::open_marker`] already knows what to do with it.
     pub(crate) fn marker_rows_in(&self, start: usize, end: usize) -> Vec<MarkerHit> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
@@ -314,12 +324,15 @@ impl App {
             let Some(sp) = i.checked_sub(1).map(|i| self.spans[i]) else {
                 continue;
             };
-            let Some(first) = (sp.row..self.items.len())
+            let run = match (sp.row..self.items.len())
                 .find(|k| crate::ui::row_hidden(&self.items, self.visibility, *k))
-            else {
-                continue;
+            {
+                Some(first) => self.items[first].item_id.clone(),
+                // Nothing hidden here, so the only thing the counts can be about is the turn
+                // that is still running. A marker with neither is a join the next frame undoes.
+                None if self.live_work_now().work() > 0 => LIVE_RUN.to_string(),
+                None => continue,
             };
-            let run = self.items[first].item_id.clone();
             for (from, to, show) in found {
                 out.push(MarkerHit {
                     y: line - start,
@@ -334,6 +347,13 @@ impl App {
     }
 
     /// The clause under the pointer, on the last frame.
+    ///
+    /// **The pointer's `x` is a terminal cell and a clause's columns are the row's own** — the
+    /// gutter is padded onto every row after the frame is composed, so a record read off
+    /// `hist_lines` is short by exactly that much. This is the defect the header's git field had
+    /// (`rect.x=59 drawn_col=61`): the target is real and sits two columns left of what it drew,
+    /// so a click on the tail of the clause lands on nothing while one in the middle works —
+    /// which reads as *sometimes it clicks, sometimes it does not*.
     pub(crate) fn marker_at(&self, x: u16, y: u16) -> Option<&MarkerHit> {
         let top = self
             .hits
@@ -342,13 +362,14 @@ impl App {
             .rect
             .y;
         let r = usize::from(y).checked_sub(top)?;
-        let x = usize::from(x);
+        let x = usize::from(x).checked_sub(Self::gutter(self.term_cols))?;
         self.marker_rows
             .iter()
             .find(|m| m.y == r && x >= m.from && x < m.to)
     }
 
-    /// The clause's place on the screen, for the hover to light.
+    /// The clause's place on the screen, for the hover to light — the columns it was drawn in,
+    /// which is the record's own plus the gutter (see [`App::marker_at`]).
     pub(crate) fn marker_screen(&self, m: &MarkerHit) -> Option<(usize, usize, usize)> {
         let top = self
             .hits
@@ -356,7 +377,8 @@ impl App {
             .find(|h| h.target == Target::Conversation)?
             .rect
             .y;
-        Some((top + m.y, m.from, m.to))
+        let gutter = Self::gutter(self.term_cols);
+        Some((top + m.y, m.from + gutter, m.to + gutter))
     }
 
     /// **The live pane's marker clauses, as targets** — the rows of this frame below the history
