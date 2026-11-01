@@ -305,3 +305,195 @@ fn a_control_character_in_a_row_is_drawn_as_a_space_by_both_lists() {
         own.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// **A session a session started has that session as its parent**
+//
+// The tree nests by `SessionBrief::parent_session_id` and by nothing else — not by the id, not by
+// the workspace. The daemon side of the rule is `Registry::parent_for`, applied once in
+// `Harness::open_with_registry`; these tests are the pen, and each one is a spawner whose child
+// must land under its parent (or, for the two a PERSON starts, at the top of its project).
+// ---------------------------------------------------------------------------
+
+/// The rows `session_rows()` would draw, as `(session, depth)` — a node's line has no session, so
+/// it is not here; see the file's note on the two indices.
+fn tree(a: &App) -> Vec<(String, usize)> {
+    a.session_rows()
+        .iter()
+        .filter_map(|r| r.idx.map(|i| (a.sessions[i].session_id.clone(), r.depth)))
+        .collect()
+}
+
+/// Every fold open, so every child is on the list — the walk
+/// `the_session_list_looks_like_this_with_every_fold_open` makes, as a helper for the tests that
+/// care about nesting rather than about what a folded list looks like.
+fn open_everything(a: &mut App) {
+    for _ in 0..4 {
+        let keys: Vec<String> = a
+            .session_rows()
+            .iter()
+            .map(|r| match r.idx {
+                Some(i) => a.sessions[i].session_id.clone(),
+                None => r.node.key().to_string(),
+            })
+            .collect();
+        for key in keys {
+            a.set_row_fold(&key, true);
+        }
+    }
+}
+
+/// **A `task` child, and its own child under it** — the shape `HarnessTaskRunner::start` leaves:
+/// an id minted `…-sub-<ns>`, and the child's own id as the grandchild's parent.
+#[test]
+fn a_task_child_and_its_own_child_are_drawn_under_their_parents() {
+    let mut a = app();
+    a.home = HOME.to_string();
+    let root = brief("s-root", "the conversation", true);
+    let mut child = brief("s-root-sub-1793000000000000000", "count the files", false);
+    child.parent_session_id = Some("s-root".into());
+    child.slug = "count-files".into();
+    let mut grandchild = brief(
+        "s-root-sub-1793000000000000000-sub-1793000000000000001",
+        "and the sizes",
+        false,
+    );
+    grandchild.parent_session_id = Some("s-root-sub-1793000000000000000".into());
+    a.apply(hello(
+        "s-root",
+        vec![root, child, grandchild],
+        Hub::new("s-root").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    open_everything(&mut a);
+    assert_eq!(
+        tree(&a),
+        vec![
+            ("s-root".to_string(), 1),
+            ("s-root-sub-1793000000000000000".to_string(), 2),
+            (
+                "s-root-sub-1793000000000000000-sub-1793000000000000001".to_string(),
+                3
+            ),
+        ],
+        "a child is one level under its parent, and a grandchild one level under the child"
+    );
+    let text = drawn(&a, 100);
+    assert!(text.contains("count the files"), "{text}");
+    assert!(text.contains("and the sizes"), "{text}");
+}
+
+/// **A `task_start` child is placed by the tree it hangs from, not by its own worktree.**
+///
+/// The child's workspace is `…/worktrees/agent-a-thing` and its parent's is the repository, so a
+/// head that placed rows by `wiring.workspace` would invent a second project line and put the
+/// child at the top of it — which is the picture the operator reported as *subagents shown as
+/// top level*.
+#[test]
+fn a_task_start_child_is_placed_by_its_parent_and_not_by_its_worktree() {
+    let mut a = app();
+    a.home = HOME.to_string();
+    let root = brief("s-root", "the conversation", true);
+    let mut child = brief("s-root-sub-1793000000000000002", "the worktree brief", false);
+    child.parent_session_id = Some("s-root".into());
+    child.wiring = letibot_sessionlog::SessionWiring {
+        workspace: "/home/dead/Projects/letibot/worktrees/agent-a-thing".into(),
+        ..wiring()
+    };
+    a.apply(hello(
+        "s-root",
+        vec![root, child],
+        Hub::new("s-root").snapshot(),
+    ));
+    let place = a.placements();
+    let at = |id: &str| {
+        a.sessions
+            .iter()
+            .position(|s| s.session_id == id)
+            .expect("on the feed")
+    };
+    assert_eq!(
+        place[at("s-root-sub-1793000000000000002")].project,
+        place[at("s-root")].project,
+        "a worktree is where the child works, not where it is drawn"
+    );
+    assert_eq!(
+        a.projects(&place).len(),
+        1,
+        "one repository is one project line, however many worktrees its children hold"
+    );
+    a.push_surface(Surface::Picker);
+    open_everything(&mut a);
+    assert_eq!(
+        tree(&a),
+        vec![
+            ("s-root".to_string(), 1),
+            ("s-root-sub-1793000000000000002".to_string(), 2),
+        ]
+    );
+}
+
+/// **A session a PERSON started is a top row, and nothing invents a parent for it** — the
+/// corollary of the rule, tested because a rule that fills a parent in is one edit away from
+/// inventing one.
+///
+/// The two rows are the two doors: `--session SESSION` (a conversation reopened by id) and
+/// `--continue`'s newest conversation. The second one's id is deliberately shaped like a minted
+/// child's (`…-sub-3`), because the tree must read the field and not the name: `--continue`
+/// resolves only rows whose parent is NULL, so this is a session a person is in.
+#[test]
+fn a_session_a_person_started_is_a_top_row_whatever_its_id_looks_like() {
+    let mut a = app();
+    a.home = HOME.to_string();
+    let reopened = brief("s-1793000000000000003", "the session --session reopened", true);
+    let continued = brief("s-1793000000000000004-sub-3", "the newest conversation", false);
+    a.apply(hello(
+        "s-1793000000000000003",
+        vec![reopened, continued],
+        Hub::new("s-1793000000000000003").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    open_everything(&mut a);
+    assert_eq!(
+        tree(&a),
+        vec![
+            ("s-1793000000000000003".to_string(), 1),
+            ("s-1793000000000000004-sub-3".to_string(), 1),
+        ],
+        "neither has a parent, so neither is nested under the other"
+    );
+}
+
+/// **A child whose parent has since closed is drawn under the project, not swallowed.**
+///
+/// The parent is not on the feed at all — a session the daemon no longer holds and the store no
+/// longer lists — so `parent_on_list` answers `None` and the row is a root of its project. The
+/// alternative (hiding it, because its parent is not there to be nested under) is the one this
+/// pins against: a finished child's transcript is still a conversation a head can switch into.
+#[test]
+fn a_child_whose_parent_has_closed_is_drawn_under_the_project() {
+    let mut a = app();
+    a.home = HOME.to_string();
+    let live = brief("s-live", "a conversation", true);
+    let mut orphan = brief("s-gone-sub-1793000000000000005", "a child of a closed session", false);
+    orphan.parent_session_id = Some("s-gone".into());
+    a.apply(hello(
+        "s-live",
+        vec![live, orphan],
+        Hub::new("s-live").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    open_everything(&mut a);
+    assert_eq!(
+        tree(&a),
+        vec![
+            ("s-live".to_string(), 1),
+            ("s-gone-sub-1793000000000000005".to_string(), 1),
+        ],
+        "an orphan is not a subagent: it is a root of the project it belongs to"
+    );
+    assert!(
+        drawn(&a, 100).contains("a child of a closed session"),
+        "and it is on the screen rather than vanishing"
+    );
+}

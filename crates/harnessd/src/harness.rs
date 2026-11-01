@@ -3872,6 +3872,42 @@ impl Harness {
                 _ => false,
             };
 
+        // **A SESSION A SESSION STARTED HAS THAT SESSION AS ITS PARENT** — settled here, once,
+        // for every door a session can arrive by, because this is the one function every open
+        // goes through and the one moment all three sources are in one hand:
+        //
+        //   * `cfg.parent_session_id` — the caller's word, and the only source that exists
+        //     before the session does (a `task`/`task_start` spawn mints the id, builds the
+        //     child's config and states the parent);
+        //   * the registry's entry for this id — what the door that CREATED it recorded: the
+        //     daemon's `--session`, a head's `ResumeSession`, a parked child reopened by its
+        //     parent, a reviewer's `adopt`, a room tag's agent;
+        //   * its own stored row — the fact that survives a restart, and the repair for a door
+        //     that recorded nothing anywhere.
+        //
+        // See [`letibot_sessionlog::registry::Registry::parent_for`], which is the rule itself;
+        // what this line adds is that a door which FORGOT is repaired here rather than leaving a
+        // child indistinguishable from a top-level session for ever (the head's `ctrl-s` tree
+        // nests by exactly this field, `App::placements`).
+        //
+        // **Resolved after the mode block above, and not before it.** That block reads
+        // `cfg.parent_session_id` to ask a different question — *does this session inherit a
+        // LIVE parent's point* — and a session opened as the daemon's first (`--session`) has no
+        // live parent even when it is a child, so its own row is the authority there. Resolving
+        // earlier would have made a resumed child come back at the daemon's `--mode` instead of
+        // its own.
+        //
+        // **And nothing is invented.** A session a PERSON started (a head's `NewSession`, a
+        // fresh launcher start) and one the launcher resumed as a conversation (`--continue`
+        // resolves only rows with a NULL parent) has no parent in any of the three sources, so
+        // it gets none and stays at the top of its project. The `-sub-` in a minted id is a
+        // convention, not a record.
+        cfg.parent_session_id = session_registry.parent_for(
+            &cfg.session_id,
+            cfg.parent_session_id.clone(),
+            stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
+        );
+
         // **The backend the seat needs, and the constructor is the disclosure.**
         //
         // Four constructors and each is spelled out so `grep -rn
@@ -11446,6 +11482,19 @@ impl Harness {
     /// the room pass's clock asks before it makes itself a reason to wake.
     pub fn has_room(&self) -> bool {
         self.room.is_some()
+    }
+
+    /// **Whose subagent this session is, as the open settled it** — the fact
+    /// [`Harness::open_with_registry`] resolves once from the caller's word, the registry's entry
+    /// and the session's own row, by [`letibot_sessionlog::registry::Registry::parent_for`].
+    ///
+    /// Read here rather than off the config at each call site because a session's config is
+    /// mutable and this is not a preference: a child whose parent was settled here stays a child
+    /// for the life of the process, and the two things that depend on it — the room's door (a
+    /// subagent speaks through its parent) and the `parent` row in the settings pane — must not
+    /// be able to disagree with the store row the same value was written to.
+    pub fn parent_session(&self) -> Option<&str> {
+        self.cfg.parent_session_id.as_deref()
     }
 
     /// **The room's reminders, onto this session's own board** — one row per item it holds, and
@@ -22959,6 +23008,12 @@ impl HarnessTaskRunner {
             session_id: sub_id.clone(),
             title: title.clone(),
             seat,
+            // **The caller's word, and the only source that exists before the child does.** The
+            // rule itself lives one place — `Registry::parent_for`, applied in
+            // `Harness::open_with_registry` — and this line is the input it cannot get anywhere
+            // else: the child is minted, configured and opened before anything registers it, so
+            // `adopt`'s `Some(parent)` below and this field are the same fact stated twice to two
+            // readers (the registry's entry and the child's own open), not two rules.
             parent_session_id: Some(parent.clone()),
             // **The parent's point, read LIVE and not off `base`.** `base` is the config as it
             // stood at the parent's open, and nothing updates it — so a child built from it came

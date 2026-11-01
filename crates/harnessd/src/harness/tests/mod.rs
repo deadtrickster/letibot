@@ -41,6 +41,7 @@ mod intent;
 mod jobs;
 mod misc;
 mod operator_ask;
+mod parentage;
 mod prefix_on_open;
 mod questions;
 mod restart_notice;

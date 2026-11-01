@@ -1776,6 +1776,39 @@ impl Registry {
             .and_then(|e| e.parent_session_id.clone())
     }
 
+    /// **A session a session started has that session as its parent** — the rule, and the one
+    /// place it is decided for every door a session can arrive by.
+    ///
+    /// Three sources, in the order of how well each knows:
+    ///
+    /// * `said` — the caller's word, for a session that has no row and no entry yet. A `task` or
+    ///   `task_start` spawn is the only thing that knows a child's parent before the child
+    ///   exists: it mints the id, builds the child's config and hands it the parent.
+    /// * **this registry's entry** ([`Registry::parent_of`]) — the door that CREATED the session
+    ///   recorded it there: the daemon's `--session`, a head's `ResumeSession`, a parked child
+    ///   reopened by its parent, a room tag's agent, a reviewer's `adopt`.
+    /// * `on_disk` — the session's own row. It is the fact that survives a restart, and it is the
+    ///   repair for a daemon whose entry was built without it: a session opened by a path that
+    ///   forgot is still a child if its row says so.
+    ///
+    /// # The corollary, which is why this is a function and not a default
+    ///
+    /// A session a PERSON started — a head's `NewSession`, a fresh launcher start — and one the
+    /// launcher resumed as a conversation (`--continue` resolves only rows whose
+    /// `parent_session_id` is NULL) has no parent in any of the three, so it gets `None` and is
+    /// drawn at the top of its project for ever. Nothing here invents one from an id: the
+    /// `-sub-` in a minted id is a convention, and a reader of it would be stating a fact the
+    /// registry never recorded.
+    pub fn parent_for(
+        &self,
+        session_id: &str,
+        said: Option<String>,
+        on_disk: Option<&str>,
+    ) -> Option<String> {
+        said.or_else(|| self.parent_of(session_id))
+            .or_else(|| on_disk.map(str::to_string))
+    }
+
     /// **The ids of the sessions this registry holds, and nothing else** — no store read (the
     /// store's listing is [`Registry::list`]'s, and it costs a scan). For the merge queue, which
     /// rings the root sessions of a repository whose target went red (R76 item 1).
@@ -2682,6 +2715,49 @@ mod tests {
 
     fn reg() -> Arc<Registry> {
         Registry::new()
+    }
+
+    /// **The rule, in the one place it is decided** — a session a session started has that session
+    /// as its parent, from whichever of the three sources knows it; and a session a person started
+    /// has none, from all three.
+    ///
+    /// The order is the design and not an accident: the caller's word is the only source that
+    /// exists before the session does (a `task` spawn mints the id and states the parent), the
+    /// entry is what a creation door recorded, and the row is what survives a restart — the repair
+    /// for a daemon whose entry was built without the fact.
+    #[test]
+    fn a_parent_comes_from_whichever_source_knows_and_is_never_invented() {
+        let r = reg();
+        // (1) The caller's word, for a session with neither an entry nor a row yet.
+        assert_eq!(
+            r.parent_for("s-new-sub-1", Some("s-new".into()), None),
+            Some("s-new".to_string())
+        );
+        // (2) The registry's entry — the door that created it.
+        r.create_under("s-entry-sub-1", "", SessionWiring::default(), Some("s-entry".into()))
+            .unwrap();
+        assert_eq!(
+            r.parent_for("s-entry-sub-1", None, None),
+            Some("s-entry".to_string())
+        );
+        // (3) The session's own row, for an id this registry does not hold at all.
+        assert_eq!(
+            r.parent_for("s-rowed-sub-1", None, Some("s-rowed")),
+            Some("s-rowed".to_string())
+        );
+        // **The corollary**: a session a person started — a head's `NewSession`, a fresh launcher
+        // start, `--continue`'s newest conversation — has no parent anywhere, so it gets none.
+        // The id is deliberately shaped like a minted child's: the `-sub-` is a convention, and a
+        // reader that inferred a parent from it would be inventing the fact this function exists
+        // to state.
+        r.create("s-mine-sub-3", "", SessionWiring::default()).unwrap();
+        assert_eq!(r.parent_for("s-mine-sub-3", None, None), None);
+        // And the caller's word wins when a session is re-registered — a parked child reopened by
+        // its parent is the case: the entry may be gone, the row may say something else.
+        assert_eq!(
+            r.parent_for("s-rowed-sub-1", Some("s-reopened".into()), Some("s-rowed")),
+            Some("s-reopened".to_string())
+        );
     }
 
     /// A subagent's hub is built first and registered only once its owner has

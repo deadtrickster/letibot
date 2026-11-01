@@ -1045,11 +1045,19 @@ pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), Wir
                             // entry is where a worker asks *is this somebody's subagent?*
                             // (`Registry::parent_of`) instead of re-reading every stored session
                             // on each open, so a resumed child must arrive knowing it is one.
+                            // Asked through `Registry::parent_for`, the tree's one rule — the
+                            // same function `Harness::open` asks, so a session resumed by a head
+                            // and one opened by the worker cannot be nested differently.
+                            let parent = registry.parent_for(
+                                &session_id,
+                                None,
+                                brief.parent_session_id.as_deref(),
+                            );
                             match registry.create_under(
                                 &session_id,
                                 &brief.title,
                                 brief.wiring,
-                                brief.parent_session_id,
+                                parent,
                             ) {
                                 Ok(hub) => {
                                     // **Who it is for, from its own row** — a session resumed
