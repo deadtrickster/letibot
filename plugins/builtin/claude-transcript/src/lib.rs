@@ -325,7 +325,7 @@ fn sessions(args: &Args, feeds: &Feeds, looks: &[Value], state: &Value, step: u6
                     files.extend(transcripts(look, dir));
                 }
             }
-            files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+            files.sort_by_key(|a| std::cmp::Reverse(a.mtime));
             files.truncate(FILES_TOTAL);
             if files.is_empty() {
                 return ok("no transcripts in any project under this root.");
@@ -454,7 +454,7 @@ fn search(args: &Args, feeds: &Feeds, looks: &[Value], state: &Value, step: u64)
         1 => {
             let dir = string(state, "dir");
             let mut files = transcripts(&looks[0], &dir);
-            files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+            files.sort_by_key(|a| std::cmp::Reverse(a.mtime));
             files.truncate(FILES_PER_PROJECT);
             if files.is_empty() {
                 return ok(format!("no transcripts in {dir}, so nothing to search."));
@@ -467,12 +467,12 @@ fn search(args: &Args, feeds: &Feeds, looks: &[Value], state: &Value, step: u64)
             for (i, look) in looks.iter().enumerate() {
                 if let Some(dir) = projects.get(i) {
                     let mut these = transcripts(look, dir);
-                    these.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+                    these.sort_by_key(|a| std::cmp::Reverse(a.mtime));
                     these.truncate(FILES_PER_PROJECT);
                     files.extend(these);
                 }
             }
-            files.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+            files.sort_by_key(|a| std::cmp::Reverse(a.mtime));
             files.truncate(FILES_TOTAL);
             if files.is_empty() {
                 return ok("no transcripts in any project under this root, so nothing to search.");
@@ -899,11 +899,10 @@ fn row_of(text: &str) -> Option<Row> {
         "user" => {
             // `userType: "internal"` is the harness talking to itself; a `content` that is a list
             // is a tool result being handed back. Neither is the operator asking anything.
-            if let Some(t) = value.get("userType").and_then(Value::as_str) {
-                if t != "external" {
+            if let Some(t) = value.get("userType").and_then(Value::as_str)
+                && t != "external" {
                     return None;
                 }
-            }
             if message.get("role").and_then(Value::as_str) != Some("user") {
                 return None;
             }
@@ -1066,7 +1065,7 @@ fn subdirs(look: &Value, dir: &str) -> Vec<String> {
 /// One transcript out of a project, by id or by the start of one. Absent is the newest.
 fn pick(files: &[File], want: Option<&str>) -> Result<File, Step> {
     let mut sorted = files.to_vec();
-    sorted.sort_by(|a, b| b.mtime.cmp(&a.mtime));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.mtime));
     match want {
         None => sorted.first().cloned().ok_or_else(|| {
             ok("this project has no transcript to read — the directory holds no `.jsonl`.")
