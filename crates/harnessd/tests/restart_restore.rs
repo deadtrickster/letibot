@@ -1068,6 +1068,80 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             (began as i64 - 60_000, old),
         )
         .unwrap();
+    // **Two more children with no record, and each stopped somewhere different.** This is the class
+    // the LIST did not carry: it printed one sentence for every child that did not end on an
+    // answer, so a parent could not tell a child that died mid-`bash` from one that never opened a
+    // session. A child's own transcript is what says where it got to, so these two are staged with
+    // one last row each — the same row the single-handle door reads.
+    let prefix_id = store
+        .put_stable_prefix(&letibot_tokencore::store::StablePrefixRecord {
+            dialect_sha: "dd".repeat(32),
+            system: "you are a harness".into(),
+            tools_json: vec![],
+            h_init: letibot_tokencore::hash_tokens(&[1, 2, 3, 4]),
+            tokens: vec![1, 2, 3, 4],
+            vocab_source: "/models/x.gguf".into(),
+        })
+        .unwrap();
+    let a_child_that_stopped_at = |id: &str, title: &str, last: TranscriptItem| {
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: id.into(),
+                title: Some(title.into()),
+                model_id: "qwen".into(),
+                dialect_sha: "dd".repeat(32),
+                workspace_root: format!("/wt/{id}"),
+                owner: "deadtrickster".into(),
+                role: Some("coder".into()),
+                approvers: vec![],
+                parent_session_id: Some(PARENT.into()),
+            })
+            .unwrap();
+        let transcript = format!("t-{id}");
+        store.put_transcript(&transcript, id, &prefix_id).unwrap();
+        store
+            .append_item(
+                &transcript,
+                0,
+                &last,
+                &letibot_tokencore::LedgerRow {
+                    item_id: "a".into(),
+                    tok_offset: 4,
+                    tok_len: 1,
+                    h_k: [1; 32],
+                },
+                &[9],
+            )
+            .unwrap();
+    };
+    // The one that died with a call's result in hand — the turn went on from there and never came
+    // back.
+    let mid = "s-restart-parent-sub-mid";
+    a_child_that_stopped_at(
+        mid,
+        "the mid-bash child",
+        TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "ok".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        },
+    );
+    // And the one whose last row IS an answer — the case the review was about: its text is what it
+    // had written when it stopped, and nothing says its turn ended.
+    let got_an_answer = "s-restart-parent-sub-answer";
+    a_child_that_stopped_at(
+        got_an_answer,
+        "the child that answered",
+        TranscriptItem::Assistant {
+            text: "the sweep is in".into(),
+            tool_calls: vec![],
+            truncated: false,
+        },
+    );
 
     let d = a_daemon(&parts, &cfg);
     // **Listed** — by its handle, marked as a child with no record rather than silently missing.
@@ -1085,6 +1159,67 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         listed.contains("s-restart-parent-sub-kept") && listed.contains("answered"),
         "the recorded child reads as it always did: {listed}"
     );
+    // **HOW FAR EACH GOT** — three children with no record, three different classes, and each row
+    // says which: a parent reading the list can tell a child that died after `bash`'s result from
+    // one that never opened a session, which one fixed sentence for both could not.
+    assert!(
+        listed.contains(&format!(
+            "{mid} — gone with no answer — it stopped after `bash`'s result"
+        )),
+        "the child that died mid-turn says where it was: {listed}"
+    );
+    assert!(
+        listed.contains(&format!(
+            "{lost} — gone with no answer — it stopped before it wrote a single row"
+        )),
+        "and the one that never opened says that: {listed}"
+    );
+    assert!(
+        listed.contains(&format!(
+            "{got_an_answer} — answered, read from its own session — whatever it had written when \
+             it stopped, not a finished answer"
+        )),
+        "and the one whose last row is an answer is named for what that is: {listed}"
+    );
+    // **And no row names a cause the list does not know.** Why a record is missing is the store's
+    // own class (`no_record_cause`), and the list is handed only the fact that it is missing.
+    assert!(
+        !listed.contains("refused"),
+        "a cause nobody measured reached the list: {listed}"
+    );
+    // **And the answer to a child whose last row is an answer is NOT an answer** — nothing
+    // recorded its settlement, and during a shutdown an interrupted turn comes back as whatever
+    // the child had written when it stopped (`SubagentRecord::settled`'s own comment). The caveat
+    // is the first thing read, so a truncation that keeps the head keeps it, and the text is still
+    // underneath it rather than replaced by it.
+    let not_an_answer = task_result(&d, got_an_answer);
+    eprintln!(
+        "--- what task_result says about the child that answered ---\n{}",
+        not_an_answer.payload
+    );
+    assert!(
+        not_an_answer.payload.starts_with(
+            "whatever it had written when it stopped, not a finished answer"
+        ),
+        "the caveat leads, so nothing cuts it off: {}",
+        not_an_answer.payload
+    );
+    assert!(
+        not_an_answer.payload.contains("nothing says its turn ended"),
+        "{}",
+        not_an_answer.payload
+    );
+    assert!(
+        not_an_answer.payload.contains("the sweep is in"),
+        "the text is still there, under the caveat: {}",
+        not_an_answer.payload
+    );
+    assert!(
+        !not_an_answer.payload.contains("refused"),
+        "its record was due and went missing — but this door is not the one that says why: {}",
+        not_an_answer.payload
+    );
+
     // **The window, and this is the assertion an unwindowed reader fails** — a child older than
     // the store's first record was never due one, so the list does not carry it. A reader that
     // dropped the window lists it here, which is the wall of rows this class used to be.
