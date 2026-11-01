@@ -31,10 +31,12 @@ done
 state_dir="$HOME/.local/share/letibot/remote-runs"; mkdir -p "$state_dir"
 local_status="$state_dir/$name.json"
 key="$HOME/.config/letibot/keys/$host"
+# The address comes from hosts.toml, so a host named only there (an IP) is reachable.
+addr=$(awk -v h="[host.$host]" '$0==h{f=1;next} /^\[/{f=0} f&&$1=="hostname"{gsub(/"/,"",$3);print $3;exit}' "$HOME/.config/letibot/hosts.toml" 2>/dev/null)
 ssh_=(ssh -F /dev/null -i "$key" -o IdentitiesOnly=yes -o IdentityAgent=none -o BatchMode=yes
       -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$HOME/.config/letibot/known_hosts"
       -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=10
-      -o ServerAliveCountMax=3 "${RRUN_USER:-$USER}@$host")
+      -o ServerAliveCountMax=3 "${RRUN_USER:-$USER}@${addr:-$host}")
 
 branch="$(git -C "$wt" rev-parse --abbrev-ref HEAD)"
 sha="$(git -C "$wt" rev-parse --short HEAD)"
@@ -71,7 +73,8 @@ printf '%s' "$steps_json" | "${ssh_[@]}" "cat > ~/$rdir/steps.json"
   XDG_RUNTIME_DIR=/run/user/\$(id -u) systemd-run --user --quiet --collect --unit=rrun-$name -p Delegate=yes \
   --working-directory=\$HOME/$rdir -p StandardOutput=file:\$HOME/$rdir/runner.log -p StandardError=file:\$HOME/$rdir/runner.log \
   env -i HOME=\$HOME USER=\$USER LOGNAME=\$USER SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm-256color \
-      XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=\$HOME/remote-runs/target \
+      XDG_RUNTIME_DIR=/run/user/\$(id -u) CARGO_TARGET_DIR=\$HOME/remote-runs/target CARGO_INCREMENTAL=0 \
+      CARGO_PROFILE_DEV_DEBUG=line-tables-only CARGO_PROFILE_TEST_DEBUG=line-tables-only \
       PATH=\$HOME/.local/bin:\$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
   \$HOME/.local/bin/mise exec -C \$HOME/$rdir/tree -- python3 \$HOME/remote-runs/bin/runner.py \$HOME/$rdir \$HOME/$rdir/steps.json && echo started"
 
