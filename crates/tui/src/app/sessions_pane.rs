@@ -203,13 +203,17 @@ impl Host {
     /// **A host with exactly this stack** — what a test needs to stand in a broken one, and the
     /// shape `docs/plugins-plan.md` §7 step 10's last paragraph is about: past the built-in, the
     /// head draws its own list.
+    ///
+    /// The stack's own refusals come with it, because a layer the stack would not load is news the
+    /// person is owed and this host is the last place that can say it.
     #[cfg(test)]
     pub(crate) fn with_stack(stack: Stack, workspace: PathBuf) -> Host {
+        let problem = would_not_load(&stack);
         Host {
             stack,
             cache: Mutex::new(Cached::default()),
             state: Mutex::new(std::collections::BTreeMap::new()),
-            problem: Mutex::new(None),
+            problem: Mutex::new(problem),
             workspace,
             next_poll: 0,
         }
@@ -256,6 +260,9 @@ impl Host {
         // never asked and so has no call to fail in.
         if let Some(builtin) = install_builtins(&mut stack) {
             broke.push(builtin);
+        }
+        if let Some(refused) = would_not_load(&stack) {
+            broke.push(refused);
         }
         let problem = (!broke.is_empty()).then(|| broke.join("; "));
         Host {
@@ -490,6 +497,19 @@ fn install_builtins(stack: &mut Stack) -> Option<String> {
          answered by the head itself",
         failed.join("; ")
     ))
+}
+
+/// **The layers that never got as far as a call, in one sentence.** A manifest this host refuses
+/// at load has no call to fail in, so the host that built the stack is the only one that can say
+/// it. A built-in is left out: [`install_builtins`] already said that one.
+fn would_not_load(stack: &Stack) -> Option<String> {
+    let said: Vec<String> = stack
+        .failures()
+        .iter()
+        .filter(|f| f.scope != letibot_plugins::Scope::BuiltIn)
+        .map(|f| format!("the plugin layer {f}"))
+        .collect();
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// The session's own plugin directory, where a session-scope layer lives.

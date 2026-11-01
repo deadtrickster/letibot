@@ -9,3 +9,6 @@ purpose = "asks the layer below and says what it found there — a fixture for t
 hooks = ["pane_sessions"]
 capabilities = []
 contract = 1
+# The fixture answers the session list, so it declares the shape it was written for.
+[contracts]
+pane_sessions = 3

@@ -7,3 +7,7 @@ capabilities = []
 feeds = ["sessions"]
 actions = ["switch", "fold"]
 contract = 1
+# **The shape of the answer this layer edits.** `system` is a branch of the project's tree, which
+# is shape 3; a layer that names no shape here is taken to draw the five groups and refused.
+[contracts]
+pane_sessions = 3

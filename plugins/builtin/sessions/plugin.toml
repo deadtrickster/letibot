@@ -10,3 +10,8 @@ feeds = ["sessions"]
 # are the verbs a reviewer read.
 actions = ["switch", "fold"]
 contract = 1
+# **Which shape of the session list this layer draws.** 3 is a project's tree; a layer written
+# before that (the five groups) declares nothing here and is refused at load rather than drawn
+# against a list it cannot read (`docs/plugins-plan.md` §1, principle 6).
+[contracts]
+pane_sessions = 3

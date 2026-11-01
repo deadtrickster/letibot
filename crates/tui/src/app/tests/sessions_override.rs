@@ -206,3 +206,61 @@ fn a_layer_that_uses_an_undeclared_act_falls_back() {
     );
     std::fs::remove_dir_all(&project).ok();
 }
+
+/// **A layer written for the groups is refused at load, by name, and the built-in's tree is
+/// drawn.** A group line and a branch line are both rows, so the manifest is the only place a host
+/// can tell the two shapes apart.
+#[test]
+fn a_layer_written_for_the_groups_is_refused_and_the_builtins_tree_is_drawn() {
+    let project = the_project_with_the_override();
+    // The same module, with the shape it draws taken out of its manifest: what a third-party layer
+    // written before the tree says.
+    let dir = project.join(".letibot").join("plugins").join("sessions");
+    let manifest = std::fs::read_to_string(dir.join("plugin.toml")).expect("a manifest");
+    let old = manifest
+        .split("[contracts]")
+        .next()
+        .expect("the manifest before the table");
+    std::fs::write(dir.join("plugin.toml"), old).expect("a manifest that names no shape");
+
+    let mut stack = Stack::discover(
+        None,
+        Some(&project),
+        None,
+        Arc::new(crate::app::sessions_pane::RanoLoader),
+    );
+    let failed = letibot_builtins::install(&mut stack);
+    assert!(failed.is_empty(), "{failed:?}");
+
+    let mut a = a_head_with_a_one_shot();
+    let workspace = a.workspace_path();
+    *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
+        stack, workspace,
+    ));
+
+    // The built-in's list is what is drawn: a layer answered, so the head's own tree is not the
+    // way out being used, and the branch the example would have renamed is still the built-in's.
+    assert!(
+        a.sessions_list(100).is_some(),
+        "the built-in answers where the refused layer would have"
+    );
+    let text = a.picker_lines(100).join("\n");
+    assert!(text.contains("system (2)"), "\n{text}");
+    assert!(
+        !text.contains("the harness's own"),
+        "the refused layer drew nothing:\n{text}"
+    );
+
+    // And the person is told, once, why their layer is not the one drawing it.
+    let said = a
+        .take_sessions_failure()
+        .expect("a layer refused at load is news the person is owed");
+    assert!(said.contains("`sessions`"), "the layer: {said}");
+    assert!(
+        said.contains("this host speaks 3"),
+        "and what we speak: {said}"
+    );
+    assert!(said.contains("pane_sessions = 3"), "and the fix: {said}");
+    assert!(a.take_sessions_failure().is_none(), "and only once");
+    std::fs::remove_dir_all(&project).ok();
+}

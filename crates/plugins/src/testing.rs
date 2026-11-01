@@ -365,8 +365,20 @@ pub(crate) fn layer_with(root: &Path, name: &str, hooks: &[&str], capabilities: 
     std::fs::create_dir_all(&dir).expect("a layer directory");
     let hooks_toml: Vec<String> = hooks.iter().map(|h| format!("\"{h}\"")).collect();
     let caps_toml: Vec<String> = capabilities.iter().map(|c| format!("\"{c}\"")).collect();
+    // **The version of each kind whose shape has moved**, so a fixture layer is a layer the host
+    // would accept: a test that means to watch a call fail should not be refused at load instead.
+    let moved: String = hooks
+        .iter()
+        .filter(|h| crate::speaks(h) != crate::CONTRACT)
+        .map(|h| format!("{h} = {}\n", crate::speaks(h)))
+        .collect();
+    let contracts = if moved.is_empty() {
+        String::new()
+    } else {
+        format!("[contracts]\n{moved}")
+    };
     let manifest = format!(
-        "name = \"{name}\"\npurpose = \"a layer the tests control\"\nhooks = [{}]\ncapabilities = [{}]\ncontract = 1\n",
+        "name = \"{name}\"\npurpose = \"a layer the tests control\"\nhooks = [{}]\ncapabilities = [{}]\ncontract = 1\n{contracts}",
         hooks_toml.join(", "),
         caps_toml.join(", ")
     );

@@ -42,11 +42,17 @@
 
 /// The contract version every pane input carries. **Version 2** added `feeds`, `folded` and the
 /// row's `enter`: three things a version-1 pane never saw and cannot want, so a plugin that reads
-/// `v` and refuses anything but 1 keeps working — it simply never asks.
+/// `v` and refuses anything but 1 keeps working: it simply never asks.
+///
+/// **Version 3** moved `feeds.sessions` and the session list's answer: a session now carries
+/// `project` and `system` instead of the marks the groups were worked out from, and the answer a
+/// `pane_sessions` layer gives is a project's tree rather than five groups. Both shapes are rows,
+/// so the wire cannot tell them apart and a layer has to say which one it draws: see
+/// `letibot_plugins::MOVED` and the manifest's `[contracts]`.
 ///
 /// The manifest's `contract` (in `crates/plugins`) is a different number and stays 1: an added
 /// *field* is not a version there (`docs/plugins-plan.md` §1, principle 6).
-pub const V: u32 = 2;
+pub const V: u32 = 3;
 
 /// The export name a pane answers under: `pane_<name>`.
 pub fn hook(name: &str) -> String {

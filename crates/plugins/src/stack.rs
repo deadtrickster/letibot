@@ -1494,7 +1494,8 @@ mod tests {
         );
         let mut s = stack(&t);
         let manifest = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
-                        capabilities = [\"read\"]\ncontract = 1\n";
+                        capabilities = [\"read\"]\ncontract = 1\n[contracts]\n\
+                        pane_sessions = 3\n";
         s.register_builtin_bytes(
             "sessions",
             manifest,
@@ -1538,7 +1539,8 @@ mod tests {
         }
         let mut s = Stack::discover(None, None, None, Arc::new(FilesOnly));
         let manifest = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
-                        capabilities = []\ncontract = 1\n";
+                        capabilities = []\ncontract = 1\n[contracts]\n\
+                        pane_sessions = 3\n";
         let why = s
             .register_builtin_bytes("sessions", manifest, b"not a module")
             .expect_err("a loader without `load_bytes` cannot register a built-in");
@@ -1567,6 +1569,55 @@ mod tests {
             .expect_err("the manifest and the exports disagree");
         assert!(why.contains("pane_sessions"), "{why}");
         assert!(s.layers().is_empty(), "nothing half-registered");
+    }
+
+    /// **A layer written for the shape before a move is refused at load, by name, and the layer
+    /// below it answers**. No wire can tell the two shapes apart, so the manifest is the witness.
+    #[test]
+    fn a_layer_written_for_the_old_shape_is_refused_and_the_layer_below_answers() {
+        let t = TempDir::new("old-shape");
+        let dir = t.path().join("session").join("sessions");
+        std::fs::create_dir_all(&dir).expect("a layer directory");
+        // What a person wrote before the session list became a tree: the hook, and no shape.
+        std::fs::write(
+            dir.join(MANIFEST),
+            "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
+             capabilities = []\ncontract = 1\n",
+        )
+        .expect("plugin.toml");
+        write_wasm(
+            &dir,
+            &["pane_sessions"],
+            Act::answer(json!({"from": "groups"})),
+        );
+        let mut s = stack(&t);
+        s.register_builtin_bytes(
+            "sessions",
+            "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
+             capabilities = []\ncontract = 1\n[contracts]\npane_sessions = 3\n",
+            &script(&[("pane_sessions", Act::answer(json!({"from": "tree"})))]),
+        )
+        .expect("the built-in registers");
+
+        // The refusal names the layer, the version it declares and the one this host speaks.
+        let why = s
+            .failures()
+            .iter()
+            .find(|f| f.layer == "s1")
+            .map(|f| f.why.clone())
+            .expect("the old-shape layer is recorded as refused");
+        assert!(why.contains("`sessions`"), "{why}");
+        assert!(why.contains("contract 1"), "{why}");
+        assert!(why.contains("this host speaks 3"), "{why}");
+        assert!(
+            why.contains("pane_sessions = 3"),
+            "and the line that fixes it: {why}"
+        );
+
+        // And it never answers: the built-in below it draws the list.
+        let r = s.call("pane_sessions", &json!({}));
+        assert_eq!(r.by.as_deref(), Some("b-sessions"), "{:?}", r.failures);
+        assert_eq!(answer_of(&r), json!({"from": "tree"}));
     }
 
     #[test]

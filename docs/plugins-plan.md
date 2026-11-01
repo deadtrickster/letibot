@@ -662,7 +662,7 @@ change:
 
 | feed | is | first wanted by |
 |---|---|---|
-| `sessions` | the daemon's sessions: id, title, slug, parent, origin, live/running, rows, heads, model, workspace, waits-on-you, paused nags — plus `here` and `home` | the session list (built) |
+| `sessions` | the daemon's sessions: id, title, slug, parent, origin, live/running, rows, heads, model, workspace, waits-on-you, paused nags, `project`/`project_name` and `system` (where the row sits in the tree), plus `here` and `home` | the session list (built) |
 | `monitors` | this session's monitors: armed, last look, fired, what each is watching | a monitors pane |
 | `jobs` | the session's background jobs: handle, command, state, bytes, tail | a jobs pane |
 | `todos` | the session's todo rows, with their waits and their questions | a todo board |
@@ -728,6 +728,26 @@ attention. It is run by the HEAD, not by the daemon — `App::queue_feed` builds
 `QueueSnapshot` the head already holds and has already cut to this session's repository, so a
 daemon-side layer would have to be handed the snapshot back. And it is the first pane to use
 `{"verb", "id"}`, because the queue's keys are the head's and a row has to name its own entry.
+
+#### The answer's shape is versioned (built 2026-11-01)
+
+A shape the wire cannot see needs a witness. When the session list stopped being five groups and
+became a project's tree, no field changed type: a group header and a branch line are both rows, so
+a layer written for the groups drew a plausible list and nobody was told. So a hook kind whose
+answer has moved is declared in the manifest:
+
+```toml
+contract = 1          # the manifest's own version, unchanged
+[contracts]
+pane_sessions = 3     # the shape of the answer this layer draws
+```
+
+`crates/plugins::MOVED` holds the kinds that moved and the version each moved at, and
+`Manifest::admit` refuses a layer that declares another version, or none at all (which is the shape
+before the move), at load: the sentence names the layer, the version it expects and the one this
+host speaks. The stack then falls down to the builtin and the head says that sentence once.
+`plugin-sdk`'s pane `V` is 3 for this same move, because it is the same numbering: a layer that
+reads `v` and a manifest that declares a contract cannot disagree about which shape they mean.
 
 #### The feeds a DAEMON-drawn pane is handed (built 2026-10-30)
 

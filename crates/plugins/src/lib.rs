@@ -153,10 +153,42 @@ pub trait Loader: Send + Sync {
     }
 }
 
-/// The contract version this host speaks. A layer declaring another is refused by name at the
-/// gate (step 2) and never answers, because a contract that moved is not a field that can be
-/// guessed at — `docs/plugins-plan.md` §1, principle 6.
+/// The contract version this host speaks for every hook kind whose shape has never changed. A
+/// layer declaring another is refused by name at load and never answers, because a contract that
+/// moved is not a field that can be guessed at (`docs/plugins-plan.md` §1, principle 6).
 pub const CONTRACT: u32 = 1;
+
+/// **One hook kind whose contract has moved**, and the version it moved to.
+///
+/// A kind is listed here only when its answer changed shape in a way no wire can show: a session
+/// row and a group header are both rows, so a layer written for one draws a plausible list of the
+/// other and nobody is told. A witness is the only detector, so a manifest declares the version it
+/// draws and [`Manifest::admit`] refuses a layer that declares another.
+pub struct Moved {
+    /// The export name, as `plugin.toml`'s `hooks` spells it.
+    pub hook: &'static str,
+    /// The version this host speaks for it, in the pane contract's own numbering
+    /// ([`letibot_plugin::pane::V`]). It moves only when THIS kind's shape moves.
+    pub version: u32,
+    /// What changed, for the refusal a layer reads.
+    pub why: &'static str,
+}
+
+/// The hook kinds whose contract has moved, in no particular order.
+pub const MOVED: &[Moved] = &[Moved {
+    hook: "pane_sessions",
+    version: 3,
+    why: "the session list's answer is a project's tree now, not the five groups",
+}];
+
+/// The version this host speaks for one hook kind: its own entry in [`MOVED`], or [`CONTRACT`].
+pub fn speaks(hook: &str) -> u32 {
+    MOVED
+        .iter()
+        .find(|m| m.hook == hook)
+        .map(|m| m.version)
+        .unwrap_or(CONTRACT)
+}
 
 /// The export-name prefixes the host recognises as hooks: rano's own two, and the kinds the
 /// daemon passes as extra prefixes (`docs/plugins-slice1.md`, C1). An export outside this list is

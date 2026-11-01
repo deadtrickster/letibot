@@ -73,7 +73,9 @@ fn project_layer(root: &Path) {
          capabilities = []\n\
          feeds = [\"sessions\"]\n\
          actions = [\"switch\", \"fold\"]\n\
-         contract = 1\n",
+         contract = 1\n\
+         [contracts]\n\
+         pane_sessions = 3\n",
     )
     .expect("a manifest");
     std::fs::write(dir.join("plugin.wasm"), b"not a module").expect("a module");

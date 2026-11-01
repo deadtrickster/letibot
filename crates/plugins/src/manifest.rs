@@ -34,6 +34,9 @@
 //!   harness telling the model about a capability it does not have.
 //! * `contract` is the version of the JSON contracts the hooks speak; a host that moved does not
 //!   guess, it refuses by name (§1, principle 6).
+//! * `[contracts]` names a version per hook kind, for the kinds whose shape has moved past
+//!   `contract` (see [`crate::MOVED`]). A layer written for the shape before a move declares
+//!   nothing here and is refused, which is the only detector a shape change can have.
 //!
 //! Unknown keys are ignored rather than refused: a newer layer may carry metadata this host has
 //! no use for, and refusing it would make every forward-compatible field a version bump.
@@ -205,6 +208,10 @@ pub struct Manifest {
     pub hooks: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub contract: u32,
+    /// **The version of each hook kind this layer was written against**, for the kinds whose
+    /// contract has moved ([`crate::MOVED`]). A kind that is absent is at `contract`, which is
+    /// what a layer written before the move says.
+    pub contracts: std::collections::BTreeMap<String, u32>,
     /// **The feeds a `pane` layer reads** — data the host already has (`docs/plugins-plan.md`
     /// §4.9, `letibot_plugin::pane::Feed`). Empty is a layer that reads none, which is every
     /// layer that is not a pane and a pane that draws only what it is handed in `state`.
@@ -323,6 +330,7 @@ impl Manifest {
             .map_err(|why| format!("feeds: {why}"))?;
         let actions = strings_opt(&table, "actions")?;
         let tools = tools_opt(&table)?;
+        let contracts = contracts_opt(&table, &hooks)?;
 
         Ok(Manifest {
             name,
@@ -330,6 +338,7 @@ impl Manifest {
             hooks,
             capabilities,
             contract,
+            contracts,
             feeds,
             actions,
             tools,
@@ -354,6 +363,28 @@ impl Manifest {
                 "contract {} — this host speaks {CONTRACT}",
                 self.contract
             ));
+        }
+        // **A kind whose shape moved needs a witness.** The wire cannot tell a row drawn as a
+        // group from a row drawn as a branch, so a layer that declares no version for such a kind
+        // is taken to be the version before the move and refused here, at load, rather than drawn
+        // against data it cannot read.
+        for moved in crate::MOVED {
+            if !self.hooks.iter().any(|h| h == moved.hook) {
+                continue;
+            }
+            let declared = self
+                .contracts
+                .get(moved.hook)
+                .copied()
+                .unwrap_or(self.contract);
+            if declared != moved.version {
+                return Err(format!(
+                    "the layer `{}` draws `{}` at contract {declared} and this host speaks {}: \
+                     {}. Declare `[contracts]` with `{} = {}` in plugin.toml when the layer \
+                     draws that shape",
+                    self.name, moved.hook, moved.version, moved.why, moved.hook, moved.version
+                ));
+            }
         }
         // The tool half first: its sentence names the tool AND the export, which is what a model
         // about to fix the manifest needs.
@@ -408,6 +439,45 @@ fn string(table: &toml::Table, key: &str) -> Result<String, String> {
         )),
         None => Err(format!("{key}: missing")),
     }
+}
+
+/// **`[contracts]`**: one version per hook kind the layer answers, for the kinds whose contract
+/// has moved. A key that names a hook the layer does not answer is refused: it is a typo standing
+/// where a declaration should be, and the version it carries would never be checked.
+fn contracts_opt(
+    table: &toml::Table,
+    hooks: &[String],
+) -> Result<std::collections::BTreeMap<String, u32>, String> {
+    let Some(value) = table.get("contracts") else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let Some(entries) = value.as_table() else {
+        return Err(format!(
+            "contracts: expected a table of `hook = version`, found {}",
+            value.type_str()
+        ));
+    };
+    let mut out = std::collections::BTreeMap::new();
+    for (hook, found) in entries {
+        if !hooks.iter().any(|h| h == hook) {
+            return Err(format!(
+                "contracts: `{hook}` is not in `hooks`: a version for a hook this layer does not \
+                 answer is never checked"
+            ));
+        }
+        match found {
+            toml::Value::Integer(n) if (1..=u32::MAX as i64).contains(n) => {
+                out.insert(hook.clone(), *n as u32);
+            }
+            other => {
+                return Err(format!(
+                    "contracts: `{hook}` takes a version as an integer, found {} in it",
+                    other.type_str()
+                ));
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn strings(table: &toml::Table, key: &str) -> Result<Vec<String>, String> {
@@ -582,6 +652,61 @@ contract = 1
             let why = Manifest::parse(text).expect_err("a missing or malformed key is refused");
             assert!(why.contains(key), "`{key}` should be named in `{why}`");
         }
+    }
+
+    /// **A kind whose shape moved is spoken at its own version, and a layer that names none is
+    /// taken to be the shape before the move**. It is the only detector a shape change can have.
+    #[test]
+    fn a_layer_that_names_no_shape_for_a_moved_kind_is_refused_by_name() {
+        let old = "name = \"sessions\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\n\
+                   capabilities = []\ncontract = 1\n";
+        let m = Manifest::parse(old).expect("the old spelling still parses");
+        assert!(m.contracts.is_empty());
+        let why = m
+            .admit(&["pane_sessions".to_string()])
+            .expect_err("a layer written for the groups is refused");
+        assert!(why.contains("`sessions`"), "the layer is named: {why}");
+        assert!(why.contains("contract 1"), "what it expects: {why}");
+        assert!(why.contains("this host speaks 3"), "what we speak: {why}");
+        assert!(
+            why.contains("pane_sessions = 3"),
+            "and the line that fixes it: {why}"
+        );
+
+        let now = format!(
+            "{old}[contracts]\npane_sessions = {}\n",
+            crate::speaks("pane_sessions")
+        );
+        Manifest::parse(&now)
+            .expect("the declaration parses")
+            .admit(&["pane_sessions".to_string()])
+            .expect("the shape this host draws is admitted");
+
+        // A hook whose shape never moved needs no declaration at all.
+        Manifest::parse(PLAN)
+            .expect("the dashboard layer")
+            .admit(&["pane_dashboard".to_string()])
+            .expect("a kind nobody moved is at the manifest's contract");
+    }
+
+    /// **A version for a hook the layer does not answer is a typo**, and it is refused rather than
+    /// kept where it would never be checked.
+    #[test]
+    fn a_contract_for_a_hook_the_layer_does_not_answer_is_refused() {
+        let why = Manifest::parse(
+            "name = \"a\"\npurpose = \"p\"\nhooks = [\"pane_x\"]\ncapabilities = []\n\
+             contract = 1\n[contracts]\npane_sessions = 3\n",
+        )
+        .expect_err("a hook outside `hooks` cannot be declared");
+        assert!(why.contains("pane_sessions"), "{why}");
+        assert!(why.contains("not in `hooks`"), "{why}");
+
+        let why = Manifest::parse(
+            "name = \"a\"\npurpose = \"p\"\nhooks = [\"pane_sessions\"]\ncapabilities = []\n\
+             contract = 1\n[contracts]\npane_sessions = \"three\"\n",
+        )
+        .expect_err("a version is a number");
+        assert!(why.contains("integer"), "{why}");
     }
 
     #[test]
