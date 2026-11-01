@@ -507,16 +507,16 @@ fn a_bang_run_on_its_own_thread_watches_what_it_promotes() {
     let call_id_for_run = call_id.clone();
     let runtime_for_run = runtime.clone();
     let watch_for_run = watch.clone();
-    let spawned = letibot_harnessd::bangrun::spawn_run(
-        session_for_run,
-        call_id_for_run,
-        call_for_run,
-        line_for_run,
-        "dead".to_string(),
-        runtime_for_run,
-        hub_for_run,
-        watch_for_run,
-    );
+    let spawned = letibot_harnessd::bangrun::spawn_run(letibot_harnessd::bangrun::OperatorRun {
+        session: session_for_run,
+        call_id: call_id_for_run,
+        call: call_for_run,
+        line: line_for_run,
+        who: "dead".to_string(),
+        runtime: runtime_for_run,
+        hub: hub_for_run,
+        watch: watch_for_run,
+    });
     spawned.expect("the run's thread starts");
     std::thread::sleep(Duration::from_millis(500));
     // Exactly what Ctrl+O sets, on the hub the run's own wait loop polls.

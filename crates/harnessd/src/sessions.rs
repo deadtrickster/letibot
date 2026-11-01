@@ -4599,16 +4599,16 @@ impl<'a> Sessions<'a> {
             (call_id, call, h.runtime_handle(), h.job_watchers())
         };
         state.start();
-        if let Err(why) = crate::bangrun::spawn_run(
-            session_id.to_string(),
+        if let Err(why) = crate::bangrun::spawn_run(crate::bangrun::OperatorRun {
+            session: session_id.to_string(),
             call_id,
             call,
-            line.to_string(),
-            who.to_string(),
+            line: line.to_string(),
+            who: who.to_string(),
             runtime,
             hub,
             watch,
-        ) {
+        }) {
             state.end();
             return Err(why);
         }

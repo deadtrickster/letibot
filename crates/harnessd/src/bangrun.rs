@@ -150,6 +150,21 @@ impl State {
     }
 }
 
+/// **One operator line on its way to a thread of its own**, with everything already minted.
+///
+/// A value rather than eight positional arguments: four of them are strings a reader would
+/// have to tell apart by position, and the thread's body takes the same eight.
+pub struct OperatorRun {
+    pub session: String,
+    pub call_id: String,
+    pub call: ToolCall,
+    pub line: String,
+    pub who: String,
+    pub runtime: Arc<ToolRuntime>,
+    pub hub: Arc<Hub>,
+    pub watch: Option<Arc<JobWatchers>>,
+}
+
 /// **Run one operator command on a thread of its own, and hand the result back.**
 ///
 /// Called by the worker with everything minted ([`crate::harness::Harness::prepare_operator_shell`]
@@ -159,36 +174,28 @@ impl State {
 ///
 /// The thread holds an [`Arc<ToolRuntime>`] — one exec host per session is a fact, so the
 /// run goes through the session's own runtime — and nothing else that outlives this call.
-pub fn spawn_run(
-    session: String,
-    call_id: String,
-    call: ToolCall,
-    line: String,
-    who: String,
-    runtime: Arc<ToolRuntime>,
-    hub: Arc<Hub>,
-    watch: Option<Arc<JobWatchers>>,
-) -> Result<(), String> {
-    let name = format!("bang-{call_id}");
+pub fn spawn_run(run: OperatorRun) -> Result<(), String> {
+    let name = format!("bang-{}", run.call_id);
     std::thread::Builder::new()
-        .name(name.clone())
-        .spawn(move || run_and_hand_back(&session, call_id, call, line, who, runtime, hub, watch))
+        .name(name)
+        .spawn(move || run_and_hand_back(run))
         .map(|_| ())
         .map_err(|e| format!("the thread for the operator's run could not be started: {e}"))
 }
 
 /// The thread's whole body. Deliberately small enough to read as one sentence:
 /// wait for the command, hand back what it produced — once, whichever way it ends.
-fn run_and_hand_back(
-    session: &str,
-    call_id: String,
-    call: ToolCall,
-    line: String,
-    who: String,
-    runtime: Arc<ToolRuntime>,
-    hub: Arc<Hub>,
-    watch: Option<Arc<JobWatchers>>,
-) {
+fn run_and_hand_back(run: OperatorRun) {
+    let OperatorRun {
+        session,
+        call_id,
+        call,
+        line,
+        who,
+        runtime,
+        hub,
+        watch,
+    } = run;
     // The runtime's own events go to a null sink, exactly as the synchronous path's
     // do: the transcript row is the durable record and every head draws *it*.
     //

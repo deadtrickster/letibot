@@ -85,7 +85,6 @@
 //! vocabulary id where the boundary still exists. The live view and the stored
 //! view carry the same bytes, on channels that agree.
 
-#![allow(clippy::all)]
 pub mod activity;
 pub mod answers;
 pub mod attachments;

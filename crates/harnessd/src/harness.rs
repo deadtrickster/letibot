@@ -186,8 +186,7 @@ pub struct Parts {
     /// *"every ancestor's handle can be collected from any level"*. Without it the tree's
     /// wake delivers a settlement the root was told about and cannot collect — the
     /// completion names a handle no runner in `open` holds.
-    pub(crate) tree_slots:
-        Option<std::sync::Arc<std::sync::Mutex<Vec<(String, std::sync::Arc<TaskSlot>)>>>>,
+    pub(crate) tree_slots: Option<TaskSlots>,
     /// **The head's answers, as the whole tree reaches them** — the ask route's half of
     /// R58.
     ///
@@ -19246,6 +19245,11 @@ pub(crate) struct TaskSlot {
     slug: Option<String>,
 }
 
+/// The handles one runner has handed out, with the slot each knocks on, in the order the
+/// children were started.
+pub(crate) type TaskSlots =
+    std::sync::Arc<std::sync::Mutex<Vec<(String, std::sync::Arc<TaskSlot>)>>>;
+
 impl TaskSlot {
     fn recorded(owner: &str, record: Option<crate::subagent_record::SubagentRecord>) -> TaskSlot {
         TaskSlot {
@@ -20324,7 +20328,7 @@ struct HarnessTaskRunner {
     /// The subagents this session has started, in the order it started them.
     /// Shared with every clone of this runner — the thread that runs a child
     /// holds one, and so does the tool that collects it.
-    slots: Arc<std::sync::Mutex<Vec<(String, Arc<TaskSlot>)>>>,
+    slots: TaskSlots,
     /// **The watcher set a child of THIS session joins** (R58).
     ///
     /// A slot rather than a value because the runner is built before the harness has
