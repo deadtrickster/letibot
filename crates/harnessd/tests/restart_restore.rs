@@ -1062,10 +1062,23 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         "{}",
         r.payload
     );
-    // By its name too, which the store's `title` carries.
-    let by_name = task_result(&d, "the-notices-stay-collapsed");
+    // **And what it was asked**, which is the only thing left that says WHICH child this was:
+    // a lost child was never given a name anything wrote down, so its brief's first line is how
+    // a parent recognises it.
     assert!(
-        by_name.payload.contains("no record of it was ever written"),
+        r.payload
+            .contains("it was asked: the-notices-stay-collapsed"),
+        "{}",
+        r.payload
+    );
+    // Its handle is the only name it answers to: a name it does not have is refused rather than
+    // resolving to a child nobody named.
+    let by_name = task_result(&d, "a-name-nobody-gave-it");
+    assert!(
+        matches!(
+            by_name.outcome,
+            letibot_transcript::ToolOutcome::Failed { .. }
+        ),
         "{}",
         by_name.payload
     );

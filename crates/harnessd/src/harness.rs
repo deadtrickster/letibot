@@ -22066,7 +22066,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             }
             out.push(ChildName {
                 handle: child.id,
-                slug: child.title.clone().filter(|t| !t.trim().is_empty()),
+                // **No name**: a child with no record was never given one that anything wrote
+                // down — its session's `title` is the first line of its brief, not a slug — so it
+                // answers to its handle, which is what the model was handed when it started it.
+                slug: None,
                 own: true,
                 lost: true,
             });

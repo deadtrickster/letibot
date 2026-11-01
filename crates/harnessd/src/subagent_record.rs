@@ -609,9 +609,16 @@ pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild)
              `task_resume` cannot bring it back — the spawn's own description is what it would \
              need, and that is the row that is missing. Its last row is {}. Its session `{id}` \
              and its transcript hold everything it did — `transcript` with session=\"{id}\" reads \
-             it — and it worked in `{}`.",
+             it — and it worked in `{}`.{}",
             ended_in(child.last_item.as_ref()),
-            child.workspace_root
+            child.workspace_root,
+            // **Its brief, so a parent can recognise which child this was** — the one thing left
+            // that says what it was doing, and the only place a child with no record can be
+            // identified at all.
+            match child.title.as_deref().map(crate::jobwatch::first_line) {
+                Some(line) if !line.trim().is_empty() => format!("\n  it was asked: {line}"),
+                _ => String::new(),
+            }
         ),
     }
 }
