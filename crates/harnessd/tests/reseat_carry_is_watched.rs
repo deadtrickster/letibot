@@ -1,4 +1,3 @@
-#![allow(clippy::all)]
 //! **A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.**
 //!
 //! The rano session, 2026-10-12 01:17: the operator ran a bare `/reseat` on a 971-row
@@ -166,7 +165,10 @@ fn follow(
     seen
 }
 
+// The size is `SessionEvent`'s (a wire enum in another crate at 520 bytes); boxing it here
+// would put a deref in every assertion to save memory this test never spends.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 enum Seen {
     Event(SessionEvent),
     Resync(String),
