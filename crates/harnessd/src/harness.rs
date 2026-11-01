@@ -22036,7 +22036,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 handle: h.clone(),
                 slug: s.slug.clone(),
                 own: s.owner == me,
-                lost: false,
+                lost: None,
             })
             .collect();
         let runs = self
@@ -22063,7 +22063,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                     handle: run.child_id,
                     slug: Some(slug),
                     own: true,
-                    lost: false,
+                    lost: None,
                 }),
             }
         }
@@ -22072,10 +22072,16 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         // simply absent: not `working`, not `answered`, not `failed` (MEASURED 2026-11-01, a child
         // that ran six and a half minutes and left four commits). Its own session is the second
         // witness, and it is named by the same handle.
+        //
+        // **And it carries how far it got** (`subagent_record::how_far`), which is the one thing
+        // its own rows can still say: the list used to print one fixed sentence for every child
+        // that did not end on an answer, so a parent could not tell a child that died mid-`bash`
+        // from one that never opened a session.
         for child in self.unrecorded_children() {
             if out.iter().any(|c| c.handle == child.id) {
                 continue;
             }
+            let lost = crate::subagent_record::how_far(&child);
             out.push(ChildName {
                 handle: child.id,
                 // **No name**: a child with no record was never given one that anything wrote
@@ -22083,7 +22089,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 // answers to its handle, which is what the model was handed when it started it.
                 slug: None,
                 own: true,
-                lost: true,
+                lost: Some(lost),
             });
         }
         out

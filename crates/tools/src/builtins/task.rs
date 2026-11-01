@@ -480,11 +480,43 @@ pub struct ChildName {
     pub slug: Option<String>,
     pub own: bool,
     /// **No `subagent_run` row was ever written for this child** — its spawn lost the store to
-    /// another writer, so the runner read it from the child's own session instead of from a
-    /// record. A lost child has no collected answer and nothing that resumes it, so the listing
-    /// says so rather than drawing it exactly as a recorded one.
-    pub lost: bool,
+    /// another writer, or it is older than the store's first record, so the runner read it from the
+    /// child's own session instead of from a record — **and how far it got**, which is the one
+    /// thing a list row can say about a child nothing recorded. A lost child has no collected
+    /// answer and nothing that resumes it, so the listing says so rather than drawing it exactly
+    /// as a recorded one.
+    pub lost: Option<LostChild>,
 }
+
+/// **How far a child with no record got** — the class the listing and the single-handle answer
+/// both read, so a parent can tell a child that died mid-`bash` from one that never opened.
+///
+/// The judgement is the runner's (`harnessd::subagent_record::how_far`, over the same last-row
+/// rule that makes a text an answer), because the tools crate cannot see a store. What lives here
+/// is only what a row's words need.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LostChild {
+    /// **Its last row is an answer** — an `Assistant` with no call after it. The text a reader
+    /// gets IS that row, and nothing recorded a settlement, so it is
+    /// [`NOT_A_FINISHED_ANSWER`].
+    Answered,
+    /// **It stopped before an answer**, and the words say where — `before it wrote a single row`,
+    /// `mid-bash, on a call it never got an answer to`, `after bash's result`. They are
+    /// `subagent_record::EndedIn::brief`'s, and they read on from *"it stopped "*.
+    Stopped(String),
+}
+
+/// **What the text of a child with no record IS**, in one sentence — the caveat both doors carry,
+/// so a parent is never handed a turn that stopped mid-way under the name of a finished answer.
+///
+/// The sentence is one copy on purpose: the list row and the answer to `task_result task=<handle>`
+/// are two renderings of one fact, and `SubagentRecord::settled`'s comment says why the fact is
+/// not obvious — during a shutdown an interrupted turn *comes back as an ANSWER, whatever the
+/// child had written when it stopped, so no status here can be trusted to be the child's last
+/// word*. Nothing here may say the child finished, and nothing here may guess WHY the row is
+/// missing: that is `no_record_cause`'s to say, from the store's own class.
+pub const NOT_A_FINISHED_ANSWER: &str =
+    "whatever it had written when it stopped, not a finished answer";
 
 impl ChildName {
     /// `fix-login · s-…-sub-3`, or the bare handle for a child nobody named — the job rule
@@ -902,7 +934,7 @@ pub trait TaskRunner: Send + Sync {
                 handle,
                 slug: None,
                 own: true,
-                lost: false,
+                lost: None,
             })
             .collect()
     }
@@ -1818,45 +1850,50 @@ impl Tool for TaskResultTool {
                 // word comes from the same judgement the single-handle answer uses
                 // (`ChildDoing::said`). A runner that keeps no reading keeps the old words.
                 //
-                // **A child with no record is marked as one**: its state is read from its own
-                // session, which is the only witness there is — so a reader is told which of the
-                // two it is looking at rather than drawing a lost child exactly as a recorded one.
-                let state =
-                    if c.lost {
-                        match &status {
-                        TaskStatus::Done { .. } => {
-                            "answered, read from its own session — no record of it was ever \
-                             written"
-                                .to_string()
-                        }
-                        _ => "gone with no answer — nothing is running it, and no record of it was \
-                              ever written"
-                            .to_string(),
-                    }
-                    } else {
-                        match &status {
-                            TaskStatus::Running { note, .. } => match (status.doing(), note) {
-                                (Some(doing), Some(n)) => format!("{} — {n}", doing.said()),
-                                (Some(doing), None) => doing.said().to_string(),
-                                (None, Some(n)) => format!("running — {n}"),
-                                (None, None) => "running".into(),
-                            },
-                            TaskStatus::Done { .. } => "answered".into(),
-                            TaskStatus::Failed { .. } => "failed".into(),
-                            TaskStatus::Unknown => "unknown".into(),
-                        }
-                    };
+                // **A child with no record is marked as one, and says HOW FAR IT GOT**: its state
+                // is read from its own session, which is the only witness there is — so a reader is
+                // told which of the two it is looking at rather than drawing a lost child exactly as
+                // a recorded one. The class is the runner's (`LostChild`), so the row and the
+                // single-handle answer cannot say two different things about one child, and it is
+                // worded here because this is the door that has a line to spend.
+                let state = match (&c.lost, &status) {
+                    // **Answered, and it is NOT a finished answer** — nothing recorded a
+                    // settlement, so the text is whatever the child had written when it stopped.
+                    (Some(LostChild::Answered), _) => format!(
+                        "answered, read from its own session — {NOT_A_FINISHED_ANSWER}; no record \
+                         of it was ever written"
+                    ),
+                    (Some(LostChild::Stopped(where_)), _) => format!(
+                        "gone with no answer — it stopped {where_}; nothing is running it, and no \
+                         record of it was ever written"
+                    ),
+                    (None, TaskStatus::Running { note, .. }) => match (status.doing(), note) {
+                        (Some(doing), Some(n)) => format!("{} — {n}", doing.said()),
+                        (Some(doing), None) => doing.said().to_string(),
+                        (None, Some(n)) => format!("running — {n}"),
+                        (None, None) => "running".into(),
+                    },
+                    (None, TaskStatus::Done { .. }) => "answered".into(),
+                    (None, TaskStatus::Failed { .. }) => "failed".into(),
+                    (None, TaskStatus::Unknown) => "unknown".into(),
+                };
                 out.push_str(&format!("  {} — {state}\n", c.label()));
             }
             return Invocation::ok(out);
         };
         // **The handle, or the child's name** — the job rule: the id wins, a name two children
         // carry is refused naming them, and anything else goes on as it was written.
-        let handle = match resolve_child(self.runner.as_ref(), handle) {
+        //
+        // The list is read ONCE and used twice: to resolve the name, and to find out whether the
+        // child it named has a record — which is the fact the answer below has to carry. One
+        // reading, so the two cannot disagree about the same child.
+        let kids = self.runner.children();
+        let handle = match resolve_child_in(&kids, handle) {
             Ok(h) => h,
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
+        let lost = kids.iter().find(|c| c.handle == handle).and_then(|c| c.lost.clone());
         let label = self.runner.label_of(handle);
         // A deadline always applies, and its expiry is its own outcome rather
         // than being reported as completion — `job_wait`'s rule, for the same
@@ -1920,6 +1957,24 @@ impl Tool for TaskResultTool {
         }
         match status {
             TaskStatus::Done { ref answer, .. } => {
+                // **A child with no record's text is not a finished answer, and it is said BEFORE
+                // the text.** Nothing recorded its settlement, so the only witness is its own last
+                // row — and an interrupted turn comes back as an answer with whatever the child had
+                // written when it stopped (`SubagentRecord::settled`'s own comment). A parent handed
+                // that bare would read a turn that stopped mid-way as the child's last word.
+                //
+                // **First, and in the payload rather than in a headline**, because this is the
+                // position every truncation keeps: a spilled payload keeps its head half
+                // (`Spiller`), a one-line notice keeps the first line, and a reader who stops at
+                // the first paragraph still learns what it is holding.
+                let answer = match &lost {
+                    Some(LostChild::Answered) => format!(
+                        "{NOT_A_FINISHED_ANSWER}: nothing recorded this child's settlement, so \
+                         nothing says its turn ended. `{handle}` and its transcript hold everything \
+                         it did — `transcript` with session=\"{handle}\" reads it.\n\n{answer}"
+                    ),
+                    _ => answer.clone(),
+                };
                 // **The child has finished, so its branch goes to be landed.** This is the one
                 // door the tool layer has onto a child's finish, and `task_start`'s own answer
                 // already sends the model here (*"call `task_result` with task=…"*), so the

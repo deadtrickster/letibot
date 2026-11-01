@@ -609,14 +609,9 @@ pub fn no_record_cause(why: letibot_tokencore::store::NoRecord) -> &'static str 
 /// one.
 pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild) -> TaskStatus {
     let id = &child.id;
-    if let Some(TranscriptItem::Assistant {
-        text, tool_calls, ..
-    }) = &child.last_item
-        && tool_calls.is_empty()
-        && !text.trim().is_empty()
-    {
+    if let Some(text) = its_answer(child.last_item.as_ref()) {
         return TaskStatus::Done {
-            answer: text.clone(),
+            answer: text.to_string(),
             child: None,
         };
     }
@@ -630,7 +625,7 @@ pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild)
             // **The one clause the store decides** — a child older than the store's first record
             // is not told a write was refused, because none was due for it.
             no_record_cause(child.why),
-            ended_in(child.last_item.as_ref()),
+            EndedIn::of(child.last_item.as_ref()).said(),
             child.workspace_root,
             // **Its brief, so a parent can recognise which child this was** — the one thing left
             // that says what it was doing, and the only place a child with no record can be
@@ -643,23 +638,112 @@ pub fn a_child_with_no_record(child: &letibot_tokencore::store::UnrecordedChild)
     }
 }
 
-/// **How a child's transcript ended**, in the words a parent needs — the companion of
-/// [`a_child_with_no_record`].
-fn ended_in(last: Option<&TranscriptItem>) -> String {
-    match last {
-        None => "nothing: it wrote no row of its own at all".into(),
-        Some(TranscriptItem::Assistant { tool_calls, .. }) if !tool_calls.is_empty() => format!(
-            "a call it had just asked for (`{}`) and never got an answer to",
-            tool_calls[0].name
-        ),
-        Some(TranscriptItem::Assistant { .. }) => "an empty answer".into(),
-        Some(TranscriptItem::ToolResult { name, .. }) => {
-            format!("the result of `{name}`, so the turn went on from there")
+/// **The one rule that makes a child's last row an answer** — an `Assistant` with no call after
+/// it and something to say. Shared by [`a_child_with_no_record`], which returns the text, and
+/// [`how_far`], which reports the class, so the two doors cannot disagree about whether a child
+/// with no record answered.
+fn its_answer(last: Option<&TranscriptItem>) -> Option<&str> {
+    match last? {
+        TranscriptItem::Assistant {
+            text, tool_calls, ..
+        } if tool_calls.is_empty() && !text.trim().is_empty() => Some(text),
+        _ => None,
+    }
+}
+
+/// **How a child with no record got on, as a value** — the companion of [`a_child_with_no_record`],
+/// and the reason there are two renderings of one judgement.
+///
+/// The single-handle door writes a paragraph and can afford to be exact ([`Self::said`]); a list
+/// row is one line beside its siblings and can afford a few words ([`Self::brief`]). MEASURED
+/// 2026-11-01: the list said *gone with no answer — nothing is running it, and no record of it was
+/// ever written* about every child that did not end on an answer, so a parent reading it could not
+/// tell a child that died mid-`bash` from one that never opened a session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndedIn {
+    /// It wrote no row of its own at all.
+    Nothing,
+    /// Its last row asks for a call — named here — that nothing ever answered.
+    AwaitedCall(String),
+    /// Its last row is an `Assistant` with no text and no call.
+    EmptyAnswer,
+    /// Its last row is the result of the named call: the turn went on from there.
+    AfterTool(String),
+    /// Its last row is the prompt it was given: it never began.
+    OnPrompt,
+    /// Its last row is a thought it never finished.
+    MidThought,
+    /// Its last row is a notice it was given.
+    OnNotice,
+    /// Its last row is a mark in its conversation.
+    OnMark,
+}
+
+impl EndedIn {
+    pub fn of(last: Option<&TranscriptItem>) -> EndedIn {
+        match last {
+            None => EndedIn::Nothing,
+            Some(TranscriptItem::Assistant { tool_calls, .. }) if !tool_calls.is_empty() => {
+                EndedIn::AwaitedCall(tool_calls[0].name.clone())
+            }
+            Some(TranscriptItem::Assistant { .. }) => EndedIn::EmptyAnswer,
+            Some(TranscriptItem::ToolResult { name, .. }) => EndedIn::AfterTool(name.clone()),
+            Some(TranscriptItem::User { .. }) => EndedIn::OnPrompt,
+            Some(TranscriptItem::Reasoning { .. }) => EndedIn::MidThought,
+            Some(TranscriptItem::System { .. }) => EndedIn::OnNotice,
+            Some(TranscriptItem::SegmentMark { .. }) => EndedIn::OnMark,
         }
-        Some(TranscriptItem::User { .. }) => "the prompt it was given".into(),
-        Some(TranscriptItem::Reasoning { .. }) => "a thought it never finished".into(),
-        Some(TranscriptItem::System { .. }) => "a notice it was given".into(),
-        Some(TranscriptItem::SegmentMark { .. }) => "a mark in its conversation".into(),
+    }
+
+    /// **Where the child was, in the words a model reads** — the long form, and the one the
+    /// single-handle answer has always carried.
+    pub fn said(&self) -> String {
+        match self {
+            EndedIn::Nothing => "nothing: it wrote no row of its own at all".into(),
+            EndedIn::AwaitedCall(name) => format!(
+                "a call it had just asked for (`{name}`) and never got an answer to"
+            ),
+            EndedIn::EmptyAnswer => "an empty answer".into(),
+            EndedIn::AfterTool(name) => {
+                format!("the result of `{name}`, so the turn went on from there")
+            }
+            EndedIn::OnPrompt => "the prompt it was given".into(),
+            EndedIn::MidThought => "a thought it never finished".into(),
+            EndedIn::OnNotice => "a notice it was given".into(),
+            EndedIn::OnMark => "a mark in its conversation".into(),
+        }
+    }
+
+    /// **The same class in as few words as a list row can hold** — a clause that reads on from
+    /// *"it stopped "*, so the row says how far the child got without spending a sentence on it.
+    pub fn brief(&self) -> String {
+        match self {
+            EndedIn::Nothing => "before it wrote a single row".into(),
+            EndedIn::AwaitedCall(name) => {
+                format!("mid-`{name}`, on a call it never got an answer to")
+            }
+            EndedIn::EmptyAnswer => "on an empty answer".into(),
+            EndedIn::AfterTool(name) => format!("after `{name}`'s result"),
+            EndedIn::OnPrompt => "on the prompt it was given, before it answered".into(),
+            EndedIn::MidThought => "mid-thought".into(),
+            EndedIn::OnNotice => "on a notice it was given".into(),
+            EndedIn::OnMark => "on a mark in its conversation".into(),
+        }
+    }
+}
+
+/// **How far a child with no record got, as the two doors carry it** — the class a list row is
+/// built from, and the same judgement [`a_child_with_no_record`] makes about the answer.
+///
+/// One function rather than two matches, because *did it answer?* is the whole difference
+/// between the two readings and two copies of it would drift: a child whose text the single-handle
+/// door returns as an answer must be the child the list calls *answered*.
+pub fn how_far(child: &letibot_tokencore::store::UnrecordedChild) -> letibot_tools::builtins::task::LostChild {
+    use letibot_tools::builtins::task::LostChild;
+    if its_answer(child.last_item.as_ref()).is_some() {
+        LostChild::Answered
+    } else {
+        LostChild::Stopped(EndedIn::of(child.last_item.as_ref()).brief())
     }
 }
 
@@ -1304,6 +1388,138 @@ mod tests {
             panic!("a child that wrote nothing has no answer");
         };
         assert!(why.contains("it wrote no row of its own at all"), "{why}");
+    }
+
+    /// **How far a child with no record got, in the two sizes the two doors need** — a clause for a
+    /// list row and the paragraph for the single-handle answer, both from ONE judgement.
+    ///
+    /// The defect this closes, in the reviewer's words: *item 1 of the brief asked for the list to
+    /// mark a lost child 'with what the record says (its last state)'. It does not. Every lost child
+    /// that did not end on an assistant row prints the same fixed sentence* — so a parent could not
+    /// tell a child that died mid-`bash` from one that never opened.
+    ///
+    /// And the two renderings must agree about the one thing that decides the class: a child whose
+    /// text [`a_child_with_no_record`] returns as an ANSWER is the child [`how_far`] calls
+    /// `Answered`, or the list and the answer say two things about one child.
+    #[test]
+    fn how_far_says_where_a_child_with_no_record_stopped() {
+        use letibot_tools::builtins::task::{LostChild, TaskStatus};
+
+        let child = |last: Option<TranscriptItem>| letibot_tokencore::store::UnrecordedChild {
+            id: "s-1-sub-lost".into(),
+            title: Some("the sweep".into()),
+            role: Some("coder".into()),
+            workspace_root: "/wt/agent-lost".into(),
+            created_ms: 1,
+            why: NoRecord::Due,
+            last_item: last,
+        };
+        let answer = TranscriptItem::Assistant {
+            text: "the sweep is in".into(),
+            tool_calls: vec![],
+            truncated: false,
+        };
+        let asked = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        let result = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: "ok".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        };
+
+        // **Two children that stopped somewhere different read differently** — this is the whole
+        // point, and the sentence the list printed for both was one.
+        let mid_call = how_far(&child(Some(asked)));
+        let mid_turn = how_far(&child(Some(result.clone())));
+        let never = how_far(&child(None));
+        assert_eq!(
+            mid_call,
+            LostChild::Stopped("mid-`bash`, on a call it never got an answer to".into())
+        );
+        assert_eq!(
+            mid_turn,
+            LostChild::Stopped("after `bash`'s result".into())
+        );
+        assert_eq!(
+            never,
+            LostChild::Stopped("before it wrote a single row".into())
+        );
+        assert_ne!(mid_call, mid_turn, "two classes, one clause");
+
+        // **A last row that IS an answer is the other class**, and the two doors agree about it.
+        assert_eq!(how_far(&child(Some(answer.clone()))), LostChild::Answered);
+        assert!(
+            matches!(
+                a_child_with_no_record(&child(Some(answer))),
+                TaskStatus::Done { .. }
+            ),
+            "the class the list calls `Answered` is the one the answer door returns as an answer"
+        );
+
+        // **Every shape of last row, in both sizes** — the clause reads on from *"it stopped "*,
+        // and the paragraph never loses the long form a model has been reading.
+        for (item, said, brief) in [
+            (
+                None,
+                "nothing: it wrote no row of its own at all",
+                "before it wrote a single row",
+            ),
+            (
+                Some(result.clone()),
+                "the result of `bash`, so the turn went on from there",
+                "after `bash`'s result",
+            ),
+            (
+                Some(TranscriptItem::User {
+                    parts: vec![],
+                    speaker: Default::default(),
+                }),
+                "the prompt it was given",
+                "on the prompt it was given, before it answered",
+            ),
+            (
+                Some(TranscriptItem::Reasoning {
+                    text: "hm".into(),
+                    field: letibot_transcript::ReasoningField::Inline,
+                    truncated: false,
+                }),
+                "a thought it never finished",
+                "mid-thought",
+            ),
+        ] {
+            let ended = EndedIn::of(item.as_ref());
+            assert_eq!(ended.said(), said);
+            assert_eq!(ended.brief(), brief);
+            assert_eq!(
+                how_far(&child(item)),
+                LostChild::Stopped(brief.into()),
+                "{brief}"
+            );
+        }
+        // **And nothing in either rendering guesses WHY the row is missing** — that is
+        // `no_record_cause`'s, from the store's own class, and the list is not told it at all.
+        for why in [NoRecord::Due, NoRecord::BeforeTheStore] {
+            let c = letibot_tokencore::store::UnrecordedChild {
+                why,
+                ..child(None)
+            };
+            let said = match how_far(&c) {
+                LostChild::Stopped(words) => words,
+                other => panic!("{other:?}"),
+            };
+            assert!(!said.contains("refused") && !said.contains("store"), "{said}");
+        }
     }
 
     /// **A child older than the store's first record is not told a write was refused** — the

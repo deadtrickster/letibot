@@ -1270,7 +1270,7 @@ impl Named {
             handle: handle.into(),
             slug: slug.map(str::to_string),
             own,
-            lost: false,
+            lost: None,
         };
         Named {
             kids: std::sync::Mutex::new(vec![
@@ -1298,7 +1298,7 @@ impl TaskRunner for Named {
             handle: handle.clone(),
             slug: Some(slug),
             own: true,
-            lost: false,
+            lost: None,
         });
         Ok(handle)
     }
@@ -1696,7 +1696,7 @@ fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
                 handle: "sub-a-child-called-parent".into(),
                 slug: Some(PARENT_HANDLE.into()),
                 own: true,
-                lost: false,
+                lost: None,
             }]
         }
         fn parent(&self) -> Option<String> {
@@ -1788,5 +1788,222 @@ fn parent_is_a_reserved_handle_and_a_root_is_refused_by_name() {
             "sub-a-child-called-parent".to_string(),
             "and you".to_string()
         ))
+    );
+}
+
+/// **A child with no record's row says how far it got** — the class, not one fixed sentence.
+///
+/// MEASURED 2026-11-01, from the review of the branch that made a lost child appear in the list at
+/// all: every lost child that did not end on an assistant row printed *gone with no answer —
+/// nothing is running it, and no record of it was ever written*, so a parent reading the list could
+/// not tell a child that died mid-`bash` from one that never opened a session. The single-handle
+/// door already computed the difference (`subagent_record::ended_in`) and used it there alone.
+///
+/// **And no row may name a cause the list does not know.** *Why* the row is missing is the store's
+/// own class (`no_record_cause`), and the list is handed only the fact that it is: a row that said
+/// *the store refused the write* about a child older than the store's first record would be a
+/// cause nobody measured (the defect the window closed).
+#[test]
+fn a_lost_childs_row_says_how_far_it_got() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use std::time::Duration;
+
+    /// Three children with no record — two that stopped somewhere different, and one that got as
+    /// far as an answer — and the status each of them is read as.
+    struct Lost;
+    impl TaskRunner for Lost {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            unreachable!("this test only reads")
+        }
+        fn collect(&self, handle: &str, _t: Duration) -> TaskStatus {
+            match handle {
+                "s-1-sub-answered" => TaskStatus::Done {
+                    answer: "the sweep is in".into(),
+                    child: None,
+                },
+                _ => TaskStatus::Failed {
+                    why: "nothing is running it, and no record of it was ever written".into(),
+                },
+            }
+        }
+        fn started(&self) -> Vec<String> {
+            vec![
+                "s-1-sub-midcall".into(),
+                "s-1-sub-never".into(),
+                "s-1-sub-answered".into(),
+            ]
+        }
+        fn children(&self) -> Vec<ChildName> {
+            let lost = |handle: &str, how: LostChild| ChildName {
+                handle: handle.into(),
+                slug: None,
+                own: true,
+                lost: Some(how),
+            };
+            vec![
+                lost(
+                    "s-1-sub-midcall",
+                    LostChild::Stopped("after `bash`'s result".into()),
+                ),
+                lost(
+                    "s-1-sub-never",
+                    LostChild::Stopped("before it wrote a single row".into()),
+                ),
+                lost("s-1-sub-answered", LostChild::Answered),
+            ]
+        }
+    }
+
+    let runner: Arc<dyn TaskRunner> = Arc::new(Lost);
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let listed = rt.invoke(
+        "t1",
+        &letibot_transcript::ToolCall {
+            id: "c0".into(),
+            name: "task_result".into(),
+            arguments: "{}".into(),
+        },
+        &mut crate::NullToolSink,
+    )
+    .payload;
+    eprintln!("--- the list ---\n{listed}");
+    let row = |handle: &str| {
+        listed
+            .lines()
+            .find(|l| l.contains(handle))
+            .unwrap_or_else(|| panic!("`{handle}` is not listed: {listed}"))
+            .to_string()
+    };
+
+    // **Two children of the same class read differently**, which is the whole defect: the one that
+    // died after `bash`'s result says so, and the one that never opened says that instead.
+    let mid = row("s-1-sub-midcall");
+    let never = row("s-1-sub-never");
+    assert_ne!(mid, never, "two classes, one sentence: {mid} / {never}");
+    assert!(mid.contains("after `bash`'s result"), "{mid}");
+    assert!(
+        never.contains("before it wrote a single row"),
+        "the child that never opened says so: {never}"
+    );
+    assert!(
+        mid.contains("gone with no answer") && never.contains("gone with no answer"),
+        "neither answered: {mid} / {never}"
+    );
+
+    // **The one that answered is not drawn as one that did not** — and its text is named for what
+    // it is, because nothing recorded a settlement.
+    let answered = row("s-1-sub-answered");
+    assert!(answered.contains("answered"), "{answered}");
+    assert!(answered.contains(NOT_A_FINISHED_ANSWER), "{answered}");
+    assert!(!answered.contains("gone with no answer"), "{answered}");
+
+    // **No row claims a cause it was not given.** The list knows the row is missing; why is the
+    // store's to say, and it said nothing to this door.
+    for r in [&mid, &never, &answered] {
+        assert!(!r.contains("refused"), "a cause nobody measured: {r}");
+        assert!(!r.contains("store"), "a cause nobody measured: {r}");
+    }
+    // And each is ONE line, so a list of thirty children is thirty lines.
+    assert_eq!(listed.lines().count(), 4, "{listed}");
+}
+
+/// **`task_result task=<handle>` on a child with no record does not hand its text over as an
+/// answer** — the caveat comes first, and it survives the shape a payload is cut to.
+///
+/// MEASURED 2026-11-01, from the review: `a_child_with_no_record` returns `Done { answer: text }`
+/// for any last `Assistant` row with no tool calls, and the Done arm printed that text alone.
+/// During a shutdown an interrupted turn *comes back as an ANSWER — whatever the child had written
+/// when it stopped* (`SubagentRecord::settled`'s own comment), so a parent asking by handle got a
+/// turn that stopped mid-way under the name of the child's last word.
+#[test]
+fn a_lost_childs_answer_says_it_is_not_a_finished_answer() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use std::time::Duration;
+
+    /// One child with no record that ends on an answer, and one recorded child that does too — the
+    /// second is the control: a recorded answer is an answer, and nothing may be prefixed to it.
+    struct Two;
+    impl TaskRunner for Two {
+        fn start(&self, _p: &str, _s: &TaskSpec) -> Result<String, String> {
+            unreachable!("this test only reads")
+        }
+        fn collect(&self, handle: &str, _t: Duration) -> TaskStatus {
+            TaskStatus::Done {
+                answer: format!("the text of {handle}"),
+                child: None,
+            }
+        }
+        fn started(&self) -> Vec<String> {
+            vec!["s-1-sub-lost".into(), "s-1-sub-kept".into()]
+        }
+        fn children(&self) -> Vec<ChildName> {
+            vec![
+                ChildName {
+                    handle: "s-1-sub-lost".into(),
+                    slug: None,
+                    own: true,
+                    lost: Some(LostChild::Answered),
+                },
+                ChildName {
+                    handle: "s-1-sub-kept".into(),
+                    slug: Some("kept".into()),
+                    own: true,
+                    lost: None,
+                },
+            ]
+        }
+    }
+
+    let runner: Arc<dyn TaskRunner> = Arc::new(Two);
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let ask = |handle: &str| {
+        rt.invoke(
+            "t1",
+            &letibot_transcript::ToolCall {
+                id: "c0".into(),
+                name: "task_result".into(),
+                arguments: format!(r#"{{"task": "{handle}"}}"#),
+            },
+            &mut crate::NullToolSink,
+        )
+    };
+
+    let lost = ask("s-1-sub-lost");
+    eprintln!("--- the answer ---\n{}", lost.payload);
+    assert!(
+        lost.payload.starts_with(NOT_A_FINISHED_ANSWER),
+        "the caveat is the FIRST thing read, so no truncation drops it: {}",
+        lost.payload
+    );
+    assert!(
+        lost.payload.contains("the text of s-1-sub-lost"),
+        "and the text is still there, under it: {}",
+        lost.payload
+    );
+    // **Where the rest of it is** — a parent that wants the whole turn is told the door, in the
+    // same sentence that says the answer is not one.
+    assert!(
+        lost.payload
+            .contains("`transcript` with session=\"s-1-sub-lost\""),
+        "{}",
+        lost.payload
+    );
+    // Nothing claims the child finished, and nothing claims a cause nobody measured.
+    assert!(!lost.payload.contains("refused"), "{}", lost.payload);
+
+    // **A recorded child's answer is untouched** — this is a caveat about a missing record, and a
+    // child whose settlement was written down has none of it.
+    let kept = ask("s-1-sub-kept");
+    assert_eq!(
+        kept.payload, "the text of s-1-sub-kept",
+        "a recorded child's answer is its answer, byte for byte"
     );
 }
