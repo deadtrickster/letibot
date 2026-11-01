@@ -46,6 +46,11 @@ impl App {
     /// order and the path is shortened from its left before anything is dropped —
     /// a path is recognisable from its end, and a token count is not recoverable
     /// from anywhere else on the screen.
+    // **A test's door, and `cfg(test)` says so.** Its only readers are
+    // `app/tests/session.rs`'s two assertions; a release build has no reader at all, which is what
+    // the compiler was saying. The drawing itself goes through `header_row`, which is where the
+    // click target is read off what was drawn.
+    #[cfg(test)]
     pub(crate) fn header_line(&self, w: usize) -> String {
         self.header_row(w).0
     }
