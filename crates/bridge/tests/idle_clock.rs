@@ -15,7 +15,7 @@
 //!    delta of the whole machine — answers *the box is busy* for every process on it, which is
 //!    what the gate's three reds had in common. So a real burner is started BESIDE this process,
 //!    and this process's own reading must not move: measured with a child at a full core,
-//!    **4–18 µs of a one-second span**. The burner's own reading is taken too, so the test cannot
+//!    **4–10 µs of a one-second span**. The burner's own reading is taken too, so the test cannot
 //!    pass by the burner having failed to start.
 //! 3. **The settle waits for a burn to end.** [`cpu::wait_until_idle`] is the half that was
 //!    missing on 2026-11-01: a fixed `sleep(500 ms)` after a daemon's start opened the measured
