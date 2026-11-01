@@ -394,13 +394,7 @@ fn every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in() {
     let opened = draw(&f, &[("/home/dead/Projects/two", true)]);
     assert_eq!(
         words(&opened),
-        vec![
-            "[one (1)]",
-            "s-here",
-            "[two (1)]",
-            "s-two",
-            "[three (1)]"
-        ],
+        vec!["[one (1)]", "s-here", "[two (1)]", "s-two", "[three (1)]"],
         "opening one project draws its rows and nothing else's"
     );
 }
@@ -431,7 +425,10 @@ fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
         Some(Fold::Open),
         "and the row above says `-`, because the row it holds is on the screen"
     );
-    assert_eq!(rows[1].depth, 1, "drawn at its depth, not promoted to the top");
+    assert_eq!(
+        rows[1].depth, 1,
+        "drawn at its depth, not promoted to the top"
+    );
     // **And the project's own exception**: the line holding `here` is open, so the sessions of the
     // project the head is working in are on the list while every other project's are behind their
     // line (see `every_project_line_is_drawn_and_no_session_under_the_ones_you_are_not_in`).

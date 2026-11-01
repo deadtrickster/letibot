@@ -129,6 +129,16 @@ pub(crate) enum Act {
     /// **The todos pane's `d`: fold the done group away, or open it** —
     /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
     FoldDone,
+    /// **The session list's `x`: take the row under the cursor off this list** —
+    /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
+    /// it. See `app::removal` for the three senses of *remove* and which one this is.
+    Remove,
+    /// **The session list's `u`: put the last removed row back** — [`App::restore_removed`], the
+    /// undo a removal has to have if it is to be the sense worth building.
+    Undo,
+    /// **The session list's `f`: forget the session in the store** — [`App::forget_selected`],
+    /// which refuses, by name, because this head has no door to the store's delete.
+    Forget,
 }
 
 /// **What the bar and the help say about a binding.**
@@ -186,6 +196,34 @@ const PICKER: &[Binding] = &[
     ),
     b(&[On::Left], Empty, Act::Collapse, Text("closes them")),
     b(&[On::Enter], Empty, Act::Open, Says::Row),
+    // **`x` takes the row off the list and `u` puts it back** — the operator's *"add controls to
+    // remove sessions"*. Asked twice (`app::removal`): the first press says what would go and the
+    // second does it, and `u` is the way back. A plain letter like the todos pane's `d` and `n`,
+    // and guarded by `Empty` like every other letter here: with a line in the composer, `x` is the
+    // composer's.
+    b(
+        &[On::Char('x')],
+        Empty,
+        Act::Remove,
+        Text("removes it from this list (twice)"),
+    ),
+    b(
+        &[On::Char('u')],
+        Empty,
+        Act::Undo,
+        Text("brings the last removed back"),
+    ),
+    // **`f` is the destructive sense, and it says no.** Forgetting a session in the store is
+    // `letibot --delete <id>`: no frame reaches the store's delete from a head, and the store
+    // refuses any session that holds rows at all. A key that only refuses is worth having when the
+    // refusal is the fact the person needs (`app::removal`), and the bar says which key it is
+    // rather than promising an act it will not perform.
+    b(
+        &[On::Char('f')],
+        Empty,
+        Act::Forget,
+        Text("forgets it — this head has no store door"),
+    ),
     // Short, and its cursor keeps itself in view: a page key moves nothing under it.
     b(&[On::Page, On::Wheel], Always, Act::Swallow, Nothing),
 ];

@@ -649,6 +649,10 @@ impl App {
             .sessions
             .iter()
             .enumerate()
+            // **A removed session is not in the feed at all**, so the layer's rows, its counts and
+            // its numbering agree with the head's own walk by construction: one predicate
+            // (`App::removed_chain`), two drawings.
+            .filter(|(i, _)| !self.removed_chain(*i))
             .map(|(i, s)| {
                 json!({
                     "id": s.session_id,

@@ -325,6 +325,15 @@ pub struct App {
     /// is instant because it changes this map and the next draw, and survives a re-answer because
     /// it travels back in the pane's input.
     pub(crate) picker_folds: std::collections::BTreeMap<String, bool>,
+    /// **The sessions the person has taken off this list**, oldest first — `x` on the row pushes
+    /// one, `u` pops it. A head's own answer like `picker_folds`, and for the same reason: the list
+    /// is a view, and a view the person arranges must survive the next answer from the daemon
+    /// without a round trip. See `app::removal` for the three senses of *remove* and which one this
+    /// is.
+    pub(crate) removed: Vec<String>,
+    /// **The row `x` has armed, and when** — the first of the two presses. `(id, at_ms)`, and a
+    /// second `x` on the same row inside `removal::ARM_MS` is the removal.
+    pub(crate) removal_armed: Option<(String, u64)>,
     /// The key a pane's `event` action asked the head to deliver, until the next ask.
     pub(crate) sessions_event: std::cell::RefCell<Option<letibot_plugin::pane::Event>>,
     /// **Which session each screen row of the last picker frame belongs to**: `(y, k)` for
@@ -1416,10 +1425,12 @@ pub struct App {
     /// **Which rows of the tree the picker has OPENED** — a project's path, `…/system`, a
     /// `…/system/<group>`, or a session id whose sub-sessions are being shown under it.
     ///
-    /// **Empty is the default, and the default is the tree's own**: a project and its `system`
-    /// branch are open, a group inside `system` is folded, and a session's children are folded —
-    /// which is the answer to the objection that kept sub-sessions out of this list altogether,
-    /// *twenty subagents bury the four conversations I care about*. See [`App::session_rows`].
+    /// **Empty is the default, and the default is CLOSED** — every node, the project's line
+    /// included ([`Node::default_open`]). What a list with nothing open still draws is where you
+    /// are: the project holding this head's session, and the chain of parents down to it. Which
+    /// is the answer to the objection that kept sub-sessions out of this list altogether,
+    /// *twenty subagents bury the four conversations I care about*, and to the operator's own
+    /// *"make sessions tree collapsed by default"*. See [`App::session_rows`].
     pub(crate) expanded: Vec<String>,
     /// Wall clock, fed in by the driver, and when this head last had anything from
     /// the daemon.
@@ -2080,6 +2091,8 @@ impl App {
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
             picker_folds: std::collections::BTreeMap::new(),
+            removed: Vec::new(),
+            removal_armed: None,
             sessions_event: std::cell::RefCell::new(None),
             picker_hits: Vec::new(),
             screen_rows: 0,
@@ -2539,6 +2552,7 @@ mod pointer;
 mod prefs;
 mod queue_pane;
 mod reach;
+mod removal;
 pub(crate) mod reseat;
 pub(crate) mod runclick;
 mod scroll;

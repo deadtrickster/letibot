@@ -105,6 +105,13 @@ impl App {
         act: Act,
         k: &Key,
     ) -> ControlFlow<Option<Action>> {
+        // **Any other key on the pane disarms a removal.** The second press is the confirmation, so
+        // a press that is not the second one is the person doing something else — an arrow, a fold,
+        // Enter on another row — and the arm must not outlive it. One place, because every key of
+        // every pane comes through here.
+        if !matches!(act, Act::Remove) {
+            self.clear_removal_arm();
+        }
         let up = upward(k);
         match act {
             Act::Swallow => ControlFlow::Break(None),
@@ -189,6 +196,21 @@ impl App {
             // the answer on the next frame.
             Act::FoldDone => {
                 self.toggle_todos_fold_done();
+                ControlFlow::Break(None)
+            }
+            // **`x` on the session list** — arm, or remove. See `app::removal`.
+            Act::Remove => {
+                self.remove_selected();
+                ControlFlow::Break(None)
+            }
+            // **`u`** — the last removal, back.
+            Act::Undo => {
+                self.restore_removed();
+                ControlFlow::Break(None)
+            }
+            // **`f`** — the destructive sense, refused by name.
+            Act::Forget => {
+                self.forget_selected();
                 ControlFlow::Break(None)
             }
         }

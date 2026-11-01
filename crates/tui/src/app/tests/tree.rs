@@ -550,10 +550,7 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
         rows(&a)
     );
     assert_eq!(
-        a.session_rows()
-            .iter()
-            .filter(|r| r.idx.is_some())
-            .count(),
+        a.session_rows().iter().filter(|r| r.idx.is_some()).count(),
         2,
         "and nothing else's"
     );

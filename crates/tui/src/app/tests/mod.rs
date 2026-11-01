@@ -1428,6 +1428,7 @@ mod queue;
 mod queue_plugin;
 mod reach;
 mod redcard;
+mod removal;
 mod render;
 mod repos;
 mod reseatcard;

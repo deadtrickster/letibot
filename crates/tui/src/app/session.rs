@@ -416,8 +416,11 @@ impl App {
         let projects = self.projects(&place);
         let here = self.here_nodes(&place);
         for project in &projects {
+            // **A removed session is not counted either** — a project line saying `(7)` over six
+            // rows is a number that lies about what it hides, and the same filter feeds the
+            // built-in layer's copy of this list (`App::sessions_feed`).
             let members: Vec<usize> = (0..self.sessions.len())
-                .filter(|&i| place[i].project == project.key)
+                .filter(|&i| place[i].project == project.key && !self.removed_chain(i))
                 .collect();
             let node = Node::Project {
                 key: project.key.clone(),
@@ -531,6 +534,14 @@ impl App {
         force: bool,
         branch: Option<Branch<'_>>,
     ) {
+        // **A row the person took off the list is not drawn, and neither is anything under it** —
+        // the unit of removal is the subtree, because a child whose parent is not on a tree has no
+        // place on it. One guard here covers all three ways a session becomes a row (a project's
+        // root, a group's root, a child), which is why the filter is at this end of the walk rather
+        // than at each of them. See `app::removal`.
+        if self.removed_chain(i) {
+            return;
+        }
         let id = self.sessions[i].session_id.clone();
         let kids = self.children_in(&id, branch);
         let open = force || self.children_open(&id, path);
@@ -569,7 +580,10 @@ impl App {
     /// **The index of a session's parent, when that parent is on this list.** `None` for a session
     /// nobody spawned and for one whose parent this daemon does not hold — the two cases in which
     /// the row is a root of the tree it is drawn in.
-    fn parent_on_list(&self, i: usize) -> Option<usize> {
+    ///
+    /// `pub(crate)` because `app::removal` walks the same edge: *is this row off the list because a
+    /// session above it is* is a question about this chain and nothing else.
+    pub(crate) fn parent_on_list(&self, i: usize) -> Option<usize> {
         self.sessions[i]
             .parent_session_id
             .as_deref()
@@ -2003,7 +2017,7 @@ pub(crate) struct SessionRow {
 
 /// How far up a parent chain this tree will walk before it decides the chain loops. A child is
 /// always created after its parent, so a real chain is short; this is a store somebody edited.
-const MAX_CHAIN: usize = 64;
+pub(crate) const MAX_CHAIN: usize = 64;
 
 /// **How far in a row is drawn.** The renderer caps the indent at three steps (rano's tree list,
 /// and a name pushed four steps in is off the right edge), and the built-in `sessions` layer caps
