@@ -3508,7 +3508,11 @@ fn latest_box_stop(store: &Store) -> crate::restart::Stopped {
         .filter_map(|l| l.stopped_ms.map(|at_ms| (at_ms, l.instance)))
         .max_by_key(|(at_ms, _)| *at_ms);
     match latest {
-        Some((at_ms, instance)) => crate::restart::Stopped::At {
+        // **`instance` is the tie-breaker, not a field of the answer.** `max_by_key` needs it —
+        // two `daemon_life` rows can share a millisecond and the rowid order is what decides — but
+        // `Stopped::At` says *when* the box stopped, and which daemon's row told us is not part of
+        // that fact: the whole point is that the stop is the BOX's, whichever session's row named it.
+        Some((at_ms, _)) => crate::restart::Stopped::At {
             at_ms,
             estimated_from: None,
         },
