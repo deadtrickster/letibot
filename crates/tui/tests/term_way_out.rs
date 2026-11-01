@@ -30,6 +30,16 @@
 //! arm for it, `_ => i += 1`), and the pane opened a moment later **with no way out at
 //! all**. The way out is looked for on the byte stream, so the byte stream is where it has
 //! to be looked for, and not only when the pane was already open when the tick began.
+//!
+//! # The two waits, which are conditions
+//!
+//! A positive claim waits for the frame it is about ([`frames_until`]) and a draw waits for the
+//! state it is about ([`settle_until`]); neither is a pause. MEASURED 2026-11-01 on the gate's own
+//! shape — three hundred busy processes and `TMPDIR` on a real disk, `/var/tmp/letibot-gate` —
+//! the 200 ms drain these tests settled with saw **nothing at all** after a frame the head had
+//! written, and two of them failed with `the pane opened: []` and `the Enter is the program's …:
+//! []`. An absence cannot be waited for, so the three claims that nothing was sent use a window
+//! ([`ABSENCE_WINDOW`]), and the comment at each says why that one has to be a window.
 
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
@@ -161,31 +171,134 @@ fn step(link: &mut Link, a: &mut App, raw: &[u8]) {
     link.tick(a, (100, 30), &decode(raw), raw, &mut sink);
 }
 
-/// Read until nothing new arrives, so a frame already on the socket has landed.
-fn settle(link: &mut Link, a: &mut App) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut quiet = 0;
-    while Instant::now() < deadline {
-        let before = a.seq;
+// ---------------------------------------------------------------------------
+// The two waits, and why neither is a pause
+// ---------------------------------------------------------------------------
+
+/// **How long a wait for a fact about two threads in THIS process may take before it is a hang.**
+///
+/// Nothing in this file waits on a network, a model or a build: the head and the scripted daemon
+/// are both in this process, so a frame is one socket write and one wake-up. This is a hang
+/// detector, and the number is far above anything a busy box can add to a write and a wake-up.
+const PATIENCE: Duration = Duration::from_secs(60);
+
+/// **How long the daemon is given to read a frame the head did NOT write.**
+///
+/// An absence cannot be waited for — only watched for — so this is the one wait in the file that
+/// is a window rather than a condition, and it is a window on the *witness*: the head's own write
+/// is synchronous (`HeadClient::term_close` puts the frame on the socket before it returns), so
+/// whether anything left the head is decided by the time `step` returns. What the window buys is
+/// the daemon thread's chance to read it, which is what the channel below can see.
+///
+/// MEASURED 2026-11-01, and this is the whole of the fix: with the gate's own shape — three
+/// hundred busy processes and `TMPDIR` on a real disk, `/var/tmp/letibot-gate` — a **200 ms**
+/// drain saw NOTHING after a frame the head had written, and two of these tests failed with
+/// `the pane opened: []` and `the Enter is the program's …: []`. A positive claim now waits for
+/// its frame; this window is only for the claims that nothing was sent.
+const ABSENCE_WINDOW: Duration = Duration::from_secs(2);
+
+/// **Pump the driver's loop until the head has got where the test is going.**
+///
+/// The condition, not a pause: `settle` used to tick until four 25 ms passes changed nothing,
+/// which is a bet that the daemon thread is scheduled within a hundred milliseconds — a bet the
+/// gate's box lost. `&mut App` because the predicate is usually the screen, and drawing it is what
+/// records the frame's click targets.
+fn settle_until(link: &mut Link, a: &mut App, what: &str, mut ready: impl FnMut(&mut App) -> bool) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
         step(link, a, &[]);
-        if a.seq == before {
-            quiet += 1;
-            if quiet >= 4 {
-                return;
-            }
-        } else {
-            quiet = 0;
+        if ready(a) {
+            return;
         }
-        std::thread::sleep(Duration::from_millis(25));
+        assert!(
+            Instant::now() < deadline,
+            "waited {PATIENCE:?} for {what}; the screen is {:?}",
+            a.screen(100, 30)
+        );
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
-fn sent(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
+/// **Everything the daemon read, up to the frame `ready` names** — so *this reached the daemon*
+/// waits for the frame instead of for a pause. Returns what it collected, so a failure prints the
+/// frames rather than an empty list.
+fn frames_until(
+    frames: &Receiver<ClientFrame>,
+    what: &str,
+    ready: impl Fn(&[ClientFrame]) -> bool,
+) -> Vec<ClientFrame> {
+    let deadline = Instant::now() + PATIENCE;
+    let mut out: Vec<ClientFrame> = Vec::new();
+    loop {
+        match frames.recv_timeout(Duration::from_millis(20)) {
+            Ok(f) => out.push(f),
+            // The daemon's thread is gone, which is a fact about the fixture and not a wait.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return out,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if ready(&out) {
+            return out;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waited {PATIENCE:?} for {what}; the daemon read {out:?}"
+        );
+    }
+}
+
+/// **What the daemon read while the head wrote nothing** — see [`ABSENCE_WINDOW`].
+fn arrived_meanwhile(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
+    let deadline = Instant::now() + ABSENCE_WINDOW;
+    let mut out: Vec<ClientFrame> = Vec::new();
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        if left.is_zero() {
+            break;
+        }
+        match frames.recv_timeout(left) {
+            Ok(f) => out.push(f),
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+/// Whatever is already in the channel, without waiting — for the places a test clears the board.
+fn clear(frames: &Receiver<ClientFrame>) -> Vec<ClientFrame> {
     let mut out = Vec::new();
-    while let Ok(f) = frames.recv_timeout(Duration::from_millis(200)) {
+    while let Ok(f) = frames.try_recv() {
         out.push(f);
     }
     out
+}
+
+/// **Wait until the head and the daemon have met.**
+///
+/// The daemon writes the `Hello` and the head answers it with a `TermStatus` ("what are you
+/// holding?"), so a `TermStatus` in the channel is a full round trip: the `Hello` was on the
+/// socket before it and the same tick took it in. `Link::open` returns before any of that, which is
+/// why every test here starts with this rather than with a pause.
+///
+/// **The loop is pumped while it waits**, and that is not decoration: the ask is *queued* by the
+/// `Hello` and written by the next `tick`, so waiting on the channel alone waits for a frame
+/// nobody has sent — measured, all seven tests in this file timed out at `PATIENCE` on the first
+/// cut of this helper.
+fn attach(link: &mut Link, a: &mut App, frames: &Receiver<ClientFrame>) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        step(link, a, &[]);
+        if clear(frames)
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermStatus))
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "waited {PATIENCE:?} for the attach's own TermStatus; the screen is {:?}",
+            a.screen(100, 30)
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// **`ctrl-\` detaches, and NOTHING leaves the head.**
@@ -204,30 +317,42 @@ fn ctrl_backslash_detaches_through_the_drivers_loop() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-plain").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     step(&mut link, &mut a, b"!term nano\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
     assert!(
         a.pane_open(),
         "the pane is up before the way out is pressed"
     );
+    let opened = frames_until(&frames, "the pane's open to reach the daemon", |fs| {
+        fs.iter().any(|f| matches!(f, ClientFrame::TermOpen { .. }))
+    });
     assert!(
-        sent(&frames)
+        opened
             .iter()
             .any(|f| matches!(f, ClientFrame::TermOpen { .. })),
-        "the pane's open reached the daemon"
+        "the pane's open reached the daemon: {opened:?}"
     );
 
     step(&mut link, &mut a, b"\x1c");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the rectangle to be back", |a| {
+        !a.pane_open()
+    });
 
+    // **The absence, and it is the one claim here that needs a window**: a detach writes nothing,
+    // so there is no frame to wait for — see [`ABSENCE_WINDOW`].
+    let meanwhile = arrived_meanwhile(&frames);
     assert!(
-        !sent(&frames)
+        !meanwhile
             .iter()
             .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "a detach sent a frame that ends the program — that is the defect the split exists \
-         to remove"
+         to remove: {meanwhile:?}"
     );
     assert!(!a.pane_open(), "the conversation's rectangle is back");
     assert!(
@@ -265,18 +390,31 @@ fn enter_and_the_way_out_in_one_read_forward_the_enter_and_detach() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-enter-wayout").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     step(&mut link, &mut a, b"!term nano\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
     assert!(a.pane_open(), "the pane is up before the coalesced read");
-    let _ = sent(&frames);
+    let _ = clear(&frames);
 
     // One read, exactly as `Terminal::events` would have consumed it: Enter + ctrl-\.
     step(&mut link, &mut a, b"\r\x1c");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the rectangle to be back", |a| {
+        !a.pane_open()
+    });
 
-    let frames = sent(&frames);
+    // **Both halves of the claim come out of one collection**, and the positive one is what makes
+    // it exact: the Enter is a frame the daemon reads, so waiting for it gives the daemon its
+    // chance to read anything else this read wrote — and a unix socket is read in order, so a
+    // `TermClose` written before that `TermInput` would be in front of it here.
+    let frames = frames_until(&frames, "the Enter to reach the program", |fs| {
+        fs.iter()
+            .any(|f| matches!(f, ClientFrame::TermInput { .. }))
+    });
     assert!(
         frames
             .iter()
@@ -321,34 +459,56 @@ fn a_way_out_byte_in_a_read_the_composer_consumed_is_not_a_way_out_of_anything()
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-phantom").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     // The operator is at the composer: no pane, none opening. A paste of text that
     // contains a literal `0x1c` — one read, one `Key::Paste`, nothing submitted.
     step(&mut link, &mut a, b"\x1b[200~notes\x1c\x1b[201~");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the paste in the composer", |a| {
+        a.input().contains("notes")
+    });
     assert!(!a.pane_open(), "a paste opens nothing");
     assert!(
-        !sent(&frames)
+        !clear(&frames)
             .iter()
             .any(|f| matches!(f, ClientFrame::TermOpen { .. })),
         "and sends nothing: the paste is composer text"
     );
 
     // The pasted text is submitted as the ordinary line it is — a prompt, not a pane — and
-    // the composer is empty again.
+    // the composer is empty again. **The submit is also the barrier**: it is a frame the daemon
+    // reads, so everything this head wrote before it is in the collection below, and a
+    // `TermOpen` the paste had produced could not hide behind it.
     step(&mut link, &mut a, b"\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the composer to empty", |a| {
+        a.input().is_empty()
+    });
+    let submitted = frames_until(&frames, "the paste to be submitted", |fs| {
+        fs.iter().any(|f| matches!(f, ClientFrame::Prompt { .. }))
+    });
+    assert!(
+        !submitted
+            .iter()
+            .any(|f| matches!(f, ClientFrame::TermOpen { .. })),
+        "a paste with a `0x1c` in it opened a pane: {submitted:?}"
+    );
     assert!(!a.pane_open(), "submitting the paste opened no pane");
 
     // Only now does the operator open one — and the poisoned latch spends itself on it.
     step(&mut link, &mut a, b"!term nano\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
+    let opened = frames_until(&frames, "the open to go out", |fs| {
+        fs.iter().any(|f| matches!(f, ClientFrame::TermOpen { .. }))
+    });
     assert!(
-        sent(&frames)
+        opened
             .iter()
             .any(|f| matches!(f, ClientFrame::TermOpen { line, .. } if line == "!term nano")),
-        "the open went out"
+        "the open went out: {opened:?}"
     );
     assert!(
         a.pane_open(),
@@ -375,13 +535,20 @@ fn the_way_out_is_not_eaten_by_the_read_that_opens_the_pane() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-same-read").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     // One read, exactly as `Terminal::events` would have consumed it.
     step(&mut link, &mut a, b"!term nano\r\x1c");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the rectangle to be back", |a| {
+        !a.pane_open()
+    });
 
-    let frames = sent(&frames);
+    // **The positive frame is what makes the absence exact**: the `TermOpen` is a frame the
+    // daemon reads, so a `TermClose` written before it would be in front of it in this collection
+    // — a unix socket is read in order.
+    let frames = frames_until(&frames, "the pane to open", |fs| {
+        fs.iter().any(|f| matches!(f, ClientFrame::TermOpen { .. }))
+    });
     assert!(
         frames
             .iter()
@@ -416,28 +583,41 @@ fn a_bare_term_line_after_a_detach_attaches_back_through_the_drivers_loop() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-attach-back").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     step(&mut link, &mut a, b"!term nano\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
     step(&mut link, &mut a, b"\x1c");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the rectangle to be back", |a| {
+        !a.pane_open()
+    });
     assert!(!a.pane_open(), "detached");
     assert!(
-        !sent(&frames)
+        !arrived_meanwhile(&frames)
             .iter()
             .any(|f| matches!(f, ClientFrame::TermClose { .. })),
         "the detach ended nothing"
     );
 
     step(&mut link, &mut a, b"!term\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen, replayed", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
 
+    let again = frames_until(&frames, "the attach to go out", |fs| {
+        fs.iter().any(|f| matches!(f, ClientFrame::TermOpen { .. }))
+    });
     assert!(
-        sent(&frames)
+        again
             .iter()
             .any(|f| matches!(f, ClientFrame::TermOpen { line, .. } if line == "!term")),
-        "a bare `!term` is an attach, and the line goes over as typed"
+        "a bare `!term` is an attach, and the line goes over as typed: {again:?}"
     );
     assert!(a.pane_open(), "the rectangle is drawn again");
     assert!(
@@ -465,22 +645,34 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-close-asks").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     step(&mut link, &mut a, b"!term nano\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the pane's screen", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("nano's screen"))
+    });
     step(&mut link, &mut a, b"\x1c");
-    settle(&mut link, &mut a);
-    let _ = sent(&frames);
+    settle_until(&mut link, &mut a, "the rectangle to be back", |a| {
+        !a.pane_open()
+    });
+    let _ = clear(&frames);
 
     // The verb, submitted. Nothing is sent, and the card is up naming what would end.
     step(&mut link, &mut a, b"!term close\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the card", |a| {
+        a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
+    });
+    // **A verb that asks writes nothing**, so the absence is the only claim here and a window is
+    // its only instrument — see [`ABSENCE_WINDOW`].
+    let asked = arrived_meanwhile(&frames);
     assert!(
-        !sent(&frames)
+        !asked
             .iter()
             .any(|f| matches!(f, ClientFrame::TermClose { .. })),
-        "the verb ended the program on its own — that is what the confirmation exists to stop"
+        "the verb ended the program on its own — that is what the confirmation exists to stop: \
+         {asked:?}"
     );
     let card = a.screen(100, 30);
     assert!(
@@ -495,12 +687,15 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
 
     // Esc is the cancel — the safe default — and it sends nothing.
     step(&mut link, &mut a, b"\x1b");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the card to be gone", |a| {
+        !a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
+    });
+    let cancelled = arrived_meanwhile(&frames);
     assert!(
-        !sent(&frames)
+        !cancelled
             .iter()
             .any(|f| matches!(f, ClientFrame::TermClose { .. })),
-        "the cancel sent the frame anyway"
+        "the cancel sent the frame anyway: {cancelled:?}"
     );
     assert!(
         a.holds_pane(),
@@ -509,15 +704,26 @@ fn the_deliberate_close_asks_first_and_only_the_yes_leaves_the_head() {
 
     // Ask again, and this time say yes.
     step(&mut link, &mut a, b"!term close\r");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the card", |a| {
+        a.screen(100, 30).iter().any(|r| r.contains("end the pane"))
+    });
+    let _ = clear(&frames);
     step(&mut link, &mut a, b"y");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the ending to be a row", |a| {
+        a.screen(100, 30)
+            .iter()
+            .any(|r| r.contains("you closed the terminal"))
+    });
 
+    let ended = frames_until(&frames, "the confirmed close to leave the head", |fs| {
+        fs.iter()
+            .any(|f| matches!(f, ClientFrame::TermClose { .. }))
+    });
     assert!(
-        sent(&frames)
+        ended
             .iter()
             .any(|f| matches!(f, ClientFrame::TermClose { .. })),
-        "the confirmed close never left the head"
+        "the confirmed close never left the head: {ended:?}"
     );
     assert!(!a.pane_open(), "the pane is over");
     assert!(!a.holds_pane(), "and the head has let it go");
@@ -547,13 +753,16 @@ fn with_no_pane_the_way_out_byte_is_still_nothing() {
     let frames = scripted_daemon(path.clone());
     let mut a = app();
     let mut link = Link::open(&path, SESSION, 0, "tui", "wayout-no-pane").expect("attach");
-    settle(&mut link, &mut a);
+    attach(&mut link, &mut a, &frames);
 
     step(&mut link, &mut a, b"hello\x1c");
-    settle(&mut link, &mut a);
+    settle_until(&mut link, &mut a, "the bytes in the composer", |a| {
+        a.input() == "hello"
+    });
 
     assert_eq!(a.input(), "hello", "the byte is not a character");
-    let frames = sent(&frames);
+    // Nothing was written, so nothing can be waited for: a window, and [`ABSENCE_WINDOW`] says why.
+    let frames = arrived_meanwhile(&frames);
     assert!(
         !frames
             .iter()

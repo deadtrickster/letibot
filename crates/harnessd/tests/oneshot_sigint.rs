@@ -35,7 +35,23 @@
 //! 4. **A turn that never comes back is bounded too** (the second test): a provider that accepts
 //!    the request and answers nothing is the shape that waited minutes — no steering poll can
 //!    reach a turn blocked in a socket, so the one-shot's `ONE_SHOT_EXIT_GRACE` ends it.
-//! 5. **A second Ctrl-C exits at once**, before that grace.
+//! 5. **A second Ctrl-C exits at once**, before that grace — and *at once* is read off the
+//!    daemon's own log (the second-Ctrl-C line present, the grace's line **absent**) rather than
+//!    off a stopwatch: the grace is the daemon's own clock, and which of its two sentences a run
+//!    ends with is the daemon saying which one fired. A stopwatch here would have been a bet on
+//!    the box, measured through a 25 ms poll, for a fact the log states outright.
+//!
+//! # The two waits this file had to change
+//!
+//! **The signal has to land on a turn whose command is RUNNING**, and the fixture used to assume
+//! that 1500 ms after the provider had read the request it was. That is a pause, and the number
+//! it is placed against is measured (request read → command running: 0.13 s alone, 0.18 s under
+//! four hundred busy processes) — a factor of eight, not a condition. The command now writes a
+//! marker as its first act and the test waits for *that*; a lost bet used to make the assertion
+//! about the killed command's row fail about the fixture.
+//!
+//! **And nothing else here is a clock.** The stop has its own budget (15 s against a measured
+//! 0.13–0.78 s) and that one is a hang detector; the grace's firing is the log's.
 //!
 //! # What makes this runnable anywhere
 //!
@@ -59,9 +75,25 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// **How long the first Ctrl-C may take to end the daemon.**
 ///
-/// Well under the run's own two minutes — that is the whole point — and above the one-shot's own
-/// five-second grace, so a stop that works is never reported as a stop that did not.
+/// Well under the run's own two minutes — that is the whole point — and above everything the
+/// daemon's own stop is allowed to spend: [`ONE_SHOT_EXIT_GRACE`](letibot_harnessd::daemon::ONE_SHOT_EXIT_GRACE)
+/// for a turn that does not come back, and the subagent drain beside it. MEASURED 2026-11-01,
+/// signal to gone: **0.13 s** alone, **0.20 s** under four hundred busy processes, and **0.78 s**
+/// with those processes *and* the gate's own `TMPDIR` on a real disk. The stop is not slow, so this
+/// ceiling is a hang detector and nothing else.
 const CTRL_C_BUDGET: Duration = Duration::from_secs(15);
+
+/// **The file the in-flight command writes as its first act.**
+///
+/// The signal this test sends has to land on a turn whose command is *running*, and nothing the
+/// provider can see says that: `rounds()` moves when the provider has READ the request, before
+/// the daemon has parsed the tool call, run it past the gate and spawned it. A pause after
+/// `rounds()` is a bet on how fast the box does that, and the number the bet is placed against is
+/// measured — request read to command running: **0.13 s** alone, **0.18 s** under four hundred
+/// busy processes, **0.16 s** with those and `TMPDIR` on a real disk. So the old 1500 ms pause had
+/// a factor of eight on this box and no more; a factor is not a condition, and the fact this test
+/// needs is *the command is running*. The command says so itself.
+const MARKER: &str = "the-command-started";
 
 struct TempDir {
     path: PathBuf,
@@ -106,6 +138,10 @@ enum Script {
 struct Fake {
     url: String,
     rounds: Arc<AtomicUsize>,
+    /// When the FIRST request had been read off the socket — the moment the daemon could begin
+    /// to parse it. The gap from here to the command's marker is what the old fixture's 1500 ms
+    /// pause was standing in for.
+    first_read: Arc<std::sync::OnceLock<Instant>>,
 }
 
 impl Fake {
@@ -117,18 +153,27 @@ impl Fake {
         );
         let rounds = Arc::new(AtomicUsize::new(0));
         let seen = Arc::clone(&rounds);
+        let first_read = Arc::new(std::sync::OnceLock::new());
+        let read_at = Arc::clone(&first_read);
         std::thread::spawn(move || {
             for conn in listener.incoming() {
                 let Ok(mut conn) = conn else { continue };
                 let _ = read_request(&conn);
                 let n = seen.fetch_add(1, Ordering::SeqCst);
+                if n == 0 {
+                    let _ = read_at.set(Instant::now());
+                }
                 if script == Script::Hang {
                     // Held open and never answered: the request the daemon is waiting on.
                     std::thread::sleep(Duration::from_secs(600));
                     continue;
                 }
                 let body = if n == 0 {
-                    let arguments = serde_json::json!({ "command": "sleep 120" }).to_string();
+                    // **The command announces itself before it blocks**, and the `touch` is what
+                    // the test waits for: `rounds()` only says the provider has read the request.
+                    let arguments =
+                        serde_json::json!({ "command": format!("touch {MARKER} && sleep 120") })
+                            .to_string();
                     frames([
                         serde_json::json!({"choices":[{"delta":{"tool_calls":[{
                             "index": 0,
@@ -155,11 +200,20 @@ impl Fake {
                 let _ = conn.flush();
             }
         });
-        Fake { url, rounds }
+        Fake {
+            url,
+            rounds,
+            first_read,
+        }
     }
 
     fn rounds(&self) -> usize {
         self.rounds.load(Ordering::SeqCst)
+    }
+
+    /// When the first request was read, if it has been.
+    fn first_read(&self) -> Option<Instant> {
+        self.first_read.get().copied()
     }
 }
 
@@ -201,6 +255,9 @@ struct OneShot {
     log: PathBuf,
     store: PathBuf,
     session: String,
+    /// The session's workspace, which is where the command runs and therefore where its marker
+    /// lands.
+    workspace: PathBuf,
 }
 
 impl OneShot {
@@ -222,9 +279,11 @@ impl OneShot {
         .expect("providers.toml");
         // The preapproved list, so the long command is admitted with no head to ask: a one-shot
         // has nobody attached, and an ask would be `gate:no-head` before the command ever ran.
+        // Two segments, because the command is two: the `touch` that says it is up, and the
+        // `sleep` that is the thing in flight.
         std::fs::write(
             config.join("permission.json"),
-            "{\"bash\": {\"sleep*\": \"allow\"}}\n",
+            "{\"bash\": {\"touch*\": \"allow\", \"sleep*\": \"allow\"}}\n",
         )
         .expect("permission.json");
 
@@ -279,25 +338,31 @@ impl OneShot {
             log,
             store,
             session,
+            workspace,
         }
     }
 
-    /// **Wait until the turn is inside its command**: round one served, and no round two after a
-    /// second and a half. The turn asks the provider for nothing while a call runs, so a round
-    /// count that stays at one IS the call in flight.
-    fn wait_for_the_run(&mut self, fake: &Fake) -> bool {
+    /// Where the command's own marker lands — the workspace is the command's cwd.
+    fn marker(&self) -> PathBuf {
+        self.workspace.join(MARKER)
+    }
+
+    /// **Wait until the command is RUNNING** — the marker the command writes itself, so this is
+    /// the condition and not a pause. Returns how long the daemon took from the provider reading
+    /// the request to the command being up, which is the number the old 1500 ms pause was betting
+    /// on. `None` when it never got there, and the caller says what the log had to say about it.
+    fn wait_for_the_command(&mut self, fake: &Fake) -> Option<Duration> {
         let deadline = Instant::now() + PATIENCE;
         while Instant::now() < deadline {
-            if fake.rounds() >= 1 {
-                std::thread::sleep(Duration::from_millis(1500));
-                return fake.rounds() == 1;
+            if self.marker().exists() {
+                return Some(fake.first_read().map(|t| t.elapsed()).unwrap_or_default());
             }
             if let Ok(Some(_)) = self.child.try_wait() {
-                return false;
+                return None;
             }
-            std::thread::sleep(Duration::from_millis(25));
+            std::thread::sleep(Duration::from_millis(10));
         }
-        false
+        None
     }
 
     /// **Wait until a round is being generated** — the request has reached the provider.
@@ -377,10 +442,22 @@ fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
     let dir = TempDir::new("oneshot-sigint");
     let fake = Fake::serve(Script::BashThenProse);
     let mut shot = OneShot::start(dir.path(), &fake);
-    assert!(
-        shot.wait_for_the_run(&fake),
-        "the one-shot never put a command in flight ({} round(s) served); its log:\n{}",
+    let Some(dispatch) = shot.wait_for_the_command(&fake) else {
+        panic!(
+            "the one-shot never had a command running ({} round(s) served); its log:\n{}",
+            fake.rounds(),
+            shot.log()
+        );
+    };
+    // **The number the old fixture's pause was standing in for**, and the reason it was a bet:
+    // this is how long the box takes to get from a request the provider has read to a process
+    // the daemon has spawned.
+    println!("  request read -> command running: {dispatch:?}");
+    assert_eq!(
         fake.rounds(),
+        1,
+        "a second round was asked for while the first round's command was running — the turn did \
+         not wait for it. Its log:\n{}",
         shot.log()
     );
 
@@ -393,6 +470,7 @@ fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
             shot.log()
         ),
     };
+    println!("  the signal to gone: {took:?}");
 
     let log = shot.log();
     assert!(
@@ -457,8 +535,19 @@ fn a_turn_that_never_comes_back_is_bounded_and_a_second_ctrl_c_exits_at_once() {
         log.contains("a second Ctrl-C — exiting now"),
         "the second Ctrl-C was not said, or did not end it ({took:?}):\n{log}"
     );
+    // **And the grace did not fire** — which is the fact *exited at once* means, said by the
+    // daemon itself instead of by a stopwatch on a busy box. A second signal that did nothing
+    // would have left the turn blocked in a provider that never answers, and
+    // `ONE_SHOT_EXIT_GRACE` would have ended the process with its own sentence; the absence of
+    // that sentence is the proof, and it does not care what else is running.
     assert!(
-        took < letibot_harnessd::daemon::ONE_SHOT_EXIT_GRACE,
-        "the second Ctrl-C waited out the grace instead of exiting at once: {took:?}"
+        !log.contains("the turn did not come back within"),
+        "the second Ctrl-C waited out the grace instead of exiting at once ({took:?}):\n{log}"
+    );
+    assert!(
+        took < CTRL_C_BUDGET,
+        "the second Ctrl-C took {took:?}, which is not *at once* by any reading: {CTRL_C_BUDGET:?} \
+         is this test's hang detector and it is far above the grace's own {}\n{log}",
+        letibot_harnessd::daemon::ONE_SHOT_EXIT_GRACE.as_secs()
     );
 }

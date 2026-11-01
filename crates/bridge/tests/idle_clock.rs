@@ -103,7 +103,11 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
     // --- 2. a neighbour's CPU is not this process's CPU --------------------
     let burner = Burner::start();
     assert!(
-        has_burned(burner.pid(), Duration::from_millis(300), Duration::from_secs(30)),
+        has_burned(
+            burner.pid(),
+            Duration::from_millis(300),
+            Duration::from_secs(30)
+        ),
         "the burner never got going, so nothing below would have been proved either way"
     );
     let mine = cpu::over_one_slice();
@@ -154,5 +158,8 @@ fn the_idle_clock_reads_one_child_and_waits_for_the_work_to_be_over() {
         cpu::SLICE
     );
     // A write to stdout, so a run under `--nocapture` shows the numbers even when it is green.
-    let _ = writeln!(std::io::stdout(), "  the idle clock reads one child and waits for the work");
+    let _ = writeln!(
+        std::io::stdout(),
+        "  the idle clock reads one child and waits for the work"
+    );
 }
