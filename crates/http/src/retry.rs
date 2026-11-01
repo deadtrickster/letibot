@@ -262,11 +262,8 @@ impl Policy {
             // A 2xx whose body did not arrive whole — the likeliest cause is a server going down
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
-            HttpError::Status { code, .. } => {
-                if Self::states_a_refusal(match e {
-                    HttpError::Status { body, .. } => body,
-                    _ => "",
-                }) {
+            HttpError::Status { code, body } => {
+                if Self::states_a_refusal(body) {
                     "the account behind the key cannot pay for the call"
                 } else if TRY_AGAIN.contains(code) {
                     "the provider said to try again"
@@ -348,7 +345,7 @@ impl Ladder {
             );
         }
         if self.policy.retries() == 0 {
-            return format!("{e} — {what}, and this daemon retries nothing (`--http-retries 0`)",);
+            return format!("{e} — {what}, and this daemon retries nothing (`--http-retries 0`)");
         }
         if self.failed <= 1 {
             return format!("{e} — {what}, and the ladder stopped after one call");
