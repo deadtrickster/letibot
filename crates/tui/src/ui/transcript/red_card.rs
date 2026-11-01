@@ -268,10 +268,9 @@ fn session_head(text: &str) -> Option<RedTip> {
         (Trouble::Red, r)
     } else if let Some(r) = first.strip_prefix("The merge queue's gate of `") {
         (Trouble::TimedOut, r)
-    } else if let Some(r) = first.strip_prefix("The merge queue CANNOT JUDGE `") {
-        (Trouble::Unjudged, r)
     } else {
-        return None;
+        let r = first.strip_prefix("The merge queue CANNOT JUDGE `")?;
+        (Trouble::Unjudged, r)
     };
     let (target, r) = rest.split_once("` at ")?;
     let (sha, r) = r.split_once(" in ")?;

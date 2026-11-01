@@ -2202,7 +2202,7 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
             .to_string()
     };
     assert!(
-        line("glm-coding/glm-5.3").contains(&format!("{}", sgr::GREEN)),
+        line("glm-coding/glm-5.3").contains(&sgr::GREEN.to_string()),
         "a provider this box holds a key for is not greened: {:?}",
         line("glm-coding/glm-5.3")
     );

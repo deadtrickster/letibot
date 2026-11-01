@@ -6081,7 +6081,7 @@ fn the_marker_steps_down_its_ladders_instead_of_growing() {
         "the rungs do not get narrower: {widths:?}"
     );
     assert!(
-        widths[3] <= marker_room(80) - 1,
+        widths[3] < marker_room(80),
         "the last rung does not fit a narrow frame's room: {} > {}",
         widths[3],
         marker_room(80) - 1

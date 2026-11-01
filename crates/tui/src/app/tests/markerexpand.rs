@@ -360,7 +360,7 @@ fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {
             SessionEvent::TranscriptContent {
                 item_id: id,
                 item: Box::new(TranscriptItem::ToolResult {
-                    call_id: format!("c{i}").into(),
+                    call_id: format!("c{i}"),
                     name: (*name).into(),
                     outcome: letibot_transcript::ToolOutcome::Ok,
                     payload: format!("CONTENTS-{i}"),

@@ -328,9 +328,9 @@ fn the_corners_repository_survives_a_todo_md_beside_it() {
         .find(|h| h.target == Target::GitField)
         .cloned()
         .expect("the corner's repository is not a click target");
-    let col = drawn.find("(main").expect("the field is drawn") as usize;
+    let col = drawn.find("(main").expect("the field is drawn");
     assert_eq!(
-        usize::from(hit.rect.x),
+        hit.rect.x,
         col,
         "the target is not where the field was drawn: {drawn}"
     );

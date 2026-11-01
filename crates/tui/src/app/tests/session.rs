@@ -1115,7 +1115,7 @@ fn a_switch_re_asks_for_the_jobs_and_the_daemons_answer_refills_the_pane() {
     // subagents, which had no frame to ask with.
     a.apply(hello("s-sub-1", a_family(), Hub::new("s-sub-1").snapshot()));
     assert!(
-        a.take_actions().iter().any(|a| *a == Action::ListJobs),
+        a.take_actions().contains(&Action::ListJobs),
         "the switched head did not re-ask for its jobs"
     );
     a.jobs = Vec::new();

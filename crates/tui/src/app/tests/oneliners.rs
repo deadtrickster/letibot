@@ -7,7 +7,7 @@ use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;
 
 /// How many of the frame's rows say `needle`.
-fn rows<'a>(screen: &'a [String], needle: &str) -> usize {
+fn rows(screen: &[String], needle: &str) -> usize {
     rows_with(screen, needle).len()
 }
 
