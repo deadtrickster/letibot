@@ -589,6 +589,29 @@ fn the_project_holding_here_is_open_and_the_chain_to_it_is_drawn() {
     );
 }
 
+/// **Enter on a project's line opens and closes it** — the key the bar names (`enter folds it
+/// away`), which is the gesture a closed default exists to be undone by.
+#[test]
+fn enter_on_a_project_line_opens_and_closes_it() {
+    let mut a = a_daemon_with_two_projects();
+    // The head is standing in `letibot`, so its line is open and Enter closes it.
+    a.picker_sel = 0;
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(
+        !rows(&a).contains(&"the habr article".to_string()),
+        "Enter closed the project: {:?}",
+        rows(&a)
+    );
+    assert_eq!(a.session_rows()[0].open, Some(false));
+    // And the same key brings them back.
+    a.key(Key::Enter);
+    assert!(
+        rows(&a).contains(&"the habr article".to_string()),
+        "Enter opened it again: {:?}",
+        rows(&a)
+    );
+}
+
 /// **Two projects with the same name are told apart by their paths** — the one case the name
 /// cannot do the job.
 #[test]
