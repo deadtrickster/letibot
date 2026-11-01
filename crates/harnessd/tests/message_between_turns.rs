@@ -96,9 +96,18 @@ const MESSAGE: &str = "stop and report what you have";
 const TO_THE_TASK: &str = "the task is done, waiting";
 const TO_THE_PARENT: &str = "understood, reporting now";
 
-/// How long the driver waits for something a correct build produces in milliseconds —
-/// generous on purpose, because the assertion is what happened, not how fast.
-const PATIENCE: Duration = Duration::from_secs(20);
+/// **How long the driver waits for something a correct build produces in milliseconds** — a
+/// ceiling on *the far side never ended*, never a claim about how fast anything is. MEASURED
+/// 2026-11-01: the merge gate runs 226 test binaries at once and this target alone takes 4.5 s
+/// there, so 20 s was a bet on the box; a child's OPEN (a vocabulary, a composed prompt, a store)
+/// is the slowest thing any wait here covers, and it is seconds on a quiet box.
+const PATIENCE: Duration = Duration::from_secs(120);
+
+/// **The bound a test GIVES a drain when the question is whether the drain spends it.** The claim
+/// in the two exit tests below is *it returned without waiting*, so the reference is the bound and
+/// not a clock; 60 s is far enough above what a loaded box does to a call that costs microseconds
+/// that only a drain which waits can reach it.
+const GRACE: Duration = Duration::from_secs(60);
 
 // ---------------------------------------------------------------------------
 // The fixtures
@@ -1509,7 +1518,7 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
     // read as a give-up.
     stub.release(usize::MAX);
     let began = Instant::now();
-    let done = sessions.borrow().drain_subagents(PATIENCE);
+    let done = sessions.borrow().drain_subagents(GRACE);
     assert!(
         matches!(done, SubagentExit::Waited { .. }),
         "a child that can leave is a clean wait, not a give-up: {done:?}"
@@ -1520,16 +1529,20 @@ fn the_daemons_exit_waits_for_a_child_and_gives_up_on_a_bound() {
             "a wait that succeeded may not read as a give-up: {said}"
         );
     }
+    // **And it did not spend the bound it was given.** `Waited` says the child left inside it; this
+    // says the drain NOTICED rather than sleeping the grace out and looking afterwards. The
+    // reference is the bound, not a stopwatch over the box: a loaded box only makes the wait
+    // longer, and the claim is that the bound was not what ended it.
     assert!(
-        began.elapsed() < Duration::from_secs(5),
-        "the wait ended {:?} after the child left, which is a deadline and not a wakeup",
-        began.elapsed()
+        began.elapsed() < GRACE,
+        "the wait spent its whole {GRACE:?} bound after the child had already left, which is a \
+         deadline and not a wakeup"
     );
 }
 
 /// **A quit with nothing running is not slowed down by the wait** — the other half, and the one
 /// that catches a hang. This is the ordinary daemon: a session that never started a child, a
-/// closed registry, and an exit that must not spend `SUBAGENT_EXIT_GRACE` on an empty tree.
+/// closed registry, and an exit that must not spend the bound it is given on an empty tree.
 #[test]
 fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1550,20 +1563,18 @@ fn the_daemons_exit_returns_promptly_when_nothing_is_running() {
     );
     registry.close();
 
-    // The bound is the daemon's own number, so this measures the call the daemon makes.
+    // **A bound the box cannot reach**, so what the assertion below measures is the call and not
+    // the machine: an empty tree is a lock and a look, and 60 s of it is a drain that waited.
     let began = Instant::now();
     assert_eq!(
-        sessions
-            .borrow()
-            .drain_subagents(Duration::from_secs(5))
-            .sentence(),
+        sessions.borrow().drain_subagents(GRACE).sentence(),
         None,
         "a session with no children is a clean exit, not a give-up"
     );
     assert!(
-        began.elapsed() < Duration::from_secs(1),
-        "an empty tree cost {:?} of the exit's grace, which is a hang wearing a bound",
-        began.elapsed()
+        began.elapsed() < GRACE,
+        "an empty tree spent the whole {GRACE:?} bound it was given, which is a hang wearing a \
+         bound"
     );
 }
 

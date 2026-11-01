@@ -35,8 +35,34 @@ fn tool(rig: &Rig) -> Fanout {
 /// **A command that lives long enough to have a pid.** A job that exits in five milliseconds has
 /// already written its exit file by the time the launch's pid poll asks, and `RemoteProcesses`
 /// then reports pid `0` — harmless (the exit file is the settlement, and nothing signals pid 0) but
-/// useless to a test that wants to look at the process.
-const BRIEFLY: &str = "sleep 0.3";
+/// useless to a test that wants to look at the process. Five seconds, not three hundred
+/// milliseconds: the window the poll has to land in is a round trip through a shell, and a loaded
+/// box stretches that by seconds rather than by fractions.
+const BRIEFLY: &str = "sleep 5";
+
+/// **How long a wait may last before it is the thing that failed** — a ceiling on *the far side
+/// never ended*, never a claim about how long anything took. The merge gate runs 226 test binaries
+/// at once (MEASURED 2026-11-01), so a bound a loaded box can reach is a bound that reds `main`
+/// for the machine.
+const CEILING: Duration = Duration::from_secs(180);
+
+/// **Run a call that blocks, and fail only when the fact it is about never comes** — the fanout's
+/// own deadline is what ends a slow one, so waiting for it IS the fact, and [`CEILING`] is the
+/// sentence a reader gets when it never came.
+fn within<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let run = s.spawn(f);
+        let began = Instant::now();
+        while !run.is_finished() {
+            assert!(began.elapsed() < CEILING, "{what}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        match run.join() {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
+}
 
 /// The row lines of an answer — the header is not one.
 fn rows(payload: &str) -> Vec<&str> {
@@ -153,16 +179,24 @@ fn an_unreachable_host_is_a_row_and_the_rest_still_report() {
 #[test]
 fn the_deadline_stops_a_slow_host_and_its_row_says_stopped() {
     let rig = Rig::new("deadline", &["fake1", "fake2"]);
-    let started = std::time::Instant::now();
-    let answer = tool(&rig).answer(
-        &json!({
-            "hosts": {"fake1": "sleep 30", "fake2": "true"},
-            "deadline_s": 2
-        }),
-        None,
-        "fanout-deadline",
+    // **The slow branch outlives any wait this test could make** — five minutes against a
+    // two-second deadline — so "the call returned" and "it returned before that branch could end"
+    // are one fact, and the row is the only thing that can say what stopped it. (It was
+    // `sleep 30` against `took < 20 s`: ten seconds of margin, and the box decides those.)
+    let answer = within(
+        "the fanout never returned: its deadline is 2 s and the branch it waits for sleeps 300 s, \
+         so the deadline is not what ended the call",
+        || {
+            tool(&rig).answer(
+                &json!({
+                    "hosts": {"fake1": "sleep 300", "fake2": "true"},
+                    "deadline_s": 2
+                }),
+                None,
+                "fanout-deadline",
+            )
+        },
     );
-    let took = started.elapsed();
     let text = answer.payload.clone();
     assert_eq!(rows(&text).len(), 2, "{text}");
     assert!(
@@ -170,11 +204,6 @@ fn the_deadline_stops_a_slow_host_and_its_row_says_stopped() {
         "the slow host's row says what stopped it:\n{text}"
     );
     assert!(text.contains("fake2 on fake2 · exited 0"), "{text}");
-    // **The call is bounded by the deadline it was given**, not by the slow branch.
-    assert!(
-        took < Duration::from_secs(20),
-        "a 2-second deadline returned in {took:?}"
-    );
     // **And the process is really gone**, not just reported so: the pid in the job directory is
     // no longer there. A row that says `stopped` about a live process is the claim-versus-fact
     // failure this whole feature is against.
@@ -197,7 +226,7 @@ fn the_deadline_stops_a_slow_host_and_its_row_says_stopped() {
             checked += 1;
             if let Some(command) = pid_command(pid) {
                 assert!(
-                    !command.contains("sleep 30"),
+                    !command.contains("sleep 300"),
                     "the slow branch is still running: pid {pid} `{command}`"
                 );
             }
@@ -368,24 +397,29 @@ fn journal(host: &HostProcesses, handle: &str) -> String {
 fn a_background_fanout_answers_one_handle_at_once() {
     let rig = Rig::new("bg-at-once", &["fake1", "fake2"]);
     let host = session_host("at-once");
-    let began = Instant::now();
+    // **The branches outlive any wait this test could make** — five minutes — so "the answer came
+    // back while they were running" is a fact about the handle and not a stopwatch over the box:
+    // a call that waited for them would hand back a handle that has already settled.
     let answer = tool(&rig).answer(
-        &json!({"hosts": ["fake1", "fake2"], "command": "sleep 20", "background": true}),
+        &json!({"hosts": ["fake1", "fake2"], "command": "sleep 300", "background": true}),
         Some(host.clone() as Arc<dyn ProcessHost>),
         "fanout-bg",
     );
-    let took = began.elapsed();
     let handle = handle_of(&answer);
-    // **At once is the claim**, and it is a measurement: the branches sleep twenty seconds and
-    // the call came back while they were still running.
-    assert!(
-        took < Duration::from_secs(10),
-        "a backgrounded fanout took {took:?} to answer"
-    );
     let view = host
         .job(&JobId(handle.clone()))
         .expect("the handle is a job of this session's table");
-    assert!(view.state.is_running(), "{view:?}");
+    assert!(
+        view.state.is_running(),
+        "the answer came back after the branches ended, so the call waited for them: {view:?}"
+    );
+    // **And no branch has an ending in the journal** — the same fact from the other side, which is
+    // what a model reading `job_output` straight away would see.
+    let text = journal(&host, &handle);
+    assert!(
+        !text.contains(" · exited ") && !text.contains(" · stopped"),
+        "a branch has already ended, so the call waited for it: {text}"
+    );
     assert_eq!(
         view.slug.as_deref(),
         Some("fanout"),
@@ -408,7 +442,7 @@ fn job_output_mid_run_names_the_rows_that_ended_and_the_ones_still_running() {
     let host = session_host("progress");
     let answer = tool(&rig).answer(
         &json!({
-            "hosts": {"fake1": "true", "fake2": "sleep 20"},
+            "hosts": {"fake1": "true", "fake2": "sleep 300"},
             "background": true
         }),
         Some(host.clone() as Arc<dyn ProcessHost>),
@@ -416,7 +450,7 @@ fn job_output_mid_run_names_the_rows_that_ended_and_the_ones_still_running() {
     );
     let handle = handle_of(&answer);
     let id = JobId(handle.clone());
-    let arrived = fake_remote::until(Duration::from_secs(20), || {
+    let arrived = fake_remote::until(CEILING, || {
         journal(&host, &handle).contains("fake1 on fake1 · exited 0")
     });
     let text = journal(&host, &handle);
@@ -472,7 +506,7 @@ fn job_kill_stops_every_branch_and_every_record_says_stopped() {
         .with_bound(Duration::from_secs(5))
         .with_book(book.clone())
         .answer(
-            &json!({"hosts": ["fake1", "fake2"], "command": "sleep 30", "background": true}),
+            &json!({"hosts": ["fake1", "fake2"], "command": "sleep 300", "background": true}),
             Some(host.clone() as Arc<dyn ProcessHost>),
             "fanout-kill",
         );
@@ -497,7 +531,7 @@ fn job_kill_stops_every_branch_and_every_record_says_stopped() {
     host.kill_job(&id).expect("the handle is killable");
     // The tracker writes each branch's ending one pass later, so the settlement is the thing to
     // wait for — it is the same wait the daemon's watcher makes.
-    let settled = fake_remote::until(Duration::from_secs(20), || {
+    let settled = fake_remote::until(CEILING, || {
         host.job(&id)
             .map(|v| !v.state.is_running())
             .unwrap_or(false)
@@ -515,7 +549,7 @@ fn job_kill_stops_every_branch_and_every_record_says_stopped() {
     for pid in &pids {
         if let Some(command) = pid_command(*pid) {
             assert!(
-                !command.contains("sleep 30"),
+                !command.contains("sleep 300"),
                 "branch pid {pid} is still running: {command}"
             );
         }
@@ -547,7 +581,7 @@ fn the_settlement_is_the_per_host_table_including_a_host_that_could_not_be_reach
     );
     let handle = handle_of(&answer);
     let id = JobId(handle.clone());
-    let settled = fake_remote::until(Duration::from_secs(20), || {
+    let settled = fake_remote::until(CEILING, || {
         host.job(&id)
             .map(|v| !v.state.is_running())
             .unwrap_or(false)

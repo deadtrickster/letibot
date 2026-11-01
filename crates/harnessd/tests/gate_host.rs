@@ -34,6 +34,51 @@ fn only_rig() -> std::sync::MutexGuard<'static, ()> {
     ENV.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// **How long a wait may last before it is the thing that failed** — a ceiling on *the far side
+/// never ended*, never a claim about how long anything took. MEASURED 2026-11-01: the merge gate
+/// runs 226 test binaries at once and this target alone takes 57 s there, so a bound a loaded box
+/// can reach is a bound that reds `main` for the machine rather than for the gate.
+const CEILING: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// **Run something that blocks, and fail only when the fact it is about never comes.** A gate run
+/// is synchronous, so waiting for it IS the fact; [`CEILING`] is what a reader is told when it did
+/// not come, and the sentence names the condition rather than a duration.
+fn within<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|s| {
+        let run = s.spawn(f);
+        let began = std::time::Instant::now();
+        while !run.is_finished() {
+            assert!(began.elapsed() < CEILING, "{what}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        match run.join() {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    })
+}
+
+/// **Every process on this box whose command line names the rig's directory** — the "host" is a
+/// directory here, so this is what *still running on the host* looks like: a step's launcher is
+/// `bash <rig>/…/run/step-N.sh`, and the step itself is that launcher's group.
+///
+/// The check this replaces asked for `sleep 60` AND the rig's path on ONE line, and nothing ever
+/// carries both — a launcher's argv has the path, its child's has the command — so it could not
+/// fail for anything.
+fn running_under(rig: &Rig) -> Vec<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-eo", "command"])
+        .output()
+        .expect("ps");
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let mine = rig.dir.display().to_string();
+    listing
+        .lines()
+        .filter(|l| l.contains(&mine))
+        .map(str::to_string)
+        .collect()
+}
+
 struct Rig {
     dir: PathBuf,
     repo: PathBuf,
@@ -336,13 +381,29 @@ fn a_step_that_fails_on_the_host_is_red_and_the_next_one_never_runs() {
 }
 
 /// **A step still running at the deadline is killed on the host and the row is `timed_out`** —
-/// and nothing is left running there. The deadline is the gate's own, one second in this test.
+/// and nothing is left running there. The deadline is the gate's own, two seconds in this test.
+///
+/// **"At the deadline, not at the far side's end" is a fact about the STEP, not a stopwatch over
+/// the box.** The step lives two minutes and writes one line of its own for every second of it:
+///
+/// * a gate that waited for the step would come back with `finished` in the row, and could only do
+///   so after the step's own two minutes — past [`CEILING`], so the wait fails naming that;
+/// * the step's own count says how much of it ran before the gate ended it. A kill at the two
+///   second deadline leaves a handful of beats; one at a poll's bound (30 s) leaves tens.
+///
+/// This test asserted `elapsed() < 45 s` against a far side that slept 60, and it reddened `main`
+/// twice (`d0b08db6` and an earlier tip): 15 s of headroom is nothing beside 226 test binaries.
 #[test]
 fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let _only = only_rig();
     let rig = Rig::new("deadline", FAKE_SSH);
-    let started = std::time::Instant::now();
-    let run = rig.gate(&["echo started; sleep 60; echo finished"], 2);
+    let step = "echo started; i=0; while [ $i -lt 120 ]; do i=$((i+1)); echo \"beat $i\"; \
+                sleep 1; done; echo finished";
+    let run = within(
+        "the gate never returned from a step that only its deadline could end: the step is still \
+         running and its own end is 120 s away, so the gate is waiting for the far side",
+        || rig.gate(&[step], 2),
+    );
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::TimedOut);
     // **The sentence names the step's own bound** — the gate's deadline, here two seconds, and not
@@ -355,27 +416,42 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
         why.contains("the gate's own deadline passed (2 s)"),
         "{why}"
     );
+    let out = &run.steps[0].output;
+    assert!(out.contains("started"), "the step's own words: {out}");
+    // **It never reached its own end** — a step that printed `finished` is one the gate waited for.
     assert!(
-        run.steps[0].output.contains("started"),
-        "{:#?}",
-        run.steps[0]
+        !out.contains("finished"),
+        "the step reached its own end, so the gate waited for the far side rather than for its \
+         deadline: {out}"
     );
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(45),
-        "the gate waited {:?}, which is the far side's own 60 s rather than the deadline",
-        started.elapsed()
-    );
-    // The far side's group was killed: no `sleep 60` of this gate is left behind.
-    let out = std::process::Command::new("ps")
-        .args(["-eo", "command"])
-        .output()
-        .expect("ps");
-    let listing = String::from_utf8_lossy(&out.stdout);
-    let mine: Vec<&str> = listing
+    // **And the step's own count says the kill came from the deadline.** `beat N` is the far side's
+    // own arithmetic, one per second it lived, so a loaded box can only make this number SMALLER:
+    // the assertion cannot fire for the machine.
+    let beats = out
         .lines()
-        .filter(|l| l.contains("sleep 60") && l.contains(&rig.dir.display().to_string()))
-        .collect();
-    assert!(mine.is_empty(), "stranded on the host: {mine:?}");
+        .filter_map(|l| l.trim().strip_prefix("beat "))
+        .filter_map(|n| n.trim().parse::<u32>().ok())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        beats < 20,
+        "the step ran {beats} of its own seconds before the gate ended it, and the gate's deadline \
+         is 2 s: something other than the deadline ended this step (a poll's bound is 30 s): {out}"
+    );
+    // **The far side's group was killed**, and this waits for that fact rather than assuming it: a
+    // killed group takes a moment to be reaped.
+    let began = std::time::Instant::now();
+    loop {
+        let stranded = running_under(&rig);
+        if stranded.is_empty() {
+            break;
+        }
+        assert!(
+            began.elapsed() < CEILING,
+            "the far side's process group was not killed — still running on the host: {stranded:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }
 
 /// **A fake ssh whose polls are slow** — the 2026-10-30 shape. The steps are `echo`s and finish in
@@ -421,8 +497,10 @@ const SLOW_POLL_SSH: &str = "#!/bin/bash\n\
 fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
     let _only = only_rig();
     let rig = Rig::new("slowpoll", SLOW_POLL_SSH);
-    let began = std::time::Instant::now();
-    let run = rig.gate(&["echo the first step", "echo the second step"], 120);
+    // **The gate's deadline is far above what these two steps cost**, the 12 s and the 35 s the
+    // fake host spends answering included: what this test measures is the RETRY, and a deadline a
+    // loaded box could reach would measure the box instead.
+    let run = rig.gate(&["echo the first step", "echo the second step"], 300);
     assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::Passed);
     assert!(
@@ -436,12 +514,18 @@ fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
         "{:#?}",
         run.steps[1]
     );
-    // 12 s for the first poll, and 30 s for the second — which is where it was killed and asked
-    // again, and the retry answered at once. Both halves of the incident are in this number.
+    // **The miss was asked again** — the host's own count of the polls it was given. Its second
+    // answer sleeps 35 s, past the 30 s a poll is allowed, so a third ask can only happen if the
+    // miss was retried rather than read as a verdict about the step. (The old form asserted
+    // `elapsed() >= 42 s`, which is the same fact with the box's speed in it.)
+    let asked = std::fs::read_to_string(rig.dir.join("home/polls"))
+        .map(|s| s.trim().parse::<u32>().unwrap_or(0))
+        .unwrap_or(0);
     assert!(
-        began.elapsed() >= std::time::Duration::from_secs(42),
-        "the polls really were slow ({:?}) — otherwise this test proves nothing",
-        began.elapsed()
+        asked >= 3,
+        "the 35 s poll was never asked again: the host was asked {asked} poll(s) in all and the \
+         gate answered {:?} — a missed poll was read as a verdict about the step",
+        run.verdict
     );
 }
 
@@ -495,8 +579,9 @@ fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold(
     );
 }
 
-/// **A host that cannot be reached is a verdict with a sentence, in seconds** — not a hang and
-/// not a red branch. The fake ssh answers the way a dead machine's does.
+/// **A host that cannot be reached is a verdict with a sentence, at once** — not a hang and not a
+/// red branch. The fake ssh answers the way a dead machine's does, and the gate must read that
+/// refusal rather than wait out the deadline it was given.
 #[test]
 fn an_unreachable_host_is_unjudged_with_a_sentence() {
     let _only = only_rig();
@@ -505,8 +590,11 @@ fn an_unreachable_host_is_unjudged_with_a_sentence() {
         "#!/bin/sh\necho 'ssh: connect to host fake.invalid port 22: Connection refused' >&2\n\
          exit 255\n",
     );
-    let started = std::time::Instant::now();
-    let run = rig.gate(&["echo hello"], 300);
+    let run = within(
+        "a host that refuses the connection was not judged: the gate is waiting out its own \
+         15 min deadline instead of reading the refusal",
+        || rig.gate(&["echo hello"], 900),
+    );
     let GateVerdict::Infra(why) = &run.verdict else {
         panic!("{run:#?}");
     };
@@ -517,11 +605,6 @@ fn an_unreachable_host_is_unjudged_with_a_sentence() {
         "the sentence names the machine: {why}"
     );
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::NotRun);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(60),
-        "a dead host must not cost the deadline: {:?}",
-        started.elapsed()
-    );
 }
 
 /// **The second gate of one repository on one host reuses everything the first one made** — the
