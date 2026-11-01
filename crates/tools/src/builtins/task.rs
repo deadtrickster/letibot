@@ -1893,7 +1893,10 @@ impl Tool for TaskResultTool {
             Err(refused) => return refused,
         };
         let handle = handle.as_str();
-        let lost = kids.iter().find(|c| c.handle == handle).and_then(|c| c.lost.clone());
+        let lost = kids
+            .iter()
+            .find(|c| c.handle == handle)
+            .and_then(|c| c.lost.clone());
         let label = self.runner.label_of(handle);
         // A deadline always applies, and its expiry is its own outcome rather
         // than being reported as completion — `job_wait`'s rule, for the same

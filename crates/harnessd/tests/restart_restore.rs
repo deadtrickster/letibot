@@ -1198,14 +1198,16 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
         not_an_answer.payload
     );
     assert!(
-        not_an_answer.payload.starts_with(
-            "whatever it had written when it stopped, not a finished answer"
-        ),
+        not_an_answer
+            .payload
+            .starts_with("whatever it had written when it stopped, not a finished answer"),
         "the caveat leads, so nothing cuts it off: {}",
         not_an_answer.payload
     );
     assert!(
-        not_an_answer.payload.contains("nothing says its turn ended"),
+        not_an_answer
+            .payload
+            .contains("nothing says its turn ended"),
         "{}",
         not_an_answer.payload
     );

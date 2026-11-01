@@ -1860,16 +1860,17 @@ fn a_lost_childs_row_says_how_far_it_got() {
     let mut reg = Registry::new();
     reg.register(Box::new(TaskResultTool::new(runner))).unwrap();
     let rt = ToolRuntime::new(reg, Box::new(backend));
-    let listed = rt.invoke(
-        "t1",
-        &letibot_transcript::ToolCall {
-            id: "c0".into(),
-            name: "task_result".into(),
-            arguments: "{}".into(),
-        },
-        &mut crate::NullToolSink,
-    )
-    .payload;
+    let listed = rt
+        .invoke(
+            "t1",
+            &letibot_transcript::ToolCall {
+                id: "c0".into(),
+                name: "task_result".into(),
+                arguments: "{}".into(),
+            },
+            &mut crate::NullToolSink,
+        )
+        .payload;
     eprintln!("--- the list ---\n{listed}");
     let row = |handle: &str| {
         listed

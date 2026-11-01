@@ -700,9 +700,9 @@ impl EndedIn {
     pub fn said(&self) -> String {
         match self {
             EndedIn::Nothing => "nothing: it wrote no row of its own at all".into(),
-            EndedIn::AwaitedCall(name) => format!(
-                "a call it had just asked for (`{name}`) and never got an answer to"
-            ),
+            EndedIn::AwaitedCall(name) => {
+                format!("a call it had just asked for (`{name}`) and never got an answer to")
+            }
             EndedIn::EmptyAnswer => "an empty answer".into(),
             EndedIn::AfterTool(name) => {
                 format!("the result of `{name}`, so the turn went on from there")
@@ -738,7 +738,9 @@ impl EndedIn {
 /// One function rather than two matches, because *did it answer?* is the whole difference
 /// between the two readings and two copies of it would drift: a child whose text the single-handle
 /// door returns as an answer must be the child the list calls *answered*.
-pub fn how_far(child: &letibot_tokencore::store::UnrecordedChild) -> letibot_tools::builtins::task::LostChild {
+pub fn how_far(
+    child: &letibot_tokencore::store::UnrecordedChild,
+) -> letibot_tools::builtins::task::LostChild {
     use letibot_tools::builtins::task::LostChild;
     if its_answer(child.last_item.as_ref()).is_some() {
         LostChild::Answered
@@ -1447,10 +1449,7 @@ mod tests {
             mid_call,
             LostChild::Stopped("mid-`bash`, on a call it never got an answer to".into())
         );
-        assert_eq!(
-            mid_turn,
-            LostChild::Stopped("after `bash`'s result".into())
-        );
+        assert_eq!(mid_turn, LostChild::Stopped("after `bash`'s result".into()));
         assert_eq!(
             never,
             LostChild::Stopped("before it wrote a single row".into())
@@ -1510,15 +1509,15 @@ mod tests {
         // **And nothing in either rendering guesses WHY the row is missing** — that is
         // `no_record_cause`'s, from the store's own class, and the list is not told it at all.
         for why in [NoRecord::Due, NoRecord::BeforeTheStore] {
-            let c = letibot_tokencore::store::UnrecordedChild {
-                why,
-                ..child(None)
-            };
+            let c = letibot_tokencore::store::UnrecordedChild { why, ..child(None) };
             let said = match how_far(&c) {
                 LostChild::Stopped(words) => words,
                 other => panic!("{other:?}"),
             };
-            assert!(!said.contains("refused") && !said.contains("store"), "{said}");
+            assert!(
+                !said.contains("refused") && !said.contains("store"),
+                "{said}"
+            );
         }
     }
 
