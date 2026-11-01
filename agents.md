@@ -83,7 +83,7 @@ launcher to satisfy.
 
 ```sh
 sh scripts/check-fmt.sh main
-cargo clippy --all-targets
+cargo clippy --all-targets -- -D warnings
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
 sh scripts/install-gate-build.sh
