@@ -78,16 +78,14 @@ fn on_path(program: &str) -> bool {
 
 #[test]
 fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
-    // **A sentence rather than a panic when the box has no python3**: the fake daemon is a
-    // fixture, and a suite that reddens because a fixture's interpreter is absent measures the
-    // box and not the tree.
-    if !on_path("python3") {
-        println!(
-            "SKIPPED: no python3 on this box, so the fake daemon cannot bind a socket. What \
-             this test measures — the bridge writing the launcher's record — is unmeasured here."
-        );
+    // python3 is the fixture's interpreter and apparatus a box either has or has not,
+    // so the skip goes through the tree's one refusable door rather than a quiet pass.
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "python3, which the fake daemon binds its socket with",
+        on_path("python3"),
+    ) else {
         return;
-    }
+    };
 
     let dir = scratch("list");
     let home = dir.join("home");
