@@ -18,11 +18,25 @@
 //! # The measurement, and why it is the whole process
 //!
 //! The daemon here is in this process (`Daemon::serve`, as `end_to_end.rs` builds it), so the
-//! CPU the daemon burns is the CPU `getrusage(RUSAGE_SELF)` reports. That is exactly right for
-//! the fact being asserted — a spinning session thread spends a core whoever's process it is
-//! in — and it is measured over WINDOW of wall clock, so the assertion is a rate rather than a
-//! total that three seconds of somebody else's work could disguise. This binary holds ONE test,
-//! because a second one running beside it would be burning the CPU this one is accounting for.
+//! CPU the daemon burns is the CPU `getrusage(RUSAGE_SELF)` reports — the process's own
+//! `utime + stime`, which is the same number `/proc/<pid>/stat` carries and the same number
+//! nobody else's work can get into. `support/cpu.rs` holds it, and `idle_clock.rs` proves it
+//! against the `/proc` reading. This binary holds ONE test, because a second one running beside
+//! it would be burning the CPU this one is accounting for.
+//!
+//! # The window, which is the half that was wrong
+//!
+//! MEASURED 2026-11-01, from the merge gate's own report (3 of 227 targets red, this the first):
+//! the first window read **178 ms against a 300 ms budget** on the gate's box and **1.3 ms on a
+//! quiet one** — the same daemon, the same assertion. The number was not the daemon's: a
+//! daemon's opening is a FIXED ~260 ms of CPU (measured by sampling this process every 250 ms),
+//! and how long it takes to *spend* is the box's business — 0.6 s on a quiet box, 4.7 s under
+//! four hundred busy processes. The window opened half a second after the start, so it measured
+//! how much of the opening the box had got through.
+//!
+//! So every window here opens on a CONDITION — the process has gone quiet, read off its own
+//! accounting ([`cpu::wait_until_idle`]) — and not at a fixed moment after an act. A settle can
+//! never be looser than the assertion it precedes: both draw the line at a tenth of a core.
 //!
 //! Every phase is a shape the field produced: a daemon nobody has attached to, a session stopped
 //! after a turn, two sessions with one of them stopped, a stop repeated, and a stop of a session
@@ -62,6 +76,12 @@ fn idle_budget() -> Duration {
     WINDOW / 10
 }
 
+/// The instrument: this process's own `utime + stime`, and the settle that opens a window on a
+/// condition rather than on a clock. See [`cpu`] and its own doc for the two numbers this file
+/// was measured with.
+#[path = "support/cpu.rs"]
+mod cpu;
+
 /// A directory that removes itself — a test that leaks a store per run fills the disk, and the
 /// run that finds out is not this one.
 struct TempDir(PathBuf);
@@ -93,35 +113,30 @@ impl Drop for TempDir {
 // The CPU clock
 // ---------------------------------------------------------------------------
 
-/// This process's CPU time so far, user and system together.
+/// **How much CPU this process burns while nothing is asked of it**, once it has stopped being
+/// busy — [`WINDOW`] of wall clock, with the rate asserted against [`idle_budget`].
 ///
-/// `getrusage` and not `ps -o time=`: the daemon is in this process, so the process's own
-/// accounting is the direct answer, it costs one syscall, and it needs no free-descriptor
-/// round trip through a subprocess on a box where that is exactly the resource the tree keeps
-/// running out of.
-fn cpu_time() -> Duration {
-    let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
-    // SAFETY: `getrusage` writes into a `rusage` this frame owns, and `RUSAGE_SELF` cannot
-    // fail for a live process.
-    let rc = unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut ru) };
-    assert_eq!(rc, 0, "getrusage(RUSAGE_SELF)");
-    let secs = |t: libc::timeval| Duration::new(t.tv_sec as u64, t.tv_usec as u32 * 1000);
-    secs(ru.ru_utime) + secs(ru.ru_stime)
-}
-
-/// **How much CPU this process burns while nothing is asked of it** — WINDOW of wall clock, with
-/// the rate asserted against [`idle_budget`].
+/// Two numbers and both are reported: how long the process took to go quiet (the box's business,
+/// and the reason this window is not opened at a fixed moment) and what it then spent (the
+/// daemon's). The settle's ceiling is [`cpu::CEILING`], and only a real hang or a real spin trips
+/// it — with its own words, because a process that never spends under a tenth of a core is not a
+/// process that is waiting.
 fn assert_idle(what: &str) -> Duration {
-    let before = cpu_time();
+    let settled = cpu::wait_until_idle(what);
+    let before = cpu::this_process();
     std::thread::sleep(WINDOW);
-    let spent = cpu_time().saturating_sub(before);
+    let spent = cpu::this_process().saturating_sub(before);
+    println!("  {what}: {spent:?} of CPU over {WINDOW:?} (quiet after {settled:?})");
+    let budget = idle_budget();
     assert!(
-        spent < idle_budget(),
+        spent < budget,
         "{what}: the process spent {spent:?} of CPU over a {WINDOW:?} window with nothing to do \
-         (the budget is {:?}). That is a session thread looping rather than blocking: \
-         `court_main` takes a command off its session's queue and dispatches it, so a dispatch \
-         path that puts the command back on that same queue takes it again at once, for ever.",
-        idle_budget()
+         (the budget is {budget:?}), having already been quiet for a {:?} slice {settled:?} after \
+         the last thing it was asked to do. That is a session thread looping rather than \
+         blocking: `court_main` takes a command off its session's queue and dispatches it, so a \
+         dispatch path that puts the command back on that same queue takes it again at once, for \
+         ever.",
+        cpu::SLICE,
     );
     spent
 }
@@ -453,19 +468,21 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     // **The first session, and the review queue's, are both courts already** — `open_first`
     // eagerly, and `ensure_gatekeeper` on the daemon's first idle pass — so this phase would
     // catch a spin that has nothing to do with a head at all.
-    std::thread::sleep(Duration::from_millis(500));
+    //
+    // **And this is the phase that was red on the gate**, because a daemon's opening is a fixed
+    // ~260 ms of CPU and the window used to open half a second in: 178 ms of that work was still
+    // being spent on a loaded box, 1.3 ms of it on a quiet one. The window now opens when the
+    // process has gone quiet, and `quiet after` in the line below is how long the box took to get
+    // there — the box's number, printed beside the daemon's.
     let cold = assert_idle("a fresh daemon with no head");
-    println!("  no head: {cold:?} of CPU over {WINDOW:?}");
 
     // --- 2. a session stopped after a turn ---------------------------------
     // **The field's shape exactly**: `leticode_start`, a turn, `leticode_stop`.
     let first = world.a_session(&bridge, &worktree);
     bridge.stop(&first).expect("the bridge stops the session");
-    // The head's detach reaches the daemon on its own connection's thread, so the phase is
-    // measured from the moment the bridge has stopped rather than from the moment it said so.
-    std::thread::sleep(Duration::from_millis(500));
+    // The head's detach reaches the daemon on its own connection's thread, and ending a session
+    // is work — so the settle, not a fixed pause, is what says it is over.
     let stopped = assert_idle("a session stopped after a turn");
-    println!("  stopped after a turn: {stopped:?} of CPU over {WINDOW:?}");
 
     // --- 3. two sessions, ONE of them stopped ------------------------------
     // The 200% observation: a daemon holding two sessions spun on two cores. The second
@@ -474,11 +491,8 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     // nothing either.
     let second = world.a_session(&bridge, &worktree);
     let one_of_two = assert_idle("one of two sessions stopped, the other held by a head");
-    println!("  one of two stopped: {one_of_two:?} of CPU over {WINDOW:?}");
     bridge.stop(&second).expect("the second session stops too");
-    std::thread::sleep(Duration::from_millis(500));
     let two_stopped = assert_idle("both sessions of the daemon stopped");
-    println!("  both stopped: {two_stopped:?} of CPU over {WINDOW:?}");
 
     // --- 4. the same stop again -------------------------------------------
     // The bridge no longer holds the session, so this is the refusal — and a refused stop is
@@ -487,7 +501,6 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     let again = bridge.stop(&first);
     assert!(again.is_err(), "the bridge no longer holds it: {again:?}");
     let twice = assert_idle("a second stop of the same session");
-    println!("  a second stop: {twice:?} of CPU over {WINDOW:?}");
 
     // --- 5. a stop of a session that never ran a turn ----------------------
     // **The review queue's session**: the daemon opens it on its first idle pass and it stays
@@ -500,11 +513,16 @@ fn a_daemon_with_nothing_to_do_does_not_burn_a_core() {
     bridge
         .stop(&idle_session)
         .expect("a session with nothing running is stopped like any other");
-    std::thread::sleep(Duration::from_millis(500));
     let idle = assert_idle("a stop of a session that never ran a turn");
-    println!("  a stop of an idle session: {idle:?} of CPU over {WINDOW:?}");
 
     // And the daemon as a whole, one last window, after everything above.
     let settled = assert_idle("the daemon once every head is gone");
-    println!("  settled: {settled:?} of CPU over {WINDOW:?}");
+
+    // **The numbers, in one line, for whoever reads the gate's log**: six windows, and every one
+    // of them under a tenth of the budget. A spin reads a whole `WINDOW` here.
+    println!(
+        "  six windows: {cold:?} {stopped:?} {one_of_two:?} {two_stopped:?} {twice:?} {idle:?} \
+         (settled {settled:?}) against a {WINDOW:?} budget of {:?}",
+        idle_budget()
+    );
 }
