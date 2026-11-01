@@ -33,6 +33,15 @@ pub(crate) enum On {
     Enter,
     Tab,
     Char(char),
+    /// **The Delete key** — `On::Char` cannot say it, and on a list *delete this row* is what the
+    /// key means. It is also the one spelling a typed line can never be: the session picker's
+    /// typed path is a NAME, so a letter bound there eats the first letter of a filter (see
+    /// `PICKER`).
+    Delete,
+    /// **Ctrl+Z, or ⌘Z** — both decode to [`Key::Undo`]. The undo of a removal, spelled as the
+    /// chord everybody's hands already know, and never as a letter for the same reason as
+    /// [`On::Delete`].
+    Undo,
     /// PageUp and PageDown.
     Page,
     /// A wheel notch with no position — what the chords hand a surface.
@@ -51,6 +60,8 @@ impl On {
             | (On::Right, Key::Right)
             | (On::Enter, Key::Enter)
             | (On::Tab, Key::Tab)
+            | (On::Delete, Key::Delete)
+            | (On::Undo, Key::Undo)
             | (On::Page, Key::PageUp | Key::PageDown)
             | (On::Wheel, Key::WheelUp | Key::WheelDown) => true,
             (On::Char(c), Key::Char(d)) => c == *d,
@@ -70,6 +81,8 @@ impl On {
             On::Enter => "enter".into(),
             On::Tab => "tab".into(),
             On::Char(c) => c.to_string(),
+            On::Delete => "del".into(),
+            On::Undo => "ctrl-z".into(),
             On::Page => "pgup/pgdn".into(),
             On::Wheel => "the wheel".into(),
             On::Any => String::new(),
@@ -129,16 +142,13 @@ pub(crate) enum Act {
     /// **The todos pane's `d`: fold the done group away, or open it** —
     /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
     FoldDone,
-    /// **The session list's `x`: take the row under the cursor off this list** —
+    /// **The session list's `del`: take the row under the cursor off this list** —
     /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
     /// it. See `app::removal` for the three senses of *remove* and which one this is.
     Remove,
-    /// **The session list's `u`: put the last removed row back** — [`App::restore_removed`], the
-    /// undo a removal has to have if it is to be the sense worth building.
+    /// **The session list's `ctrl-z`: put the last removed row back** — [`App::restore_removed`],
+    /// the undo a removal has to have if it is to be the sense worth building.
     Undo,
-    /// **The session list's `f`: forget the session in the store** — [`App::forget_selected`],
-    /// which refuses, by name, because this head has no door to the store's delete.
-    Forget,
 }
 
 /// **What the bar and the help say about a binding.**
@@ -196,33 +206,29 @@ const PICKER: &[Binding] = &[
     ),
     b(&[On::Left], Empty, Act::Collapse, Text("closes them")),
     b(&[On::Enter], Empty, Act::Open, Says::Row),
-    // **`x` takes the row off the list and `u` puts it back** — the operator's *"add controls to
-    // remove sessions"*. Asked twice (`app::removal`): the first press says what would go and the
-    // second does it, and `u` is the way back. A plain letter like the todos pane's `d` and `n`,
-    // and guarded by `Empty` like every other letter here: with a line in the composer, `x` is the
-    // composer's.
+    // **`del` takes the row off the list and `ctrl-z` puts it back** — the operator's *"add
+    // controls to remove sessions"*. Asked twice (`app::removal`): the first press says what would
+    // go and the second does it.
+    //
+    // **Not letters, and this is the one surface where that matters.** The picker's typed path is
+    // a session's NUMBER OR NAME (`typed_says`), so `x`/`u`/`f` bound here are matched under
+    // `Guard::EmptyComposer` — which is exactly the first character of a typed filter. A person
+    // typing `f` for a session called `fix the parser` got a refusal sentence and a filter missing
+    // its first letter, and `x` armed a removal of whatever the cursor happened to be on. Every
+    // other pane's letters are free only because their typed paths start with `/`; the picker's
+    // does not, so its keys are the two chords a line can never be. The forget of a session is
+    // `/forget` — typed, therefore unambiguous.
     b(
-        &[On::Char('x')],
+        &[On::Delete],
         Empty,
         Act::Remove,
         Text("removes it from this list (twice)"),
     ),
     b(
-        &[On::Char('u')],
+        &[On::Undo],
         Empty,
         Act::Undo,
         Text("brings the last removed back"),
-    ),
-    // **`f` is the destructive sense, and it says no.** Forgetting a session in the store is
-    // `letibot --delete <id>`: no frame reaches the store's delete from a head, and the store
-    // refuses any session that holds rows at all. A key that only refuses is worth having when the
-    // refusal is the fact the person needs (`app::removal`), and the bar says which key it is
-    // rather than promising an act it will not perform.
-    b(
-        &[On::Char('f')],
-        Empty,
-        Act::Forget,
-        Text("forgets it — this head has no store door"),
     ),
     // Short, and its cursor keeps itself in view: a page key moves nothing under it.
     b(&[On::Page, On::Wheel], Always, Act::Swallow, Nothing),

@@ -105,10 +105,11 @@ impl App {
         act: Act,
         k: &Key,
     ) -> ControlFlow<Option<Action>> {
-        // **Any other key on the pane disarms a removal.** The second press is the confirmation, so
-        // a press that is not the second one is the person doing something else — an arrow, a fold,
-        // Enter on another row — and the arm must not outlive it. One place, because every key of
-        // every pane comes through here.
+        // **A key that is not the removal ends its arm.** The second press is the confirmation, so
+        // a press that is not it is the person doing something else — an arrow, a fold, Enter on
+        // another row. **Not every key comes through here**: a letter typed into the composer is
+        // unbound on this surface and never reaches a binding, so it cannot disarm anything — the
+        // arm's own clock is what ends that case (`removal::ARM_MS`).
         if !matches!(act, Act::Remove) {
             self.clear_removal_arm();
         }
@@ -198,19 +199,14 @@ impl App {
                 self.toggle_todos_fold_done();
                 ControlFlow::Break(None)
             }
-            // **`x` on the session list** — arm, or remove. See `app::removal`.
+            // **`del` on the session list** — arm, or remove. See `app::removal`.
             Act::Remove => {
                 self.remove_selected();
                 ControlFlow::Break(None)
             }
-            // **`u`** — the last removal, back.
+            // **`ctrl-z`** — the last removal, back.
             Act::Undo => {
                 self.restore_removed();
-                ControlFlow::Break(None)
-            }
-            // **`f`** — the destructive sense, refused by name.
-            Act::Forget => {
-                self.forget_selected();
                 ControlFlow::Break(None)
             }
         }

@@ -635,7 +635,11 @@ impl App {
     /// known by the chain it hangs from. A guest that recomputed them would be a second opinion
     /// about where a session goes, which is the one thing the layer must not have: it decides what
     /// a row SAYS, the head decides where it sits.
-    fn sessions_feed(&self) -> Value {
+    ///
+    /// **The feed the pane is drawn from, as this head builds it.** `pub(crate)` because it is the
+    /// one place a removal meets the built-in layer: a test that asserts the layer drops a removed
+    /// row has to be able to read the input it was given (`app::tests::removal`).
+    pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
         let name_of = |key: &str| {

@@ -176,18 +176,16 @@ impl Ctx<'_> {
     }
 
     /// **Whether a node's rows are on the list** — the person's answer, then whether this head is
-    /// standing in it, then the node's own default.
+    /// standing in it.
     ///
-    /// **Every node's default is CLOSED**, the project's line included. The operator, on the pane
-    /// they use most: *"make sessions tree collapsed by default"* — a box with a hundred sessions
-    /// drew a hundred rows because a project and its `system` branch were open, and the one row a
-    /// person was looking for was somewhere in the middle of them. What a closed list must still
-    /// answer is *where am I*, and that is [`Ctx::on_the_way`]'s job, not the default's.
-    fn node_open(&self, key: &str, default: bool) -> bool {
-        match self.opened(key) {
-            Some(open) => open,
-            None => default || self.on_the_way(key),
-        }
+    /// **Every node's default is CLOSED**, the project's line included, and that is why there is no
+    /// default parameter: the operator, on the pane they use most, *"make sessions tree collapsed
+    /// by default"* — a box with a hundred sessions drew a hundred rows because a project and its
+    /// `system` branch were open, and the one row a person was looking for was somewhere in the
+    /// middle of them. What a closed list must still answer is *where am I*, and that is
+    /// [`Ctx::on_the_way`]'s job, not a default's.
+    fn node_open(&self, key: &str) -> bool {
+        self.opened(key).unwrap_or_else(|| self.on_the_way(key))
     }
 
     /// **Whether a node is on the chain to where this head is standing** — the project, the
@@ -322,7 +320,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             .filter(|&i| ctx.sessions[i].project == project)
             .collect();
         let key = project.to_string();
-        let open = ctx.node_open(&key, false);
+        let open = ctx.node_open(&key);
         out.push(node_row(
             key,
             0,
@@ -361,7 +359,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
             continue;
         }
         let skey = format!("{project}/system");
-        let open = ctx.node_open(&skey, false);
+        let open = ctx.node_open(&skey);
         out.push(node_row(
             skey,
             1,
@@ -382,7 +380,7 @@ fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
                 continue;
             }
             let gkey = format!("{project}/system/{group}");
-            let open = ctx.node_open(&gkey, false);
+            let open = ctx.node_open(&gkey);
             out.push(node_row(
                 gkey,
                 2,

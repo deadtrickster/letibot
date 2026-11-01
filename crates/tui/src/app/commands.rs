@@ -571,6 +571,16 @@ impl App {
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());
         }
+        // **`/forget` is the destructive sense of removing a session, and it says no.** It is a
+        // verb and not a key because the picker's typed line is a NAME: a letter bound there is
+        // matched exactly when the composer is empty, which is the first character of a filter. A
+        // line that starts with `/` cannot be one, and a verb is where a person looks for the act
+        // a key does not have (`app::removal` is the whole argument, including why no frame
+        // reaches the store's delete).
+        if let Some(what) = verb_arg(cmd, "forget") {
+            self.forget_named(what);
+            return None;
+        }
         // Renames the session this head is **in**. Not an arbitrary one: the picker
         // is where another session is on screen, and a `/rename` that could reach a
         // row you were only looking at is one typo away from renaming the wrong
@@ -1561,6 +1571,10 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("new", "TITLE — start a fresh session"),
     ("sessions", "the session picker"),
     ("switch", "ID or list number — go to another session"),
+    (
+        "forget",
+        "ID — forget a session in the store (refused: see the sentence it answers)",
+    ),
     ("rename", "NAME — name the session you are in"),
     ("help", "the key and command reference"),
     ("status", "the bottom border's telemetry, full screen"),

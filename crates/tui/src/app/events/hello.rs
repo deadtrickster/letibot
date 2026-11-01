@@ -177,14 +177,13 @@ impl App {
                 // [`App::session_rows`]'s business now: nested, collapsed by default, with the
                 // parent's id already on the row.
                 self.sessions = sessions;
-                // **A removal is about a row of the daemon's list, so it goes when the row does.**
-                // The ids in `removed` are pruned to what this `Hello` actually lists: a session
-                // the daemon no longer holds (a `--delete`, a store moved on) is not a row this
-                // list can hide, and a head that kept its id for ever would be remembering an
-                // answer about nothing — the same reason `picker_folds` is keyed by row id and not
-                // by position.
-                self.removed
-                    .retain(|id| self.sessions.iter().any(|s| &s.session_id == id));
+                // **A removal is about a row of the daemon's list, so it goes when the row does** —
+                // and it goes for the chain down to where this head has just been seated, which is
+                // the refusal seen from the other side (`App::prune_removed`): a head that
+                // switches onto a row it had removed would otherwise stand in a subtree its own
+                // list filters out. One door, because a switch, a resume and a reconnect are all
+                // this frame.
+                self.prune_removed(&session_id);
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
                 // `session_id` is assigned by `load` and **not before it**: `load`
