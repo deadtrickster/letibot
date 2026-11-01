@@ -458,8 +458,9 @@ impl OpenAiProvider {
                 .into_body()
                 .read_to_string()
                 .unwrap_or_else(|e| format!("(unreadable body: {e})"));
-            let message = serde_json::from_str::<Value>(&text)
-                .ok()
+            let parsed: Option<Value> = serde_json::from_str(&text).ok();
+            let message = parsed
+                .as_ref()
                 .and_then(|v| {
                     v.get("error")
                         .and_then(|e| e.get("message").or(Some(e)))
@@ -469,7 +470,30 @@ impl OpenAiProvider {
                                 .unwrap_or_else(|| m.to_string())
                         })
                 })
-                .unwrap_or(text);
+                .unwrap_or_else(|| text.clone());
+            // **The provider's own CODE, kept beside its message.**
+            //
+            // A refusal arrives as JSON — `{"error":{"code":"insufficient_quota",
+            // "message":"You exceeded your current quota…"}}` — and taking only the message
+            // threw away the one machine-readable word in it. MEASURED 2026-10-31 through this
+            // file's own fixture: a `429` whose code is `insufficient_quota` reached the retry
+            // policy as *"You exceeded your current quota"*, matched nothing in the money list
+            // (`letibot_http::retry::Policy::states_a_refusal`), and was taken six times
+            // against an account that could not pay — the exact case the list exists for,
+            // invisible because the word that named it had been dropped one layer above.
+            //
+            // Appended rather than replacing the message, because the message is what a person
+            // reads and the code is what a classifier and a bug report want: `http 429: You
+            // exceeded your current quota, please check your plan and billing details
+            // (insufficient_quota)`.
+            let message = match parsed.as_ref().and_then(|v| {
+                v.get("error")
+                    .and_then(|e| e.get("code"))
+                    .and_then(|c| c.as_str())
+            }) {
+                Some(code) if !message.contains(code) => format!("{message} ({code})"),
+                _ => message,
+            };
             // **What was SENT, when what was sent was refused** — the shape of it and
             // never the content. This exists because two explanations of the
             // `reasoning_content … must be passed back` refusal have already been

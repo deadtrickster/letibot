@@ -208,7 +208,51 @@ fn a_refusal_carries_the_providers_own_message() {
     match err {
         BackendError::Refused { status, body } => {
             assert_eq!(status, 401);
+            // **No `code` in this body, so nothing is appended.** `type` is not a code: it says
+            // what KIND of refusal this is, and the retry policy asks whether the account can
+            // pay, which no `type` answers.
             assert_eq!(body, "Authentication Fails");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// **The provider's own code survives the projection to its message** — MEASURED 2026-10-31,
+/// and it cost a six-times retry.
+///
+/// A `429` whose JSON is `{"error":{"code":"insufficient_quota","message":"You exceeded
+/// your current quota…"}}` reached the retry policy as the message alone. `insufficient_quota`
+/// is one of the phrases that says *the account cannot pay* — the case the whole 429 exception
+/// exists for — and it was gone one layer above the classifier, so the round was taken six
+/// times on byte-identical bytes against an account that could not pay.
+#[test]
+fn a_refusal_keeps_the_code_that_says_what_it_is() {
+    let f = fake(
+        "{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You exceeded your \
+         current quota, please check your plan and billing details\"}}",
+        429,
+    );
+    let p = provider(&f.url);
+    let items = vec![];
+    let req = TurnRequest {
+        system: "",
+        tools_json: &[],
+        items: &items,
+        tail: &[],
+        max_output_tokens: None,
+    };
+    let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
+    match err {
+        BackendError::Refused { status, body } => {
+            assert_eq!(status, 429);
+            assert!(
+                body.contains("insufficient_quota"),
+                "the code the classifier reads was dropped: {body}"
+            );
+            assert!(
+                body.starts_with("You exceeded your current quota"),
+                "and the message a person reads comes first: {body}"
+            );
         }
         other => panic!("{other:?}"),
     }
