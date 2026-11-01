@@ -220,6 +220,13 @@ jobs:
           esac
           sh scripts/check-fmt.sh "$base"
 
+      # A #[test] that is not on its own function: two test attributes with no fn
+      # between them attach both to one function, and one test silently stops
+      # running while the suite stays green. The merge gate runs the same script
+      # as its second step, so the two refuse the same shape.
+      - name: Test attributes (every #[test] on its own function)
+        run: sh scripts/check-test-attrs.sh
+
       # **The tree is not clippy-clean, and this step says so rather than pretending
       # otherwise.**
       #

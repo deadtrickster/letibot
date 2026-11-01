@@ -75,10 +75,10 @@ the branch, and a step still running after thirty minutes is killed with its pro
 the row is `timed_out` (R61). A step naming `install-gate-build` is not run with the gate: it runs
 only after the landing was PUSHED (R61 decision 7), so nothing is installed that is not on the
 remote. The same steps (without the install) gate the target's own tip whenever it changes. Read from `main`'s copy of this file, so a
-branch cannot change its own gate. The first four are what `.github/workflows/ci.yml` runs — a
+branch cannot change its own gate. The first five are what `.github/workflows/ci.yml` runs — a
 queue that lands on a weaker standard than CI lands branches CI would refuse, and the ONE
 difference is the `LETIBOT_REQUIRE_APPARATUS=1` prefix on the test step, which makes a skip a
-failure (see below). The fifth is the queue's own and CI has no use for it: a runner has no
+failure (see below). The sixth is the queue's own and CI has no use for it: a runner has no
 launcher to satisfy.
 
 **The four design-shaped lints are exempt on the clippy line, and the reason is here rather than in
@@ -95,8 +95,14 @@ already built by a plain `cargo clippy` or a `cargo check` in the same target di
 `-- -D warnings`, and the step can exit green having linted nothing. The script touches every
 workspace member's root first, which costs the re-lint and nothing else.
 
+**`scripts/check-test-attrs.sh` rejects a `#[test]` attribute that is not on a function of its
+own.** Two test attributes separated only by comments and other attributes attach both to one
+function, and the test between them silently stops running while the suite stays green. CI runs
+the same script, so a shape one refuses the other refuses too.
+
 ```sh
 sh scripts/check-fmt.sh main
+sh scripts/check-test-attrs.sh
 sh scripts/clippy-gate.sh --all-targets -- -D warnings -A clippy::result_large_err -A clippy::type_complexity -A clippy::large_enum_variant -A clippy::too_many_arguments
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins

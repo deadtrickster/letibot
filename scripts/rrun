@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --host) host="$2"; shift 2 ;;
     --gate) steps=("sh scripts/check-fmt.sh main" \
+                   "sh scripts/check-test-attrs.sh" \
                    "sh scripts/clippy-gate.sh --offline --all-targets" \
                    "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast"); shift ;;
     --) shift; steps=("$@"); break ;;
