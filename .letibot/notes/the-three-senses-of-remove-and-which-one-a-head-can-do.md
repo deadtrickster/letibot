@@ -1,10 +1,9 @@
-<!-- abstract: MEASURED 2026-11-01: of the three senses of "remove a session", a head can only hide the row — `Store::delete_empty_session` refuses any session holding transcript rows (a BEFORE DELETE trigger) and NO ClientFrame reaches it, so the only door is `letibot --delete <id>`, a one-shot on the store file; `CloseSession` closes only the session a connection is attached to. -->
+<!-- abstract: MEASURED 2026-11-01: of the three senses of "remove a session", a head can only hide the row — `Store::delete_empty_session` refuses any session holding transcript rows (a BEFORE DELETE trigger) and NO ClientFrame reaches it, so the only door is `letibot --delete <id>`; and the picker's keys must be chords (`del`, `ctrl-z`, `/forget`), never letters, because its typed line is a NAME. -->
 
-# A head can hide a session's row and nothing else — the store's delete has no frame
+# A head can hide a session's row and nothing else — and the picker's keys cannot be letters
 
-MEASURED 2026-11-01, branch `agent/the-tree-starts-folded` (worktree of the same name),
-building the operator's *"add controls to remove sessions"*. The finding is what decided
-the design, so it is here rather than in the diff.
+MEASURED 2026-11-01, branch `agent/the-tree-starts-folded`, building the operator's
+*"add controls to remove sessions"*. Two findings here, and both were paid for.
 
 ## The three senses, and what each would need
 
@@ -15,51 +14,50 @@ the design, so it is here rather than in the diff.
    append-only log whose history can be removed is not one. So even the store can only
    forget a session nothing was ever said in.
 3. **Close it if it is live, then forget it** — `ClientFrame::CloseSession` closes *the
-   session a connection is attached to* (`crates/sessionlog/src/protocol.rs`, and its own
-   doc says why: a migration needs one session still). A list cannot close its
-   neighbours.
+   session a connection is attached to*, so a list cannot close its neighbours.
 
 ## The finding: no frame reaches the store's delete
 
-`grep -n "delete\|Delete" crates/sessionlog/src/protocol.rs` answers **no variant** —
-every hit is prose. `delete_empty_session` has exactly one caller in the tree:
+`delete_empty_session` has exactly one caller in the tree:
 `crates/harnessd/src/cli.rs:3082`, the `Query::Delete` arm of `letibot --delete <id>`, a
-one-shot that opens the store file itself. So sense 2 from a head would need a new
-`ClientFrame` **and** a protocol bump — which is the one thing this tree's notes keep
-warning about merging — and sense 3 needs the same plus a decision about stopping somebody
-else's work.
+one-shot that opens the store file itself. Nothing in `crates/sessionlog/src/protocol.rs`
+names a delete (every hit is prose). So sense 2 from a head needs a new `ClientFrame` and
+a protocol bump, and sense 3 needs the same plus a decision about stopping somebody else's
+work. `/forget ID` therefore refuses by name, always, in a sentence that names the
+live-ness, the cost (rows, transcript, children) and the one door that could.
 
-A head's own `CloseSession` is not that door either: it names no session, and the server
-answers it on the connection's own thread.
+## The picker's keys cannot be letters — REFUSED BY REVIEW, and it was right
 
-## What was built instead, and why it is not a compromise
+The first cut used `x` (remove), `u` (undo) and `f` (forget). The session list is the one
+surface in this head whose typed line is a **name** (`Surface::Picker::typed_says`), and
+`key_surface` runs before the editor, so a letter bound under `Guard::EmptyComposer` is
+matched exactly at the first character of a filter: typing `fix the parser` said a refusal
+sentence and left the filter missing its `f`, and `x` armed a removal of whatever the
+cursor was on. Every other pane's letters are free only because their typed paths start
+with `/`. The controls are now **`del`** (`On::Delete`), **`ctrl-z`** (`Key::Undo` — both
+Ctrl+Z and ⌘Z decode to it) and **`/forget ID`**, a verb.
 
-* `x` on the session list — remove the row, **asked twice**: the first press names the
-  session, the rows drawn under it, and that its store rows stay; the second press removes.
-  `u` brings the last one back, in order. Any other key on the pane disarms, so the second
-  press is a press.
-* `f` — the destructive sense, **refused by name, always**, in one sentence that names the
-  live-ness first (`the daemon is holding it, 1 head attached`), what a forget would take
-  (rows, transcript, children), and the one door that could (`letibot --delete <id>`, which
-  itself refuses a session with rows). A key that only refuses is worth having when the
-  refusal is the fact the person needs; the bar says so rather than promising the act.
-* The row the head is standing in is refused: the list is the whole answer to *where am I*.
+## The invariant, stated as a PREDICATE and not at the call sites
 
-## Two rakes under the implementation
+A removal is a subtree, so removing a parent takes the row the head is standing in with
+it. Three doors, and the third is the one that survives a bug in the other two:
 
-**A removal is a SUBTREE, and both drawings must agree about it.** The unit is the row and
-everything under it (a child whose parent is not on a tree has no place on it), so the
-predicate is `App::removed_chain` — the id, or any ancestor's. The head's walk applies it in
-`push_session` (one guard covers a project's root, a group's root and a child); the built-in
-layer's copy is drawn from `App::sessions_feed`, so the feed drops the same rows. Filtering
-only one of the two leaves the layer drawing rows the head's keys no longer enumerate.
+* `remove_row` refuses the session this head is in **and every session above it**;
+* `prune_removed` (on `Hello`) drops a removal the head then lands on — `/switch <name>`
+  searches every session, not the drawn rows;
+* `removed_chain` itself answers *not removed* for the chain to `here`.
 
-**The project's count had to move with the removal** — a line saying `(7)` over six rows is
-a number that lies about what it hides. `members` is filtered, not just the walk.
+The reviewer found the family branch of `session_rows` pushing the parent's row with no
+guard of its own — the head's drawing kept the parent and dropped every child, while the
+layer's feed (which did filter) fell out of the family view into the whole project tree:
+the pane changed shape on a removal. Putting the rule in the predicate closes the family
+branch, the tree's children and the feed at once.
 
-## What is deliberately not there
+## Rakes
 
-A "show the hidden ones" list, and a count of them on the project's line. `say` names the
-count on every removal and every undo (`2 sessions are removed from this list`), and `u` is
-the way back — which is what the sense is worth: the row is a view, and the session is one
-`/switch <name>` away whatever the list says.
+**A test that means to ask the layer must install the layer.** `picker_rows()` falls back
+to the head's own `session_list` when `sessions_host` is `None`, so a "both drawings"
+test over a bare `App` compares two head-side functions over one source. Install the
+built-in through a real `Host` (`Stack::discover` + `letibot_builtins::install`), then
+assert `sessions_list(..).is_some()` before trusting its rows — and prove the guard bites
+by deleting the filter and watching it fail.
