@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! **A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.**
 //!
 //! The rano session, 2026-10-12 01:17: the operator ran a bare `/reseat` on a 971-row

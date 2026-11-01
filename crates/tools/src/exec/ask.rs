@@ -892,6 +892,7 @@ mod tests {
 
     /// A child with `script` as its command, on the pty the way `host::spawn` puts it there:
     /// all three descriptors, and the pty as its controlling terminal.
+    #[allow(dead_code)]
     fn on_the_terminal(pty: &super::super::pty::Pty, script: &str) -> std::process::Child {
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.arg("-c").arg(script);
@@ -904,6 +905,7 @@ mod tests {
 
     /// Poll a run's answer the way the wait loop does, up to two seconds: a child needs a
     /// moment to reach its read, and a single sample would be a test that fails on a loaded box.
+    #[allow(dead_code)]
     fn poll(pids: &[u32], ours: Option<&InputEnd>) -> Waiting {
         let mut seen = Waiting::No;
         for _ in 0..100 {

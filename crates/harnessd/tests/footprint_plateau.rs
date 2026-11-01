@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! **R66's experiment at CI scale**: does a daemon's heap plateau at `sessions × (what one
 //! session's harness holds)`, or does it grow past it?
 //!

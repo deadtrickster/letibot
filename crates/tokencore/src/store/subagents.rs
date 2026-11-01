@@ -978,7 +978,8 @@ mod tests {
             .busy_timeout(std::time::Duration::from_millis(50))
             .unwrap();
 
-        let writes: Vec<(&str, Box<dyn Fn(&Store) -> Result<()>>)> = vec![
+        type WriteFn = Box<dyn Fn(&Store) -> Result<()>>;
+        let writes: Vec<(&str, WriteFn)> = vec![
             (
                 "put_subagent_run",
                 Box::new(|s| s.put_subagent_run(&run("s-1-sub-2", "s-1"))),

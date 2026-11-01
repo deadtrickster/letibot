@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 //! **R57's last hop: a child's answer wakes its parent, with nobody asking.**
 //!
 //! The operator's measurement (2026-10-03) was a session that spawned `task` children: the

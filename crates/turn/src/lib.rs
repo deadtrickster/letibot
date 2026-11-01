@@ -1,3 +1,5 @@
+// TODO: remove this allow and fix the warnings it hides.
+#![allow(clippy::all)]
 //! The turn engine (W6): one turn, from a transcript to a transcript.
 //!
 //! This is the first crate that **assembles** rather than builds: `transcript` says

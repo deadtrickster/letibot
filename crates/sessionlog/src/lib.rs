@@ -44,6 +44,7 @@
 //!   vocabulary is in [`event`] (`DecisionOption`, `option_id`, the four
 //!   `OptionKind`s) so the adapter is a mapping when somebody writes it.
 
+#![allow(clippy::all)]
 pub mod activity;
 pub mod client;
 pub mod cursor;

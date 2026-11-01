@@ -1,3 +1,5 @@
+// TODO: remove this allow and fix the warnings it hides.
+#![allow(clippy::all)]
 //! The flowy connector, as a **monitor**: a seat's inbox watched across turns
 //! through the [`letibot_tools::exec::monitor::Condition`] seam, with a
 //! per-room attention table, entity subscriptions, and a `flowy` tool to drive

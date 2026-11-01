@@ -4319,7 +4319,7 @@ impl Store {
     /// convention only, which is why the append-only guarantees live in triggers
     /// rather than in whoever holds this reference.
     // ----------------------------------------------------------- adjudication
-
+    ///
     /// Record one decision. Called when the gate acts, not when the operator
     /// answers — the two are separate events and sometimes separate turns.
     ///
