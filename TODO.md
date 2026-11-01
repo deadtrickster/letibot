@@ -43,6 +43,45 @@ engine_decisions}`, `tools/{exec,background,confine}`.
 
 ---
 
+## R105 - The work order after the 2026-11-01 review, folded with the open list - **OPEN, filed 2026-11-01**
+
+Record: `docs/review/2026-11-01-ab5f7841-90dd9c84.md` (three reviewers, two rounds, synthesis). In order; each step relies on the one before it.
+
+1. Guards. Remove the 15 `#![allow(clippy::all)]` crate by crate, each replaced by targeted allows with a reason. The gate's clippy step must not pass on a warm target. A check that every `#[test]` sits on its own function (or `--list` counts per binary). A test that cannot run on the gate host fails there instead of printing SKIPPED (`crates/bridge/tests/daemon_record.rs:84-89`).
+2. Orchestration bugs that cost runs: R106, R107, R108; re-check R99's own Done-when now that R101 is closed.
+3. Contracts from the review: version the sessions plugin answer so a layer written for groups is refused out loud; record reviewers-on-host in DECISIONS.md and restore a test of the VM arm (`mergequeue/review.rs:700`); the single-attempt retry test (`crates/http/src/retry.rs`); the room protocol bumps only at release points.
+4. R100, firecode for remote sessions.
+5. De-duplication: one queue renderer (`crates/tui/src/ui/panes/queue.rs` or `plugins/builtin/queue`), one `now_ms`, one truncation helper, `crates/harnessd/tests/common`.
+6. Deslop per `hands-off/templates/deslop.md`: comments to the 2-3 line rule, `.letibot/notes` merged into rewritten topic docs.
+7. Structure: split `open_with_registry`, `rounds`, `run_to_completion`; break `harness.rs` into modules.
+8. Plugins: script layers (`docs/plugins-plan.md` step 11).
+9. Backlog, unchanged: R94, R95, R98 half 1, R104, R89-R93, R62-R67 and the older open entries below.
+
+**Done when**: steps 1-8 are closed or moved to their own entries. **Still open?** this entry's list.
+
+---
+
+## R106 - A session that joins a running daemon ignores its own `model` - **OPEN, filed 2026-11-01**
+
+`leticode_start {model: "deepseek"}` on a worktree whose daemon a glm session had started answered with glm's own 429 ("余额不足", code 1113): the second session's turns went to the first session's provider. Each session's model must be its own, or a join with a different model must be refused by name.
+**Still open?** start two sessions on one worktree with different `model`s and compare `leticode_status`.
+
+---
+
+## R107 - `wait --until attention` returns at once while the session waits on its own background job - **OPEN, filed 2026-10-27**
+
+A session idle with `jobs_open` non-empty and `waiting_on` empty makes `letibot-mcp wait` exit 0 immediately, though the job's settlement will wake the model (PG, 2026-10-27, job `j15647`). The daemon's `Activity` must count a job whose settlement wakes the model, and `wait` must hold until that turn ends; a job whose settlement wakes nothing (a server) must not hold it.
+**Still open?** a session that starts a background `sleep 30` and ends its turn: `wait` should take about 30 s.
+
+---
+
+## R108 - sessionlog's placement test rests on inode reuse - **OPEN, filed 2026-10-27**
+
+`placement::tests::a_record_of_a_socket_that_is_gone_is_not_an_answer` assumes a re-bound unix socket gets a new inode; ext4 on lab2x1 reuses it. The record's identity needs something a rebind cannot repeat, or the fixture's premise made true without sleeping. See `.letibot/notes/sessionlogs-placement-test-rests-on-inode-reuse.md`.
+**Still open?** run that test 20 times on lab2x1 inside a placement.
+
+---
+
 ## R94 — What the parser still cannot read, and the parts of it a parser can fix — **OPEN, filed 2026-10-27**
 
 After G3 and G4 (on main since 2026-10-27), 10,065 of 161,099 recorded `bash` decisions (6.2%)
