@@ -211,6 +211,16 @@ impl App {
 /// notifications reappear"*. A retired note is hidden, counted and listed (R10) — `/notes` names
 /// the event and `/notes restore` brings the card back — so the rows it stands for stay hidden
 /// with it.
+///
+/// **The retirement is asked of the KEY SET first, and that half is not decoration.** `notes` is
+/// capped at 64 (`App::file_note` drops the oldest), while the pairing here is keyed by the note's
+/// own key and is deliberately kept past a snapshot for exactly that reason
+/// (`App::absorbed`'s `retain`: *an id the key set still names is kept*). So a long-lived head
+/// reaches a state the first cut could not: the pairing is here, the reader retired it, and the
+/// NOTE IS GONE — and asking the notes alone answered *not collapsed* and drew the row again, on
+/// the first rebuild after the eviction. A rebuild is what an expansion is (`set_lift` →
+/// `invalidate_history`), which is how the operator met it: *"when i click on tool calls counter
+/// tools expand and all hidden with Ctrl-n notification are showed up again"*.
 pub(crate) fn is_absorbed(
     absorbed: &std::collections::HashMap<String, String>,
     notes: &[(Placed, Note)],
@@ -219,10 +229,11 @@ pub(crate) fn is_absorbed(
     item_id: &str,
 ) -> bool {
     absorbed.get(item_id).is_some_and(|key| {
-        notes.iter().any(|(place, n)| {
-            note_key(n) == *key
-                && (matches!(place, Placed::Seam(_)) || note_retired(dismissed, marks, n))
-        })
+        dismissed.contains(key)
+            || notes.iter().any(|(place, n)| {
+                note_key(n) == *key
+                    && (matches!(place, Placed::Seam(_)) || note_retired(dismissed, marks, n))
+            })
     })
 }
 

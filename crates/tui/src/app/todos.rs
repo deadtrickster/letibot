@@ -1087,8 +1087,10 @@ impl App {
     pub(crate) fn refresh_repo_todos(&mut self) {
         // **Resolved, like the read it guards** — the mtime watch and the parse must look at the
         // same file, or a nested layout re-reads on every draw (the watch misses, so `now` is
-        // None, so the cache never holds).
-        let path = crate::gitfield::project_dir(&self.wiring.workspace).join("TODO.md");
+        // None, so the cache never holds). Both ask `todos_path`, which is the list's own
+        // question: the header's branch is `project_dir`'s, and a folder's `TODO.md` says
+        // nothing about where the repository is.
+        let path = crate::gitfield::todos_path(&self.wiring.workspace);
         let now = std::fs::metadata(&path)
             .ok()
             .and_then(|m| Some((m.modified().ok()?, m.len())));

@@ -44,7 +44,10 @@ impl App {
             // **The chrome's labels are drawn by whatever screen is up** — the composer's two
             // edges and the header belong to no surface, so there is none that can have closed
             // under them between the frame and the click.
-            Target::CountLabel(_) | Target::GitField | Target::QueueStandings => true,
+            Target::CountLabel(_)
+            | Target::GitField
+            | Target::HeaderRepo
+            | Target::QueueStandings => true,
             // **A link is drawn by whatever screen is up** — the reply, a note, a pane — so the
             // record is the frame's own and nothing can have closed under it. A link the frame
             // no longer has is not in `link_targets`, which the click checks before it acts.
@@ -103,6 +106,17 @@ impl App {
             (Target::GitField, _) => {
                 let _ = self.command("repo");
                 return ControlFlow::Break(None);
+            }
+            // **The corner's repository opens the queue for it** — the operator's *"option to
+            // track the work"*: the path beside the session's name is the tree, and a click asks
+            // the merge queue pane for that tree's queues through the verb a person would type
+            // (`/queue /PATH`, `QueueScope::Path`), so the pane and the word cannot disagree
+            // about what a scope is.
+            (Target::HeaderRepo, _) => {
+                let repo = crate::gitfield::repo_dir(&self.wiring.workspace);
+                return ControlFlow::Break(
+                    self.queue_in(QueueScope::Path(repo.display().to_string())),
+                );
             }
             (Target::CountLabel(l), _) => {
                 // **The label's chord, through the one door** — the operator's ask: *"make so that
@@ -311,6 +325,7 @@ impl App {
             Target::SettingCard
             | Target::CountLabel(_)
             | Target::GitField
+            | Target::HeaderRepo
             | Target::QueueStandings
             | Target::FlashNotice
             // A line of the window with no window up — `still_drawn` has already refused

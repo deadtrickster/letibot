@@ -368,7 +368,7 @@ pub fn git_action(workspace: &str) -> Option<&'static str> {
 /// The rule, in order, and it is a RESOLUTION rather than a guess at every step:
 ///
 /// 1. **the workspace itself**, when it is a repository (`.git` present — a directory, or a file
-///    for a linked worktree) or carries a `TODO.md` — the ordinary layout, unchanged;
+///    for a linked worktree) — the ordinary layout, unchanged;
 /// 2. **the same-named child** (`<workspace>/<basename>`), when that is a repository — the nested
 ///    naming above, and the reason this function exists;
 /// 3. **the one repository child**, when exactly one child is one — a parent holding two
@@ -380,12 +380,23 @@ pub fn git_action(workspace: &str) -> Option<&'static str> {
 /// A workspace that is merely *inside* a repository needs none of this: `git` walks up on its
 /// own, and step 1 not matching simply leaves it to git.
 ///
-/// Shared by the git field and the todos pane so the two cannot disagree about which directory is
+/// **A `TODO.md` is not evidence that the workspace is the project** — it used to be step 1's
+/// first clause, and that clause cost the header its repository on this very box. The operator
+/// moved their list to `~/Projects/letibot/TODO.md` on 2026-10-31 (*"keep todos in TODO.md so
+/// claude and other harnesses can pickup"*), and `~/Projects/letibot` is a FOLDER of repositories
+/// whose repository is `~/Projects/letibot/letibot`: the file answered *this directory is the
+/// project*, `read_state` then ran `git -C ~/Projects/letibot status`, git said *not a
+/// repository*, and the header drew no branch and recorded no click for one. The operator's own
+/// words: *"it used to be showing clickable repo and option to track the work. and it is gone
+/// since yesterday."* Which `TODO.md` a reader should open is [`todos_path`]'s question now, and
+/// it is a different question from which directory holds the branch.
+///
+/// Shared by the git field and [`todos_path`] so the two cannot disagree about which directory is
 /// the project — a branch from one tree and a `TODO.md` from another would each be true alone.
 pub fn project_dir(ws: &str) -> std::path::PathBuf {
     let dir = std::path::Path::new(ws);
     let is_repo = |d: &std::path::Path| d.join(".git").exists();
-    if dir.join("TODO.md").is_file() || is_repo(dir) || dir.read_dir().is_err() {
+    if is_repo(dir) || dir.read_dir().is_err() {
         return dir.to_path_buf();
     }
     // The same-named child first: nested naming is a convention, not a coincidence.
@@ -411,6 +422,70 @@ pub fn project_dir(ws: &str) -> std::path::PathBuf {
     }
 }
 
+/// **Which `TODO.md` the operator's queue is** — the workspace's own when it has one, else the
+/// project's.
+///
+/// A separate question from [`project_dir`], and the split is the fix for a real disappearance:
+/// the operator keeps their list at `~/Projects/letibot/TODO.md`, one level ABOVE the repository
+/// (`~/Projects/letibot/letibot`), because that is the folder they open and the place the
+/// harnesses are told to look. A directory carrying a `TODO.md` therefore says *here is the
+/// list*, and it says nothing at all about where the branch is — which is why the two
+/// resolutions are now two functions and the todos pane asks this one.
+///
+/// The workspace first, and that is not a preference: a session in a worktree has the worktree's
+/// own list, a session in a folder of repositories has the folder's, and the repository's is the
+/// fallback for the layout where the list lives beside the code (every layout before
+/// 2026-10-31). The two agree whenever the workspace IS the project, so nothing that worked
+/// before this split reads a different file.
+pub fn todos_path(ws: &str) -> std::path::PathBuf {
+    let own = std::path::Path::new(ws).join("TODO.md");
+    if own.is_file() {
+        return own;
+    }
+    project_dir(ws).join("TODO.md")
+}
+
+/// **The repository the project is** — [`project_dir`]'s answer when that is one (or sits inside
+/// one: git walks up), else the one repository child of a project folder that is not a repository
+/// itself.
+///
+/// # Why this is not [`project_dir`]
+///
+/// The two questions were one function, and on this box's own layout they have different answers:
+/// the session lives in `~/Projects/letibot`, which carries the project's `TODO.md` **and** holds
+/// the repository in `letibot/`. `project_dir` answers the folder — right for the todos pane,
+/// which reads that file — and the git field then ran `git status` in a directory that is not a
+/// repository, drew nothing, and with it took the repo card (whose first row is *follow the work*)
+/// and every click that opened it. Measured 2026-11-01, when a `TODO.md` appeared at the project's
+/// root: the header read `letibot  ~/Projects/letibot` and nothing else.
+///
+/// So the two are derived from ONE resolver and cannot disagree about which tree is the project:
+/// the repository is the project directory when git can read it there, and otherwise the single
+/// repository inside it. A project folder holding several repositories still answers itself —
+/// nobody chose between them, and `repos_in` is what the field says in that case.
+pub fn repo_dir(ws: &str) -> std::path::PathBuf {
+    let project = project_dir(ws);
+    let is_repo = |d: &std::path::Path| d.join(".git").exists();
+    // The ordinary layout, a workspace inside a repository, and the nested same-named child: in
+    // all three git walks up from the project directory on its own.
+    if project.ancestors().any(is_repo) {
+        return project;
+    }
+    let repos: Vec<std::path::PathBuf> = project
+        .read_dir()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|e| e.path())
+        .filter(|p| is_repo(p))
+        .collect();
+    match repos.as_slice() {
+        [only] => only.clone(),
+        _ => project,
+    }
+}
+
 /// **One reading of the workspace, or `None`** — leticl's `%git-refresh`, without its cache: the
 /// caller is the loop, which has its own interval and its own cache (`App::git_read`).
 ///
@@ -429,9 +504,9 @@ pub fn read_state(workspace: &str) -> Option<GitState> {
         return None;
     }
     // **Resolved, not assumed** — the workspace may be the parent of the repository rather than
-    // the repository (`project_dir`), which is the nested layout both this field and the todos
+    // the repository (`repo_dir`), which is the nested layout both this field and the todos
     // pane were drawing nothing over.
-    read_state_at(&project_dir(workspace))
+    read_state_at(&repo_dir(workspace))
 }
 
 /// **The repositories a workspace holds** — the operator, of `~/Projects/stroppy-io`: *"there are

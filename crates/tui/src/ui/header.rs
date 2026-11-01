@@ -47,7 +47,46 @@ impl App {
     /// a path is recognisable from its end, and a token count is not recoverable
     /// from anywhere else on the screen.
     pub(crate) fn header_line(&self, w: usize) -> String {
-        crate::ui::render::row(&self.header_view().line(w), self.cfg.palette())
+        self.header_row(w).0
+    }
+
+    /// **The header row, and where its workspace path sits on it** — the drawing's own record, the
+    /// same rule the frame's other click targets keep: a rectangle read off what was drawn, never
+    /// worked out from the words' length.
+    ///
+    /// The path is not always the string this head handed over: the fit shortens it **from its
+    /// left** when the tail and the git field need the columns, so `~/Projects/letibot` can be on
+    /// the row as `…/letibot`. Computing columns from the path would put a click on cells that hold
+    /// something else, which is why this walks the [`Line`]'s spans and takes the one the header
+    /// pushed for the path — `"  {shown}"`, after the name and the subagent label and before the
+    /// git field's `(`.
+    ///
+    /// `None` when there is no path on the row at all (no workspace, or a frame too narrow to keep
+    /// one). The safe failure is *no target*: a click on a path that is not there is a click that
+    /// opens a pane for a tree nobody pointed at.
+    pub(crate) fn header_row(&self, w: usize) -> (String, Option<(usize, usize)>) {
+        let h = self.header_view();
+        let line = h.line(w);
+        // The spans the header pushes before the path: the name, then `subagent of …` when there
+        // is one. The path's span is the next one, and it is recognised by its own leading two
+        // columns rather than by its index alone — a frame that dropped the path has the git
+        // field's lead (` (`) or the padding there instead.
+        let after = 1 + usize::from(h.subagent_of.is_some());
+        let mut at = 0usize;
+        let mut path = None;
+        for (i, s) in line.spans.iter().enumerate() {
+            if i == after
+                && let Some(rest) = s.content.strip_prefix("  ")
+                && !rest.is_empty()
+                && !rest.starts_with('(')
+                && !rest.trim().is_empty()
+            {
+                path = Some((at + 2, s.width() - 2));
+                break;
+            }
+            at += s.width();
+        }
+        (crate::ui::render::row(&line, self.cfg.palette()), path)
     }
 
     /// **The header's facts, in rano's words** — `rano::agent::header` lays them out (most

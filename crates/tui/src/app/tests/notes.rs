@@ -2738,3 +2738,276 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
         "a stale prefix changes what the model can call, so it belongs in the record"
     );
 }
+
+// ─────────────── a dismissed notice stays dismissed in every view ───────────────
+
+/// **A run folded into one counter, with notices filed at the end of the conversation** — the
+/// operator's frame: `[2 tool calls]` above the composer edge, and the notices he cleared above
+/// the live pane. The counter is what he clicked.
+fn a_run_with_notices() -> App {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("s.0", "assistant"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(TranscriptItem::Assistant {
+                text: "here is what I am about to do:".into(),
+                tool_calls: vec![
+                    letibot_transcript::ToolCall {
+                        id: "c0".into(),
+                        name: "read".into(),
+                        arguments: r#"{"path":"crates/tui/src/app.rs"}"#.into(),
+                    },
+                    letibot_transcript::ToolCall {
+                        id: "c1".into(),
+                        name: "grep".into(),
+                        arguments: r#"{"pattern":"ctrl-t"}"#.into(),
+                    },
+                ],
+                truncated: false,
+            }),
+        },
+    )));
+    for (i, (id, call, name)) in [("s.1", "c0", "read"), ("s.2", "c1", "grep")]
+        .into_iter()
+        .enumerate()
+    {
+        a.apply(ServerFrame::Event(env(
+            (i as u64) * 2 + 3,
+            testing::appended(id, "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            (i as u64) * 2 + 4,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(TranscriptItem::ToolResult {
+                    call_id: call.into(),
+                    name: name.into(),
+                    outcome: letibot_transcript::ToolOutcome::Ok,
+                    payload: format!("CONTENTS-{i}"),
+                    edit: None,
+                    origin: None,
+                    media: None,
+                }),
+            },
+        )));
+    }
+    // **The notices, at three instants** — explicit stamps, because a mark is an ORDER and two
+    // publishes are not guaranteed to land in different milliseconds.
+    for (i, ts) in [(1u64, 1_000u64), (2, 2_000), (3, 3_000)] {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            ts,
+            SessionEvent::Warning {
+                code: "model_endpoint_retry".into(),
+                detail: format!("the model endpoint did not answer: attempt {i} of 5"),
+                compaction: None,
+            },
+        )));
+    }
+    a.visibility = Visibility::of(Profile::CONVERSATION);
+    a.invalidate_history();
+    a
+}
+
+/// Where `needle` starts on the screen, as (x, y) — the frames these tests read are the head's own.
+fn where_at(screen: &[String], needle: &str) -> (u16, u16) {
+    for (y, l) in screen.iter().enumerate() {
+        let cells: String = crate::app::keyhints::cells(l).into_iter().collect();
+        if let Some(x) = cells.find(needle) {
+            return (cells[..x].chars().count() as u16, y as u16);
+        }
+    }
+    panic!("{needle:?} is not on the frame:\n{}", screen.join("\n"));
+}
+
+/// **A notice whose row is not in the window is not drawn** — the wall the operator watched come
+/// back, at the door that drew it.
+///
+/// A tail walk renders the last N rows of a long conversation and skips the rest. `hist_upto` then
+/// stands at the END of the transcript, so every note's seam is *at or before* it — and the walk
+/// drew them all, at the top of the window, in list order, on every rebuild of the tail. That is
+/// the operator's *"when i click on tool calls counter tools expand and all hidden with Ctrl-n
+/// notification are showed up again, then they hide on the next tool call"*: the click, the queued
+/// row and the first thinking count are all rebuilds, and each put the whole list back.
+///
+/// A note whose row is above the window has no seam here, which is the rule R19 already keeps for
+/// `Placed::Before`. It is held, listed by `/notes` and counted on `/status` — hidden is not
+/// deleted.
+#[test]
+fn a_notice_whose_row_is_above_the_window_is_not_drawn() {
+    let mut a = app();
+    // Forced tail mode: the head renders the end of the conversation and leaves the rest.
+    a.walk_limit = 1;
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    let mut seq = 0u64;
+    for i in 0..60u64 {
+        let id = format!("s.{i}a");
+        seq += 1;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(&id, "assistant"),
+        )));
+        seq += 1;
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::TranscriptContent {
+                item_id: id.clone(),
+                item: Box::new(TranscriptItem::Assistant {
+                    text: format!("reply {i}"),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                }),
+            },
+        )));
+        // One notice at the top of the conversation — its row is far above any window.
+        if i == 1 {
+            seq += 1;
+            a.apply(ServerFrame::Event(env_at(
+                seq,
+                1_000,
+                SessionEvent::Warning {
+                    code: "model_endpoint_retry".into(),
+                    detail: "the model endpoint did not answer: attempt 1 of 5".into(),
+                    compaction: None,
+                },
+            )));
+        }
+    }
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        a.hist_floor > 0,
+        "the premise — a tail walk, not a whole one (floor {}, upto {})",
+        a.hist_floor,
+        a.hist_upto
+    );
+    assert!(
+        !screen.contains("model_endpoint_retry"),
+        "a notice whose row is above the window was drawn anyway:\n{screen}"
+    );
+    // Held, not dropped, and not retired: it is out of this window, which is a third answer.
+    assert_eq!(a.notes.len(), 1, "the note is gone, not out of the window");
+
+    // **And a notice at the END of the conversation is drawn** — the rule is the seam, not the
+    // silence: a note whose row IS in the window still arrives.
+    a.apply(ServerFrame::Event(env_at(
+        0,
+        9_000,
+        SessionEvent::Warning {
+            code: "target_green".into(),
+            detail: "target_green at 294af894".into(),
+            compaction: None,
+        },
+    )));
+    let screen = a.screen(120, 40).join("\n");
+    assert!(
+        screen.contains("target_green at 294af894"),
+        "the notice filed at the end of the conversation is not on the screen:\n{screen}"
+    );
+}
+
+/// **`ctrl-n`, then the counter's expansion — the notices stay hidden, and they stay hidden the
+/// second time too.**
+///
+/// The click on `[2 tool calls]` is `App::open_marker` → `set_lift`, which throws the rendered
+/// history away and rebuilds it — the strongest re-render the head has. It used to draw the wall
+/// for the reason [`a_notice_whose_row_is_above_the_window_is_not_drawn`] carries. Collapsing and
+/// opening again is a second rebuild of the same kind, and the mark is what has to survive both:
+/// it is a value compared at every draw, not a list a rebuild can lose.
+#[test]
+fn ctrl_n_then_the_counters_expansion_draws_no_notice() {
+    let mut a = a_run_with_notices();
+    // The premise: one counted row, and the counter this test clicks.
+    let before = a.screen(200, 40).join("\n");
+    assert!(before.contains("model_endpoint_retry"), "{before}");
+    assert!(before.contains("2 tool calls"), "{before}");
+
+    a.key(Key::CtrlN);
+    assert_eq!(a.read_upto("model_endpoint_retry"), Some(3_000));
+    let cleared = a.screen(200, 40).join("\n");
+    assert_eq!(
+        cleared.matches("model_endpoint_retry").count(),
+        0,
+        "the press did not clear the wall:\n{cleared}"
+    );
+
+    // Open the run — the door the operator's click takes.
+    let (x, y) = where_at(&a.screen(200, 40), "2 tool calls");
+    a.key(Key::Click { x: x + 1, y });
+    let open = a.screen(200, 40).join("\n");
+    assert!(open.contains("CONTENTS-0"), "the run did not open:\n{open}");
+    assert_eq!(
+        open.matches("model_endpoint_retry").count(),
+        0,
+        "the expansion drew the retired wall:\n{open}"
+    );
+
+    // Fold it back and open it again: a second rebuild, and the same answer.
+    a.key(Key::Esc);
+    let (x, y) = where_at(&a.screen(200, 40), "2 tool calls");
+    a.key(Key::Click { x: x + 1, y });
+    let again = a.screen(200, 40).join("\n");
+    assert!(again.contains("CONTENTS-0"), "{again}");
+    assert_eq!(
+        again.matches("model_endpoint_retry").count(),
+        0,
+        "the second expansion drew the retired wall:\n{again}"
+    );
+    // And the mark is still the mark — nothing a drawing path did moved it.
+    assert_eq!(
+        a.read_upto("model_endpoint_retry"),
+        Some(3_000),
+        "a drawing path moved the watermark: {:?}",
+        a.read_marks
+    );
+    assert_eq!(a.notes.len(), 3, "the notes were dropped, not retired");
+}
+
+/// **`ctrl-n`, then a row is queued** — the operator's *"new thinking also hides the notifications
+/// and just queued thing brought them back"*.
+///
+/// A prompt typed while a turn runs is an echo under the live pane and nothing else: no row is
+/// appended, so nothing about the transcript changed. The notices must not come back, and the mark
+/// must be the same value afterwards.
+#[test]
+fn ctrl_n_then_a_queued_row_draws_no_notice() {
+    let mut a = a_run_with_notices();
+    a.key(Key::CtrlN);
+    assert_eq!(
+        a.screen(200, 40)
+            .join("\n")
+            .matches("model_endpoint_retry")
+            .count(),
+        0
+    );
+
+    typed(&mut a, "and what about the queue");
+    let sent = a.key(Key::Enter);
+    assert!(sent.is_some(), "the line was not sent: {sent:?}");
+    let queued = a.screen(200, 40).join("\n");
+    assert!(queued.contains("queued"), "no echo on the frame:\n{queued}");
+    assert_eq!(
+        queued.matches("model_endpoint_retry").count(),
+        0,
+        "the queued row brought the retired wall back:\n{queued}"
+    );
+    assert_eq!(
+        a.read_upto("model_endpoint_retry"),
+        Some(3_000),
+        "the queued row moved the watermark: {:?}",
+        a.read_marks
+    );
+}

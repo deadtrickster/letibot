@@ -1411,6 +1411,7 @@ mod jobcard;
 mod jobs;
 mod linkclick;
 mod markerclick;
+mod markerexpand;
 mod markerorder;
 mod misc;
 mod monitors;

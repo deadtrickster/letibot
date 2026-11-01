@@ -148,7 +148,15 @@ impl App {
     ///
     /// **Only forwards.** A mark is `max`, never a replacement, so a mark set while this
     /// head holds fewer notes than it once did cannot rewind and re-draw an older incident.
+    ///
+    /// **The mark is a DRAWING input, so moving it rebuilds what was drawn.** `hist_lines` is a
+    /// cache of rendered rows and the walk only consults the mark when it WRITES one — so a line a
+    /// note contributed before the press survives in the cache until something rebuilds it. This
+    /// used to be the caller's half (`retire` rebuilds, and `ctrl-n` happens to call it first),
+    /// which is one writer too many: any door that moves the mark without also rebuilding leaves
+    /// the wall on the screen. One function, both halves.
     pub(crate) fn mark_read(&mut self) {
+        let before = self.read_marks.clone();
         for (_, n) in &self.notes {
             let (Some(kind), Some(ts)) = (note_kind(n), note_stamp(n)) else {
                 continue;
@@ -161,7 +169,11 @@ impl App {
                 None => self.read_marks.push((kind.to_string(), ts)),
             }
         }
-        self.hide_read();
+        let added = self.hide_read();
+        if self.read_marks != before || added > 0 {
+            self.invalidate_history();
+            self.redraw = true;
+        }
     }
 
     /// **Put every note the mark covers into `dismissed`**, and answer how many went in.

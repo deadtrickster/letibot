@@ -106,6 +106,17 @@ pub(crate) enum Target {
     PayloadLine,
     /// **The header's git field** — its `(…)` on the header row; a click opens the repo card.
     GitField,
+    /// **The corner's repository** — the workspace path the header draws beside the session's name.
+    /// A click opens the merge queue pane **scoped to that repository** (`QueueScope::Path`, the
+    /// scope `/queue /PATH` names), which is the operator's *"option to track the work"*.
+    ///
+    /// It is the path and not the git field because the two answer different questions on one row:
+    /// the field is *what the branch is doing* and opens the card that can pin another repository
+    /// (`/repo`, whose first row is *follow the work*); the path is *which tree this is* and is
+    /// where a reader who wants its queues clicks. The rectangle is the span the header drew for
+    /// it, read off the line's own spans (`App::header_row`) — never computed from the path's
+    /// length, which the fit may have shortened from its left.
+    HeaderRepo,
     /// **The merge queue's standings on the composer's bottom edge** — `1 red · 1 unjudged · 3 in
     /// review · 1 being merged · 1 stuck · 2 landed`, the words `Standings::words()` drew, each
     /// only while it has a count. A click opens the queue pane.

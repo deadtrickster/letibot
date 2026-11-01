@@ -63,6 +63,18 @@ fn at(f: &Folder) -> App {
     a
 }
 
+/// The same, for a folder that is its own workspace (`one_repo`).
+fn at_folder(f: &Folder) -> App {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.wiring.workspace = f.0.display().to_string();
+    a
+}
+
 /// A row announced and then given its body, as the daemon delivers it.
 fn row(a: &mut App, id: &str, kind: &str, item: TranscriptItem) {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -222,6 +234,154 @@ fn a_click_on_the_field_opens_the_card_and_a_pin_holds_against_the_work() {
     assert!(
         h.contains("stroppy-io/stroppy-contrib"),
         "following again: {h}"
+    );
+}
+
+/// **A folder holding one repository and the operator's `TODO.md`** — their own layout:
+/// `~/Projects/letibot/TODO.md` beside `~/Projects/letibot/letibot` (the repository, one level
+/// down and the same name). `todo` decides whether the list sits in the folder or beside the
+/// code, which is the two halves of the split this test is about.
+fn one_repo(tag: &str, todo: Option<&str>) -> Folder {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = letibot_sessionlog::testing::scratch_root()
+        .join(format!("letibot-repos-{tag}-{}-{n}", std::process::id()))
+        .join("letibot");
+    let _ = std::fs::remove_dir_all(&root);
+    let repo = root.join("letibot");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/x.rs"), "fn x() {}\n").unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["add", "-A"],
+        &[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "first",
+        ],
+    ] {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+    if let Some(text) = todo {
+        std::fs::write(root.join("TODO.md"), text).unwrap();
+    }
+    Folder(root)
+}
+
+/// **The corner's repository survives a `TODO.md` beside it** — the operator's own layout, and
+/// the disappearance they reported on 2026-11-01: *"in the top left corner where session name and
+/// path lives. it used to be showing clickable repo and option to track the work. and it is gone
+/// since yesterday"*.
+///
+/// `~/Projects/letibot` is a folder holding the repository `letibot` and — since 2026-10-31 — the
+/// operator's `TODO.md`. A `TODO.md` used to answer *this directory is the project*, so the git
+/// field ran `git -C ~/Projects/letibot status`, git said *not a repository*, and the header drew
+/// the name and the path and nothing else. Three things are asserted here, and they are the three
+/// the operator lost: the branch is DRAWN (beside the path, in the `(…)` rano puts it in), it is a
+/// CLICK TARGET, and the click opens the repo card — whose first row is *follow the work*, the
+/// operator's *"option to track the work"*.
+///
+/// And the fourth, which is why the fix is a split rather than a deletion: the todos pane still
+/// reads the FOLDER's list. One directory answering both questions is what broke the corner, so
+/// the file and the branch are two resolutions now (`gitfield::todos_path`, `project_dir`).
+#[test]
+fn the_corners_repository_survives_a_todo_md_beside_it() {
+    let f = one_repo(
+        "corner",
+        Some("# TODO\n\n## the corner\n\n- [ ] the corner's repo link\n"),
+    );
+    let mut a = at_folder(&f);
+    let frame = {
+        header(&mut a);
+        a.screen(140, 30)
+    };
+    let drawn: String = crate::app::keyhints::cells(&frame[0]).iter().collect();
+    assert!(
+        drawn.contains("(main"),
+        "the corner drew no repository: {drawn}"
+    );
+    // The path is the FOLDER (what the operator sees) and the field beside it is the repository
+    // one level down — the two resolutions of one layout, each answering its own question.
+    assert!(
+        drawn.contains(&f.0.display().to_string()),
+        "the path is not the session's workspace: {drawn}"
+    );
+
+    // **The field is a target, and its FIRST column is inside it.** The record was made two
+    // columns left of the drawing (no `+ gutter`), which a click in the middle of a six-column
+    // field survived and a click on its edge did not — so this clicks the edge.
+    let hit = a
+        .hits
+        .iter()
+        .find(|h| h.target == Target::GitField)
+        .cloned()
+        .expect("the corner's repository is not a click target");
+    let col = drawn.find("(main").expect("the field is drawn") as usize;
+    assert_eq!(
+        usize::from(hit.rect.x),
+        col,
+        "the target is not where the field was drawn: {drawn}"
+    );
+    a.key(Key::Click {
+        x: hit.rect.x as u16,
+        y: hit.rect.y as u16,
+    });
+    assert_eq!(
+        a.pick,
+        Some(crate::app::pick::Pick::Repo),
+        "the click opened the repo card"
+    );
+    let rows: Vec<String> = a.pick_values().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        rows.first().map(String::as_str),
+        Some(crate::app::pick::FOLLOW),
+        "the card's first row is the option to track the work: {rows:?}"
+    );
+
+    // **And the list is still the folder's.** The split's other half: the pane reads the same
+    // `TODO.md` the operator wrote, not the repository's (which does not exist here).
+    let rows = crate::ui::panes::todos::repo_todos_map(&a.wiring.workspace);
+    let text = rows
+        .iter()
+        .map(|r| r.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("the corner's repo link"),
+        "the pane read the wrong TODO.md: {text}"
+    );
+
+    // **And a list beside the code is still read from there.** The fallback is what every layout
+    // before 2026-10-31 used, so the split must not cost it: a folder with no `TODO.md` of its
+    // own opens the repository's.
+    let g = one_repo("beside", None);
+    let beside = g.0.join("letibot");
+    std::fs::write(
+        beside.join("TODO.md"),
+        "# TODO\n\n## beside the code\n\n- [ ] the repository's own list\n",
+    )
+    .unwrap();
+    let rows = crate::ui::panes::todos::repo_todos_map(&g.0.display().to_string());
+    let text = rows
+        .iter()
+        .map(|r| r.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("the repository's own list"),
+        "the fallback to the project's TODO.md is gone: {text}"
     );
 }
 

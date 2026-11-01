@@ -157,6 +157,49 @@ fn a_retired_notice_stays_collapsed_across_a_resync_and_a_switch() {
     );
 }
 
+/// **A note the 64-note cap evicted still holds its row collapsed** — the pairing outlives the note
+/// it names, because the reader's retirement is what it is about.
+///
+/// `App::file_note` keeps 64 notes and drops the OLDEST, while `App::absorbed` keeps a pairing for
+/// every id the key set still names (`App::load`'s `retain` says so in as many words). So a
+/// long-lived head reaches a state where the pairing is here, the reader retired it, and the note
+/// is gone — and `is_absorbed` asked the notes alone, so the row came back on the first rebuild
+/// after the eviction. A rebuild is what an expansion is (`set_lift` → `invalidate_history`),
+/// which is how the operator met it: *"when i click on tool calls counter tools expand and all
+/// hidden with Ctrl-n notification are showed up again"*.
+#[test]
+fn a_retired_notice_whose_note_was_evicted_keeps_its_row_collapsed() {
+    let (mut a, _hub) = watched();
+    a.key(Key::CtrlN);
+    // 64 more of another kind: the reseat's note is the oldest, so the cap drops it.
+    for i in 0..64u64 {
+        a.apply(ServerFrame::Event(env_at(
+            0,
+            10_000 + i,
+            SessionEvent::Warning {
+                code: "queue_blocked".into(),
+                detail: format!("the queue is blocked by row {i}"),
+                compaction: None,
+            },
+        )));
+    }
+    assert!(
+        !a.notes
+            .iter()
+            .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == "reseated")),
+        "the premise — the reseat's note was not evicted: {:?}",
+        a.notes.len()
+    );
+    // The rebuild the expansion does, which is the door that draws the cached rows again.
+    a.invalidate_history();
+    let s = screen(&mut a);
+    assert_eq!(
+        a.notice_rows.len(),
+        0,
+        "the evicted note gave its row back\n{s}"
+    );
+}
+
 /// **A note the reader did NOT retire gives its rows back when its card cannot be drawn** — the
 /// rule that must not be lost with the one above.
 ///

@@ -701,11 +701,12 @@ fn insert_row(content: &mut rano::agent::pane::PaneLines, at: usize, line: Line)
 /// nobody has filled in, and org does not mark it either. It carries no cookie
 /// and no box.
 pub(crate) fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
-    // **The project directory, not the workspace** — the same resolution the git field uses
-    // (`gitfield::project_dir`), so a nested layout (session in `Projects/x`, repo in
-    // `Projects/x/x`) loads one tree's TODO.md in the pane and one tree's branch in the header,
-    // and never one of each.
-    let path = crate::gitfield::project_dir(workspace).join("TODO.md");
+    // **The list's own resolution, not the repository's** — `gitfield::todos_path` prefers the
+    // workspace's `TODO.md` and falls back to the project's, so a session in `Projects/x` whose
+    // repository is `Projects/x/x` opens the folder's list when the operator keeps it there (and
+    // the repository's when they do not). The header's branch is the other question, and it is
+    // `project_dir`'s — a file in a folder says nothing about where the branch is.
+    let path = crate::gitfield::todos_path(workspace);
     let body = match std::fs::read_to_string(&path) {
         Ok(b) => b,
         Err(e) => {

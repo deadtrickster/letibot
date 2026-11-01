@@ -563,7 +563,12 @@ impl App {
         // It costs a row of transcript and it is worth it because the question it
         // answers ("which session am I in, and how big has it got") is otherwise
         // answered by scrolling.
-        let header = (h >= 6 && !self.session_id.is_empty()).then(|| self.header_line(w));
+        let (header, header_path) = if h >= 6 && !self.session_id.is_empty() {
+            let (row, path) = self.header_row(w);
+            (Some(row), path)
+        } else {
+            (None, None)
+        };
         let room = h
             .saturating_sub(chrome.len() + usize::from(header.is_some()))
             .max(1);
@@ -688,8 +693,33 @@ impl App {
                 stops: vec![(row, 0)],
             });
         }
+        // **The corner's repository, as a target** — the span the header itself drew for the
+        // workspace path (`header_row`), on row 0 because that is where the header is inserted
+        // above. The gutter is added here for the reason every hit adds it: `out`'s rows have no
+        // gutter yet, and a click's `x` is in terminal cells. **Not gated on `row_clicks`** — that
+        // is the status row's own flag ("the row this frame drew is clickable"), and the header is
+        // drawn on every frame tall enough to hold it.
+        if let Some((col, cols)) = header_path {
+            self.hits.push(Hit {
+                rect: Rect {
+                    x: col + gutter,
+                    y: 0,
+                    w: cols,
+                    h: 1,
+                },
+                target: Target::HeaderRepo,
+                stops: Vec::new(),
+            });
+        }
         // **The header's git field, as a target** — found on the drawn header row by its own text,
         // `(` and the pieces the reader rendered, so wherever the fit put it is where it is.
+        //
+        // **The columns are the row's own plus the gutter**, because a click's `x` is in terminal
+        // cells and this record is made before the pad is inserted (the rule the count labels and
+        // the standings keep below). It was missing here, and the field was measurably two
+        // columns left of what it drew — `rect.x=59 drawn_col=61 w=6` on a 140-column frame — which
+        // a click in the middle of a six-column field survives and a click on its first column does
+        // not.
         if let Some(pieces) = &self.git {
             let text: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
             let want: Vec<char> = format!("({text}").chars().collect();
@@ -702,7 +732,12 @@ impl App {
                             .position(|c| *c == ')')
                             .map_or(want.len(), |e| e + 1);
                         self.hits.push(Hit {
-                            rect: Rect { x, y, w: end, h: 1 },
+                            rect: Rect {
+                                x: x + gutter,
+                                y,
+                                w: end,
+                                h: 1,
+                            },
                             target: Target::GitField,
                             stops: Vec::new(),
                         });
@@ -1248,6 +1283,14 @@ impl App {
                     *row += y;
                 }
                 for (row, _) in &mut self.card_rows {
+                    *row += y;
+                }
+                // **A finished child's line too** — it was the one record this list left out, and
+                // the omission was invisible because a click one row above the line hit nothing
+                // and fell through to the card, which answered the same. It stopped being
+                // invisible the moment the header's own row became a target: the click landed on
+                // the corner's repository instead of the child (five `taskcard` tests, 2026-11-01).
+                for (row, _) in &mut self.task_rows {
                     *row += y;
                 }
                 for (row, _) in &mut self.picture_rows {

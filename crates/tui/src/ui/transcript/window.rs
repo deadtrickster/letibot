@@ -957,16 +957,29 @@ impl App {
         // the transcript for every row drawn.
         let newest_run = newest_unseen_run(items, *visibility, bound_prompts, live);
         loop {
-            // **A note from before this window is stepped over, not drawn** (R19).
-            // It is a disclosure this head holds — `/notes` lists it and `/status`
-            // counts it — and it has no seam in this conversation to be drawn at,
-            // because this head was not there when it happened. Stepped over here,
-            // once, and never again: `note_upto` only goes forward, so the cost is
-            // paid at the head of the list and not per row.
-            while matches!(
-                notes.get(*note_upto).map(|(place, _)| place),
-                Some(Placed::Before)
-            ) {
+            // **A note with no seam in THIS window is stepped over, not drawn** (R19).
+            // Two ways to have none, and they are one fact:
+            //
+            // * `Placed::Before` — it happened before the conversation this head holds;
+            // * **a seam below `hist_floor`** — its row is above the window. A tail walk renders the
+            //   last N rows and skips the rest, and `hist_upto` then stands at the END of the
+            //   transcript, so every seam is *at or before* it and the walk drew the whole list at
+            //   the foot of the window. That is the operator's *"when i click on tool calls counter
+            //   ... all hidden with Ctrl-n notification are showed up again, then they hide on the
+            //   next tool call"*: the click, the queued row and the first thinking count all rebuild
+            //   the tail, and each one put every notice back.
+            //
+            // Stepped over once — `note_upto` only goes forward — and the note is still held, listed
+            // by `/notes` and counted on `/status`: retired is not deleted, and neither is *out of
+            // this window*.
+            while let Some((place, _)) = notes.get(*note_upto) {
+                let gone = match place {
+                    Placed::Before => true,
+                    Placed::Seam(at) => *at < *hist_floor,
+                };
+                if !gone {
+                    break;
+                }
                 *note_upto += 1;
             }
             let note_next = notes
