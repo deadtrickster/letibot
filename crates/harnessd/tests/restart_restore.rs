@@ -992,6 +992,10 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
     // **One recorded child, so the store has a window** — it began recording children at this
     // row, and a reader that ignored the window would list every child this store ever had.
+    // **The daemon that loses it, and then a restart** — the reported sequence. The child was
+    // spawned by the first one; the list is read by the second.
+    let one = a_daemon(&parts, &cfg);
+    one.stop(None);
     let store = Store::open(&dir.store()).unwrap();
     let mut kept = run(
         "s-restart-parent-sub-kept",
