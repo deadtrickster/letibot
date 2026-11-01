@@ -630,7 +630,11 @@ mod tests {
     #[test]
     fn the_synthetic_input_is_a_first_frame_a_pane_can_deserialise() {
         let input = synthetic_input();
-        assert_eq!(input["v"], 2, "the pane contract this host speaks");
+        assert_eq!(
+            input["v"],
+            letibot_plugin::pane::V,
+            "the pane contract this host speaks"
+        );
         // Every key present, because a plugin deserialises this into a struct and a missing key
         // is a plugin that cannot tell *no look* from *an empty one*.
         for key in ["state", "look", "event"] {

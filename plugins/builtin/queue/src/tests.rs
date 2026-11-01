@@ -116,7 +116,7 @@ fn chrome_line<'a>(view: &'a Value, label: &str) -> Option<&'a Value> {
 /// The view the layer answers for a feed, as JSON — the hook's own door, minus the wasm arena.
 fn view_of(feed: &Value, folded: &[(&str, bool)]) -> Value {
     let input = json!({
-        "v": 2,
+        "v": letibot_plugin::pane::V,
         "size": {"w": 120, "h": 40},
         "feeds": {"queue": feed},
         "folded": folded.iter().cloned().collect::<std::collections::BTreeMap<&str, bool>>(),

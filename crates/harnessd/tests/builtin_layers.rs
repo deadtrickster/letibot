@@ -53,7 +53,7 @@ fn project_layer(root: &Path, name: &str) -> PathBuf {
 /// answer that needs a feed arrives only when the layer asked for it.
 fn asked_with() -> serde_json::Value {
     json!({
-        "v": 2,
+        "v": letibot_plugin::pane::V,
         "size": {"w": 100, "h": 40},
         "feeds": {"sessions": {
             "sessions": [

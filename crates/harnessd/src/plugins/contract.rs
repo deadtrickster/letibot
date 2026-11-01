@@ -325,6 +325,20 @@ fn keys(v: &Value) -> String {
     }
 }
 
+/// **The shapes a manifest has to declare**, read off the host's own table so the document cannot
+/// name a version the host does not speak (`crates/plugins::MOVED`).
+fn moved_shapes() -> String {
+    let shapes: Vec<String> = letibot_plugins::MOVED
+        .iter()
+        .map(|m| format!("`{} = {}`", m.hook, m.version))
+        .collect();
+    if shapes.is_empty() {
+        "no hook kind of this host".to_string()
+    } else {
+        shapes.join(", ")
+    }
+}
+
 fn pane_doc() -> String {
     let input = letibot_tools::builtins::plugin::synthetic_input();
     let input = serde_json::to_string_pretty(&input).unwrap_or_default();
@@ -370,11 +384,17 @@ fn pane_doc() -> String {
     .collect::<Vec<_>>()
     .join(", ");
 
+    // The contract's own numbers, so the document cannot name a version the host does not speak.
+    let v = letibot_plugin::pane::V;
+    let shapes = moved_shapes();
+
     format!(
         r#"# The `pane` hook — `pane_<name>`, contract 1
 
 A pane is a wasm export named `pane_<name>` in a plugin whose `plugin.toml` declares
-`hooks = ["pane_<name>"]`, `contract = 1`, and whatever capabilities it asks for. The host calls it
+`hooks = ["pane_<name>"]`, `contract = 1`, and whatever capabilities it asks for. A hook kind whose
+answer has changed shape is declared too, `[contracts]` holding {shapes}: a layer that names no
+shape for such a kind is refused by name at load. The host calls it
 with one JSON object and reads one back, and **that is the whole conversation**: a pane never opens
 a file and never runs a program. When it needs the world it asks for a *look* in its answer and the
 host runs it — `{{"read": "path"}}` under the `read` capability; an `exec` look is refused in this
@@ -395,7 +415,7 @@ result.
 {input}
 ```
 
-* `v` — the contract version, always `2`.
+* `v` — the contract version, always `{v}`.
 * `state` — what this pane returned in its last answer's `state`, or `null` on the first call. A
   plugin is stateless between calls: anything it must remember it returns, and the host keeps it
   (§1 principle 5).
@@ -534,6 +554,16 @@ mod tests {
             );
         }
         assert!(doc.contains(&format!("at least {MIN_EVERY_S}")));
+        // The input's version is the host's, not a number the document was written with.
+        assert!(
+            doc.contains(&format!("always `{}`", letibot_plugin::pane::V)),
+            "the document names the contract version this host speaks"
+        );
+        // And so is every shape a manifest has to declare.
+        assert!(
+            doc.contains(&moved_shapes()),
+            "the document names the shapes this host requires"
+        );
     }
 
     /// **Every kind has a page, every page carries its own types' fields, and a name that is not a
