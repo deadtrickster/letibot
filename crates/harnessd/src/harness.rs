@@ -354,6 +354,37 @@ pub enum HarnessError {
     NoProgress {
         evidence: String,
     },
+    /// **The endpoint failed, and this is the whole account of it** — the class, how many
+    /// times the call was tried and for how long, and the provider's own last words.
+    ///
+    /// `said` is [`letibot_http::retry::Ladder::ending`]'s sentence, built where the ladder
+    /// was run, and it is what the head draws under `FAILED — `. A failure with no count on
+    /// it is the report this exists for: *"a child's turn ended with FAILED — http io:
+    /// provider unreachable: … (nothing was recorded)"*, which does not say whether the
+    /// daemon tried once or six times, and a `401` that reads like a timeout is the same
+    /// defect one class along.
+    ///
+    /// `cause` is kept typed because two questions are asked of a failure AFTER it is
+    /// said: `switch_back_notice` cites a 4xx ([`letibot_http::retry::Policy::refusal_of_what_was_sent`])
+    /// and a caller may want the status. Nothing else about it is secret — it is in the
+    /// sentence too, in the provider's own words.
+    Endpoint {
+        said: String,
+        cause: letibot_turn::HttpError,
+    },
+}
+
+impl HarnessError {
+    /// **The HTTP failure underneath this error**, for the two questions asked after it is
+    /// said — never for re-deciding whether to retry, which the ladder already answered.
+    pub fn http_cause(&self) -> Option<&letibot_turn::HttpError> {
+        match self {
+            HarnessError::Turn(TurnFailure::Http(e)) | HarnessError::Endpoint { cause: e, .. } => {
+                Some(e)
+            }
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for HarnessError {
@@ -361,6 +392,9 @@ impl std::fmt::Display for HarnessError {
         match self {
             HarnessError::Setup(s) => write!(f, "{s}"),
             HarnessError::Turn(e) => write!(f, "{e}"),
+            // **The whole account of one endpoint failure**: what it was, how many calls it
+            // took, and what the provider said last. See [`HarnessError::Endpoint`].
+            HarnessError::Endpoint { said, .. } => write!(f, "{said}"),
             HarnessError::Store(s) => write!(f, "store: {s}"),
             // **Never "the model called tools N times without answering".**
             // It *was* answering; it had not finished, and that sentence taught an
@@ -14931,10 +14965,6 @@ impl Harness {
         // assembly can be recomposed*.
         let mut offers = crate::notes_offer::Offers::new();
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
-        // Consecutive HTTP failures on the round being attempted. Not per turn:
-        // the thing being waited out is the endpoint, and it is as likely to go
-        // down on round nine as on round one.
-        let mut attempt = 0u32;
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
@@ -15114,7 +15144,7 @@ impl Harness {
             // failed.** An inner loop, so a retry does NOT spend one of
             // `max_tool_rounds`: it produced nothing and appended nothing, and
             // ending a turn early because a server was restarting would be the
-            // budget measuring the wrong thing. See `http_retry_after`.
+            // budget measuring the wrong thing. See `letibot_http::retry`.
             //
             // # And the second question: is the operator's `/models` being heard?
             //
@@ -15143,6 +15173,14 @@ impl Harness {
             // hands what it took back to this value, and the retried attempt's greedy poll
             // must find it there; one built per pass dropped it on the floor.
             let mut steering = self.steering();
+            // **The ladder this turn walks, and the only thing that decides whether a round
+            // is taken again** — see `letibot_http::retry`, where *what is retryable, and for
+            // how long* is written down. It is also what the turn's ending is said from: the
+            // count and the waiting are nobody else's to report, and a failure that reads as
+            // `FAILED — http io: …` with no count is the report this was written for.
+            let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
+                self.cfg.http_retries,
+            ));
             let outcome = loop {
                 // **The operator's own line, answered before the attempt rather than after
                 // it** — the window they type in. What comes back says when the switch
@@ -15181,7 +15219,6 @@ impl Harness {
                 // is over and the watchdog has nothing left to say.
                 watch.finish();
                 let Err(TurnFailure::Http(e)) = attempted else {
-                    attempt = 0;
                     // **The new model answered**, which is the whole of what a switch had
                     // to prove — there is nothing to go back to any more.
                     self.switch_back = None;
@@ -15227,7 +15264,7 @@ impl Harness {
                 // deliberately: a key the provider refused is that card's news, not the
                 // endpoint's weather.
                 self.outage_failed(&e);
-                let Some(wait) = http_retry_after(&e, attempt, self.cfg.http_retries) else {
+                let Some(wait) = ladder.failed(&e) else {
                     // **The ladder has nothing left to wait for, and the session may still
                     // have somewhere to go — but not this round.**
                     //
@@ -15266,7 +15303,6 @@ impl Harness {
                     }
                     break Err(TurnFailure::Http(e));
                 };
-                attempt += 1;
                 // **Nothing is published here, and that is the change.** This used to raise
                 // `model_endpoint_retry` once per attempt — three rows in three seconds for
                 // one endpoint, which is the operator's *"i dont need walls of this … a
@@ -15348,7 +15384,7 @@ impl Harness {
                     )?;
                     continue;
                 }
-                Err(f @ TurnFailure::Http(_)) => {
+                Err(TurnFailure::Http(e)) => {
                     // **A context-length refusal IS the wall, and this is where it
                     // becomes one.** The provider owns the window and it has just
                     // said the prompt does not fit; every recovery `Sessions` has
@@ -15368,7 +15404,7 @@ impl Harness {
                     // box never learned reads as zero in the error and is named as
                     // unconfigured in the warning, because inventing one here would
                     // point the operator at a wall nobody measured.
-                    if let TurnFailure::Http(letibot_turn::HttpError::Status { body, .. }) = &f
+                    if let letibot_turn::HttpError::Status { body, .. } = &e
                         && let Some(refusal) = context_length_refusal(body)
                     {
                         let r = self.measure_resident().tokens;
@@ -15430,7 +15466,23 @@ impl Harness {
                             ledger: (resident, window),
                         });
                     }
-                    return Err(f.into());
+                    // **The whole account of the failure, not just the last call of it.**
+                    //
+                    // `http io: provider unreachable: io: failed to lookup address information:
+                    // Temporary failure in name resolution` is the truth about ONE call, and the
+                    // operator read it under `FAILED — ` with `(nothing was recorded)` after it and
+                    // no way to tell whether the daemon had tried once or six times — nor, on the
+                    // other class, whether a `401` had been asked six times for no reason. The
+                    // ladder knows both, so the ending is its sentence: *tried 6 times over 31s,
+                    // then gave up: name resolution failed*, or *http 401: … — the provider refused
+                    // it, and a refusal is not retried (1 call, no waiting)*.
+                    //
+                    // The typed cause rides along ([`HarnessError::Endpoint`]) because
+                    // `switch_back_notice` still asks it which 4xx refused.
+                    return Err(HarnessError::Endpoint {
+                        said: ladder.ending(&e),
+                        cause: e,
+                    });
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -18466,107 +18518,32 @@ fn next_job_offset(slice: &letibot_tools::exec::OutputSlice) -> Option<u64> {
 
 /// How many times a round is re-attempted when the model endpoint fails.
 ///
-/// Six, doubling from a second: 1, 2, 4, 8, 16, 32 — about a minute of waiting
-/// before the turn fails for real. That is long enough to sit out the thing this
-/// exists for (llama.cpp reloading a six-shard GGUF after `--sleep-idle-seconds`,
-/// which answers `503 Loading model` for as long as it takes) and short enough
-/// that an endpoint which is genuinely gone is reported rather than waited on.
+/// **The default for [`Config::http_retries`], and only that** — the RULE is
+/// [`letibot_http::retry::Policy`], which is where *what is retryable, and for how long* is
+/// written down (three classes, a bounded ladder, and a sentence for each ending). This
+/// constant is the number the daemon hands it.
 ///
-/// **The default for [`Config::http_retries`], which is what the code reads.**
-/// A caller that already KNOWS the endpoint is not there — a test pointed at a
-/// dead port — sets it to 0 and is told so at once, instead of sitting out a
-/// minute of waiting for a server it never wanted. That minute was real: seven
-/// tests in `compact.rs` took 63.7 seconds of wall clock for 3.5 seconds of CPU,
-/// and the whole difference was one of them walking this ladder.
-pub const MAX_HTTP_RETRIES: u32 = 6;
-
-/// **Is this failure worth taking the round again, and how long to wait first?**
+/// Five, doubling from a second: 1, 2, 4, 8, 16 — six calls, 31 seconds of waiting. That is
+/// the measured 29–31 s llama.cpp cold reload, which is the longest legitimate silence the
+/// ladder exists for, and half the 63 s it used to be: the count no longer has to carry the
+/// classification, because a refusal is now refused on the first call.
 ///
-/// `None` means no: report it. The operator's rule (2026-09-17) is *"when model
-/// http endpoint doesnt answer or answers with error codes except
-/// unauthenticated"*, and the exception is the point — a credential the server
-/// rejected is rejected identically on every retry, so backing off on a 401 is a
-/// minute of waiting to be told the same thing, with the real cause buried under
-/// six notices.
-///
-/// What is retried, and the honest limits of the rule:
-///
-/// * **No answer at all** ([`HttpError::Io`]) — the connection was refused, or
-///   dropped, or timed out. The commonest case on this box: the model server
-///   restarting.
-/// * **A status that is not 2xx**, except `401` and `403`. `403` is on the
-///   exception with `401` because both mean *the credential is not the problem
-///   the server has with you*, and neither improves by asking again.
-/// * **A malformed response** — a stream that did not parse. Retried because the
-///   likeliest cause is a truncated body from a server going down mid-answer.
-///
-/// **What this rule knowingly retries that will never succeed**: a `400` from a
-/// prompt the server will not accept, and the `500 Context size has been
-/// exceeded` that the mid-turn wall check exists to prevent. Both are
-/// deterministic in the bytes, so all six attempts fail and the turn ends about
-/// a minute late. That is the cost of following the operator's rule rather than
-/// second-guessing which 5xx is which, and it is bounded — the alternative is a
-/// list of "codes we think are transient" that is wrong the first time a new one
-/// appears.
-///
-/// A turn is safe to take again because an HTTP failure commits NOTHING:
-/// `stream_turn` posts before it accumulates, so the prompt is rebuilt from the
-/// same ledger and the retry sends the same bytes.
-fn http_retry_after(
-    e: &letibot_turn::HttpError,
-    attempt: u32,
-    attempts: u32,
-) -> Option<std::time::Duration> {
-    if attempt >= attempts {
-        return None;
-    }
-    let worth_it = match e {
-        letibot_turn::HttpError::Io(_) => true,
-        letibot_turn::HttpError::Malformed(_) => true,
-        // **A 4xx is the request, not the weather.** The retry's whole premise is
-        // that *"the retry sends exactly the bytes this one did"* — which is why
-        // it is safe, and equally why it is pointless when the server's complaint
-        // is about those bytes. A provider 400 was retried six times on identical
-        // bytes with the waits doubling to 32 seconds, and the operator watched
-        // every one of them.
-        //
-        // The two exceptions are the 4xx that are about timing rather than
-        // content: 408 is the server saying it waited too long, 429 is it saying
-        // not yet.
-        //
-        // **And a 429 is not always "not yet".** It is also the status a provider uses
-        // when the account behind the key cannot pay for the call, and that one no retry
-        // can lift — the body is the only place the difference is written. MEASURED
-        // 2026-10-04 on the operator's GLM account: `http 429: 余额不足或无可用资源包,请充值。`
-        // (insufficient balance, please top up), and the daemon took the round again six
-        // times, the waits doubling to 32 seconds, on identical bytes against an account
-        // with no credit — while the person watching pressed interrupt on a turn that
-        // could not succeed.
-        letibot_turn::HttpError::Status { code, body } => {
-            !refused_for_want_of_credit(body) && (matches!(code, 408 | 429) || *code >= 500)
-        }
-    };
-    worth_it.then(|| std::time::Duration::from_secs(1u64 << attempt))
-}
+/// A caller that already KNOWS the endpoint is not there — a test pointed at a dead port —
+/// sets it to 0 and is told so at once. That minute was real: seven tests in `compact.rs`
+/// took 63.7 seconds of wall clock for 3.5 seconds of CPU, all of it one of them walking
+/// this ladder.
+pub const MAX_HTTP_RETRIES: u32 = letibot_http::retry::STANDARD_RETRIES;
 
 /// **Did the MODEL refuse, rather than the wire failing?**
 ///
-/// The discriminator `Harness::fall_back_from` turns on, and it is deliberately narrower
-/// than [`http_retry_after`]'s `worth_it` rather than a copy of it — the two are
-/// different questions and this file already had the first:
-///
-/// * *is this worth waiting for* includes a connection that was refused and a stream
-///   that did not parse, because the endpoint may be restarting and the model behind it
-///   may be perfectly well;
-/// * *is the model itself out* is a `429` or a `5xx` and nothing else. A `408` is the one
-///   that looks like it and is not: the server waited too long for US, which is weather
-///   on the route rather than a statement about the model, so it stays on the waiting
-///   side and never moves a session.
-///
-/// Kept beside [`http_retry_after`] because they are the same subject — one failure, two
-/// questions — and a reader changing what counts as weather must see both.
+/// The discriminator `Harness::fall_back_from` turns on: a `429` or a `5xx` and nothing else.
+/// A `408` is the one that looks like it and is not — the server waited too long for US, which
+/// is the route rather than a statement about the model — and a transport failure says nothing
+/// about it either. The whole of the argument is
+/// [`letibot_http::retry::Policy::the_model_refused`], which is where it now lives so that a
+/// reader changing what counts as weather sees the retry rule in the same file.
 fn model_refused(e: &letibot_turn::HttpError) -> bool {
-    matches!(e, letibot_turn::HttpError::Status { code, .. } if *code == 429 || *code >= 500)
+    letibot_http::retry::Policy::the_model_refused(e)
 }
 
 /// **One outage of one model endpoint, and the single row it is worth.**
@@ -18778,45 +18755,6 @@ fn refusal_word(e: &letibot_turn::HttpError) -> String {
     }
 }
 
-/// **A refusal no retry can lift: the account cannot pay for the call.**
-///
-/// A 429 is the status a provider uses for both *not yet* (a rate limit) and *not ever until
-/// somebody tops up* (a billing refusal), so the status alone cannot tell them apart and the
-/// body can. MEASURED 2026-10-04: GLM answered `http 429: 余额不足或无可用资源包,请充值。` and
-/// the retry loop took the round again six times — waits of 1, 2, 4, 8, 16 then 32 seconds —
-/// while the operator pressed interrupt on a turn that could not succeed either way.
-///
-/// **Narrow on purpose.** Only phrases that name MONEY are here. A bare `quota` is left out
-/// deliberately: *rate* quota is exactly the transient thing this retry path exists for, and
-/// a list that swallowed it would stop retrying the case the whole exception was written
-/// around. Nor is it a status code: the same 429 means both things, which is why the body is
-/// the instrument.
-fn refused_for_want_of_credit(body: &str) -> bool {
-    const FILLED: &[&str] = &[
-        "insufficient balance",
-        "insufficient_quota",
-        "insufficient funds",
-        "insufficient credit",
-        // **The same refusal in the words providers actually use, added 2026-10-31.** The
-        // entry this classifier was written for says *"a refusal that says out of credit"*
-        // and that spelling was not in the list, so the sentence that filed the bug was one
-        // of the shapes still retried; `credit balance` is Anthropic's form of it, which
-        // arrives on a 429 as well as a 400. Both name money, which is the whole test here.
-        "out of credit",
-        "credit balance",
-        "please recharge",
-        "no available resource package",
-        "billing",
-        // The provider's own words, which are what actually arrived: a reader who cannot
-        // decode them would otherwise be told only that the endpoint "did not answer".
-        "余额不足",
-        "请充值",
-        "资源包",
-    ];
-    let b = body.to_ascii_lowercase();
-    FILLED.iter().any(|p| b.contains(p))
-}
-
 /// **The host a retry warning names, for the route this turn is on.**
 ///
 /// Split out of the retry loop so the choice is testable on its own, because the wrong
@@ -18856,18 +18794,19 @@ struct ContextLengthRefusal {
 /// **The HTTP status a failure names, when it is a provider refusing what was SENT.**
 ///
 /// 4xx is that class: the request reached a model that read it and said no. 429 is not
-/// (the ladder's — it waits, and may move the session), and neither is anything 5xx or
-/// transport, which is a fact about the endpoint rather than about what was sent. Read by
+/// (the ladder's — it waits, and may move the session), 408 is not (the server waited too
+/// long for US, which is the route), and neither is anything 5xx or transport, which is a
+/// fact about the endpoint rather than about what was sent. Read by
 /// [`Harness::switch_back_notice`].
+///
+/// **Two shapes**, because a failure now reaches a caller either as it left the engine
+/// ([`TurnFailure::Http`]) or as the ladder's account of it ([`HarnessError::Endpoint`]), and
+/// a question that answered only the first would silently stop advising a switch back on
+/// exactly the failures an operator most wants advice on — a `400` from the model they just
+/// moved to.
 fn provider_refusal(e: &HarnessError) -> Option<u16> {
-    match e {
-        HarnessError::Turn(TurnFailure::Http(letibot_turn::HttpError::Status { code, .. }))
-            if (400..500).contains(code) && *code != 429 =>
-        {
-            Some(*code)
-        }
-        _ => None,
-    }
+    e.http_cause()
+        .and_then(letibot_http::retry::Policy::refusal_of_what_was_sent)
 }
 
 /// **Is this HTTP failure the context wall, spoken by the thing that owns it?**
@@ -19030,7 +18969,7 @@ fn silence_notice(
 /// deadline short enough to catch it would fail a round that was going to succeed and
 /// then retry into the same slow backend. What the operator lacked was not a kill
 /// switch but a sentence; the retry ladder already handles a provider that is
-/// genuinely gone, and `http_retry_after` is where that policy lives. So this fires
+/// genuinely gone, and `letibot_http::retry::Policy` is where that policy lives. So this fires
 /// once, the round continues, and nothing is cancelled.
 ///
 /// # Scope, and why it is the cloud route only
@@ -25076,10 +25015,16 @@ mod endpoint_retry {
     //! operator, 2026-09-17: *"implement exponential backoff and auto turn
     //! restart for when model http endpoint doesnt answer or answers with error
     //! codes except unauthenticated"*.
+    // **The retry rule's own tests are the policy's**, beside it in
+    // `crates/http/src/retry.rs`: what is retryable, the ladder's numbers, the billing
+    // refusal and the ending sentence are one subject with one home, and a second copy here
+    // is a second thing to keep true. What is left in this module is what the DAEMON does
+    // with an answer — which host a warning names, what a fallback says, when a silence is
+    // worth a row.
     use super::{
-        ContextLengthRefusal, MAX_HTTP_RETRIES, Outage, SilenceWatch, context_length_refusal,
-        fallback_continuation_notice, fallback_notice, http_retry_after, model_refused,
-        outage_span, retry_host, silence_host, silence_notice,
+        ContextLengthRefusal, Outage, SilenceWatch, context_length_refusal,
+        fallback_continuation_notice, fallback_notice, model_refused, outage_span, retry_host,
+        silence_host, silence_notice,
     };
     use letibot_turn::{Endpoint, HttpError};
 
@@ -25197,14 +25142,6 @@ mod endpoint_retry {
         }
     }
 
-    #[test]
-    fn a_credential_the_server_refuses_is_not_retried() {
-        assert!(http_retry_after(&status(401), 0, MAX_HTTP_RETRIES).is_none());
-        assert!(http_retry_after(&status(403), 0, MAX_HTTP_RETRIES).is_none());
-        // And not on a later attempt either — it is the code, not the streak.
-        assert!(http_retry_after(&status(401), 3, MAX_HTTP_RETRIES).is_none());
-    }
-
     /// **"The model is out" is a narrower question than "is this worth waiting for",
     /// and the difference is what decides whether a session MOVES.**
     ///
@@ -25223,7 +25160,7 @@ mod endpoint_retry {
             model_refused(&status(503)),
             "a server reloading is still out"
         );
-        // Not out: the wire, which `http_retry_after` waits on and this must not act on.
+        // Not out: the wire, which the ladder waits on and this must not act on.
         assert!(!model_refused(&HttpError::Io(std::io::Error::other(
             "refused"
         ))));
@@ -25233,7 +25170,9 @@ mod endpoint_retry {
         assert!(!model_refused(&status(408)));
         assert!(!model_refused(&status(400)));
         assert!(
-            http_retry_after(&status(408), 0, MAX_HTTP_RETRIES).is_some(),
+            letibot_http::retry::Policy::standard()
+                .after(&status(408), 0)
+                .is_some(),
             "408 stays on the waiting side, which is exactly why it is not here"
         );
     }
@@ -25689,216 +25628,6 @@ mod endpoint_retry {
         // And it follows the backend's own URL, so a moved endpoint is named as itself.
         let proxy = Cloud("10.0.0.7:8443");
         assert_eq!(retry_host(Some(&proxy), &local), "10.0.0.7:8443");
-    }
-
-    /// The case this exists for: llama.cpp reloading a six-shard GGUF after
-    /// `--sleep-idle-seconds`, answering `503 Loading model` until it is up.
-    /// Seen repeatedly on this box on 2026-09-17.
-    #[test]
-    fn a_server_that_is_coming_back_up_is_waited_out() {
-        for code in [500, 502, 503, 504, 429] {
-            assert!(
-                http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_some(),
-                "{code} should be waited out"
-            );
-        }
-
-        // No answer at all, and a body that did not parse — both likeliest to be
-        // a server going down mid-answer.
-        assert!(
-            http_retry_after(
-                &HttpError::Io(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "no"
-                )),
-                0,
-                MAX_HTTP_RETRIES
-            )
-            .is_some()
-        );
-        assert!(
-            http_retry_after(
-                &HttpError::Malformed("truncated".into()),
-                0,
-                MAX_HTTP_RETRIES
-            )
-            .is_some()
-        );
-    }
-
-    /// **A 429 that names money is not taken again** — MEASURED 2026-10-04, the operator's GLM
-    /// account, and the screen they were looking at while it happened:
-    ///
-    /// ```text
-    /// · model_endpoint_retry — the model endpoint at open.bigmodel.cn did not answer:
-    ///   http 429: 余额不足或无可用资源包,请充值。. Taking this round again in 1s (attempt 1 of 6).
-    /// ```
-    ///
-    /// Six attempts, waits doubling to 32 seconds, on identical bytes, against an account that
-    /// cannot pay — and the sentence was wrong twice over: the endpoint *did* answer, and what it
-    /// said was actionable. The rate-limit half must survive, which is the assertion this test
-    /// would be worthless without.
-    #[test]
-    fn a_billing_refusal_is_not_taken_again_and_a_rate_limit_still_is() {
-        let said = |code: u16, body: &str| HttpError::Status {
-            code,
-            body: body.to_string(),
-        };
-        // The provider's own words, verbatim off the operator's screen.
-        let credit = said(429, "http 429: 余额不足或无可用资源包,请充值。");
-        assert!(
-            http_retry_after(&credit, 0, MAX_HTTP_RETRIES).is_none(),
-            "a billing refusal was taken again: no retry can top up an account"
-        );
-        // OpenAI's own billing code, which arrives as a 429 too.
-        assert!(
-            http_retry_after(
-                &said(
-                    429,
-                    r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota, please check your plan and billing details"}}"#
-                ),
-                0,
-                MAX_HTTP_RETRIES
-            )
-            .is_none()
-        );
-        // **The wording this tree's own entry was filed with, and the one Anthropic uses.**
-        // A phrase list is where a variant goes missing: *out of credit* is the sentence
-        // `TODO.md` names and *credit balance is too low* is the other spelling of the same
-        // refusal, and neither was in the list — so a 429 in either shape was still taken six
-        // times, on identical bytes, against an account that cannot pay.
-        for body in [
-            "http 429: you are out of credits",
-            r#"{"error":{"message":"Your credit balance is too low to access the API"}}"#,
-        ] {
-            assert!(
-                http_retry_after(&said(429, body), 0, MAX_HTTP_RETRIES).is_none(),
-                "a billing refusal in another wording was taken again: {body}"
-            );
-        }
-        // **The case the exception exists for, and it must survive.** A rate limit names
-        // requests-per-minute, not money, and it is transient by construction.
-        assert!(
-            http_retry_after(
-                &said(
-                    429,
-                    r#"{"error":{"type":"requests","message":"Rate limit reached for requests"}}"#
-                ),
-                0,
-                MAX_HTTP_RETRIES
-            )
-            .is_some(),
-            "a rate limit stopped being retried — this is the whole reason 429 is an exception"
-        );
-        // A status with no body at all is the old behaviour, unchanged.
-        assert!(http_retry_after(&status(429), 0, MAX_HTTP_RETRIES).is_some());
-    }
-    /// **The budget is the caller's, and `1` means do not retry.**
-    ///
-    /// The ladder is right for a server that might be reloading and wrong for one
-    /// that is not there, and only the caller knows which. Measured, 2026-09-20:
-    /// `compact.rs` took 63.7 seconds of wall clock for 3.5 seconds of CPU — one
-    /// test walking 1+2+4+8+16+32 against a port its own comment called *"a dead
-    /// port, so the attempt fails fast"*. With the budget at 1 the same file takes
-    /// 1.65 seconds.
-    ///
-    /// The premise is asserted first: the SAME error at the same attempt is still
-    /// retryable under the default. Without that this passes on a build that
-    /// stopped retrying altogether.
-    #[test]
-    fn one_attempt_means_no_retry_and_the_default_still_retries() {
-        let refused = || {
-            HttpError::Io(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "no",
-            ))
-        };
-        assert!(
-            http_retry_after(&refused(), 0, MAX_HTTP_RETRIES).is_some(),
-            "the premise: a refused connection is retryable under the default"
-        );
-        assert!(
-            http_retry_after(&refused(), 0, 0).is_none(),
-            "zero retries means the first failure is the answer"
-        );
-        // And a budget in between is honoured as itself, so this is a number and
-        // not a boolean wearing one. The off-by-one here is the whole reason the
-        // field is named for RETRIES: `1` used to be called one attempt and still
-        // retried once.
-        assert!(
-            http_retry_after(&refused(), 0, 1).is_some(),
-            "one retry is one"
-        );
-        assert!(http_retry_after(&refused(), 1, 1).is_none(), "and only one");
-        assert!(http_retry_after(&refused(), 2, 3).is_some());
-        assert!(http_retry_after(&refused(), 3, 3).is_none());
-    }
-
-    /// Doubling from a second, and a hard stop — so an endpoint that is
-    /// genuinely gone is REPORTED rather than waited on forever.
-    #[test]
-    fn the_wait_doubles_and_the_attempts_run_out() {
-        let secs: Vec<u64> = (0..MAX_HTTP_RETRIES)
-            .map(|a| {
-                http_retry_after(&status(503), a, MAX_HTTP_RETRIES)
-                    .expect("retryable")
-                    .as_secs()
-            })
-            .collect();
-        assert_eq!(secs, vec![1, 2, 4, 8, 16, 32]);
-        assert_eq!(secs.iter().sum::<u64>(), 63, "about a minute in total");
-        assert!(
-            http_retry_after(&status(503), MAX_HTTP_RETRIES, MAX_HTTP_RETRIES).is_none(),
-            "the cap is a cap"
-        );
-    }
-
-    /// **A 4xx is about the request, not the weather.**
-    ///
-    /// The retry's premise is that *"the retry sends exactly the bytes this one
-    /// did"* — which is what makes it safe, and equally what makes it pointless
-    /// when the server's complaint is about those bytes. This used to retry a 400
-    /// on purpose, with the note that following "every code except
-    /// unauthenticated" was cheaper than keeping a list of which 5xx is
-    /// transient, and that it cost about a minute.
-    ///
-    /// It cost that minute for real on 2026-09-19: a session switched to deepseek
-    /// carried an assistant row whose `tool_calls` had no matching `tool`
-    /// messages, the provider refused with a 400 saying so, and the operator
-    /// watched six identical attempts with the waits doubling to 32 seconds.
-    ///
-    /// The list stayed small, which was the original worry: two codes.
-    #[test]
-    fn a_four_hundred_is_not_retried_and_a_five_hundred_still_is() {
-        assert!(
-            http_retry_after(&status(400), 0, MAX_HTTP_RETRIES).is_none(),
-            "the bytes are the problem, so sending them again cannot help"
-        );
-        for code in [404, 413, 422] {
-            assert!(
-                http_retry_after(&status(code), 0, MAX_HTTP_RETRIES).is_none(),
-                "{code}"
-            );
-        }
-        // The two 4xx that are about timing rather than content: 408 is the server
-        // saying it waited too long, 429 is it saying not yet.
-        assert!(http_retry_after(&status(408), 0, MAX_HTTP_RETRIES).is_some());
-        assert!(http_retry_after(&status(429), 0, MAX_HTTP_RETRIES).is_some());
-        // And the one deterministic failure still waited on, stated rather than
-        // hidden: llama.cpp reports the context wall as a 500, and a 5xx is not
-        // something a client can tell apart from a server restarting.
-        assert!(
-            http_retry_after(
-                &HttpError::Status {
-                    code: 500,
-                    body: "Context size has been exceeded".into()
-                },
-                0,
-                MAX_HTTP_RETRIES
-            )
-            .is_some(),
-            "the context wall, which the mid-turn check exists to prevent reaching"
-        );
     }
 }
 

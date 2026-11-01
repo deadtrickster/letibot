@@ -117,7 +117,7 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 /// **A model server that refuses in the one way the retry rule respects.**
 ///
 /// Every settle starts a turn, and this file does not want that turn to work — but a
-/// port that merely REFUSES is classed `HttpError::Io`, and `http_retry_after` takes
+/// port that merely REFUSES is classed `HttpError::Io`, and the ladder takes
 /// an `Io` round again with the waits doubling: measured here as the worker held for
 /// the whole retry budget, which is the very defect this file exists to disprove. A
 /// 400 is different — *the request, not the weather* — and fails the turn on the

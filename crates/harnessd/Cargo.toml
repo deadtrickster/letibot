@@ -24,6 +24,10 @@ letibot-tokencore.workspace = true
 letibot-llama = { workspace = true, optional = true }
 letibot-backend.workspace = true
 letibot-turn.workspace = true
+# **What a failed provider call is worth** — the retry policy the turn loop asks
+# (`crates/http/src/retry.rs`), reachable here directly so the daemon names the crate
+# that owns the rule rather than borrowing it through `letibot-turn`.
+letibot-http.workspace = true
 letibot-tools.workspace = true
 # The tree-sitter shape of a command, for the etalon map (`--etalon-map`).
 letibot-code.workspace = true

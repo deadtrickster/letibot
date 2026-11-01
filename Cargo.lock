@@ -1026,6 +1026,7 @@ dependencies = [
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
  "letibot-flowy",
+ "letibot-http",
  "letibot-llama",
  "letibot-metrics",
  "letibot-opencode",

@@ -270,7 +270,7 @@ fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
     // text), which is a large number for a prompt this small and would have the compaction door
     // firing in the middle of an outage — a second subject in a file about one.
     cfg.context_window = None;
-    // The ladder this file measures. `http_retry_after` waits 1 s, 2 s, 4 s…, so a scenario's
+    // The ladder this file measures. `letibot_http::retry` waits 1 s, 2 s, 4 s…, so a scenario's
     // cost is the policy's and not a fixture's.
     cfg.http_retries = retries;
     // No `[fallback]` in the providers.toml this file writes, so an exhausted ladder ends the

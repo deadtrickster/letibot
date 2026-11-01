@@ -87,7 +87,7 @@ const TOOL_FILE: &str = "notes.txt";
 /// the difference between a window of milliseconds and one of most of a second.
 const REFUSAL_HOLD_MS: u64 = 900;
 
-/// The provider's own words, as they arrived. `http_retry_after` reads this: a 429 whose body names
+/// The provider's own words, as they arrived. The retry policy reads this: a 429 whose body names
 /// money is refused at once, because no wait can lift a quota, and this one names a reset time.
 const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhausted. \
                              Your limit will reset at 2026-10-12 15:01:48.\"}}";

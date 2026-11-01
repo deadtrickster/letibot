@@ -1477,7 +1477,7 @@ impl TurnEngine {
             // was announced as garbage from a healthy local host.
             //
             // `HttpError::Io` is the class that is true of it — the transport failed —
-            // and `http_retry_after` already takes the round again for it, which is
+            // and the retry policy (`letibot_http::retry`) takes the round again for it, which is
             // right: a host that could not be resolved this second may resolve the next.
             // The payload keeps the provider's own words, prefixed with our class name so
             // nothing that was in the old string is lost.

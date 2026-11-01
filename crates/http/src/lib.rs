@@ -29,6 +29,8 @@
 //! place for a framing bug to live*. [`send`] is the general entry; [`post_json`]
 //! and [`get`] are the two spellings the engine already used.
 
+pub mod retry;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
