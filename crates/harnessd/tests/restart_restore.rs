@@ -47,7 +47,9 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
 use letibot_tokencore::Vocab;
-use letibot_tokencore::store::{JobContext, JobRecord, Store, SubagentRun, TodoItem};
+use letibot_tokencore::store::{
+    JobContext, JobRecord, Store, SubagentRun, TodoBy, TodoItem, TodoStatus,
+};
 use letibot_tools::NullToolSink;
 use letibot_tools::builtins::task::{TaskSpec, WorktreePlacement};
 use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
@@ -2149,6 +2151,205 @@ fn an_empty_restart_is_said_once_and_starts_no_turn() {
         user_rows(&hub)
     );
     assert_eq!(stub.arrived(), 0);
+    registry.close();
+}
+
+/// **A session restored with a plan it still owes is WOKEN, and its first turn carries the restart
+/// sentence** — the operator, 2026-11-01: *"it is not ok that restart notice arrived with my
+/// continue … so i expected that after restart you will continue"*.
+///
+/// The whole chain, through production doors only: the daemon's own open (`Sessions::open_first`),
+/// its ring (`put_a_restored_session_to_work`), and its wake — and the model stub counts the calls,
+/// so "woken" is a number rather than a reading.
+///
+/// FAILS before the ruling: the sentence was a transcript row and the wake found nothing to say
+/// (`Outcome::Ignored`, `stub.arrived() == 0`), so the session waited for the person to type.
+#[test]
+fn a_restored_session_with_an_open_todo_row_is_woken_and_its_turn_carries_the_restart() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel need more open files than a shell's 256 —
+    // `room`'s note has the measurement.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-owed-plan");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "carried on"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    let store = Store::open(&dir.store()).unwrap();
+    old_daemon_stopped(&store, Duration::from_secs(1));
+    // **The plan the model left on the board** — work it wrote down and never finished, which is
+    // the durable half of *"after restart i owe you"*.
+    store
+        .put_todos(
+            PARENT,
+            &[TodoItem {
+                content: "finish the migration and report".into(),
+                status: TodoStatus::Pending,
+                by: TodoBy::Model,
+                when: None,
+                needs: Vec::new(),
+            }],
+        )
+        .unwrap();
+    // **And nothing was running**, with the session still naming the daemon that held it — a
+    // monitor that had already ended, which is where the down time is read from.
+    store
+        .put_monitor(
+            PARENT,
+            "ended",
+            r#"{"name":"ended","path":"x"}"#,
+            OLD,
+            60_000,
+        )
+        .unwrap();
+    store.end_monitor(PARENT, "ended").unwrap();
+
+    let registry = Registry::new();
+    registry
+        .create(PARENT, "the parent", wiring(&cfg))
+        .expect("created");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let hub = registry.get(PARENT).unwrap();
+    // **The open rang the session**, which is the only door a between-turns fact has after a
+    // restart — a watcher or a head's command would both be something that ran before it.
+    let woke = loop {
+        match registry.next_work_until(Some(Instant::now() + Duration::from_secs(5))) {
+            WorkOrIdle::Work(Work::Woken(id)) => break id,
+            WorkOrIdle::Work(_) => continue,
+            _ => panic!("the opened session was not rung"),
+        }
+    };
+    assert_eq!(woke, PARENT);
+    // **The wake is a turn**, and the turn's opening line is the restart's own sentence.
+    assert!(
+        !matches!(sessions.wake(PARENT), Outcome::Ignored),
+        "a restored session that owes work was not woken"
+    );
+    assert_eq!(stub.arrived(), 1, "one model call, for the work it owes");
+    let rows = user_rows(&hub);
+    let restart = rows
+        .iter()
+        .find(|r| r.starts_with("[restart] "))
+        .unwrap_or_else(|| panic!("the restart sentence never reached the turn: {rows:?}"));
+    assert!(restart.contains("nothing was running"), "{restart}");
+    assert!(
+        restart.contains("a todo row still owed"),
+        "the sentence says why it is a turn: {restart}"
+    );
+    // **Once per restart, not once per pass.** A second wake is the worker's next pass over the
+    // same restart: it finds nothing, and neither the sentence nor the row is said again.
+    assert!(matches!(sessions.wake(PARENT), Outcome::Ignored));
+    assert_eq!(stub.arrived(), 1, "the restart was said twice");
+    assert_eq!(
+        user_rows(&hub)
+            .iter()
+            .filter(|r| r.starts_with("[restart]"))
+            .count(),
+        1,
+        "{:?}",
+        user_rows(&hub)
+    );
+    registry.close();
+}
+
+/// **A session that was mid-turn when the daemon stopped is woken too** — the arm the operator's
+/// own case is, since a model that restarts the daemon from inside a tool call leaves its call and
+/// no result.
+///
+/// FAILS before the ruling: nothing was running, so the sentence was a row and the wake said
+/// nothing (`Outcome::Ignored`), and the session waited for the person to type.
+#[test]
+fn a_restored_session_that_was_mid_turn_is_woken() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-owed-midturn");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "carried on"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    let store = Store::open(&dir.store()).unwrap();
+    old_daemon_stopped(&store, Duration::from_secs(1));
+    // **The last row the dying daemon left**: a call was issued and its result never written. The
+    // transcript is the one the seeded daemon's own open made, so the prefix and the anchor are
+    // its own and only the row is the fixture's.
+    let transcript = store
+        .current_transcript_id(PARENT)
+        .unwrap()
+        .expect("the seeded daemon wrote this session's transcript");
+    let prefix_id = store
+        .transcript_prefix_id(&transcript)
+        .unwrap()
+        .expect("a transcript has a prefix");
+    let (prefix_tokens, h_init) = store.get_stable_prefix(&prefix_id).unwrap();
+    let tokens: Vec<u32> = vec![7, 8, 9];
+    store
+        .append_item(
+            &transcript,
+            0,
+            &TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "call_restart".into(),
+                    name: "bash".into(),
+                    arguments: r#"{"command":"letibot --stop"}"#.into(),
+                }],
+                truncated: false,
+            },
+            &letibot_tokencore::LedgerRow {
+                item_id: format!("{transcript}.0"),
+                tok_offset: prefix_tokens.len() as u32,
+                tok_len: tokens.len() as u32,
+                h_k: letibot_tokencore::ledger::chain(&h_init, &tokens),
+            },
+            &tokens,
+        )
+        .expect("the row is appended");
+
+    let registry = Registry::new();
+    registry
+        .create(PARENT, "the parent", wiring(&cfg))
+        .expect("created");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the daemon opens");
+    let hub = registry.get(PARENT).unwrap();
+    let _ = loop {
+        match registry.next_work_until(Some(Instant::now() + Duration::from_secs(5))) {
+            WorkOrIdle::Work(Work::Woken(id)) => break id,
+            WorkOrIdle::Work(_) => continue,
+            _ => panic!("the opened session was not rung"),
+        }
+    };
+    assert!(
+        !matches!(sessions.wake(PARENT), Outcome::Ignored),
+        "a session cut off mid-turn was not woken"
+    );
+    assert_eq!(stub.arrived(), 1);
+    let rows = user_rows(&hub);
+    let restart = rows
+        .iter()
+        .find(|r| r.starts_with("[restart] "))
+        .unwrap_or_else(|| panic!("the restart sentence never reached the turn: {rows:?}"));
+    assert!(
+        restart.contains("a turn was in flight when the rows stopped"),
+        "{restart}"
+    );
     registry.close();
 }
 
