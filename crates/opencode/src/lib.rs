@@ -1,33 +1,23 @@
-//! **Reading an opencode conversation into this head's rows.**
+//! Reading an opencode conversation into this head's rows.
 //!
-//! R6. `letibot --session oc-<opencode-session-id>` opens the UI immediately and
-//! imports the conversation in the background, rows landing as they are read. This
-//! crate is the **reading** half: it opens opencode's SQLite database, walks one
-//! session's whole tree, and turns each `part` into a [`TranscriptItem`] this head
-//! already knows how to draw. It renders nothing, publishes nothing, and knows
-//! nothing about the daemon — so the four rules below are testable in isolation,
-//! which is the whole reason the halves are split (R6a here, the wiring in
-//! `letibot-harnessd`).
+//! A session opened as `oc-<opencode-session-id>` imports in the background while the UI is already
+//! up. This crate is the reading half: it opens opencode's SQLite database, walks one session's
+//! tree, and turns each `part` into a [`TranscriptItem`] this head already knows how to draw. It
+//! renders nothing, publishes nothing and knows nothing about the daemon, so its rules are testable
+//! in isolation.
 //!
-//! # The four rules that make this an import and not a forgery
+//! Four rules make this an import rather than a forgery:
 //!
-//! 1. **An imported row says it is imported, and whose it was.** Carried by
-//!    [`Tree`]: the root session's id, its `directory`, and the provider/model it ran
-//!    under. The row itself cannot say it — no [`TranscriptItem`] has an origin field
-//!    — so the session does, in its header. See [`SessionMeta::origin`].
-//! 2. **The ledger does not claim the spend.** [`Report::spend`] is the opencode
-//!    session's real `cost` and tokens, in another provider's units, summed from
-//!    `step-finish`. It is reported for a label and is never folded into this
-//!    session's budget.
-//! 3. **Time is taken, never invented.** Every [`Row`] carries `time_created` off the
-//!    row it came from ([`Row::ts_ms`]). Nothing here calls `now`.
-//! 4. **Nothing is written to opencode's database.** [`Source::open`] opens with
-//!    `SQLITE_OPEN_READ_ONLY` and **not** `immutable=1`: opencode's WAL is live and an
-//!    immutable open reads a torn snapshot. `account` and `credential` are readable by
-//!    the operator's ruling, but for **auth**, not for rows — this crate reads
-//!    neither, and there is no path here that could render one into a transcript.
-//!
-//! # What a part becomes, and why one part is sometimes two rows
+//! 1. An imported row says it is imported, and whose it was. No [`TranscriptItem`] carries an origin,
+//!    so the session does, in its header: see [`SessionMeta::origin`].
+//! 2. The ledger does not claim the spend. [`Report::spend`] is the opencode session's real cost and
+//!    tokens in another provider's units, reported for a label and never folded into this session's
+//!    budget.
+//! 3. Time is taken, never invented: every row carries the `time_created` of the row it came from
+//!    ([`Row::ts_ms`]), and nothing here calls `now`.
+//! 4. Nothing is written to opencode's database. [`Source::open`] opens read-only and not
+//!    `immutable=1`, because opencode's WAL is live and an immutable open reads a torn snapshot.
+//!    Credentials are never read here and no path could render one into a transcript.
 //!
 //! Parts are read in `time_created` order and mapped by their `type` tag:
 //!
@@ -36,35 +26,24 @@
 //! | `text` (role `user`) | [`TranscriptItem::User`] |
 //! | `text` (role `assistant`) | [`TranscriptItem::Assistant`], no calls |
 //! | `reasoning` | [`TranscriptItem::Reasoning`] |
-//! | `tool` | an [`TranscriptItem::Assistant`] carrying the one [`ToolCall`], **then** a [`TranscriptItem::ToolResult`] |
-//! | `patch` | a [`Scrap`] — *"N files changed"*, never an empty diff (see below) |
+//! | `tool` | an [`TranscriptItem::Assistant`] carrying the one [`ToolCall`], then a [`TranscriptItem::ToolResult`] |
+//! | `patch` | a [`Scrap`], a sentence naming how many files changed |
 //! | `compaction` | a [`Scrap`] |
-//! | `step-start` / `step-finish` | a boundary / the spend side-channel (rule 2) |
+//! | `step-start` / `step-finish` | a boundary, and the spend side-channel |
 //! | anything else | a [`Scrap`] and a count in [`Report::unknown_tags`] |
 //!
-//! **A `tool` part is two rows on purpose.** The head labels a tool card from the
-//! nearest preceding `Assistant { tool_calls }` row — `a head that attached after a
-//! turn still says which file was read`, because the row is the only place the
-//! arguments survive (`crates/tui/src/app.rs:6360`). opencode keeps the call and its
-//! result in one row (`state.input` and `state.output`), so mapping the part to a
-//! lone `ToolResult` would lose every command. Emitting the call in its own
-//! `Assistant` row immediately before the result is what keeps the card legible, and
-//! it is the shape the engine already produces when a model calls without prose.
-//! Order is preserved exactly: one part in, one or two rows out, in `time_created`
-//! order, no regrouping.
+//! A `tool` part becomes two rows on purpose. The head labels a tool card from the nearest preceding
+//! `Assistant` row carrying the calls, and opencode keeps a call and its result in one row, so
+//! mapping the part to a lone `ToolResult` would lose every command. Emitting the call in its own row
+//! immediately before the result is the shape the engine already produces when a model calls without
+//! prose.
 //!
-//! **`patch` must not render an empty diff.** It is a hash and a file list, not a
-//! diff — the content lives in opencode's `snapshot/` git object store, which is not
-//! opened here. So the row is a sentence naming how many files changed, reported and
-//! counted, rather than a diff pane that would claim a change was shown.
+//! A `patch` renders a count rather than a diff: it is a hash and a file list, and the content lives
+//! in opencode's git object store, which is not opened here. A diff pane would claim a change was
+//! shown.
 //!
-//! # An unknown tag is counted, never dropped
-//!
-//! The same rule R3 applies to an unreadable frame (`crates/tui/src/app.rs`): an
-//! importer that skips what it does not recognise reproduces **inside the transcript**
-//! the exact failure R3 exists to prevent. Seven tags appeared in one real session
-//! measured 2026-09-21 and there will be others, so an unrecognised `type` becomes a
-//! [`Scrap`] and a count in [`Report::unknown_tags`] — visible, not silent.
+//! An unknown tag is counted, never dropped: an importer that skips what it does not recognise
+//! reproduces inside the transcript the failure the header rule exists to prevent.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -76,9 +55,8 @@ use rusqlite::{Connection, OpenFlags};
 /// Everything that can stop a read.
 #[derive(Debug)]
 pub enum ImportError {
-    /// **The database is not there, or is not a database.** Reported as *this* and
-    /// not "no such session", because the two are different facts and the operator
-    /// asked for them to be told apart.
+    /// The database is not there, or is not a database. Reported as this and not "no such session",
+    /// because the two are different facts and the operator asked for them to be told apart.
     NoDatabase { path: PathBuf, err: String },
     /// The database opened, the schema is there, and no session has that id.
     NoSuchSession { id: String },
