@@ -48,9 +48,8 @@ thing it draws, with the scroll already applied, and a click is answered from th
 (`App::hit_at`, later records on top). A new clickable segment costs no arithmetic, and "did the frame draw
 that row" is answered structurally instead of per site.
 
-The same shape covers things a terminal cannot report at all: the head takes the mouse, so a link's cells are
-read back off the finished row (`App::draw_links` over `app::pointer::pieces`) and recorded as a `Target`
-rather than left to the terminal's own OSC 8 handling.
+The same shape covers what a terminal cannot report at all: the head takes the mouse, so a link's cells are read
+back off the finished row (`App::draw_links` over `app::pointer::pieces`) and recorded as a `Target`.
 
 ### 1.3 Colour is a role's, not a segment's
 
@@ -75,11 +74,10 @@ head's own records (`hist_marks`, `note_upto`) are incremental so a draw does no
 ## 2. What governs a key
 
 **The chrome's mouse and a program's mouse are separated by where the event landed, not by who wants it.**
-tmux asks the outer terminal for mouse reporting when its own `mouse` is on (`?1000h ?1002h ?1006h`, and never
-`?1003h`); a pane that wants the mouse says so on its own pty, and tmux records that as a format variable
-(`mouse_any_flag`). The default bindings then branch: a `Pane` binding forwards with `send-keys -M` when the
-pane asked, and a `Status*` binding never reaches a pane at all. There is no ambiguity to resolve, because the
-location decides before the binding is looked up.
+tmux asks the outer terminal for mouse reporting when its own `mouse` is on (`?1000h ?1002h ?1006h`, never
+`?1003h`); a pane that wants the mouse says so on its own pty, and tmux records that as `mouse_any_flag`. The
+default bindings branch on it: a `Pane` binding forwards with `send-keys -M` when the pane asked, and a `Status*`
+binding never reaches a pane at all - the location decides before the binding is looked up.
 
 This head is the chrome and the program in one process, so it asks for the mouse itself (`Mouse::Any`, all
 motion and SGR coordinates) and separates the two by what it recorded on the frame: a wheel notch arrives with
@@ -109,8 +107,8 @@ worlds.
 What tmux would replace is the **session layer**, which is exactly the unfinished half of the shell: streaming
 (`%output` is a stream), `SIGWINCH` (`refresh-client -C`), scrollback (`capture-pane -S -`), a registry of
 running sessions, and the input path (`send-keys`, literal and `-H`). Against it: a control-mode client cannot
-forward a mouse (`send-keys -M` answers "no mouse target"), a tmux server is a second long-lived process tree
-whose lifetime has to be expressed like the session cgroup's, and the dependency has a version floor.
+forward a mouse, a tmux server is a second long-lived process tree whose lifetime has to be expressed like the
+session cgroup's, and the dependency has a version floor.
 
 **The one measurement that would decide it.** One private server (`TMUX_TMPDIR` under the test's scratch dir,
 `-L letibot-spike -f /dev/null`), one pane running a full-screen program, and two readers of the same pane: ours
@@ -141,5 +139,5 @@ segment list under a scratch `HOME`. Anything about byobu's *screen* backend, wh
 `capture-pane` fidelity for every class of program: a shell, a wrapped line and a colour prompt were measured,
 and `mc`, `top`, `vim` and a 256-colour program were not. The alternate screen under `capture-pane -a`: the
 attempt to put a pane on it by printing the escape at a shell failed, so the flag's semantics are from the man
-page and were not observed working. And whether Shift+drag still selects in the operator's terminal
-specifically: the mechanism is measured, the gesture was not driven.
+page and were not observed working. And whether Shift+drag still selects in the operator's own terminal: the
+mechanism is measured, the gesture was not driven.
