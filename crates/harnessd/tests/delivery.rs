@@ -8,7 +8,7 @@ use std::time::{Instant, SystemTime};
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::Harness;
-use letibot_harnessd::jobwatch::{BackgroundKind, JobCompletion};
+use letibot_harnessd::jobwatch::{BackgroundKind, JobCompletion, TurnEnd};
 use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_transcript::{Speaker, TranscriptItem, UserPart};
@@ -197,7 +197,7 @@ fn a_turn_that_ends_with_results_held_delivers_them_as_its_own_turn() {
         !woken(&registry, &cfg.session_id),
         "held mid-turn rings nothing"
     );
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert!(
         woken(&registry, &cfg.session_id),
         "a turn that ended with results held must wake its session"
@@ -276,7 +276,7 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
     let (mut h, _registry) = adopted(&parts, &cfg);
     let w = h.job_watchers().expect("a watcher set").clone();
     w.hold(vec![settled(&cfg.session_id, "j21", "exited 0")]);
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
 
     h.submit("what is next?").expect("the prompt's turn runs");
     let rows = user_rows(&h);
@@ -334,7 +334,7 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
 
     let w = h.job_watchers().expect("a watcher set").clone();
     w.hold(vec![settled(&cfg.session_id, "j31", "exited 0")]);
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     std::thread::sleep(std::time::Duration::from_millis(5));
     w.queue_for_test(settled(&cfg.session_id, "j30", "exited 0"));
     assert!(
@@ -383,7 +383,7 @@ fn a_wake_whose_turn_never_opened_keeps_its_results_held() {
     let (mut h, _registry) = adopted(&parts, &cfg);
     let w = h.job_watchers().expect("a watcher set").clone();
     w.hold(vec![settled(&cfg.session_id, "j41", "exited 0")]);
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
 
     // `open_private`: the refusal has to come from OUTSIDE the harness's connection, and
     // `Store::open` would hand back the very connection `h` writes through.

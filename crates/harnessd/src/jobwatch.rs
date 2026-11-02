@@ -32,6 +32,19 @@ pub enum BackgroundKind {
     Subagent,
 }
 
+/// How the turn that has just ended came to a stop. Only one of the three rings this session's
+/// wake for a result it left held: an operator who stopped the turn asked for quiet, and a failed
+/// turn has nobody waiting on what its wake would say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEnd {
+    /// The turn answered, or stopped of its own accord.
+    Done,
+    /// The operator stopped it - `esc esc`, a `/stop`, or a `job_kill` that reached this session.
+    Interrupted,
+    /// It failed: an outage, a refusal, a broken stream, a guard.
+    Failed,
+}
+
 /// A backgrounded thing's end, as the model is told it.
 ///
 /// Built by the watcher and drained by the session that owns it - see [`JobWatchers`].
@@ -556,15 +569,16 @@ impl JobWatchers {
     }
 
     /// A turn of this session has ended - counted after its rounds have run, whatever they came
-    /// to, by the harness's two doors into `run_rounds`. And a turn that ends with results held
-    /// rings this session's own wake
-    pub fn turn_ended(&self) {
+    /// to, by the harness's two doors into `run_rounds`. A turn that ends with results held rings
+    /// this session's own wake, unless it was stopped or failed - see [`TurnEnd`].
+    pub fn turn_ended(&self, how: TurnEnd) {
         {
             let mut r = self.read.lock().expect("read record");
             r.turns_ended += 1;
             r.ended_at = Some(SystemTime::now());
         }
-        if self.held_count() > 0
+        if how == TurnEnd::Done
+            && self.held_count() > 0
             && let Some(bell) = &self.bell
         {
             bell.ring_wake(&self.me);

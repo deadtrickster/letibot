@@ -1119,16 +1119,26 @@ impl Harness {
         opened(self);
         self.name_from_first_message();
         let out = self.run_rounds();
-        self.note_turn_ended();
+        self.note_turn_ended(&out);
         out
     }
 
     /// A turn's rounds are over, counted on the watcher set's read record, which is how the plan check's grace
     /// tells *delivered in the turn that just ended* from *delivered a turn ago*. Called by both doors into
-    /// `run_rounds`, since a turn that failed still ended.
-    pub(crate) fn note_turn_ended(&self) {
+    /// `run_rounds`, since a turn that failed still ended. What the ending was decides whether a result it left
+    /// held rings this session's wake: only a turn that finished on its own does, because an operator who stopped
+    /// it asked for quiet and a failed turn has nobody waiting on its wake.
+    pub(crate) fn note_turn_ended(&self, out: &Result<Reply, HarnessError>) {
+        // Swapped rather than read: one turn, one answer, and a stop taken during the next turn is the next
+        // turn's. The stop comes from the steering and not from `out` because a stopped turn is reported as a
+        // turn failure, which would otherwise be indistinguishable from one that broke.
+        let how = match (self.stopped.swap(false, Ordering::SeqCst), out.is_ok()) {
+            (true, _) => crate::jobwatch::TurnEnd::Interrupted,
+            (false, true) => crate::jobwatch::TurnEnd::Done,
+            (false, false) => crate::jobwatch::TurnEnd::Failed,
+        };
         if let Some(w) = &self.job_watch {
-            w.turn_ended();
+            w.turn_ended(how);
         }
     }
 
@@ -2347,6 +2357,9 @@ impl Harness {
             // interrupt arm of `try_next`.
             subagents: Some(self.subagents.clone()),
             held: self.handed_back.clone(),
+            // And the same for a stop: the turn's ending reads it, and a `HubSteering` built per
+            // round would report a round's stop as nothing at all.
+            stopped: self.stopped.clone(),
             // **And the board, so the operator's answer lands mid-turn.** See the `AnswerTodo` arm.
             todos: Some(self.todos.clone()),
             // **And this session's own parent**, so a message's sentence says which way the edge

@@ -528,6 +528,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             stops: stops.clone(),
         })),
         held: Default::default(),
+        stopped: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
         // falls back to `message from session `<id>`` - see `message_from_a_session`.
@@ -546,6 +547,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
             stops: stops.clone(),
         })),
         held: Default::default(),
+        stopped: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
         // falls back to `message from session `<id>`` - see `message_from_a_session`.
@@ -775,6 +777,7 @@ fn a_parents_message_is_the_childs_steering_and_not_the_operators_words() {
         // No children either: what is asserted here is the message's scoping.
         subagents: None,
         held: Default::default(),
+        stopped: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
         // falls back to `message from session `<id>`` - see `message_from_a_session`.
@@ -836,6 +839,7 @@ fn a_handed_back_message_comes_out_of_the_next_poll_still_the_operators() {
         deliveries: None,
         subagents: None,
         held: Default::default(),
+        stopped: Default::default(),
         todos: None,
         // No parent: these fixtures are about the message's scoping, and the sentence
         // falls back to `message from session `<id>`` - see `message_from_a_session`.

@@ -4,6 +4,7 @@
 use super::*;
 
 use crate::delivery::{DeliveryLog, LOG};
+use crate::jobwatch::TurnEnd;
 use letibot_tokencore::store::{TodoBy, TodoCondition, TodoNeed, TodoStatus};
 use letibot_tools::runtime::WantedNow;
 use std::time::{Duration, SystemTime};
@@ -97,6 +98,7 @@ fn steering(hub: &Arc<Hub>, d: Deliveries) -> HubSteering {
         deliveries: Some(d),
         subagents: None,
         held: Default::default(),
+        stopped: Default::default(),
         todos: None,
         // These fixtures are about deliveries, not about the tree: a session with no parent
         // words a message `message from session `<id>`` - see `message_from_a_session`.
@@ -138,7 +140,7 @@ fn a_routine_completion_during_a_long_turn_is_held_and_arrives_as_one_batch() {
 
     // The long turn ends; the next turn's start (a prompt that got there before the turn-end
     // wake) carries what was held through it.
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     let note = d.at_turn_start().expect("the next turn carries the batch");
     assert!(
         note.starts_with("[meanwhile] Finished while you were working:"),
@@ -218,7 +220,7 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
     let mut s = steering(&hub, d.clone());
 
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert!(!woken(&registry), "a turn that held nothing wakes nothing");
 
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
@@ -226,7 +228,7 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     assert_eq!(w.held_count(), 1);
     assert!(!woken(&registry), "and holding it rang nothing");
 
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert!(woken(&registry), "the turn ended with a result held");
 
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
@@ -256,7 +258,7 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
         settled("j1", "exited 0", SystemTime::now()),
         settled("j2", "exited 0", SystemTime::now()),
     ]);
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     std::thread::sleep(Duration::from_millis(5));
     w.queue_for_test(settled("j3", "exited 0", SystemTime::now()));
 
@@ -338,7 +340,7 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
         "a boundary that changed nothing said nothing"
     );
 
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
     assert!(b.batch.is_some());
     assert_eq!(held_said(&hub), [(1, 1, 1), (0, 0, 0)]);
@@ -610,14 +612,14 @@ fn a_wait_ons_grace_lasts_until_the_turn_after_the_completion_was_read() {
         askable(&board, &w, cap, SystemTime::now()).is_empty(),
         "delivered mid-turn: quiet"
     );
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert!(
         askable(&board, &w, cap, SystemTime::now()).is_empty(),
         "at the end of the delivering turn the model has only just read it: still quiet"
     );
 
     // 3. The next turn ends without the rows being moved: they are the check's again.
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert_eq!(
         askable(&board, &w, cap, SystemTime::now()),
         vec![
@@ -647,12 +649,12 @@ fn a_held_or_wake_delivered_completion_is_graced_the_same_way() {
     // Delivered as the opening of the next turn the model takes (the batch rides in with it).
     let note = d.at_turn_start().expect("the batch");
     assert!(note.contains("`j12` exited 0"), "{note}");
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert!(
         askable(&board, &w, cap, SystemTime::now()).is_empty(),
         "the turn it opened has ended: still quiet"
     );
-    w.turn_ended();
+    w.turn_ended(TurnEnd::Done);
     assert_eq!(askable(&board, &w, cap, SystemTime::now()).len(), 2);
 }
 

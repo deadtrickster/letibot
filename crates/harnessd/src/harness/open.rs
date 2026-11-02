@@ -2639,6 +2639,7 @@ impl Harness {
             intent,
             injected,
             handed_back: Default::default(),
+            stopped: Default::default(),
             monitors,
             monitor_cursor,
             room,

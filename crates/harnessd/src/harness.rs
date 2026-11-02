@@ -717,6 +717,9 @@ pub struct HubSteering {
     /// them first. Shared with the harness on purpose: a `HubSteering` is built per round, and one
     /// that owned them lost them when the round let go.
     held: Arc<Mutex<VecDeque<SteeringMessage>>>,
+    /// **An interrupt this turn took**, shared with the harness the way `held` is: what the turn's
+    /// ending is told, so a stop does not ring a wake of its own a moment after the operator's.
+    stopped: Arc<AtomicBool>,
     /// **This session's board**, for the one command a running turn applies to it: the
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
@@ -738,6 +741,7 @@ impl HubSteering {
             deliveries: None,
             subagents: None,
             held: Default::default(),
+            stopped: Default::default(),
             todos: None,
             parent: None,
         }
@@ -1487,6 +1491,9 @@ impl SteeringSource for HubSteering {
                     // flight through. Nothing here waits for the children, because a stop that blocked on
                     // its subtree would hold the turn it is stopping open.
                     stop_children_first(self.subagents.as_ref(), &self.hub);
+                    // And the turn's ending is told: a session the operator stopped must not ring a wake
+                    // for the results it held, which is a turn nobody asked for.
+                    self.stopped.store(true, Ordering::SeqCst);
                     Some(SteeringMessage::urgent(reason))
                 }
                 CommandKind::Message { from, text } => {
@@ -1771,6 +1778,9 @@ pub struct Harness {
     /// What a round handed back to its steering, shared with every `HubSteering` this harness builds,
     /// so a message handed back by a failed or interrupted round outlives the round (R91.1).
     handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
+    /// **Whether the turn in flight was stopped by an interrupt**, shared with every `HubSteering` for
+    /// `handed_back`'s reason and read once, when the turn ends: a stopped turn rings no wake.
+    stopped: Arc<AtomicBool>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
     /// This session's connection to the box's room, when there is a coordinator and this session may

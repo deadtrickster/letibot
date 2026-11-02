@@ -325,7 +325,7 @@ impl Harness {
     pub fn run_after_operator_shell(&mut self) -> Result<Reply, HarnessError> {
         self.trail.begin_turn();
         let out = self.run_rounds();
-        self.note_turn_ended();
+        self.note_turn_ended(&out);
         out
     }
 
