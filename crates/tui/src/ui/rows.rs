@@ -1,18 +1,10 @@
-//! **rano's lines as this head's row strings** — the one edge every `rano::agent` and
+//! rano's lines as this head's row strings - the one edge every `rano::agent` and
 //! `rano::markdown` line crosses on its way to the frame.
 //!
-//! rano draws lines of role-tagged spans; this head still composes its frame out of ANSI
-//! strings (`crate::ui::screen`, the row-diffing painter in `rano::term`). A row is written
-//! one way: the line's own style (a tool row's dim register, a highlighted row's inverse, a
-//! composer edge's faint) opened once, each styled span in its own look closed by a reset
-//! *and the line's style again* — [`Line::to_ansi_inside`] — and a reset at the end. A line
-//! with no style of its own is `to_ansi_inside` alone, each span opened and reset.
-//!
-//! A reset is not a restore. The string painters this replaced closed an inner span with a
-//! plain reset inside a container, so the text after a code span in a quote was never faint,
-//! a highlighted row was inverse only up to its first coloured mark, the turn's `Responding`
-//! lost its colour after the spinner, and the separators of the composer's legend lost the
-//! edge's faint. rano's lines say what was meant, and this writes what they say.
+//! A row is written one way: the line's own style (a tool row's dim register, a highlighted
+//! row's inverse) opened once, each styled span closed by a reset and then the line's style
+//! again ([`Line::to_ansi_inside`]), and a reset at the end. A reset is not a restore, so a
+//! span closed with a plain reset would end the line's register at its first coloured mark.
 
 use rano::render::Line;
 use rano::style::Palette;

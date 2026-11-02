@@ -29,11 +29,9 @@ pub(crate) fn editor_inner(x: usize, y: usize, w: usize, room: usize) -> Rect {
     )
 }
 
-/// **The pane's top edge**: the file, and what a reader must know before typing into it —
-/// unsaved edits, or that it cannot be written. A buffer with no file says so.
-///
-/// The name is cut from the LEFT when the edge is short — `…/dir/notes.txt` — so the file's own
-/// name and the state after it are what survive, never the head of a long path.
+/// The pane's top edge: the file, and what a reader must know before typing into it -
+/// unsaved edits, or that it cannot be written. The name is cut from the LEFT when the
+/// edge is short, so the file's own name and the state after it survive, not the path head.
 fn editor_title(name: &str, t: &rano::editor::FrameTitle, w: usize) -> Line {
     let room = w.saturating_sub(24).max(12);
     let shown = if visible_width(name) > room {
@@ -74,15 +72,9 @@ fn editor_keys(keys: &[(String, String)]) -> Line {
 }
 
 impl App {
-    /// **The pane's rows for this frame**: `room` rows of `w` columns, drawn at column `x` and
-    /// row `y` of the terminal — which is where rano is told it is, so its mouse mapping and its
-    /// caret are in the terminal's own coordinates.
-    ///
-    /// rano draws into a cell buffer the size of the rectangle (`rano::ui::draw_in`), and the
-    /// buffer is emitted as this head's row strings under its palette (`Buffer::emit`), so the
-    /// pane's colours follow `color` and the light/dark choice like every other row. A frame in
-    /// which nothing changed — no key, no tick that said so, no resize — serves the last rows
-    /// again rather than drawing them twice.
+    /// The pane's rows for this frame, at column `x` and row `y` - where rano is told it is,
+    /// so its mouse mapping and caret land in the terminal's own coordinates. A frame where
+    /// nothing changed serves the last rows rather than drawing them twice.
     pub(crate) fn editor_rows(&mut self, x: usize, y: usize, w: usize, room: usize) -> Vec<String> {
         let palette = self.cfg.palette();
         // The name the edge shows: relative to the session's workspace, as every other path this
@@ -155,10 +147,9 @@ impl App {
         p.rows.clone()
     }
 
-    /// **The places among lines `start..end` of the conversation**, as `(row of the window,
-    /// place)`: each line of the history that belongs to a finished edit or write row whose
-    /// change this head holds. The spans are in line order (the walk appends, the backward fill
-    /// prepends and shifts), so each line's row is a binary search away.
+    /// The places among lines `start..end` that belong to a finished edit or write row whose
+    /// change this head holds, as `(row of the window, place)`. In line order (the backward
+    /// fill prepends and shifts), so each line's row is a binary search away.
     pub(crate) fn file_rows_in(&self, start: usize, end: usize) -> Vec<(usize, FileRef)> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();

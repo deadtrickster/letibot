@@ -1,40 +1,11 @@
-//! **The standing notes**: the notes the harness reads into the system prompt, one row each,
-//! in the order the section carries them — `/standing`.
+//! The standing notes: the notes the harness reads into the system prompt, one row each,
+//! in the order the section carries them - `/standing`.
 //!
-//! # What a row is, and which half of it is whose
-//!
-//! A row is the **index's own**: the path the section's heading carries, the abstract it shows
-//! for the note, and the **form** the budget gave the file — `verbatim` when the prompt
-//! carries the note whole, `indexed` when it did not fit what was left of the budget and the
-//! prompt carries its headings and line ranges instead. Those three come from the daemon, and
-//! deliberately: the form is decided with the session's token counter, by the one walk that
-//! assembles the section, and a pane that re-derived it would be a second opinion about the
-//! very thing it exists to show.
-//!
-//! The **size, the age and whether the file is still there** are this head's, read from the
-//! disk at DRAW time — the todos pane's rule (`refresh_repo_todos`), for the same reason: the
-//! operator edits and deletes their own notes while a pane is open, and *the index names a
-//! note the disk no longer has* is a comparison that only a fresh `stat` can make. It is the
-//! one row that must never be drawn as a row that looks fine, because the prompt is still
-//! carrying that note's entry.
-//!
-//! # Enter
-//!
-//! **Enter opens the row's FILE, in the editor pane** — rano, the pane every other file in
-//! this head opens in, through the door they all come through (`App::open_in_editor`; see
-//! [`App::open_note`]). It is not a reader of this pane's own, and that is deliberate: a note
-//! the budget gave `indexed` is one the prompt does NOT carry whole, so anything drawn from
-//! what the daemon sent would be the index of a note shown as the note. The file is where all
-//! of it is, and it is editable, which is what a reader who came here from a path in a
-//! conversation wants. The list stays open under the pane, so leaving rano lands back on these
-//! rows with the cursor where it was.
-//!
-//! # The words
-//!
-//! `verbatim` and `indexed` are the section's own — a file the budget could not fit arrives
-//! under a heading that says it is `indexed` — so the pane says what the prompt says. Calling
-//! it *digested* here would be a second name for one fact, and a second name is how a reader
-//! comes to think there are two things.
+//! A row's path, abstract and form (`verbatim`/`indexed`) come from the daemon, because the
+//! form is decided with the session's token counter; size, age and whether the file is still
+//! there are read from disk at DRAW time, since the operator edits notes under an open pane
+//! and only a fresh `stat` can say the index names a note that is gone. Enter opens the file
+//! in the editor pane, because an `indexed` note is not in the prompt whole.
 
 use crate::app::standing::{Corpus, OnDisk};
 use crate::app::*;
@@ -46,15 +17,9 @@ use rano::render::{Line, Span, Style};
 use rano::style::Role;
 
 impl App {
-    /// The standing-notes pane's rows, and the record of where each stop landed — which is
-    /// what the arrows scroll by, never arithmetic over the list they drew from.
-    ///
-    /// **And the corpus's own watch.** The form on a row is the daemon's answer — decided with
-    /// the session's token counter, which this head does not have — while the size beside it is
-    /// read here, now; so a note edited with the pane open would otherwise draw a new size next
-    /// to the form it had before the edit. `repo_todos_at`'s rule for `TODO.md`, one pane over:
-    /// one `stat` per note (already taken for the row) plus a `read_dir` per directory, and an
-    /// ask when any of it moved.
+    /// The pane's rows, and where each stop landed - what the arrows scroll by, never
+    /// arithmetic over the list. The corpus watch compares the `stat` each row already takes,
+    /// so a note edited under the pane draws a new size beside a form the daemon decided.
     pub(crate) fn standing_lines(&mut self, w: usize) -> Vec<String> {
         let (content, corpus) = self.standing_view(w);
         self.standing_stop_rows = content.stop_rows.clone();
@@ -72,21 +37,15 @@ impl App {
         row_strings(&content.lines, self.cfg.palette())
     }
 
-    /// **The list: one stop per note, and one faint line under it for the abstract** — with the
-    /// corpus's own signature alongside, folded from the `stat` each row's draw already takes.
-    ///
-    /// Two lines an entry, like the queue pane's rows and for the same reason: the facts a
-    /// reader needs are *what is it* (the path, and the index's own line about it) and *what
-    /// state is it in* (the form the budget gave it, its size, its age) — and a single row
-    /// would spend the second on the first.
+    /// The list: one stop per note, one faint line under it for the abstract, and the corpus
+    /// signature folded from the `stat` each row already takes. Two lines an entry, so that
+    /// what it is and what state it is in stay two facts a reader can take apart.
     fn standing_view(&self, w: usize) -> (PaneLines, Corpus) {
         let mut out = PaneLines::new();
         let mut corpus = Corpus::default();
-        // **The workspace's own notes directory, watched whether or not it has anything in
-        // it**: with no rows to name it, a first note written while the pane is open would
-        // otherwise be a change nothing could see, and the pane would sit there saying there
-        // are none. The box-wide directory is not named here — this head has no path to it
-        // until a row carries one — so a FIRST note there is the one change it cannot notice.
+        // The workspace's notes directory is watched even when empty: with no rows to name
+        // it, a first note written under an open pane would be a change nothing sees. The
+        // box-wide directory is only named by a row, so a first note there goes unnoticed.
         if !self.wiring.workspace.is_empty() {
             corpus.watch_dir(&std::path::Path::new(&self.wiring.workspace).join(".letibot/notes"));
         }
@@ -112,12 +71,9 @@ impl App {
             let picked = i == cursor;
             let disk = OnDisk::read(&e.path);
             corpus.note(&e.path, disk.as_ref());
-            // **The note's path, as a link the terminal opens** (OSC 8) where it speaks it —
-            // the operator's own report, about this very row's fact: *"yeah you gave md name
-            // but it is not clickable"*. The pane prints the path the prompt's section
-            // carries, so this is where a printed path becomes a span, and `file_url` is the
-            // decision about which URL opens it. `Style::new()` rather than a role: the row is
-            // drawn plain today, and a terminal without links must get the same bytes.
+            // The printed path as a link where the terminal speaks OSC 8; `file_url` decides
+            // which URL opens it. `Style::new()` rather than a role, because a terminal
+            // without links must get the same bytes as one with them.
             let left = Line::new(vec![
                 Span::raw(format!("{} ", pane::mark(picked))),
                 path_span(
@@ -160,19 +116,13 @@ impl App {
                     "    (no prose in this note — the index has no abstract for it)",
                 )),
             }
-            // **THE KEEPER'S REPORT GOES HERE, ONE FAINT LINE UNDER THE ABSTRACT.** The
-            // notes keeper (`agent/notes-keeper`, a sibling in flight) reports stale
-            // references, what changed, and proposals to remove — and this is the row it
-            // lands on, exactly as a queue verdict lands on the queue's row: the reader is
-            // already here when the question *is this note still true* comes up, and the two
-            // lines above are the fields a report would be about. **Its shape is deliberately
-            // NOT invented here**: it arrives with the keeper, on its own wire, and this is
-            // the place rather than a guess at it.
+            // The keeper's report lands here, one faint line under the abstract, as a queue
+            // verdict lands on the queue's row: the reader is already asking whether this
+            // note is still true. Its shape arrives with the keeper, not invented here.
         }
-        // **The legend, only when it has something to say.** The whole point of the form
-        // column is that the budget's effect was invisible; one line saying what `indexed`
-        // means is what turns a word into a fact a reader can act on — and the act is Enter,
-        // which opens the file these rows are about.
+        // The legend only when it has something to say: the form column exists because the
+        // budget's effect was invisible, and one line on what `indexed` means turns the word
+        // into a fact a reader can act on with Enter.
         if indexed > 0 {
             out.blank();
             out.push(pane::faint(format!(
@@ -194,12 +144,9 @@ fn form_word(form: NoteForm) -> &'static str {
     }
 }
 
-/// **How long ago a note was last written**, from its own mtime.
-///
-/// The FACT is the file's — `OnDisk` read it — and this is only its rendering, in the register
-/// `ps` uses for ages: a reader asking *is this note from this week* wants a word, not an
-/// epoch. `None` is an mtime the filesystem would not give, which is said rather than shown as
-/// 1970.
+/// How long ago a note was last written, from its own mtime. The fact is `OnDisk`'s and this
+/// is only its rendering, in `ps`'s register for ages. `None` is an mtime the filesystem would
+/// not give, said rather than shown as 1970.
 fn age_of(mtime_ms: Option<u64>, now_ms: u64) -> String {
     let Some(at) = mtime_ms else {
         return "at an unknown time".into();
