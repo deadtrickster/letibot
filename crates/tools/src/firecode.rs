@@ -1830,9 +1830,9 @@ mod tests {
         );
     }
 
-    /// A VM's jobs can be watched (R92.1): the owned process host is the same one `processes`
-    /// lends. Before, `processes_arc` fell to the trait default `None`, so the harness built no
-    /// job watcher for a firecode session and a finished background job was never announced.
+    /// A VM's jobs can be watched: the owned process host is the same one `processes` lends.
+    /// Without it the trait default is `None`, so no job watcher was built for a firecode session
+    /// and a finished background job was never announced.
     #[test]
     fn a_vm_that_runs_processes_hands_its_host_to_the_job_watcher() {
         // An exec VM builds its process host on a process-lifetime tree, and CI's runner has none,

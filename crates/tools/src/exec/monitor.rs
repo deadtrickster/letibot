@@ -604,8 +604,8 @@ pub struct Monitors {
     /// instead of waiting out [`TICK`]. Guarded by [`Monitors::wake_guard`].
     wake: Condvar,
     wake_guard: Mutex<()>,
-    /// The plugin conditions this session may arm (`docs/plugins-plan.md` §4.4), wired by the
-    /// daemon. `None` in a test or a daemon that serves no plugins.
+    /// The plugin conditions this session may arm, wired by the daemon. `None` in a test or a
+    /// daemon that serves no plugins.
     plugins: Mutex<Option<Arc<dyn PluginConditions>>>,
 }
 

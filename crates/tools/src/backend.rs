@@ -205,8 +205,8 @@ pub trait ExecBackend: Send + Sync {
                     continue;
                 }
                 if out.len() >= limit {
-                    // Bounded, and the caller is told it was bounded. A silent cut is
-                    // the failure §8.3 refuses one layer up.
+                    // Bounded, and the caller is told it was bounded. A silent cut is the
+                    // failure the truncation rule one layer up refuses.
                     truncated = true;
                     return Ok((out, truncated));
                 }
