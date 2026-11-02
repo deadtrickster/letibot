@@ -1,45 +1,26 @@
-//! The events one turn emits (§4.5), and the sink they go to.
+//! The events one turn emits, and the sink they go to.
 //!
-//! Only the subset a turn produces lives here. `HeadAttached`, `DecisionRequested`
-//! and the tool-lifecycle events belong to W7, W11 and W9 — putting them in this
-//! enum now would make the turn engine look like it owns them.
+//! Only the subset a turn produces lives here: `HeadAttached` and the tool-lifecycle events
+//! belong elsewhere, and putting them in this enum would make the turn engine look like it
+//! owns them.
 //!
-//! **`Delta` carries only the increment.** No event here carries accumulated text.
-//! That single rule is half of "render cost independent of output length"; §13.3 is
-//! the other half. It is stated as a type: `Delta` has a `text` and no `full`, and
-//! there is nowhere to put one.
+//! `Delta` carries only the increment, never accumulated text. The rule is stated as a type:
+//! `Delta` has a `text` and no `full`, and there is nowhere to put one.
 
 use letibot_tokencore::TokenId;
 
 use crate::completion::{FinishReason, PromptProgress};
 use crate::metrics::TurnMetrics;
 
-/// Which channel a delta belongs to. Reasoning is a sibling of assistant here for
-/// the same reason it is in `TranscriptItem`: one turn interleaves several of each.
-///
-/// # Why there are three and not two
-///
-/// There used to be two, and the third was a documented gap (T13.5): the body of a
-/// `<tool_call>` block is ordinary text to this engine, so it was announced on
-/// [`DeltaTarget::Text`] and a head had no way to know it was not the answer. What
-/// the operator saw, using it: *"tool calls — i see `<function…` like strings
-/// first, then closing tag arrives and it becomes a toolcall."*
-///
-/// That is not a head-side problem and no heuristic in a head is the right fix: by
-/// the time the markup is a string in a `Delta`, the one thing that could tell it
-/// apart from a user quoting `<function=` at the model has already been thrown
-/// away. The engine knows — it is walking the ids, and `<tool_call>` is a single
-/// vocab entry in both dialects — so the channel is decided here, by id, the same
-/// way [`DeltaTarget::Reasoning`] already was.
+/// Which channel a delta belongs to. `ToolCall` exists because a call's body is ordinary text
+/// to a renderer: the engine, walking the ids, is the only layer that can say it is not the
+/// answer, and by the time it is a string in a `Delta` the evidence is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeltaTarget {
     Text,
     Reasoning,
-    /// The body of a tool call, still being written.
-    ///
-    /// A head must never render this as prose. It is the raw
-    /// `<function=…><parameter=…>` markup the model writes between
-    /// `<tool_call>` and `</tool_call>`, and its settled form is the
+    /// The body of a tool call, still being written. A head must never render this as prose:
+    /// it is the raw `<function=…><parameter=…>` markup, and its settled form is the
     /// `ToolCallProposed` that follows.
     ToolCall,
 }
@@ -50,22 +31,9 @@ pub enum TurnEvent {
         turn_id: String,
         model: String,
         ledger_head: String,
-        /// **The WHOLE turn's start, in Unix milliseconds — not this round's.**
-        ///
-        /// A `TurnStarted` fires once per ROUND (`run_turn_steered` is called inside the round
-        /// loop), and a head that times from the event it receives therefore restarts its clock
-        /// at every round: the operator watched the composer read `2.1s` a minute into a turn,
-        /// and reported exactly that — *"it should be still responding even while you do tools
-        /// calls and such, and not reset, currently it resets."*
-        ///
-        /// A turn is one prompt however many rounds it takes, so the start belongs to the
-        /// prompt. The ENGINE cannot know it — it sees one round — so the emitter supplies it,
-        /// and `None` means *nobody measured this one* (a snapshot turn), which the head draws
-        /// as *started before this head attached* rather than as a duration nobody took.
-        ///
-        /// Unix ms rather than an `Instant` because it crosses a process boundary in the
-        /// protocol; the head converts it to its own clock exactly once, the same way it does
-        /// a decision's deadline (see `wire-deadline->monotonic`).
+        /// The WHOLE turn's start in Unix ms, not this round's: a `TurnStarted` fires once per
+        /// round, so a head timing from the event restarts its clock every round. `None` means
+        /// nobody measured it, which a head draws as *started before this head attached*.
         began_ms: Option<u64>,
     },
     /// Nothing surveyed reads this one. It is what makes a long prefill visible,
@@ -74,17 +42,9 @@ pub enum TurnEvent {
         turn_id: String,
         progress: PromptProgress,
     },
-    /// The server's own generation counter, one event per frame that advanced it.
-    ///
-    /// The generation half of liveness, paired with [`TurnEvent::PromptProgress`]:
-    /// a head watching a turn tells a hang from a model that is still emitting by
-    /// whether this number moves. That is exactly the case a long tool-call write
-    /// is — the markup arrives on [`DeltaTarget::ToolCall`], which no default view
-    /// renders as prose, so the screen is static while the counter climbs.
-    ///
-    /// The value is the server's `tokens_predicted`, not a count of what we
-    /// accumulated: the accumulator's length equals it only while every frame has
-    /// been accountable, and the moment that stops, the turn is being refused.
+    /// The server's own generation counter, one event per frame that advanced it: the
+    /// generation half of liveness, so a head watching a turn tells a hang from a model still
+    /// emitting. It is the server's `tokens_predicted`, not our accumulated count.
     TokensGenerated { turn_id: String, tokens: u64 },
     Delta {
         turn_id: String,
@@ -96,24 +56,9 @@ pub enum TurnEvent {
         call_id: String,
         name: String,
         args_digest: String,
-        /// The call's raw arguments, **in process only**.
-        ///
-        /// `crates/ui/DESIGN.md` §4.1: a running call reached a head as `name` and
-        /// `args_digest`, so it could render `Running bash` and never `Running
-        /// "cargo test --workspace"` — the arguments arrived with the transcript,
-        /// i.e. after the call had finished, which is exactly when a head no longer
-        /// needs them.
-        ///
-        /// §4.1's objection to putting them on an event is that *"an event stream
-        /// fans out to every attached head and a 200 KB argument would be sent to
-        /// all of them"*. That is true of `letibot_sessionlog::SessionEvent`, which
-        /// goes on a socket. It is not true of this enum: a `TurnEvent` is handed
-        /// to an in-process `EventSink` and the string it carries is a clone of one
-        /// already in the transcript. So the arguments travel this far, and
-        /// `letibot_sessionlog::event::display_target` cuts them to a bounded label
-        /// at the lift — which is the boundary the cap is actually about, and the
-        /// one place a *head* can also reach when it needs the same label for a
-        /// settled transcript row.
+        /// The call's raw arguments, in process only. A running call reached a head as a name
+        /// and a digest, so it could never render `Running "cargo test"`; a `TurnEvent` goes to
+        /// an in-process sink, and the lift cuts the string to a bounded label.
         arguments: String,
     },
     TranscriptAppended {
@@ -134,24 +79,9 @@ pub enum TurnEvent {
     },
     /// §18's post-flight assertions land here, and so do §8.5's guards.
     Warning { code: &'static str, detail: String },
-    /// **A fold's long wait, named as the compaction's own.**
-    ///
-    /// The overrun paths summarise a SCRATCH transcript, and a scratch turn's own
-    /// `PromptProgress` cannot go out as itself: it lands in the head's
-    /// `turn.progress`, which is the SESSION's turn, so the scratch prompt's token
-    /// count was drawn as the session's context — the operator watched `69k` sit over
-    /// a 240k conversation that had not changed (2026-09-20, and again 2026-10-02 as
-    /// *"leticl compacts but why no progress bar?"*).
-    ///
-    /// The number was never wrong. Its LABEL was, and this is that number with its own:
-    /// a head that draws these fields cannot confuse them with session context however
-    /// similar the figures are, because the event says which compaction and which half
-    /// produced them.
-    ///
-    /// **Two halves is the most that exist and one is the common case.** The cloud
-    /// strategy folds once (`summarise_first_half`), reporting `1 of 1`; the local one
-    /// summarises a recent tail and then the older part (`summarise_overrun`), which is
-    /// why the count is a pair rather than a flag.
+    /// A fold's long wait, named as the compaction's own: a scratch turn's `PromptProgress`
+    /// lifted as itself lands in the head's `turn.progress`, which is the SESSION's, so the
+    /// scratch prompt's count was drawn as the session's context.
     CompactionProgress {
         /// Which half is running, 1-based, in the order they RUN — which for the local
         /// plan is the recent tail first, since its cold prompt is the cheap one to warm
@@ -169,20 +99,15 @@ pub enum TurnEvent {
         processed: u64,
         /// What the half has produced so far, counted in `unit`.
         written: u64,
-        /// **What `written` counts, because the two transports do not count the same
-        /// thing.** A token stream reports `tokens_predicted`; a messages stream reports
-        /// only text, so a character count is the whole of what is knowable there. One
-        /// name for both would be a lie about one of them, and the daemon is the layer
-        /// that knows which transport it is on.
+        /// What `written` counts, because the transports do not count the same thing: a token
+        /// stream reports `tokens_predicted`, a messages stream reports only text, so one name
+        /// for both would be a lie about one of them.
         unit: &'static str,
     },
 }
 
-/// Where events go.
-///
-/// A trait rather than a channel so the engine has no opinion about the transport,
-/// and so a test can assert on the exact sequence a turn produced. W7 will
-/// implement it over the session log.
+/// Where events go. A trait rather than a channel so the engine has no opinion about the
+/// transport, and so a test can assert on the exact sequence a turn produced.
 pub trait EventSink {
     fn emit(&mut self, event: TurnEvent);
 }
@@ -242,12 +167,9 @@ fn kind_of(e: &TurnEvent) -> &'static str {
     }
 }
 
-/// A short, stable digest of a tool call's arguments, for `ToolCallProposed`.
-///
-/// The event carries a digest rather than the arguments because an event stream
-/// fans out to every attached head and a 200 KB argument would be sent to all of
-/// them. The arguments are in the transcript, which is where a head can ask for
-/// them.
+/// A short, stable digest of a tool call's arguments, for `ToolCallProposed`: the event
+/// carries a digest rather than the arguments because it fans out to every attached head,
+/// and the arguments are in the transcript, where a head can ask for them.
 pub fn args_digest(arguments: &str) -> String {
     // FNV-1a. Not a security hash and not pretending to be one: this is a display
     // and correlation aid, and the ledger's SHA-256 chain is what carries identity.

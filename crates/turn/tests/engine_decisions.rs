@@ -1,14 +1,11 @@
 //! The decisions the engine makes about what it received.
 //!
-//! These run against a canned server (`tests/support/canned.rs`) rather than the
-//! live one, because each of them is a case the live server cannot be asked to
-//! produce without breaking a rule: `finish_reason: length` needs the `n_predict`
-//! cap §5.7 removed, repetition collapse needs a collapsing model, and a prefix
-//! violation needs a broken harness. Replaying the bytes is the same test with the
-//! model replaced by the case.
+//! These run against a canned server rather than the live one, because each is a case the live
+//! server cannot be asked to produce without breaking a rule: `length` needs a cap §5.7 removed,
+//! repetition collapse needs a collapsing model, and a prefix violation needs a broken harness.
+//! Replaying the bytes is the same test with the model replaced by the case.
 //!
-//! They still use the real vocabulary, the real tokenizer, the real ledger and the
-//! real memfd region — only the socket is fake.
+//! They still use the real vocabulary, the real tokenizer, the real ledger and the real memfd.
 
 mod support {
     pub mod canned;
@@ -113,15 +110,9 @@ fn token_frames(ids: &[u32]) -> Vec<Frame> {
         .collect()
 }
 
-/// The same, but each frame carries the token's **own** text, the way the server
-/// does.
-///
-/// `token_frames` sends `text: ""` because most cases here are about ids and a head
-/// is not the subject. The channel tests below compare what a head was *shown*
-/// against what the parser *committed*, so the two have to be the same bytes coming
-/// out of the same vocabulary — including `</think>`, which Qwen marks
-/// `USER_DEFINED` and which therefore does arrive in `content`. That is what made
-/// it visible on a real head.
+/// The same, but each frame carries the token's OWN text, the way the server does. The channel
+/// tests compare what a head was SHOWN against what the parser COMMITTED, so the two have to be
+/// the same bytes out of the same vocabulary, `</think>` included.
 fn spoken_frames(ids: &[u32]) -> Vec<Frame> {
     ids.iter()
         .map(|id| Frame::Token {
@@ -245,12 +236,9 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     );
 }
 
-/// R7, the live finding replayed: the stream stops with `eos` — a *normal* stop,
-/// which is the point — while the reasoning block is still open, and nothing but
-/// reasoning was produced. The length classifier has no opinion on a `stop`, so
-/// before the R7 check this turn committed as an ordinary empty one; the canned
-/// bytes are msg_08d19c747001d1xPcOJgtgH10c's shape, seven tokens of the same
-/// conflation at full size.
+/// The live finding replayed: the stream stops with `eos` - a NORMAL stop, which is the point -
+/// while the reasoning block is still open and nothing but reasoning was produced. The length
+/// classifier has no opinion on a `stop`, so before this check the turn committed as empty.
 #[test]
 fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     let _lock = serial();
@@ -613,15 +601,9 @@ impl SteeringSource for Once {
     }
 }
 
-/// **A round's tail is in the prompt the server gets, and not in the log.**
-///
-/// `run_turn_steered_with_tail` is where the standing-notes offer rides
-/// (`letibot_harnessd::notes_offer`), and the two things that make it an OFFER
-/// rather than a note are both asserted here: the prompt grows by the tail, and
-/// `session.items` grows by the model's own row only. The second is the one that
-/// makes it droppable — the next round's prompt is rebuilt from those items, so
-/// an offer the round does not take is gone, and an offer it does take is an
-/// ordinary `read` whose result is an ordinary permanent row.
+/// A round's tail is in the prompt the server gets, and not in the log: the prompt grows by the
+/// tail and `session.items` grows by the model's own row only, which is what makes an offer
+/// droppable - the next round's prompt is rebuilt from those items.
 #[test]
 fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
     let _g = serial();
@@ -708,21 +690,9 @@ fn a_rounds_tail_is_in_the_prompt_and_not_in_the_log() {
     );
 }
 
-/// **A message already waiting when the turn begins goes in the prompt, not behind
-/// it.**
-///
-/// The poll used to live only in the stream loop and at the boundary under it, so
-/// the window where nobody listened was exactly "a tool is running" — and it cost
-/// a round on top: the next generation was built and sent without the operator's
-/// words, ran deaf, and appended them afterwards. Measured on the operator's own
-/// session, 2026-09-20: a line typed during a three-minute `job_wait` sat queued
-/// through that wait, through the next round, and through a 300-second permission
-/// ask. *"basically it should be a little bit greedy with my messages"*.
-///
-/// `Once` is the fixture on purpose — it answers the very first poll, which is
-/// what "was already waiting" means — and the two assertions are the two halves:
-/// the message is reported as `steering_before`, and it is in the transcript
-/// ahead of anything the model said this turn.
+/// A message already waiting when the turn begins goes in the prompt, not behind it: a poll that
+/// lives only in the stream loop is deaf for as long as a tool runs, so the next generation is
+/// built and sent without the operator's words and runs deaf. `Once` is the fixture on purpose.
 #[test]
 fn a_message_already_waiting_is_read_before_the_model_speaks() {
     let _lock = serial();
@@ -801,14 +771,9 @@ fn a_message_already_waiting_is_read_before_the_model_speaks() {
     );
 }
 
-/// A correction that arrives mid-turn is injected at the **step boundary**: the
-/// generation completes, then the message is appended as a plain user item.
-///
-/// The source is `After`, not `Once`, and that is the premise rather than a
-/// detail. A turn now polls once BEFORE it builds its prompt — the greedy poll —
-/// so a `Once` here would be consumed there and this test would silently measure
-/// the other path under this name. `After` makes "arrives while the model is
-/// speaking" a fact about the fixture instead of an accident of call order.
+/// A correction that arrives mid-turn is injected at the step boundary: the generation
+/// completes, then the message is appended as a plain user item. The source is `After`, not
+/// `Once`, because the greedy poll would consume a `Once` before the prompt is built.
 #[test]
 fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     let _lock = serial();
@@ -876,20 +841,9 @@ fn an_ordinary_steering_message_is_injected_after_the_generation_completes() {
     );
 }
 
-/// **A failed turn gives the operator's words back to the source, and commits
-/// nothing.**
-///
-/// MEASURED on the operator's own head: they typed a prompt while a turn was
-/// running, the daemon accepted it, and the round then failed under §5.7
-/// (`length_empty_turn`). The words were out of the hub's queue the moment
-/// `absorb` took them, and the failed turn committed nothing — so the words were
-/// lost: not in the transcript, not in the source, and the head drew `queued` for
-/// the rest of the session. This test holds the property that the words go back
-/// to the source rather than being appended, so the next round's prompt contains
-/// them.
-///
-/// The backend is the §5.7 fixture — reasoning only, at the limit — and the
-/// steering is `After`, so the words arrive mid-generation rather than before it.
+/// A failed turn gives the operator's words back to the source, and commits nothing. The words
+/// were out of the hub's queue the moment `absorb` took them, so appending them on the error
+/// path would lose them; they go back instead, and the next round's prompt contains them.
 #[test]
 fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
     let _lock = serial();
@@ -942,11 +896,9 @@ fn a_failed_turn_gives_the_operators_words_back_to_the_source() {
         other => panic!("{other:?}"),
     }
 
-    // **The words are back in the source, not lost.** The failed turn committed
-    // nothing, so the operator's words — which are input, not output — go back to
-    // the source rather than being appended. The `left` counter is a test artifact
-    // (it delays the words to mid-generation); the next round starts fresh, so
-    // reset it and check that the words come out, with their flags intact.
+    // The words are back in the source, not lost: they are input, not output, and the failed
+    // turn committed nothing. The `left` counter is a test artifact that delays them to
+    // mid-generation, so reset it and check they come out with their flags intact.
     steering.left = 0;
     let back = steering
         .try_next()
@@ -1095,16 +1047,9 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
         other => panic!("the invariant must hold: {other:?}"),
     }
     assert!(second.metrics.prefix_check.held());
-    // **Measured, carried, and NOT put in front of the operator.** The shortfall
-    // is still in `metrics.prefix_check` above — the numbers travel and a caller
-    // that wants them has them — but it does not raise a warning, because the
-    // invariant held and there is nothing to do about it.
-    //
-    // The operator's rule, 2026-09-15: "if problem wasnt us and restorable, why
-    // it shown to me at all and not behind --debug in some log file?" The cost of
-    // an unactionable warning is not its line, it is that it trains people to
-    // skim the warnings that ARE actionable — `prefix_divergence` below being the
-    // one that matters. `LETIBOT_DEBUG=1` brings it back.
+    // Measured, carried, and NOT put in front of the operator: the shortfall is still in
+    // `metrics.prefix_check`, but it raises no warning, because the invariant held and there is
+    // nothing to do. An unactionable warning trains people to skim the actionable ones.
     assert!(
         second.metrics.prefix_check.diagnostic_only(),
         "a held invariant is a diagnostic, not a warning"
@@ -1126,26 +1071,12 @@ fn two_turns_hold_the_invariant_and_the_reuse_is_reported_separately() {
     session.ledger.verify_chain().unwrap();
 }
 
-// --------------------------------------------------------------------------
-// T12 — the live view and the stored view must agree about the channel
-// --------------------------------------------------------------------------
-//
-// The symptom was one thing and the causes were two, so the cases below are
-// written so that **each cause fails one of them on its own**. A single test that
-// only goes red when both are broken would have gone green again on half a fix.
-//
-// `crates/sessionlog/tests/live_e2e.rs` asserts the same agreement end to end
-// against the real model and a real head. These are here because a canned stream
-// can hold the seed and the emission order still while the other one moves, which
-// a live model cannot be asked to do.
+// The live view and the stored view must agree about the channel: the symptom was one thing and
+// the causes were two, so each case below fails on its own cause rather than on both.
 
-/// **Cause 1, alone.** The generation prompt ends inside `<think>`, so the very
-/// first generated token is reasoning and a head must be told so.
-///
-/// Nothing in this test involves a boundary token: it looks only at the deltas that
-/// arrive *before* `</think>`. Reordering the emission back in front of the role
-/// inspection does not change what it asserts, so a failure here means the seed —
-/// and only the seed.
+/// Cause 1, alone: the generation prompt ends inside `<think>`, so the very first generated
+/// token is reasoning and a head must be told so. Nothing here involves a boundary token, so a
+/// failure means the seed and only the seed.
 #[test]
 fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_it() {
     let _lock = serial();
@@ -1187,13 +1118,9 @@ fn the_first_delta_of_a_turn_is_reasoning_because_the_generation_prompt_opened_i
     );
 }
 
-/// **Cause 2, alone.** A chunk's text must be cut against the roles of the ids in
-/// it, so a boundary switches the channel for the rest of that same chunk and its
-/// own literal is never streamed.
-///
-/// The seed is irrelevant to what this asserts: `</think>` is dropped and the
-/// answer is `Text` whichever channel the turn started on, so a failure here means
-/// the emission order — and only the emission order.
+/// Cause 2, alone: a chunk's text must be cut against the roles of the ids in it, so a boundary
+/// switches the channel for the rest of that same chunk and its own literal is never streamed.
+/// A failure here means the emission order and only that.
 #[test]
 fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     let _lock = serial();
@@ -1213,10 +1140,9 @@ fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     engine.run_turn(&mut session, &mut sink).unwrap();
 
     let deltas = deltas(&sink);
-    // The server really does send `</think>` in `content` — it is `USER_DEFINED`,
-    // not `CONTROL` — and `spoken_frames` reproduces that. The parser drops it from
-    // every committed row, so a head that renders it is showing markup the
-    // transcript does not contain.
+    // The server really does send `</think>` in `content` - it is `USER_DEFINED`, not `CONTROL` -
+    // and the parser drops it from every committed row, so a head that renders it shows markup
+    // the transcript does not contain.
     for (target, text) in &deltas {
         assert!(
             !text.contains("</think>") && !text.contains("<|im_end|>"),
@@ -1233,11 +1159,9 @@ fn a_boundary_literal_is_cut_out_of_the_stream_rather_than_shown_to_a_head() {
     );
 }
 
-/// The agreement itself, deterministically: a head's live stream, split by channel,
-/// **equals** the transcript rows the same turn committed.
-///
-/// This is the live file's assertion with the model replaced by a fixed script. It
-/// fails under either cause, which is why the two above exist.
+/// The agreement itself, deterministically: a head's live stream, split by channel, equals the
+/// transcript rows the same turn committed. It fails under either cause, which is why the two
+/// above exist.
 #[test]
 fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     let _lock = serial();
@@ -1292,15 +1216,9 @@ fn a_heads_deltas_split_by_channel_equal_the_rows_the_turn_committed() {
     assert_eq!(streamed_text, committed_text);
 }
 
-/// T13.5, closed: the body of a `<tool_call>` block reaches a head on a channel
-/// of its own and never as assistant text.
-///
-/// The defect this replaces was visible and documented and lived in the protocol,
-/// not in the head: `DeltaTarget` had two variants, so the engine announced
-/// `<function=read>…` as `Text`, and every head then had a choice between showing
-/// raw markup and guessing. Guessing is not available — a user message quoting
-/// `<function=` at the model is the same string — so the boundary had to be kept
-/// where it still exists, which is here, walking the ids.
+/// The body of a `<tool_call>` block reaches a head on a channel of its own and never as
+/// assistant text: by the time the markup is a string in a `Delta`, nothing can tell it from a
+/// user quoting `<function=` at the model, so the boundary is kept here, walking the ids.
 #[test]
 fn the_body_of_a_tool_call_is_never_announced_as_assistant_text() {
     let _lock = serial();
@@ -1402,17 +1320,9 @@ fn suppressed_script(head: &[u32], tail: &[u32]) -> Vec<Frame> {
     frames
 }
 
-/// The server counts a token it never sends a frame for, and the operator keeps
-/// the answer anyway.
-///
-/// `Frame::Suppressed` is llama.cpp's `process_token` skipping
-/// `send_partial_response` on an incomplete UTF-8 tail after `slot.stats.n_gen`
-/// has already advanced. The next frame then reads `advance 2, ids 1`, which is
-/// the exact shape seen twice in the operator's log.
-///
-/// Two things are asserted together because either alone is the wrong fix:
-/// **nothing after the bad frame is committed** — the guard did not move — and
-/// **everything before it is**, so the turn is a seam rather than a loss.
+/// The server counts a token it never sends a frame for, and the operator keeps the answer
+/// anyway: nothing after the bad frame is committed, and everything before it is, so the turn is
+/// a seam rather than a loss.
 #[test]
 fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
     let _g = serial();
@@ -1467,11 +1377,8 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
         .expect("the interruption must be announced");
     assert!(reason.starts_with("frame_mismatch"), "{reason}");
     assert!(kept, "the partial was kept and must say so");
-    // **And the sentence says WHICH fault it was** (the R12-shaped half): the server
-    // withheld ids it counted, which is the UTF-8 gate, so the operator is told to check
-    // the server's build and given the commit to check it against. Before this the line
-    // was three bare numbers — *tokens_predicted N -> M carried K id(s)* — which names a
-    // disagreement and no remedy.
+    // And the sentence says WHICH fault it was: the server withheld ids it counted, which is the
+    // UTF-8 gate, so the operator is told to check the server's build and given the commit.
     assert!(
         reason.contains("withheld"),
         "the reading is what the operator acts on: {reason}"
@@ -1520,12 +1427,9 @@ fn a_suppressed_token_costs_the_tail_of_a_turn_and_not_the_whole_of_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The guard is not relaxed, and this is the line that says so.
-///
-/// The id the refused frame carried, and every id after it, are absent from the
-/// ledger. A change that starts accepting them makes the ledger stop being a
-/// record of what the model produced — the one outcome the hash chain exists to
-/// prevent — and it would pass every other test in this file.
+/// The guard is not relaxed, and this is the line that says so: the id the refused frame carried
+/// and every id after it are absent from the ledger. Accepting them would make the ledger stop
+/// being a record of what the model produced.
 #[test]
 fn the_ids_after_an_unaccountable_frame_never_reach_the_ledger() {
     let _g = serial();
@@ -1588,17 +1492,9 @@ impl SteeringSource for After {
     }
 }
 
-/// **The whole chain, on the path the operator is actually on.**
-///
-/// The first attempt at this fix elided a stopped thought in the RENDERER, and
-/// the renderer is not on that path: the next turn's prompt is
-/// `session.ledger.tokens()` and items are never re-rendered on the ordinary
-/// path. The row was marked correctly and the mark was never reached — which is
-/// exactly what the operator saw when they asked "why it reprefills and includes
-/// aborted reasoning then?".
-///
-/// So this asserts the LEDGER, which is the thing that gets replayed: a thought
-/// stopped mid-flow costs the next turn a sentence, not the thought.
+/// The whole chain, on the path the operator is actually on: the next turn's prompt is
+/// `session.ledger.tokens()` and items are never re-rendered, so this asserts the LEDGER - a
+/// thought stopped mid-flow costs the next turn a sentence, not the thought.
 #[test]
 fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     let _lock = serial();
@@ -1673,10 +1569,9 @@ fn a_stopped_thought_costs_the_next_turn_a_sentence_not_the_thought() {
     );
 }
 
-/// The server's own counter rides the stream: one event per frame that
-/// advanced it, in order, and the value is the server's `tokens_predicted` —
-/// the number a head shows to tell a hang from a model that is still
-/// emitting.
+/// The server's own counter rides the stream: one event per frame that advanced it, in order,
+/// and the value is the server's `tokens_predicted` - the number a head shows to tell a hang
+/// from a model still emitting.
 #[test]
 fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it() {
     let _lock = serial();
@@ -1714,12 +1609,9 @@ fn a_streaming_turn_reports_the_servers_counter_on_every_frame_that_advances_it(
 // What a FAILED round is called
 // --------------------------------------------------------------------------
 
-/// A provider that was never reached, which is what a resolver failure produces.
-///
-/// Not an `OpenAiProvider`: this test is about the CLASS the engine gives the
-/// failure, and a real provider would need a socket to fail against. What matters is
-/// that the error is `BackendError::Unreachable`, which is what
-/// `OpenAiProvider::complete` builds when `.send()` fails.
+/// A provider that was never reached, which is what a resolver failure produces. Not a real
+/// provider: this is about the CLASS the engine gives the failure, and
+/// `BackendError::Unreachable` is what a failed send builds.
 struct NeverReached(&'static str);
 
 impl letibot_backend::MessagesBackend for NeverReached {
@@ -1744,21 +1636,9 @@ impl letibot_backend::MessagesBackend for NeverReached {
     }
 }
 
-/// **A connection that never happened is an IO failure, not a malformed answer.**
-///
-/// `Malformed` means *2xx, but not the shape expected* — so this class told a reader a
-/// server had answered with garbage when no server had spoken. MEASURED 2026-10-01: the
-/// operator watched
-///
-///   malformed http response: provider unreachable: io: failed to lookup address
-///   information: Temporary failure in name resolution
-///
-/// with `127.0.0.1:8080` answering `/health` 200 and `letibot --status` reporting it
-/// `ok`. Nothing failed, so nothing caught it: the retry policy treats both classes the
-/// same, which is exactly why a wrong class survives — it costs a diagnosis, not a test.
-///
-/// The second half is the one that must not be lost: the message still says the provider
-/// was unreachable, and still carries the resolver's own words.
+/// A connection that never happened is an IO failure, not a malformed answer: `Malformed` means
+/// *2xx, but not the shape expected*, so that class told a reader a server had answered with
+/// garbage when no server had spoken. The message still carries the resolver's own words.
 #[test]
 fn an_unreached_provider_is_an_io_failure_and_not_a_malformed_answer() {
     let _lock = serial();
@@ -1859,13 +1739,9 @@ impl letibot_backend::MessagesBackend for SaysOneThing {
     }
 }
 
-/// **An interrupt that arrives between the last streamed piece and the end of a round that
-/// SUCCEEDED is handed back to the source, not dropped with the round's `Pending`** (R91.14).
-///
-/// The end-of-round `absorb` takes the urgent out of the source and holds it; before the fix
-/// the `Ok` return dropped the `Pending` it was held in, so the stop reached the children
-/// (`stop_children_first` runs when the hub hands the interrupt over) and the parent carried
-/// on into its next round as if nothing had been pressed.
+/// An interrupt that arrives between the last streamed piece and the end of a round that
+/// SUCCEEDED is handed back to the source, not dropped with the round's `Pending`: the children
+/// were already stopped, so dropping it left the parent carrying on as if nothing was pressed.
 #[test]
 fn an_interrupt_taken_at_the_end_of_a_successful_round_goes_back_to_the_source() {
     let _lock = serial();

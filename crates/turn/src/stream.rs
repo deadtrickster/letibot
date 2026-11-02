@@ -181,24 +181,9 @@ pub enum StreamError {
     Protocol(String),
 }
 
-/// **Which way a frame failed to account for itself** — and the direction is the evidence.
-///
-/// The refusal is the same either way (the frame is not a record of what the model produced,
-/// so it does not reach the ledger). What differs is **the first thing to check**, and before
-/// this they were one sentence naming three numbers and no remedy — R12's defect, where a
-/// reply that ran out of room was reported as an answer nobody could read.
-///
-/// The line between them is arithmetic and it costs nothing to compute: a server that
-/// **withholds** a token's frame can only ever send FEWER ids than it counted, because
-/// withholding removes ids and nothing adds them. So `ids > advance` is *provably not* the
-/// UTF-8 gate — it is a different fault, whatever it is — and `ids < advance` is the shape the
-/// gate produces and the only shape it produces.
-///
-/// **`Withheld` is a reading and not a diagnosis.** It says what the frames show, which is
-/// that the server counted tokens it did not send; it does not know which server is on the
-/// other end. The remedy named in the sentence is therefore *check the build*, and the commit
-/// it names is what to check against — see the module header, and note that a server rebuilt
-/// from upstream `master` is unpatched again.
+/// Which way a frame failed to account for itself - the direction is the evidence, and what
+/// differs is the first thing to check. A server that withholds can only send FEWER ids than
+/// it counted, so `ids > advance` is provably not the UTF-8 gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mismatch {
     /// The server counted more tokens than it sent. This is what a token whose bytes end
@@ -313,10 +298,9 @@ pub enum AbortCause {
     Guard(String),
     /// An urgent steering message or an explicit ABORT (§5.8).
     Steering(String),
-    /// A frame did not account for its own advance, so the stream stopped being
-    /// a record of what the model produced. See [`StreamError::FrameMismatch`] —
-    /// this is the same refusal, carried as an abort so the ids that *were*
-    /// accounted for survive.
+    /// A frame did not account for its own advance, so the stream stopped being a record of
+    /// what the model produced. Carried as an abort so the ids that were accounted for
+    /// survive.
     FrameMismatch {
         n_decoded: u64,
         previous: u64,
@@ -342,10 +326,8 @@ impl IdAccumulator {
         IdAccumulator::default()
     }
 
-    /// Feed one classified frame.
-    ///
-    /// Returns the ids this frame contributed, so a caller can run guards and stop
-    /// checks over exactly the new tokens without re-scanning the whole generation.
+    /// Feed one classified frame. Returns the ids this frame contributed, so a caller can run
+    /// guards and stop checks over exactly the new tokens without re-scanning the generation.
     pub fn push(&mut self, chunk: &Chunk) -> Result<&[TokenId], StreamError> {
         match chunk {
             Chunk::Progress { progress, timings } => {
@@ -362,10 +344,9 @@ impl IdAccumulator {
                 timings,
             } => {
                 if *n_decoded <= self.n_decoded {
-                    // Not an error the server can produce today, but the whole
-                    // point of keying on the counter is that a frame which does not
-                    // advance it contributes nothing. Silently accepting its ids is
-                    // how the progress frames' zeros got in.
+                    // Not an error the server produces today, but the whole point of keying on
+                    // the counter is that a frame which does not advance it contributes nothing;
+                    // silently accepting its ids is how the progress frames' zeros got in.
                     return Ok(&[]);
                 }
                 let advance = n_decoded - self.n_decoded;
@@ -408,11 +389,9 @@ impl IdAccumulator {
         &self.ids
     }
 
-    /// The server's own generation counter, as the last accepted frame reported it.
-    ///
-    /// Equal to [`Self::ids`] while every frame has been accountable — the
-    /// accumulator only accepts a frame whose ids match its advance — and the
-    /// number a head is shown while the turn runs.
+    /// The server's own generation counter, as the last accepted frame reported it: equal to
+    /// [`Self::ids`] while every frame has been accountable, and the number a head is shown
+    /// while the turn runs.
     pub fn n_decoded(&self) -> u64 {
         self.n_decoded
     }
@@ -425,21 +404,15 @@ impl IdAccumulator {
         self.last_progress
     }
 
-    /// The most recent `timings` object seen.
-    ///
-    /// Needed when *we* end the turn: closing the socket means the server's final
-    /// frame never arrives, and a synthesised one carrying `Timings::default()`
-    /// would report `cache_n = 0` — a cold prefill — for a turn that reused its
-    /// whole history. `timings_per_token` is on precisely so this is available.
+    /// The most recent `timings` object seen. Needed when we end the turn: the server's final
+    /// frame never arrives, and a synthesised one with default timings would report a cold
+    /// prefill for a turn that reused its whole history.
     pub fn last_timings(&self) -> Option<Timings> {
         self.last_timings
     }
 
-    /// Close the accumulation against the terminal frame.
-    ///
-    /// The count check is the one that matters: it is the only thing standing
-    /// between a dropped frame and a ledger that silently disagrees with the
-    /// server's cache.
+    /// Close the accumulation against the terminal frame. The count check is the only thing
+    /// between a dropped frame and a ledger that silently disagrees with the server's cache.
     pub fn finish(
         self,
         final_chunk: FinalChunk,
@@ -551,19 +524,15 @@ mod tests {
         assert_eq!(out.ids.len(), 4);
     }
 
-    /// T23's frames, captured verbatim from a live `/completion` stream on
-    /// 2026-09-10 — the control server, which had **no draft model and no
-    /// speculative decoding at all**, so these are not an MTP artifact.
-    ///
-    /// Kept as bytes rather than paraphrased because the whole of T23 was that a
-    /// paraphrase of this frame ("advance 2, ids 1") was all anyone had.
+    /// T23's frames, captured verbatim from a live `/completion` stream on a control server
+    /// with no draft model, so these are not a speculative-decoding artifact. Bytes rather
+    /// than a paraphrase, because a paraphrase was all anyone had.
     const T23_FRAMES: &[&str] = &[
         r#"{"index":0,"content":"","tokens":[0],"stop":false,"id_slot":-1,"tokens_predicted":0,"tokens_evaluated":26,"prompt_progress":{"total":26,"cache":0,"processed":26,"time_ms":20}}"#,
         r#"{"index":0,"content":"😀","tokens":[141334],"stop":false,"id_slot":-1,"tokens_predicted":1,"tokens_evaluated":26}"#,
-        // `" 😂"` is `[26525, 224]`. `26525` is a space plus the first three bytes
-        // of a four-byte emoji, so the server suppressed its frame — and the
-        // counter it advanced is reported here, by the token that completed the
-        // character.
+        // `" 😂"` is `[26525, 224]`. `26525` is a space plus the first three bytes of a
+        // four-byte emoji, so the server suppressed its frame and the counter advanced by the
+        // token that completed the character.
         r#"{"index":0,"content":" 😂","tokens":[224],"stop":false,"id_slot":-1,"tokens_predicted":3,"tokens_evaluated":26}"#,
         r#"{"index":0,"content":" 😃","tokens":[225],"stop":false,"id_slot":-1,"tokens_predicted":5,"tokens_evaluated":26}"#,
     ];
@@ -584,10 +553,9 @@ mod tests {
                     assert_eq!((previous, n_decoded, ids), (1, 3, 1));
                     // Exactly the operator's shape: two-for-one, never two-for-zero.
                     assert_eq!(n_decoded - previous, 2);
-                    // **And it is read as WITHHELD, not as corruption.** A token whose
-                    // bytes ended mid-character is the only thing that can make a server
-                    // send fewer ids than it counted, so this frame is the detector firing
-                    // on an unpatched server — see `Mismatch` and the module header.
+                    // Read as WITHHELD, not as corruption: a token whose bytes ended
+                    // mid-character is the only thing that can make a server send fewer ids
+                    // than it counted, so this is the detector firing on an unpatched server.
                     assert_eq!(reading, Mismatch::Withheld);
                     // And the ids accounted for so far survive the refusal — this
                     // is what `AbortCause::FrameMismatch` then keeps.
@@ -600,32 +568,14 @@ mod tests {
         panic!("the frames stopped adding up and nothing said so");
     }
 
-    /// **What the PATCHED server looks like on the wire, so the guard's silence is a
-    /// measurement rather than an assumption.**
-    ///
-    /// Captured from the live `llama-server` on 127.0.0.1:8080 on 2026-09-22, `/completion`
-    /// with `stream: true`, sixty tokens of emoji: **60 ids sent for 60 counted, 0 bad
-    /// frames** — so nothing here is refused, which is what a patched server means.
-    ///
-    /// And the patch is *visible* in those frames rather than merely absent from the
-    /// failures: **31 of the 60 carry an id with empty `content`**. Pre-`d10f94713` that
-    /// frame was not sent at all — the token's bytes ended mid-character and the emit block
-    /// was skipped — so every one of those 31 is a token an unpatched server would have
-    /// dropped, and the guard would have refused at the first of them (token 1, before any
-    /// text, so with an empty head: `partial_kept: false`).
-    ///
-    /// Two of these frames are in `FRAMES_LIKE_THE_SERVER_SENDS_THEM` below, byte for byte
-    /// as they arrived, because the shape that proves a patch is present is worth as much as
-    /// the shape that proves it is missing.
+    /// What the PATCHED server looks like on the wire, so the guard's silence is a
+    /// measurement rather than an assumption: a live capture where 60 ids were sent for 60
+    /// counted, 31 of them carrying an id with empty `content`.
     #[test]
     fn the_patched_server_sends_the_frame_the_patch_added() {
-        // The first four counter-frames of the live capture, verbatim. Two of them carry an
-        // id with an empty `content` and the counter moving by exactly one — that is
-        // `send_partial_response(slot, {}, …)` running unconditionally, which is
-        // `d10f94713`. **Consecutive, not sampled**: the first version of this fixture took
-        // frames 1 and 3 and left out 2, and the accumulator refused it for advancing the
-        // counter by two — the guard catching a hand-written "patched server" that was not
-        // one. A fixture for this crate has to be a stream, not a set of frames.
+        // The first four counter-frames of the live capture, verbatim, and consecutive: a
+        // fixture for this crate has to be a stream, not a set of frames, or the accumulator
+        // refuses it for advancing the counter by two.
         let patched = [
             r#"{"index":0,"content":"","tokens":[25677],"stop":false,"id_slot":-1,"tokens_predicted":1,"tokens_evaluated":48}"#,
             r#"{"index":0,"content":" 😋","tokens":[233],"stop":false,"id_slot":-1,"tokens_predicted":2,"tokens_evaluated":48}"#,
@@ -670,17 +620,9 @@ mod tests {
         assert!(e.to_string().contains("d10f94713"), "{e}");
     }
 
-    /// **The two faults are told apart by the direction, and the direction is arithmetic.**
-    ///
-    /// R12's shape in a second family: one refusal, two facts, and the first thing to check
-    /// differs. `ids < advance` is a server that *withheld* what it counted — the UTF-8 gate
-    /// and nothing else, because suppression only ever removes ids. `ids > advance` cannot be
-    /// that, whatever else it is.
-    ///
-    /// The refusal is identical and is asserted here as identical: `Mismatch` classifies the
-    /// same fault, it does not excuse it. What changes is the sentence, which is where an
-    /// operator reads what to do next — and this test pins both, so a later rewrite of either
-    /// has to say why.
+    /// The two faults are told apart by the direction, and the direction is arithmetic: `ids <
+    /// advance` is a server that withheld what it counted, `ids > advance` cannot be that. The
+    /// refusal is identical; what changes is the sentence an operator reads.
     #[test]
     fn a_mismatch_says_which_direction_it_disagreed_in() {
         // The arithmetic, on its own: one function, so the accumulator and a reader cannot

@@ -1,27 +1,10 @@
-//! §5.8 — messages that arrive while the model is generating.
+//! §5.8: messages that arrive while the model is generating.
 //!
-//! The plan's three options and its choice:
-//!
-//! * *Queue until the turn ends* — wrong for the common case. The message is
-//!   usually a correction, and waiting 90 seconds to act on it wastes the
-//!   generation it was correcting.
-//! * *Interrupt immediately* — truncates mid-stream, and a partial assistant turn
-//!   has to be kept for cache reasons while being useless as content.
-//! * **Inject at the next step boundary — chosen.** After the current generation
-//!   completes, or after the current tool batch settles, whichever comes first. The
-//!   message is appended as a `User` item and the loop continues with it in context.
-//!
-//! With an escape hatch: a message flagged `urgent` (of which `ABORT` is the
-//! extreme form) interrupts at the next **token**, and the partial output is kept
-//! as a transcript item marked truncated — for §13.2's cache reason, and because
-//! the model should see what it had started to say.
-//!
-//! # The rule that keeps this three lines of policy rather than a subsystem
-//!
-//! **Steering never rewrites or reorders anything already in the vector.** A
-//! steering message is an append like any other. There is no code path here that
-//! touches the ledger; the engine appends the resulting `User` item through the
-//! same door every other item goes through.
+//! Queuing until the turn ends is wrong for the common case, because the message is usually a
+//! correction and waiting wastes the generation it was correcting; interrupting immediately
+//! truncates a partial turn. So a message is injected at the next step boundary, and one
+//! flagged `urgent` interrupts at the next token with its partial output kept and marked
+//! truncated. Steering never rewrites or reorders anything already in the vector.
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -34,35 +17,17 @@ pub struct SteeringMessage {
     pub text: String,
     /// Interrupt at the next token rather than at the next step boundary.
     pub urgent: bool,
-    /// The operator's own words — a head's prompt. Consecutive operator
-    /// messages coalesce into one held message (the model reads one user turn,
-    /// not a stack of fragments), and a take-back drops them. A notice — the
-    /// harness's own injections, a fired monitor — stands alone: merging it
-    /// into the operator's text would put the harness's words in the
-    /// operator's mouth.
+    /// The operator's own words, a head's prompt. Consecutive operator messages coalesce into
+    /// one held message, because the model reads one user turn and not a stack of fragments; a
+    /// notice - the harness's injections, a fired monitor - stands alone.
     pub from_operator: bool,
-    /// **The parts that are not the operator's words** — a picture or a file the
-    /// composer attached (`PROTOCOL_VERSION` 50), already turned into
-    /// [`UserPart`]s by the side that can read a file.
-    ///
-    /// Here rather than in `text` because they are what the model is SENT and not what the
-    /// operator typed: the words still carry the chip the person saw (`[image 1 · png · 92
-    /// KiB]`), and the bytes ride beside them. A `SteeringMessage` with none is byte-for-byte
-    /// the message it always was — one `Text` part and no envelope.
+    /// The parts that are not the operator's words: a picture or a file the composer attached,
+    /// already turned into [`UserPart`]s. Here rather than in `text` because they are what the
+    /// model is SENT, while the words carry the chip the person saw.
     pub extra: Vec<UserPart>,
-    /// **The session that said it, when it was another session** — a parent's correction to a
-    /// child, or any peer's message (`CommandKind::Message`). `None` for everything else: the
-    /// operator's own words, the harness's injections, a fired monitor.
-    ///
-    /// It is here for ONE reader, and that reader is not the engine: the words already name the
-    /// sender ([`crate::steering::SteeringMessage::to_item`] puts them in the row and
-    /// `parent_message_text` in `harnessd` writes them), so the model never needs this. What
-    /// needs it is the session AFTER the turn, in `Harness::run_rounds`: a message a round took
-    /// out of the queue and then handed back is a message the turn did not read, and a
-    /// session's words must be in the transcript whatever the turn came to. A harness notice
-    /// handed back is re-offered by its own source and must not be written twice; a session's
-    /// message has no such source, so it is told apart HERE — at the one moment the two are
-    /// still distinguishable, which is before the item is an ordinary `User` row.
+    /// The session that said it, when it was another session - a parent's correction to a
+    /// child, or any peer's message. One reader needs it and it is not the engine: after the
+    /// turn, a message handed back must be written even though the turn did not read it.
     pub from_session: Option<String>,
 }
 
@@ -77,13 +42,9 @@ impl SteeringMessage {
         }
     }
 
-    /// **Another session's words** — a parent's correction to a child, a peer's message. See
-    /// [`SteeringMessage::from_session`] for why the sender is carried rather than re-derived
-    /// from the text.
-    ///
-    /// Not the operator's, deliberately: an agent's utterance can neither authorise the act it
-    /// races nor be taken back, which is the whole of the difference between this and
-    /// [`SteeringMessage::operator`].
+    /// Another session's words - a parent's correction to a child, a peer's message. Not the
+    /// operator's, deliberately: an agent's utterance can neither authorise the act it races
+    /// nor be taken back.
     pub fn from_a_session(text: impl Into<String>, from: impl Into<String>) -> Self {
         SteeringMessage {
             text: text.into(),
@@ -127,19 +88,14 @@ impl SteeringMessage {
         }
     }
 
-    /// The transcript item this message becomes.
-    ///
-    /// **A plain `User` item with exactly its own text.** No tool envelope, no
-    /// wrapper, no listener bookkeeping — §18.1-I11 says an inbound message must
-    /// cost exactly its own tokens, and this is the line that decides it. The
-    /// invariant regresses the first time somebody adds "helpful" metadata here.
+    /// The transcript item this message becomes: a plain `User` item with exactly its own text.
+    /// No tool envelope, no wrapper, no bookkeeping - an inbound message must cost exactly its
+    /// own tokens, and that regresses the first time somebody adds "helpful" metadata here.
     pub fn to_item(&self) -> TranscriptItem {
         TranscriptItem::User {
-            // **`from_operator` is exactly this field's question**, and it was already on the
-            // message: a steering line the model asked for is the session's own words, and one
-            // an operator typed is theirs. R42's rule is that a head draws a completion, a
-            // salvage notice and a steering line as the second — so the ones that are the
-            // operator's say so and the rest do not.
+            // `from_operator` is exactly this field's question: a steering line the model asked
+            // for is the session's own words and one an operator typed is theirs, so a head
+            // draws the operator's as theirs and the rest as the agent's.
             speaker: if self.from_operator {
                 letibot_transcript::Speaker::Operator
             } else {
@@ -159,53 +115,25 @@ impl SteeringMessage {
     }
 }
 
-/// Where a turn looks for steering.
-///
-/// A trait rather than a concrete channel because the flowy connector (W12), a
-/// TUI and a test each supply one differently, and none of them should have to
-/// exist for the engine to compile.
+/// Where a turn looks for steering. A trait rather than a concrete channel because the flowy
+/// connector, a TUI and a test each supply one differently, and none should have to exist for
+/// the engine to compile.
 pub trait SteeringSource {
-    /// Non-blocking. Returns the next pending message, or `None`.
-    ///
-    /// Polled once per generated token for the urgent case, so it must not block
-    /// and must not allocate on the empty path. Note this is a *pull from a queue
-    /// something else pushed to* — §3.7's "no polling anywhere" is about how a
-    /// message reaches the daemon, not about how the token loop drains an in-memory
-    /// queue it already owns.
+    /// Non-blocking. Returns the next pending message, or `None`. Polled once per generated
+    /// token, so it must not block and must not allocate on the empty path; this is a pull from
+    /// a queue something else pushed to, not polling as a way to receive.
     fn try_next(&mut self) -> Option<SteeringMessage>;
 
-    /// A take-back the operator issued from a head: every held **operator**
-    /// message is dropped, because the operator pulled the queued line back
-    /// into the composer to edit it and the held original must not land behind
-    /// the edited resend. `true` when a take-back was acted on.
-    ///
-    /// Default: never — a source that cannot carry a take-back says so by
-    /// doing nothing, and no implementor has to grow an arm for it.
+    /// A take-back the operator issued from a head: every held operator message is dropped,
+    /// because the operator pulled the queued line back to edit it and the held original must
+    /// not land behind the resend. `true` when a take-back was acted on.
     fn try_withdraw(&mut self) -> bool {
         false
     }
 
-    /// **Hand a message back to the source, for a turn that failed.**
-    ///
-    /// A message is out of the source's queue the moment [`Pending::absorb`] takes
-    /// it — `try_next` dequeues it — and a turn that fails commits nothing (§5.7).
-    /// So the words must go back to the source rather than being appended:
-    /// appending them would advance the ledger and the prefix on an error path,
-    /// which is the same loss with a different sign. The source keeps them for the
-    /// next [`Self::try_next`], so the retried or next round's greedy pre-poll puts
-    /// them in the prompt.
-    ///
-    /// MEASURED on the operator's own head: they typed a prompt while a turn was
-    /// running, the daemon accepted it, and the round then failed under §5.7. The
-    /// words were out of the hub's queue and never in the transcript — the head
-    /// drew `queued` for the rest of the session, and it was right to keep doing
-    /// so, because the words were never appended and the head has no way to know
-    /// that. This method is the door that puts them back where the head left them.
-    ///
-    /// **No default body.** A default that silently drops is exactly the loss this
-    /// exists to prevent, so every implementor must state what it does with a
-    /// message it is handed back. The test that holds the property end to end is
-    /// `a_failed_turn_gives_the_operators_words_back_to_the_source` in `tests/`.
+    /// Hand a message back to the source, for a turn that failed: it is already out of the
+    /// source's queue and appending it would advance the ledger on an error path. No default
+    /// body, because a default that silently drops is the loss this exists to prevent.
     fn give_back(&mut self, msgs: Vec<SteeringMessage>);
 }
 
@@ -268,10 +196,9 @@ impl SteeringSource for ChannelSteering {
         }
     }
     fn give_back(&mut self, msgs: Vec<SteeringMessage>) {
-        // A failed turn commits nothing (§5.7), so the words go back rather than
-        // being appended. They are held here and drained by the next `try_next`,
-        // before the channel, so the retried or next round's greedy pre-poll puts
-        // them in the prompt.
+        // A failed turn commits nothing, so the words go back rather than being appended. They
+        // are drained by the next `try_next` before the channel, so the next round's greedy
+        // pre-poll puts them in the prompt.
         for m in msgs {
             self.held.push_back(m);
         }
@@ -292,89 +219,34 @@ impl Pending {
         Pending::default()
     }
 
-    /// Drain a source, keeping non-urgent messages and returning the first urgent
-    /// one. Called once per generated token, so the empty path is one `try_recv`.
-    ///
-    /// **The operator's consecutive messages are one message.** A prompt typed
-    /// behind a long tool call sits unconsumed for minutes, and the operator
-    /// keeps typing; at the boundary those fragments would land as a stack of
-    /// one-line user turns, each costing its own row and its own turn of the
-    /// model's attention. They merge here instead — into the held operator
-    /// text, newline-joined — so the model reads one user turn. A notice
-    /// (harness injection, fired monitor) still stands alone, and splits the
-    /// run: what the operator typed after it is a separate message, because
-    /// merging across it would put the harness's words in the operator's mouth.
-    ///
-    /// A take-back is honoured first, for the same reason: the operator pulled
-    /// the queued line into the composer to edit it, and the held original must
-    /// not land behind the edited resend.
+    /// Drain a source, keeping non-urgent messages and returning the first urgent one: called
+    /// once per generated token, so the empty path is one `try_recv`. The operator's
+    /// consecutive messages merge into one; a notice stands alone and splits the run.
     pub fn absorb(&mut self, source: &mut dyn SteeringSource) -> Option<SteeringMessage> {
-        // A held urgent first, and before the withdraw check: it was already taken
-        // out of the source, so a take-back that arrived after it cannot reach it,
-        // and an interrupt is not something the operator withdraws by editing a
-        // line anyway.
+        // A held urgent first, and before the withdraw check: it was already taken out of the
+        // source, so a take-back that arrived after it cannot reach it, and an interrupt is not
+        // something the operator withdraws by editing a line.
         if let Some(u) = self.urgent.take() {
-            // **AND THE SOURCE IS STILL DRAINED, WHICH IS A BUG FIX AND NOT A TIDY-UP.**
-            //
-            // MEASURED on the operator's own head: they typed a prompt behind a long tool call and
-            // pressed `esc esc`. The interrupt became a held urgent, and from that moment THIS EARLY
-            // RETURN was taken on every poll — so `source.try_next()` was never reached again, the
-            // hub's queue was never drained, and **their prompt could not be absorbed at all.** The
-            // head held the echo and drew `queued` for the rest of the session (verified: the string
-            // appears in no item of 2,579, because it never landed). The interrupt and the queue are
-            // not two independent features; they share this one slot, and an interrupt took the
-            // queue out of the picture — *"interrupts and queue do not play well together"*.
-            //
-            // The docstring's own promise is the requirement it was breaking: *"the one after is
-            // still in the source and will be absorbed at the next boundary."* With a held urgent
-            // there was no drain at the next boundary.
-            //
-            // **The held one still goes first**, because it was taken out of the source first and an
-            // interrupt is not something a later message reorders. A NEW urgent found while draining
-            // is held for the next call rather than dropped, and everything after it stays in the
-            // source, exactly as the loop above always left it.
+            // The source is still drained: this early return used to skip `try_next` on every
+            // poll, so a prompt typed behind a long call could not be absorbed at all while an
+            // urgent was held. The held one still goes first, and a new urgent is held again.
             if let Some(found) = self.drain(source) {
                 self.urgent = Some(found);
             }
             return Some(u);
         }
         if source.try_withdraw() {
-            // **The whole held operator run, in one go** — the engine's half of the take-back, and
-            // the half that satisfies the operator's ruling (*"yes whole messages queue is
-            // dequeued in one go"*, 2026-09-25). The hub drops the prompts that have not reached
-            // this poll yet; this drops the ones that have.
-            //
-            // **Two edges, and the order of the two statements here is what holds the second.**
-            //
-            // * **The corrected resend survives, and not by accident.** The operator recalls,
-            //   edits, and sends; that resend can be sitting in the hub when this very call runs.
-            //   It is not dropped because the `retain` runs *before* the drain below: the resend
-            //   is still in the source, and what this drops is the run that was already held.
-            //   Reverse the two and a take-back eats the operator's edit — the same class of
-            //   defect `56151c1` measured on the hub's half, where the resend it ate had never
-            //   been in the queue the operator took back.
-            // * **A notice is never dropped.** `from_operator: false` is the harness's own words
-            //   or a fired monitor, and they stand alone.
-            //
-            // **What this does NOT have is a head.** The take-back that reaches here says only
-            // *a* head asked; the held run it drops is every operator line in the queue, whoever
-            // sent it (`HubSteering::try_next` throws `QueuedCommand::head_id` away when it makes
-            // the message, and the merge below is by `from_operator`, not by author). One head's
-            // `↑` therefore takes a second head's held words with it, and two heads' consecutive
-            // prompts land as one user turn. Filed in the parity document as a finding, not fixed
-            // here: it wants an author on `SteeringMessage`, which is a change to this type's
-            // shape rather than to this rule.
+            // The whole held operator run, in one go. The `retain` runs BEFORE the drain below,
+            // so a corrected resend still in the source survives and only the already-held run
+            // is dropped; a notice is never dropped, because it is not the operator's to recall.
             self.queued.retain(|m| !m.from_operator);
         }
         self.drain(source)
     }
 
-    /// **Drain the source once**: queue every non-urgent message, and RETURN the first urgent one
-    /// without queueing it — everything after that urgent stays in the source, which is what the
-    /// loop's `return` has always done.
-    ///
-    /// Extracted so the held-urgent path above can use the SAME rule. It was a `while` loop inlined
-    /// in `absorb`, and the early return meant one of the two callers of that rule did not run it.
+    /// Drain the source once: queue every non-urgent message, and return the first urgent one
+    /// without queueing it, so everything after it stays in the source. Extracted so the
+    /// held-urgent path can use the SAME rule rather than a second copy of it.
     fn drain(&mut self, source: &mut dyn SteeringSource) -> Option<SteeringMessage> {
         while let Some(m) = source.try_next() {
             if m.urgent {
@@ -397,15 +269,9 @@ impl Pending {
         None
     }
 
-    /// **Put an urgent message back**, for the next [`Self::absorb`] to return.
-    ///
-    /// The greedy poll before a generation drains the source so the operator's
-    /// words are in the prompt rather than behind it. An urgent message is not
-    /// queued by `absorb` — it is handed back to be acted on — and the caller at
-    /// that point has no generation to interrupt yet. Dropping it there would
-    /// turn an interrupt into silence, which is the worst thing this type could
-    /// do; holding it means the stream loop's first poll finds it and stops at
-    /// the next token, exactly as it always did.
+    /// Put an urgent message back, for the next [`Self::absorb`] to return. The greedy poll
+    /// before a generation has no generation to interrupt yet, and dropping the message there
+    /// would turn an interrupt into silence; holding it means the first poll finds it.
     pub fn hold_urgent(&mut self, m: SteeringMessage) {
         self.urgent = Some(m);
     }
@@ -416,23 +282,9 @@ impl Pending {
         self.queued.drain(..).map(|m| m.to_item()).collect()
     }
 
-    /// **Everything held, back to the source, for a turn that failed.**
-    ///
-    /// The mirror of [`Self::take_items`]: where `take_items` hands the held
-    /// messages to the transcript at a step boundary, this hands them back to the
-    /// source when the turn fails and commits nothing (§5.7). The operator's words
-    /// are input, not what the model produced, and appending them on an error path
-    /// would advance the ledger and the prefix — the same loss with a different
-    /// sign. So they go back, in arrival order, with any urgent first: the urgent
-    /// was taken to be acted on, and an interrupt is not something a later message
-    /// reorders.
-    ///
-    /// After this, the `Pending` is empty: the messages are the source's again, and
-    /// the next round's greedy pre-poll will put them in the prompt. The unit half
-    /// of the test that holds this is
-    /// `give_back_returns_the_queued_run_and_a_held_urgent_in_order` below; the end
-    /// to end half is `a_failed_turn_gives_the_operators_words_back_to_the_source`
-    /// in `tests/`.
+    /// Everything held, back to the source, for a turn that failed: the mirror of
+    /// [`Self::take_items`]. They go back in arrival order with any urgent first, and the
+    /// `Pending` is empty afterwards, so the next round's greedy pre-poll puts them in.
     pub fn give_back(&mut self, source: &mut dyn SteeringSource) {
         let mut msgs = Vec::new();
         if let Some(u) = self.urgent.take() {
@@ -489,17 +341,9 @@ mod tests {
         assert_eq!(text, "the spec changed - RFC 2812 rather than 1459");
     }
 
-    /// **A HELD URGENT MUST NOT STARVE THE SOURCE — and MEASURED, on the operator's own head, it
-    /// did.** They typed a prompt behind a long tool call and pressed `esc esc`. The interrupt became
-    /// a held urgent, and from then on `absorb` returned it from its early return on every poll, so
-    /// `source.try_next()` was never reached again: the hub's queue was never drained and their
-    /// prompt could not be absorbed AT ALL. The head held the echo and drew `queued` for the rest of
-    /// the session — confirmed by searching every item in the transcript for the string, which
-    /// appears in none of 2,579, because it never landed.
-    ///
-    /// This test is the promise the docstring already made: *"the one after is still in the source
-    /// and will be absorbed at the next boundary."* With a held urgent there was no drain at the next
-    /// boundary, which is the bug.
+    /// A held urgent must not starve the source: the early return used to be taken on every
+    /// poll, so `try_next` was never reached again and a prompt typed behind a long call could
+    /// not be absorbed at all. This is the promise the docstring already made.
     #[test]
     fn a_held_urgent_does_not_starve_the_source() {
         let mut src = Fixed(vec![
@@ -663,10 +507,8 @@ mod tests {
         }
     }
 
-    /// The recall-to-edit flow's daemon half: the operator pulled the queued
-    /// line into the composer, so the held original must not land behind the
-    /// edited resend. A notice held beside it is not the operator's to take
-    /// back, and stays.
+    /// The recall-to-edit flow's daemon half: the held original must not land behind the edited
+    /// resend. A notice held beside it is not the operator's to take back, and stays.
     #[test]
     fn a_take_back_drops_the_held_operator_text_and_keeps_notices() {
         let mut src = WithWithdraw {
@@ -717,15 +559,9 @@ mod tests {
         );
     }
 
-    /// **A failed turn gives the held messages back to the source, in order, with
-    /// any urgent first.**
-    ///
-    /// The unit half of the fix for the measured loss: a message absorbed
-    /// mid-generation is out of the source's queue the moment `absorb` takes it,
-    /// and a turn that fails commits nothing (§5.7). So the words must go back to
-    /// the source rather than being appended. `give_back` returns everything held —
-    /// the queued run and a held urgent — in arrival order, with the urgent first,
-    /// and leaves the `Pending` empty.
+    /// A failed turn gives the held messages back to the source, in order, with any urgent
+    /// first: a message absorbed mid-generation is out of the source's queue, and a turn that
+    /// fails commits nothing, so the words must go back rather than be appended.
     #[test]
     fn give_back_returns_the_queued_run_and_a_held_urgent_in_order() {
         let mut src = Fixed(vec![

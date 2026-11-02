@@ -1,36 +1,11 @@
-//! `turn_metrics` (§4.4), one row per request.
+//! `turn_metrics`: one row per request.
 //!
-//! > per request: prompt/cached/predicted tokens, `finish_reason`, `prompt_ms`,
-//! > `predicted_ms`, `draft_n`, `draft_n_accepted`, model, dialect, ledger head
-//! > sent, and the computed expectations of §18.
+//! `cached_tokens` comes from `timings.cache_n`, never from `tokens_cached`: the first is
+//! prompt tokens reused, the second is the slot's occupancy after generation, and reading
+//! occupancy as reuse would have reported this box's first cold turn as 114% cached.
 //!
-//! Two fields deserve an argument.
-//!
-//! **`cached_tokens` comes from `timings.cache_n`, not from `tokens_cached`.** The
-//! `/completion` final frame carries both, and they are different quantities:
-//! `cache_n` is "prompt tokens reused from cache" (`server-common.cpp:69`), while
-//! `tokens_cached` is `slot.prompt.n_tokens()` *after* generation
-//! (`server-context.cpp:4340`) — the slot's occupancy. Reading occupancy as reuse
-//! inflates `f_keep` by the whole generation and would have reported this box's
-//! first cold turn as 114% cached.
-//!
-//! **`cost.micros_usd` is `None` under `WallClock`, never zero.** Zero is a number
-//! somebody will sum into a total.
-//!
-//! # Two hit ratios, two names, and they are not interchangeable
-//!
-//! llama.cpp computes both and this struct exposes both, under the server's own
-//! names (`server-task.cpp:2603,2614`):
-//!
-//! | | denominator | here |
-//! |---|---|---|
-//! | `f_keep` | the **cached entry** — what we left behind last turn | [`TurnMetrics::f_keep`] |
-//! | `f_sim` | the **new prompt** — what we are submitting now | [`TurnMetrics::f_sim`] |
-//!
-//! Only `f_keep` is indifferent to how much the conversation grew, and only
-//! `f_keep` is §18.2's C4 (D11). §18.2 originally defined C4 with `f_sim`'s
-//! arithmetic under `f_keep`'s name and then applied a threshold measured on
-//! `f_keep` to it — see T22. Read the doc comment before using either.
+//! `cost.micros_usd` is `None` under `WallClock`, never zero, and `f_keep` and `f_sim` are not
+//! interchangeable: only `f_keep` is indifferent to how much the conversation grew.
 
 use letibot_backend::{Meter, TurnCost};
 
@@ -54,19 +29,9 @@ pub struct TurnMetrics {
     pub cached_tokens: u64,
     pub predicted_tokens: u64,
 
-    /// How many prompt tokens the **server** says it received, and how many of them
-    /// it actually processed (`n_prompt_tokens` and `timings.prompt_n`).
-    ///
-    /// Added by T17, because §14.3's C10 — deepseek's disjointness invariant,
-    /// *"reported new input tokens equal `prompt_tokens − cached_tokens`"* — was not
-    /// checkable from this struct: `prompt_tokens` above is **our** count of what we
-    /// submitted, and with only that and `cached_tokens` the identity is a tautology
-    /// rather than a measurement. It becomes a measurement when the server's own two
-    /// numbers are here to disagree with ours.
-    ///
-    /// `prompt_tokens_server != prompt_tokens` means the server counted a different
-    /// prompt than the one we built, which is the shape a truncated or rewritten
-    /// prompt has and is worth failing loudly on.
+    /// How many prompt tokens the SERVER says it received, and how many it actually processed.
+    /// With only our own count the C10 identity is a tautology rather than a measurement; when
+    /// the server's number differs from ours, the prompt it counted is not the one we built.
     pub prompt_tokens_server: u64,
     /// Prompt tokens the server prefilled this turn — the complement of
     /// `cached_tokens`, from the server rather than from subtraction.
@@ -77,10 +42,9 @@ pub struct TurnMetrics {
     pub predicted_ms: f64,
     pub draft_n: u64,
     pub draft_n_accepted: u64,
-    /// Which slot served the turn, or -1. On a five-slot box a turn that lands on a
-    /// slot which does not hold its history reports zero reuse, and that is a
-    /// scheduling fact, not a prefix divergence. Recording it is what lets the two
-    /// be told apart afterwards.
+    /// Which slot served the turn, or -1. A turn that lands on a slot which does not hold its
+    /// history reports zero reuse, and that is a scheduling fact rather than a prefix
+    /// divergence; recording it is what lets the two be told apart afterwards.
     pub id_slot: i64,
 
     /// §18.2's trap: "a tok/s number without its concurrency is not a number".
@@ -92,65 +56,28 @@ pub struct TurnMetrics {
 
     pub cost: TurnCost,
     pub wall_ms: u64,
-    /// **Time to the first generated token**, ms from the request — `docs/metrics.md` §4 #2a,
-    /// measured nowhere before (TODO R81). Local: from the `/completion` post to the first frame
-    /// that carried an id. Cloud: from the request to the first delta. `None` when nothing was
-    /// generated, which is not the same as instant.
+    /// Time to the first generated token, ms from the request: the first frame that carried an
+    /// id, or the first delta on a cloud turn. `None` when nothing was generated, which is not
+    /// the same as instant.
     pub first_byte_ms: Option<u64>,
 }
 
 impl TurnMetrics {
-    /// **`f_keep` — `lcp / cached_entry`.** How much of the entry we left in the
-    /// server's cache last turn came back to us this turn.
+    /// `f_keep` - `lcp / cached_entry`: how much of the entry we left in the server's cache last
+    /// turn came back to us this turn.
     ///
     /// ```text
     /// f_keep(N+1) = cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))
     /// ```
     ///
-    /// This is llama.cpp's own `f_keep` (`server-task.cpp:2603`), and it is D11's
-    /// settled form of §18.2's C4. Its denominator is **what was cached**, so it is
-    /// indifferent to how much the conversation grew — which is the property that
-    /// made the 0.999 measurement meaningful, and the property [`Self::f_sim`] does
-    /// not have.
+    /// Its denominator is what was cached, so it is indifferent to how much the conversation
+    /// grew - the property [`Self::f_sim`] does not have. It reads that denominator from
+    /// [`PrefixCheck::Held`] rather than recomputing it, so the two readings cannot disagree.
+    /// `None` when there is no cached entry to measure against, which is neither 0.0 nor 1.0.
     ///
-    /// It needs no server change. `lcp` is absent from the OpenAI-shaped `usage`,
-    /// but the denominator is a quantity we already own — the entry we left behind,
-    /// straight off the ledger — and the numerator is `timings.cache_n`, which the
-    /// server already returns.
-    ///
-    /// **It reads its denominator from [`PrefixCheck::Held`], not from a second
-    /// copy of the arithmetic.** C3 asserts `cached(N+1) ≥ prompt(N) +
-    /// generated(N)`; C4 is that same inequality's margin over the same two
-    /// numbers. One measurement, two readings — so the two cannot disagree, and
-    /// `committed_generated` (not `predicted`: a trailing stop token is stripped
-    /// before commit, T11) is counted once, in `PrefixWitness`.
-    ///
-    /// `None` when there is no cached entry to measure against — a first turn, a
-    /// divergence, or a backend where the check was skipped. Not 0.0 and not 1.0:
-    /// neither is true, and both get averaged into a session figure.
-    ///
-    /// # It can exceed 1, and that is not a bug to clamp away
-    ///
-    /// llama's own `f_keep` is `lcp / cached_entry` with `lcp ≤ cached_entry` by
-    /// construction, so it never passes 1. Ours cannot make that guarantee, because
-    /// the denominator is **our lower bound on** the entry the server kept, not the
-    /// entry itself. Measured over 264 submissions of the M1 script, 67% came back
-    /// above 1.0. Two mechanisms, and they are different sizes:
-    ///
-    /// * **+0 to +5 tokens, on most turns.** The boundary tokens the renderer owns —
-    ///   the stripped stop token and the generation-prompt lead — are not in
-    ///   `committed_generated`, but the next prompt re-renders them identically, so
-    ///   the server's entry runs a few tokens past our witness. Median +2, which at
-    ///   these prompt lengths is `f_keep` 1.0001.
-    /// * **Hundreds of tokens, after a turn that failed mid-stream.** The prompt was
-    ///   prefilled and warmed the slot, but the turn produced no witness, so the next
-    ///   turn is measured against the last *successful* turn. Observed at +745.
-    ///
-    /// So this is an **over-estimate of the true `f_keep`, by a couple of tokens in
-    /// the ordinary case**. It is reported unclamped: a value above 1 says the
-    /// denominator is conservative, and clamping would erase the only signal that
-    /// says so. It never masks a C3 shortfall, which is hundreds of tokens in the
-    /// other direction.
+    /// It can exceed 1 and is deliberately not clamped: the denominator is our lower bound on
+    /// the entry the server kept, so a value above 1 says the bound is conservative, and
+    /// clamping would erase the only signal that says so.
     pub fn f_keep(&self) -> Option<f64> {
         match &self.prefix_check {
             PrefixCheck::Held {
@@ -168,19 +95,9 @@ impl TurnMetrics {
         }
     }
 
-    /// **`f_sim` — `lcp / new_prompt`.** The fraction of *this* prompt that did not
-    /// have to be prefilled.
-    ///
-    /// A real quantity, and the one a per-turn "N% cached" display wants. It is
-    /// **not** `f_keep` and no `f_keep` threshold may be applied to it: its
-    /// denominator is the new prompt, so it falls purely as a function of how much
-    /// the conversation grew. A perfect turn — whole cached entry reused, nothing
-    /// recomputed — that appends a 1,093-token tool result to a 9,000-token prompt
-    /// scores 0.892 here and 1.000 on [`Self::f_keep`]. Confusing the two is T22,
-    /// and it cost a whole M1 measurement.
-    ///
-    /// `None` for an empty prompt, for the same reason `f_keep` is `None` with no
-    /// entry to measure against.
+    /// `f_sim` - `lcp / new_prompt`, the fraction of THIS prompt that did not have to be
+    /// prefilled. Not `f_keep`: its denominator is the new prompt, so it falls as the
+    /// conversation grows, and no `f_keep` threshold may be applied to it.
     pub fn f_sim(&self) -> Option<f64> {
         if self.prompt_tokens == 0 {
             None

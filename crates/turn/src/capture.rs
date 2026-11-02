@@ -1,44 +1,19 @@
-//! Keeping the **raw frames** when the stream stops accounting for itself.
-//!
-//! # Why a whole module for a debug dump
-//!
-//! T23 cost two of the operator's sessions and produced one line of evidence:
+//! Keeping the raw frames when the stream stops accounting for itself.
 //!
 //! ```text
 //! a frame advanced tokens_predicted 2477 -> 2479 but carried 1 id(s)
 //! ```
 //!
-//! That line says a frame was wrong. It does not say *which* frame, what it
-//! carried, what came before it, or whether the missing id arrived one frame later
-//! — and those are the four questions that decide whether the guard or the server
-//! is at fault. A `FrameMismatch` is rare, content-dependent and not reproducible
-//! on demand from a transcript, so the only moment the evidence exists is the
-//! moment it fires. It is caught here rather than reconstructed later.
+//! That line says a frame was wrong, not which one or what came before it - the
+//! questions that decide whether the guard or the server is at fault. A
+//! `FrameMismatch` is rare and not reproducible from a transcript, so the evidence
+//! exists only at the moment it fires.
 //!
-//! **And that line is now two lines**, which is the change R12's shape asked for: the
-//! direction of the mismatch says whether the server withheld ids it counted (`ids <
-//! advance` — the UTF-8 gate, i.e. a llama.cpp without `d10f94713`) or sent more than it
-//! counted (`ids > advance` — a fault no withholding explains). See
-//! [`crate::stream::Mismatch`]. This module is unchanged by that and is what the second
-//! case points at: when the reading is *over-sent*, the captured frames are the only
-//! evidence there is.
-//!
-//! # What it keeps, and why the frames *after* matter most
-//!
-//! The offending frame, the two before it, and the next few. The trailing ones are
-//! the load-bearing part: "the id arrives one frame late" and "the id never
-//! arrives" produce the same error message and want opposite fixes. Collecting
-//! them costs a few more frames off a socket that is about to be closed anyway.
-//!
-//! The frames are stored **verbatim**, as the payload bytes the server sent. A
-//! re-serialised `Chunk` would be this module's own understanding of the frame,
-//! which is the thing under suspicion.
-//!
-//! # This is not a fallback path
-//!
-//! Nothing here feeds the accumulator, and a capture that fails to write changes
-//! no outcome — it downgrades to a warning. The ledger's contents are decided by
-//! [`crate::stream`] alone, exactly as before.
+//! The offending frame is kept with the two before it and the next few: "the id
+//! arrives one frame late" and "the id never arrives" produce the same message and
+//! want opposite fixes. Frames are stored verbatim, as the payload bytes the server
+//! sent. Nothing here feeds the accumulator, and a failed write downgrades to a
+//! warning.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -58,10 +33,7 @@ pub struct FrameCapture {
 impl Default for FrameCapture {
     /// On by default.
     ///
-    /// The asymmetry is the whole argument: a capture that is never read costs a
-    /// few kilobytes in the temp directory, and a capture that was switched off
-    /// costs another session. `LETIBOT_FRAME_CAPTURE_DIR` moves it; setting that
-    /// variable to the empty string switches it off.
+    /// A capture never read costs a few kilobytes; one switched off costs a session.
     fn default() -> Self {
         match std::env::var("LETIBOT_FRAME_CAPTURE_DIR") {
             Ok(s) if s.is_empty() => FrameCapture { dir: None },
@@ -124,20 +96,7 @@ struct Armed {
 impl CaptureSession {
     /// Feed every raw `data:` payload, in order, before it is classified.
     ///
-    /// Called unconditionally: the window has to already hold the frames *before*
-    /// the offender by the time the offender is recognised.
-    ///
-    /// **And that is why the window is a ring that REUSES its strings.** This is called once per
-    /// SSE frame — one frame per token on this server — for a window that holds three, and a
-    /// capture almost never fires: `push_back(payload.to_string())` paid a fresh `String` for every
-    /// token of every turn so that a window nobody reads could hold a copy of it. The entry leaving
-    /// the window has exactly the storage the arriving one needs, so it is emptied and refilled
-    /// instead of freed and re-allocated. Steady state allocates nothing.
-    ///
-    /// The window's *contents* are unchanged — same three most recent frames, in order — and that
-    /// is the whole risk of a change like this: a ring that reuses storage is a ring that can hand
-    /// a caller a buffer that has since been overwritten. Nothing here hands out the storage;
-    /// [`CaptureSession::arm`] is the only reader and it copies what it keeps.
+    /// Called unconditionally: the ring must already hold the frames before the offender.
     pub fn observe(&mut self, payload: &str) {
         if let Some(a) = &mut self.armed {
             if a.after.len() < TRAIL {
@@ -187,10 +146,7 @@ impl CaptureSession {
 
     /// Write the capture out. `Ok(None)` when nothing was armed or capture is off.
     ///
-    /// The file is JSON built by hand rather than through `serde_json::to_string`
-    /// on a struct, because every frame must land in it **verbatim** — a frame that
-    /// has been through a parser and back is a frame this crate has already had an
-    /// opinion about.
+    /// JSON is built by hand so every frame lands verbatim, never through a parser.
     pub fn write(&self) -> Result<Option<PathBuf>, std::io::Error> {
         let (Some(dir), Some(a)) = (&self.dir, &self.armed) else {
             return Ok(None);

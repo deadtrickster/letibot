@@ -1,12 +1,10 @@
-//! The compaction turn, against the canned server (C1).
+//! The compaction turn, against the canned server.
 //!
-//! The strategy under test — re-send what the previous turn sent and append the
-//! instruction as one more message — is not visible in a single turn's frames,
-//! because it is a property of the *prompt*: the ledger region the engine
-//! submits. What a canned test can assert is that the operation appends the
-//! instruction, runs one normal turn, reads the summary out of it, and
-//! surfaces the reuse numbers and any tool calls instead of swallowing them.
-//! The reuse itself is the prefix invariant's job and is asserted there.
+//! The strategy under test - re-send what the previous turn sent and append the instruction as
+//! one more message - is a property of the PROMPT, so it is not visible in a single turn's
+//! frames. What a canned test can assert is that the operation appends the instruction, runs
+//! one normal turn, reads the summary out of it, and surfaces the reuse numbers and any tool
+//! calls instead of swallowing them.
 
 mod support {
     pub mod canned;
@@ -24,10 +22,9 @@ use letibot_turn::{Endpoint, RecordingSink, Session, TurnEngine, TurnFailure};
 use support::canned::{Canned, Frame, Reply};
 use support::chatml::{ChatMlParser, ChatMlRenderer};
 
-/// **The summary turn with the ladder switched off** — the shape every test in this file
-/// wants: a canned server answers on the first call, and a fixture that waited would be
-/// measuring the policy rather than the compaction. `retry_policy.rs` in `harnessd` is where
-/// the ladder on this call is measured, through a real daemon.
+/// The summary turn with the ladder switched off, which is the shape every test here wants: a
+/// canned server answers on the first call, and a fixture that waited would be measuring the
+/// policy rather than the compaction.
 fn no_retries() -> letibot_http::retry::Ladder {
     letibot_http::retry::Ladder::new(letibot_http::retry::Policy::none())
 }
@@ -129,15 +126,9 @@ fn a_summary_turn(thought: &[u32], answer: &[u32], n_prompt: u64, cache_n: u64) 
     frames
 }
 
-/// Two ordinary turns, then the compaction turn. The assertions:
-///
-/// * the instruction went into the ledger as a `System` update, after the
-///   history, distinguishable from anything anybody typed;
-/// * the summary is the turn's visible text, verbatim;
-/// * the reuse numbers come off the turn's own metrics — `reusable` is what
-///   the prefix invariant permitted (the previous turn's prompt plus its
-///   committed generation) and `cached_tokens` is what the server reported,
-///   with no reconciliation between them.
+/// Two ordinary turns, then the compaction turn: the instruction went into the ledger as a
+/// `System` update after the history, the summary is the turn's visible text verbatim, and the
+/// reuse numbers come off the turn's own metrics with no reconciliation between them.
 #[test]
 fn compaction_appends_the_instruction_and_reads_the_summary_off_the_turn() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -274,16 +265,9 @@ fn a_summary_turn_that_calls_tools_surfaces_them() {
     assert!(outcome.summary.is_empty(), "{:?}", outcome.summary);
 }
 
-/// A summary turn that keeps saying nothing fails the compaction once the
-/// salvage budget is spent, and nothing is reduced: the instruction and the
-/// salvage notices stay in the ledger, which is where the next attempt appends
-/// over them.
-///
-/// The salvage is the tool loop's, bounded by the engine's own budget (cap 3):
-/// three say-nothing turns are answered with a notice and retried, and the
-/// fourth comes back `SalvageExhausted`, which is not a say-nothing failure and
-/// so propagates. That propagation is what keeps `auto_compact_failed` honest —
-/// a compaction that did not run must say so, not vanish into retries.
+/// A summary turn that keeps saying nothing fails the compaction once the salvage budget is
+/// spent, and nothing is reduced: the instruction and the notices stay in the ledger, where the
+/// next attempt appends over them. The fourth failure is `SalvageExhausted` and propagates.
 #[test]
 fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_compaction() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -332,11 +316,9 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
         other => panic!("the spent budget must propagate as itself: {other:?}"),
     }
 
-    // The failed turns committed nothing — no assistant item, no reasoning item,
-    // no dangling half-summary anywhere. What the region gained is exactly the
-    // instruction and the three notices, which is also the prefix-reuse promise
-    // kept: the retry's prompt is the previous prompt plus those rows, so the
-    // server is re-prefilling only the notices, never the conversation.
+    // The failed turns committed nothing - no assistant row, no reasoning row, no dangling
+    // half-summary. What the region gained is exactly the instruction and the three notices,
+    // which is the prefix-reuse promise kept: only the notices are re-prefilled.
     assert!(session.items.iter().all(|i| !matches!(
         i,
         TranscriptItem::Assistant { .. } | TranscriptItem::Reasoning { .. }
@@ -367,10 +349,8 @@ fn a_summary_turn_that_never_says_anything_exhausts_the_salvage_and_fails_the_co
     );
 }
 
-/// The frames of the live finding, replayed: the stream stops with a normal
-/// `eos` while the reasoning block is still open and nothing but reasoning was
-/// produced — R7's `UnfinishedReasoning`, the shape the operator's session hit
-/// on 2026-09-15 at the context wall.
+/// The frames of the live finding, replayed: the stream stops with a normal `eos` while the
+/// reasoning block is still open and nothing but reasoning was produced - `UnfinishedReasoning`.
 fn an_unfinished_reasoning_turn(n_prompt: u64) -> Vec<Frame> {
     let mut frames = vec![Frame::Progress {
         total: n_prompt,
@@ -397,11 +377,9 @@ fn token_frames(ids: &[u32]) -> Vec<Frame> {
         .collect()
 }
 
-/// The compaction path gets the tool loop's R7 salvage: a summary turn that
-/// stops inside its own reasoning block is answered with the notice and taken
-/// again, and the compaction completes. Before this loop existed the whole
-/// compaction failed, `auto_compact_failed` fired, and the session stayed at
-/// the wall with `/compact` retrying into the same wall.
+/// The compaction path gets the tool loop's salvage: a summary turn that stops inside its
+/// reasoning block is answered with the notice and taken again, and the compaction completes.
+/// Without the loop the session stayed at the wall with `/compact` retrying into the same wall.
 #[test]
 fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -438,10 +416,9 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
     assert_eq!(outcome.summary, summary_text, "{:?}", outcome.summary);
     assert_eq!(outcome.tool_calls, 0);
 
-    // What the failed turn left behind: nothing. No assistant row, no reasoning
-    // row, no dangling half-thought — §5.7 and R7 commit no items, so the
-    // transcript between the instruction and the notice is exactly where the
-    // failed turn would have spoken and is not.
+    // What the failed turn left behind: nothing. No assistant row, no reasoning row, no
+    // half-thought - a failed turn commits no items, so the transcript between the instruction
+    // and the notice is exactly where the failed turn would have spoken and is not.
     let instruction_at = session
         .items
         .iter()
@@ -495,12 +472,9 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
     );
     assert!(session.ledger.tokens().len() > before_compaction.len());
 
-    // The reuse the auto_compact message promises, checked rather than assumed:
-    // the failed turn committed nothing, so the retry's prompt extended the
-    // previous prompt-plus-generation exactly, and the exact-form prefix check
-    // — which raises `prefix_divergence` when it does not — had nothing to say.
-    // The server was asked to re-prefill only the notice, never the
-    // conversation.
+    // The reuse the auto_compact message promises, checked rather than assumed: the failed turn
+    // committed nothing, so the retry's prompt extended the previous prompt-plus-generation
+    // exactly, and the server was asked to re-prefill only the notice.
     assert!(
         !sink
             .warnings()
@@ -511,16 +485,9 @@ fn an_unfinished_reasoning_summary_turn_is_salvaged_and_the_compaction_completes
     );
 }
 
-/// **A metered session's summary goes to the provider, not to the daemon's own
-/// model.**
-///
-/// `run_compaction` called `TurnEngine::run_turn` unconditionally, and that is
-/// the local endpoint — the engine holds one endpoint and knows nothing about a
-/// provider. So a conversation on deepseek had its summaries sent to the local
-/// qwen with the whole history in front of them. Measured on the operator's box,
-/// 2026-09-20, two lines apart in one log: `maximum context length is 1048576`
-/// from deepseek for the turn, then `exceeds the available context size
-/// (262144)` from qwen for the SUMMARY. The second is this bug.
+/// A metered session's summary goes to the provider, not to the daemon's own model: an
+/// unconditional `run_turn` sent a deepseek conversation's summaries to the local qwen with the
+/// whole history in front of them, which the provider's own 400 named.
 #[test]
 fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {
@@ -534,12 +501,9 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     struct Counting {
         calls: AtomicUsize,
         text: String,
-        /// **How many tools the request carried**, recorded off the real
-        /// `TurnRequest` rather than inferred. The summary turn must send the
-        /// session's OWN prefix, and this is the only angle from which that is
-        /// visible: the tool list is what makes the prefix byte-identical to every
-        /// other turn's, which is what lets a local server reuse its cached prefix
-        /// instead of re-reading the whole conversation cold.
+        /// How many tools the request carried, recorded off the real `TurnRequest`: the summary
+        /// turn must send the session's OWN prefix, and the tool list is the only angle from
+        /// which that is visible.
         tools_seen: AtomicUsize,
         /// The tools themselves, not just the count — a summary sent under a
         /// *different* tool list would still be a different prefix, and a count
@@ -629,21 +593,9 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
         1,
         "the summary did not reach the provider"
     );
-    // **The compaction request carries the session's tools**, and that is a
-    // deliberate choice rather than dead weight: a summary cannot call one, but the
-    // tool list is what makes its prefix byte-identical to every other turn's, so a
-    // local server reuses the cached prefix instead of re-reading the largest
-    // conversation in the session cold.
-    //
-    // The opposite was tried and reverted 2026-10-02, on a rule that turned out not
-    // to be the API's behaviour: the vendor's guide says `reasoning_content` must be
-    // passed back when a request carries `tools`, and all five permutations measured
-    // against the live API answered 200 — and a no-tools compaction was still refused
-    // for not passing `reasoning_content` back. See `Answerer::Provider`'s docs.
-    //
-    // Asserted on the request the backend actually received, and on the tool list
-    // itself rather than its length: a summary sent under a DIFFERENT list is still a
-    // different prefix, which is the failure this exists to catch.
+    // The compaction request carries the session's tools: a summary cannot call one, but the
+    // tool list is what makes its prefix byte-identical to every other turn's, so a local server
+    // reuses the cached prefix instead of re-reading the largest conversation cold.
     assert_eq!(
         backend.tools_seen.load(Ordering::Relaxed),
         tools.len(),
@@ -658,17 +610,9 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
     assert_eq!(outcome.summary, summary);
 }
 
-/// **A summary turn that meets a `503` is taken again** — the compaction is a provider call
-/// like any other, and it used to be the one nothing retried.
-///
-/// MEASURED through `harnessd`'s `retry_policy.rs`: the same failure on a TURN is taken again.
-/// Here it is the compaction, and the two facts that matter are the stub's own count (two
-/// requests, not one) and that the second one produced the summary — a ladder that retried and
-/// then threw the answer away would be the same failure with more waiting.
-///
-/// The retry is safe because the INSTRUCTION was appended once, before the salvage loop: this
-/// is why the ladder lives inside `run_compaction` rather than around it, where a caller would
-/// append a second instruction per attempt.
+/// A summary turn that meets a `503` is taken again - the compaction is a provider call like
+/// any other. The retry is safe because the instruction was appended once, before the salvage
+/// loop, which is why the ladder lives inside `run_compaction` rather than around it.
 #[test]
 fn a_summary_turn_is_taken_again_when_the_endpoint_says_try_again() {
     let Some(_) = letibot_llama::apparatus::present_gguf() else {

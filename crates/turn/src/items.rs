@@ -1,38 +1,11 @@
-//! Turning a generation into transcript items **and** the ledger rows beside them.
+//! Turning a generation into transcript items and the ledger rows beside them.
 //!
-//! # Why this is one operation and not two
+//! `Parser` answers what the model said and, since `ParsedSpan` carries token offsets, which
+//! tokens are this item - both out of one walk of the same ids, so the rows and the items
+//! cannot disagree about where a turn's reasoning ended.
 //!
-//! `Parser` answers "what did the model say" and, since `ParsedSpan` carries token
-//! offsets, "which tokens are this item" — both out of the same walk of the same
-//! ids. This module groups those spans into transcript items and assigns each item
-//! the exact token range it owns, so the rows and the items cannot disagree about
-//! where a turn's reasoning ended — which is what §5.5's fork and §10's compaction
-//! address.
-//!
-//! Two facts the parser cannot see are handled here, because they are the caller's
-//! and not the parser's:
-//!
-//! * **The lead is never parsed.** The generation prompt is harness-written; parsing
-//!   it turns a renderer's own bytes into model output. Its tokens still need a row,
-//!   so the first item's range starts at zero and owns them.
-//! * **Trailing stop tokens are stripped.** A stop is a boundary, boundaries belong
-//!   to the renderer, and keeping the emitted one would put a second user-turn
-//!   opener in the next prompt. The price is visible in the cache: the slot retains
-//!   what it decoded, so the next prompt's common prefix with it is one token
-//!   shorter — which is why the prefix witness records **committed** generated
-//!   tokens rather than the server's `predicted` count. See `crate::prefix`.
-//!
-//! # The interleaving is the point
-//!
-//! One turn is `[reasoning, tool_call, reasoning, ..., message]` and that order is
-//! byte-stable across turns — which is what makes the server's prefix cache hit.
-//! Grouping by span kind preserves it: a second reasoning block after content
-//! becomes a second `Reasoning` item rather than overwriting the first.
-//!
-//! An unterminated reasoning block — a turn cut mid-thought — needs no special
-//! handling here any more: the parser ends in reasoning mode and reports the buffer
-//! as a `Reasoning` span (Qwen's always did; GLM's was fixed when the offsets
-//! landed, which is what deleted this module's old re-segmentation pass).
+//! The lead is never parsed (the harness wrote it) but the first item's range owns it, and
+//! trailing stop tokens are stripped because a boundary belongs to the renderer.
 
 use std::ops::Range;
 
@@ -61,14 +34,9 @@ pub struct Produced {
     pub visible_text: String,
     /// Concatenated reasoning text, for the length policy.
     pub reasoning_text: String,
-    /// Whether the generation ended with the reasoning block still open: the
-    /// stream stopped before any `ThinkClose`. Computed over the same tokens the
-    /// spans were parsed from, with the same `opens_in_reasoning` seed the parse
-    /// used, by the same fold [`lead_opens_reasoning`] runs over the lead — one
-    /// primitive (`decoder.control_role`), so the item view and the stream view
-    /// cannot disagree about where the block ended. R7's turn-boundary check
-    /// reads this: a turn that stops inside its own reasoning and says nothing
-    /// else is a failure, not an empty success.
+    /// Whether the generation ended with the reasoning block still open: the stream stopped
+    /// before any `ThinkClose`. Computed over the same tokens and seed the parse used, so the
+    /// item view and the stream view cannot disagree.
     pub ended_in_reasoning: bool,
 }
 
@@ -84,24 +52,9 @@ impl Produced {
             .collect()
     }
 
-    /// Mark what this turn left unfinished.
-    ///
-    /// **The answer and the thought are cut by different facts**, and using one
-    /// for both was a bug this nearly shipped with. `truncated` says the TURN
-    /// stopped early — an interrupt, or the output limit — and that is right for
-    /// an assistant item however the turn ended. It is wrong for reasoning: a
-    /// turn that thought, CLOSED its block, answered, and only then ran out of
-    /// room has a complete thought in it, and marking that thought unfinished
-    /// would elide a finished one from every later prompt.
-    ///
-    /// [`Produced::ended_in_reasoning`] is the fact that actually applies, and it
-    /// was already here — the operator pointed at it. It says the stream stopped
-    /// before any `ThinkClose`, computed over the same tokens the spans were
-    /// parsed from, so the item view and the stream view cannot disagree.
-    ///
-    /// Only the LAST reasoning item can be the open one. A turn that reasons,
-    /// speaks, and reasons again has two blocks and the first of them is closed
-    /// by the speaking.
+    /// Mark what this turn left unfinished: `truncated` says the TURN stopped early, which is
+    /// right for an assistant item however it ended, while a thought is unfinished only when
+    /// its block never closed - marking a finished one would elide it from every later prompt.
     pub fn mark_truncated(&mut self, truncated: bool) {
         let open_thought = self.ended_in_reasoning.then(|| {
             self.items
@@ -129,30 +82,9 @@ pub fn split_trailing_stops(ids: &[TokenId], stops: &[TokenId]) -> (Vec<TokenId>
     (ids[..end].to_vec(), ids[end..].to_vec())
 }
 
-/// Which channel the model is speaking on **before it has generated anything**.
-///
-/// A per-dialect fact, and the only honest source of it is the dialect's own
-/// generation prompt — [`crate::PromptRenderer::generation_prompt`], tokenized and
-/// read back through the same `control_role` lookup the parser uses. GLM's is
-/// `<|assistant|><think>` and the ChatML fixture's is `<|im_start|>assistant\n<think>`,
-/// so both hand the model a turn that is already inside a reasoning block. A dialect
-/// whose generation prompt stops at `<|assistant|>` does not, and a hardcoded `true`
-/// would label that model's *answer* as its reasoning — the same defect with the sign
-/// flipped.
-///
-/// It is a fold rather than "does the last control token open a think block" because
-/// a generation prompt is free to open and close one (`<think></think>`, which is how
-/// a no-reasoning turn is spelled), and only the final state is the answer.
-///
-/// # Why the live stream and the committed transcript call this same function
-///
-/// [`produce`] needs it because the lead is not parsed: without it an aborted
-/// deliberation reads as visible content, and §5.7's `ReasoningOnly` failure becomes
-/// a `TruncatedText` success. The engine's stream loop needs it because a head is
-/// told a channel per delta, and a head told the wrong one shows the reasoning as the
-/// answer for the length of the turn. Those are the two views §13.2b requires to
-/// agree, so they are seeded from one function over one input rather than from two
-/// readings of the same intent.
+/// Which channel the model is speaking on before it has generated anything: read off the
+/// dialect's own generation prompt through the same `control_role` lookup the parser uses, and
+/// folded, because a prompt may open and close a block. The stream and the transcript share it.
 pub fn lead_opens_reasoning(lead: &[TokenId], decoder: &dyn TokenDecoder) -> bool {
     lead.iter()
         .fold(false, |open, id| match decoder.control_role(*id) {
@@ -162,16 +94,9 @@ pub fn lead_opens_reasoning(lead: &[TokenId], decoder: &dyn TokenDecoder) -> boo
         })
 }
 
-/// Build items and their token ranges from one generation.
-///
-/// `lead` is the generation prompt that was submitted but not committed; it is
-/// prepended so that the first item owns the turn-start tokens the model was
-/// handed. `reasoning_field` is the dialect's replay field for `Reasoning` items.
-///
-/// Assistant items come out with `truncated: false`. Whether the turn was cut
-/// short is decided from the finish reason and any interrupt, which `produce`
-/// does not see; the engine stamps the value via [`Produced::mark_truncated`]
-/// before committing.
+/// Build items and their token ranges from one generation. `lead` is prepended so the first
+/// item owns the turn-start tokens the model was handed. Assistant items come out with
+/// `truncated: false`; the engine stamps the real value before committing.
 pub fn produce(
     lead: &[TokenId],
     generated: &[TokenId],
@@ -185,26 +110,18 @@ pub fn produce(
     tokens.extend_from_slice(lead);
     tokens.extend_from_slice(&body);
 
-    // **Only the generated tokens are parsed.** The lead is the generation
-    // prompt: the harness wrote it, the model did not, and it is present here
-    // solely so the first item's ledger row owns the turn-start tokens the
-    // model was handed. Parsing it turns a renderer's own bytes into model
-    // output — with the ChatML lead it makes the literal text "assistant" the
-    // turn's visible content, which is enough to turn a §5.7 `ReasoningOnly`
-    // failure into a `TruncatedText` success. Whether the lead leaves the
-    // reasoning block open is the one fact the parser needs from outside, and
-    // `lead_opens_reasoning` is its single source.
+    // Only the generated tokens are parsed. The lead is the generation prompt, written by the
+    // harness, present only so the first item's row owns the turn-start tokens - parsing it
+    // would make the literal "assistant" the turn's visible content.
     let opens_in_reasoning = lead_opens_reasoning(lead, decoder);
     let spans = parser.parse(&tokens[lead.len()..], decoder, opens_in_reasoning);
 
     let mut items: Vec<ProducedItem> = Vec::new();
     let mut visible_text = String::new();
     let mut reasoning_text = String::new();
-    // Absolute index into `tokens` up to which emitted items claim coverage. The
-    // lead is never parsed, so the first item starts at 0; a gap between spans —
-    // an empty think block the parser skips — is absorbed into the next item's
-    // range rather than dropped, because a token with no row is a token the next
-    // turn will re-send.
+    // Absolute index into `tokens` up to which items claim coverage. The first item starts at
+    // 0, and a gap between spans is absorbed into the next item's range rather than dropped,
+    // because a token with no row is a token the next turn re-sends.
     let mut covered_to = 0usize;
     // The assistant item under construction, if the current run of spans is
     // content-shaped: (text, calls, first token).
@@ -296,9 +213,8 @@ pub fn produce(
         });
     }
 
-    // The same fold `lead_opens_reasoning` runs over the lead, run over the
-    // generated body with the lead's answer as the seed. The trailing stop tokens
-    // are already stripped; they are turn-end control, never think control, so
+    // The same fold `lead_opens_reasoning` runs, over the generated body with the lead's answer
+    // as the seed. The trailing stops are already stripped, and they are turn-end control, so
     // their removal cannot flip the answer.
     let ended_in_reasoning = tokens[lead.len()..]
         .iter()
@@ -320,10 +236,8 @@ pub fn produce(
     }
 }
 
-/// Every token has exactly one row, and the rows are contiguous from zero.
-///
-/// Not a debug assertion: a gap here is a token the next turn re-sends and the
-/// cache diverges on, which is precisely the class this project exists to abolish.
+/// Every token has exactly one row, and the rows are contiguous from zero. Not a debug
+/// assertion: a gap here is a token the next turn re-sends and the cache diverges on.
 pub fn rows_cover_every_token(p: &Produced) -> Result<(), String> {
     let mut next = 0usize;
     for item in &p.items {
@@ -504,14 +418,9 @@ mod tests {
         }
     }
 
-    /// A regression this cost a real debugging pass to find.
-    ///
-    /// GLM's generation prompt is two control tokens, so a lead that leaked into
-    /// the parse was invisible. ChatML's is `<|im_start|>` + the literal text
-    /// `assistant\n` + `<think>`, and leaking it made "assistant" the turn's
-    /// visible content — which turned a §5.7 `ReasoningOnly` **failure** into a
-    /// `TruncatedText` **success**, i.e. reproduced the nine unnoticed rows through
-    /// a different door.
+    /// A regression this cost a real debugging pass to find: ChatML's lead carries the literal
+    /// text `assistant\n`, so leaking it made "assistant" the visible content and turned a
+    /// `ReasoningOnly` failure into a `TruncatedText` success.
     #[test]
     fn the_generation_prompts_own_text_is_never_parsed_as_model_output() {
         let d = decoder().with_text(20, "assistant\n");
@@ -562,17 +471,9 @@ mod tests {
 
 #[cfg(test)]
 mod stopping_a_turn_stops_the_thought {
-    //! **The middle link of the abandoned-draft fix**, tested where it lives.
-    //!
-    //! Both real parsers emit a `Reasoning` span for a block that was cut before
-    //! its `</think>` — GLM's says so in as many words, Qwen's has always done
-    //! it. What this asserts is the next step: that the stamp the engine applies
-    //! from the interrupt reaches that span, and not only the assistant item
-    //! beside it.
-    //!
-    //! Asserted separately because the engine-level test for it used the ChatMl
-    //! double, whose parser drops an unclosed block entirely — so it proved
-    //! nothing about either dialect that ships.
+    //! The middle link of the abandoned-draft fix, tested where it lives: both real parsers
+    //! emit a `Reasoning` span for a block cut before its `</think>`, and this asserts the
+    //! stamp the engine applies from the interrupt reaches that span, not only the assistant.
 
     use super::*;
     use letibot_transcript::ReasoningField;
@@ -594,10 +495,9 @@ mod stopping_a_turn_stops_the_thought {
         }
     }
 
-    /// **The case `ended_in_reasoning` exists to tell apart**, and the one this
-    /// nearly shipped wrong: a turn that thought, CLOSED the block, answered, and
-    /// only then hit the limit. The turn is truncated; the thought is not, and
-    /// eliding it would delete a finished thought from every later prompt.
+    /// The case `ended_in_reasoning` exists to tell apart: a turn that thought, CLOSED the
+    /// block, answered, and only then hit the limit. The turn is truncated; the thought is
+    /// not, and eliding it would delete a finished thought from every later prompt.
     #[test]
     fn a_thought_that_finished_before_the_turn_was_cut_is_not_marked() {
         let mut p = produced_ending_in_reasoning(

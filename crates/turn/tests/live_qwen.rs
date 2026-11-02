@@ -1,26 +1,10 @@
 //! The engine against the llama.cpp server that is actually running on this box.
 //!
-//! # Why these are not skipped when the server is absent
-//!
-//! The same reason `tokencore`'s FFI tests are not: a test that quietly passes when
-//! the thing it tests is missing reports the health of a `TcpStream::connect`, and
-//! this fleet has already paid for the difference between a liveness indicator and
-//! the fact it stands in for. If the endpoint is wrong for your box, set
-//! `LETIBOT_COMPLETION_URL` and `LETIBOT_VOCAB_GGUF`.
-//!
-//! # The constraint these tests respect
-//!
-//! The server is in production use with five slots, and saturating them is not
-//! acceptable. So every test here takes one process-wide lock, and each holds it
-//! for one or two short generations. The whole file is a handful of requests.
-//!
-//! # What is deliberately *not* tested live
-//!
-//! `finish_reason: length`. Producing one requires either an `n_predict` cap —
-//! which §5.7 removed from the request on purpose, and which no test may add back —
-//! or filling a 1.3 M-token context. The policy is exercised exhaustively offline
-//! in `length.rs` instead, which is where the nine-unnoticed-rows case belongs
-//! anyway: it is a decision, not a server behaviour.
+//! A test that quietly passes when the thing it tests is missing reports the health of a
+//! `TcpStream::connect`, so if the endpoint is wrong for your box, set
+//! `LETIBOT_COMPLETION_URL` and `LETIBOT_VOCAB_GGUF`. The server is in production use with five
+//! slots, so every test here takes one process-wide lock and holds it for one or two short
+//! generations; `finish_reason: length` is not tested live and the policy is exercised offline.
 
 mod support {
     pub mod chatml;
@@ -51,29 +35,15 @@ fn endpoint() -> Endpoint {
         std::env::var("LETIBOT_COMPLETION_URL").unwrap_or_else(|_| "127.0.0.1:8080".to_string());
     let (host, port) = url.rsplit_once(':').expect("HOST:PORT");
     let ep = Endpoint::new(host, port.parse().expect("port"));
-    // Ask what is actually behind the port before tokenising for it. These three
-    // model services are singletons that evict each other and have shared `:8080`,
-    // so the wrong one being up is the ordinary case rather than the strange one —
-    // and the failure it produces (`400 Prompt contains invalid tokens`) names the
-    // tokenizer for what is really a different model. Once per binary.
+    // Ask what is actually behind the port before tokenising for it: these model services are
+    // singletons that evict each other, and the failure a wrong one produces names the tokenizer
+    // for what is really a different model. Once per binary.
     ep
 }
 
-/// Is a ChatML model actually behind the port?
-///
-/// **These tests are dialect-bound and cannot follow the served model.** They
-/// build a `ChatMlRenderer` and a `ChatMlParser`; against GLM the control tokens
-/// do not resolve and nothing here is exercised. That is a fact about which
-/// singleton service is up, not about the code — `letibot-harnessd`'s
-/// `loop_closes` needs only *a* model and now follows whatever is served, but
-/// this file cannot.
-///
-/// So it SKIPS rather than panicking, in the idiom this tree already uses for
-/// every environment-gated check (`FLOWY_LIVE`, `BRAVE_LIVE`, `FIRECODE_LIVE`,
-/// `SUDO_LIVE`): loudly, saying it is not a pass. Before this they were four
-/// permanent failures on a box serving GLM, and a suite that is always red is a
-/// suite nobody reads — which is how they came to be reported all day as
-/// "pre-existing, not mine" instead of being dealt with.
+/// Is a ChatML model actually behind the port? These tests build a `ChatMlRenderer` and a
+/// `ChatMlParser`, so against GLM nothing here is exercised - a fact about which service is up,
+/// not about the code. So it SKIPS loudly rather than panicking.
 fn qwen_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
@@ -241,13 +211,9 @@ fn a_turn_goes_render_tokenize_ledger_submit_stream_parse_commit() {
     );
 }
 
-/// The trap, against the running server rather than against a fixture.
-///
-/// Two things have to be true at once and they pull in opposite directions: the
-/// generated ids are **only** in the partial frames, and the partial frames include
-/// progress frames carrying a fabricated token id 0. A reader that gets either half
-/// wrong writes a different token vector, and this asserts the vector by decoding it
-/// back through the vocabulary and comparing against what the model actually said.
+/// The trap, against the running server rather than a fixture: the generated ids are ONLY in
+/// the partial frames, and those include progress frames carrying a fabricated id 0. This
+/// asserts the vector by decoding it back and comparing against what the model said.
 #[test]
 fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
     if !qwen_is_served() {
@@ -289,18 +255,9 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
     // What the ledger holds, decoded back through the real vocabulary.
     let decoded = letibot_turn::engine::decode_tokens(&vocab(), engine.control(), committed);
 
-    // # Why this compares against the rows and not against the decoded ledger
-    //
-    // The decoded ledger is not what a head is shown and was never meant to be.
-    // It opens with the generation prompt — `<|im_start|>assistant\n<think>` — which
-    // the harness wrote rather than the model, and it carries the model's own
-    // `</think>`, which is a boundary the parser drops from every row it commits.
-    // A head is shown the rows. This used to assert `decoded.contains(streamed)`,
-    // which held only because T12 streamed the boundary literal to heads as visible
-    // characters; the containment passed *because* of the defect.
-    //
-    // So the comparison is against what was committed, which is the thing a head is
-    // supposed to end up agreeing with, and it is equality.
+    // Compared against the ROWS, not the decoded ledger: the ledger opens with the generation
+    // prompt the harness wrote and carries the model's own `</think>`, which the parser drops.
+    // A head is shown the rows, so the comparison is equality against what was committed.
     let committed_prose: String = ok
         .items
         .iter()
@@ -326,14 +283,9 @@ fn the_committed_ids_are_the_models_ids_not_a_retokenized_reconstruction() {
     eprintln!("committed {} id(s): {decoded:?}", committed.len());
 }
 
-/// §18.1-I1, post-flight, over two real turns.
-///
-/// Both forms run. The structural one is exact and must hold outright. The
-/// observable one is a statistical claim about the server's past behaviour, and on
-/// this box it has a known source of noise — MTP speculative decoding trims the
-/// slot's cache around a rollback — so a shortfall is reported with its size rather
-/// than failing the turn, exactly as §18.1 specifies (`Warning{prefix_divergence,
-/// shortfall}`).
+/// The post-flight invariant over two real turns. The structural form is exact and must hold;
+/// the observable one is a statistical claim about the server, and this box trims the slot's
+/// cache around a rollback, so a shortfall is reported with its size rather than failing.
 #[test]
 fn the_generation_inclusive_prefix_invariant_is_checked_after_every_turn() {
     if !qwen_is_served() {
@@ -386,11 +338,9 @@ fn the_generation_inclusive_prefix_invariant_is_checked_after_every_turn() {
                  {expected_cached_min}, short by {shortfall}."
             );
             if *shortfall > 0 {
-                // Not a failure. `qwen-3.8-flash-next` is a hybrid/recurrent model,
-                // so llama.cpp resumes from a context checkpoint and snaps `n_past`
-                // back to it — the observable form of I1 cannot reach its own bound
-                // here whatever the harness does. The exact form above is what says
-                // the harness is correct.
+                // Not a failure: a hybrid/recurrent model resumes from a context checkpoint
+                // and snaps `n_past` back, so the observable form of I1 cannot reach its own
+                // bound here whatever the harness does. The exact form above is the verdict.
                 let (code, _) = second.metrics.prefix_check.warning().unwrap();
                 assert_eq!(code, "cache_reuse_shortfall");
             }
@@ -427,12 +377,9 @@ fn the_generation_inclusive_prefix_invariant_is_checked_after_every_turn() {
     );
 }
 
-/// The token core's tokenization must agree with the server's, and the flag that
-/// decides it is not the one the endpoint defaults to.
-///
-/// `/tokenize` defaults `parse_special` to **true** (`server-context.cpp:7775`), so
-/// a cross-check that omits the flag is checking a different function from the one
-/// the harness runs for `RenderSpan::Text`. Both directions are pinned here.
+/// The token core's tokenization must agree with the server's, and the flag that decides it is
+/// not the endpoint's default: `/tokenize` defaults `parse_special` to true, so a cross-check
+/// that omits the flag is checking a different function. Both directions are pinned here.
 #[test]
 fn the_tokenize_cross_check_passes_parse_special_explicitly() {
     if !qwen_is_served() {
