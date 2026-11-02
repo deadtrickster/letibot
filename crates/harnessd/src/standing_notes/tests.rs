@@ -715,8 +715,8 @@ fn a_declared_skill_arrives_whole_and_an_unknown_one_is_said() {
     assert!(preloaded(&r, &[]).is_none());
 }
 
-/// The skills index rides the same section, and no body comes with it: the names and their sources
-/// reach the prompt, and the text arrives only when asked.
+/// The skills index rides the same section, and no body comes with it: the pinned names and their
+/// sources reach the prompt, the rest are a count, and the text arrives only when asked.
 #[test]
 fn the_section_carries_the_skills_index_and_never_a_body() {
     let ws = dir("skills");
@@ -728,13 +728,28 @@ fn the_section_carries_the_skills_index_and_never_a_body() {
             "THE BODY NOBODY IS GIVEN UNASKED",
             letibot_tools::builtins::skill::SkillSource::Project,
         ),
-    ]);
+        letibot_tools::builtins::skill::Skill::new(
+            "review",
+            "judge a branch",
+            "ANOTHER BODY NOBODY IS GIVEN",
+            letibot_tools::builtins::skill::SkillSource::Installed(None),
+        ),
+    ])
+    .with_pins(["release"]);
     let s = section_with_skills(&ws, &g, &no_box(), &vocab(), Some(&r), None).expect("a section");
     assert!(
         s.contains("- release  [this project]  cut a release"),
         "{s}"
     );
     assert!(!s.contains("THE BODY NOBODY IS GIVEN UNASKED"), "{s}");
+    // The unpinned skill is a count and never a row: an index of every source is what R113 removed.
+    assert!(
+        !s.contains("- review"),
+        "an unpinned skill is not listed: {s}"
+    );
+    assert!(s.contains("1 more that `skill list` holds"), "{s}");
+    assert!(s.contains("1 pinned of 2"), "{s}");
+    assert!(s.contains("`skill list` every one"), "{s}");
     // And the section says what the labels mean, so a model cannot take a model's skill for
     // the operator's instruction.
     assert!(s.contains("only a skill labelled"), "{s}");

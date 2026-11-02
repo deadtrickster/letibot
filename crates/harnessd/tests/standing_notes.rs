@@ -124,14 +124,14 @@ fn the_box_a_session_reads_is_the_one_its_config_names() {
         "the instruction file the config points at is in message zero: {system}"
     );
     assert!(
-        system.contains("box-skill"),
-        "and the skill index is read from the config's roots: {system}"
+        system.contains("pinned of 3"),
+        "and the skills the config's roots hold are counted in the prompt: {system}"
     );
 
     let (nobody, _store) = opened(ws.path(), "nobody");
     let system = &nobody.config().system;
     assert!(
-        !system.contains("box-nonce-one") && !system.contains("box-skill"),
+        !system.contains("box-nonce-one") && !system.contains("pinned of 3"),
         "a session whose config names no box reads none of one: {system}"
     );
 }

@@ -224,6 +224,9 @@ pub trait SkillShelf: Send + Sync {
 #[derive(Default)]
 pub struct SkillRegistry {
     pub skills: Vec<Skill>,
+    /// The names the operator pinned for this project: the only rows the prompt's index carries.
+    /// A pin is not a load - the body still arrives only when `skill` is asked for it.
+    pins: BTreeSet<String>,
     shelf: Mutex<Option<Arc<dyn SkillShelf>>>,
 }
 
@@ -240,8 +243,26 @@ impl SkillRegistry {
     pub fn new(skills: Vec<Skill>) -> Self {
         SkillRegistry {
             skills,
+            pins: BTreeSet::new(),
             shelf: Mutex::new(None),
         }
+    }
+
+    /// The registry with the operator's pins, set once before it is shared: the prompt is composed
+    /// from it at open, and a pin that changed mid-session would move the prefix.
+    pub fn with_pins<I, S>(mut self, pins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.pins = pins.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// The names the prompt lists in full, in the order they were pinned nowhere else: the set is
+    /// what `index` reads, and a caller may want to say a pin that answers to nothing.
+    pub fn pins(&self) -> &BTreeSet<String> {
+        &self.pins
     }
 
     /// Install the shelf. Once: a second shelf replaces the first and says so in
@@ -463,21 +484,28 @@ impl SkillRegistry {
         (rows, said)
     }
 
-    /// The index the prompt carries: one line per skill, capped three ways (rows, bytes and the
-    /// session's own token counter), or `None` when there is nothing to list. The cap is why the
-    /// order is the source priority, and the tail says how many more `skill list` holds.
+    /// The index the prompt carries: the PINNED skills, one line each, and a count of everything
+    /// else - `None` when the box holds nothing at all. Never a source in full: a box with two
+    /// hundred installed skills would spend the prompt's first screen on names nobody pinned, and
+    /// the model reaches the rest with `skill list` and `skill find`.
     pub fn index(&self, vocab: &Vocab) -> Option<String> {
         let (rows, said) = self.index_rows();
         if rows.is_empty() && said.is_none() {
             return None;
         }
+        let listed: Vec<&IndexRow> = rows
+            .iter()
+            .filter(|r| self.pins.contains(&r.name))
+            .collect();
         let mut out = format!(
-            "### skills — {} in this prompt's index; `skill` loads a body, `skill list` every one\n",
+            "### skills — {} pinned of {}; `skill` loads a body, `skill list` every one, `skill \
+             find` the nearest\n",
+            listed.len(),
             rows.len()
         );
         let mut used = 0usize;
         let mut shown = 0usize;
-        for row in &rows {
+        for row in listed {
             let line = format!(
                 "- {}  [{}]  {}\n",
                 row.name,
@@ -503,6 +531,17 @@ impl SkillRegistry {
                 "… and {} more that `skill list` holds\n",
                 rows.len() - shown
             ));
+        }
+        // A pin nothing answers to is the operator's mistake, and the prompt says it rather than
+        // silently listing one row fewer than was asked for.
+        let mut unknown: Vec<&String> = self
+            .pins
+            .iter()
+            .filter(|p| !rows.iter().any(|r| &r.name == *p))
+            .collect();
+        unknown.sort();
+        for name in unknown {
+            out.push_str(&format!("pinned `{name}` names no skill on this box\n"));
         }
         if let Some(said) = said {
             out.push_str(&format!("{said}\n"));
@@ -957,7 +996,11 @@ mod tests {
             )],
             std::slice::from_ref(&root),
         );
-        let slides = r.skills.iter().find(|s| s.name == "slides").expect("slides");
+        let slides = r
+            .skills
+            .iter()
+            .find(|s| s.name == "slides")
+            .expect("slides");
         let doc = slides.document();
         for part in ["slides", "deck", "latex presentation", "beamer", "frames"] {
             assert!(doc.contains(part), "`{part}` is not in the document: {doc}");
@@ -971,11 +1014,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The index names every skill, says where it was found, and carries no body. The bodies are
-    /// what `skill` is for; a prompt that held them would be a corpus, not an index.
+    /// The index lists the pinned skills and a count of the rest, never a source in full: a box
+    /// with hundreds of installed skills would otherwise spend the prompt's first screen on names
+    /// nobody asked to pin. What it does not list is still reachable by `skill list` and `skill find`.
     #[test]
-    fn the_index_names_each_skill_with_its_source_and_carries_no_body() {
-        let r = registry();
+    fn the_index_lists_only_the_pinned_skills_and_counts_the_rest() {
+        let vocab = letibot_tokencore::Vocab::bytes([], []);
+        let r = SkillRegistry::new(vec![
+            Skill::new(
+                "commit",
+                "write a conventional commit",
+                "a body",
+                SkillSource::Operator,
+            ),
+            Skill::new(
+                "release",
+                "cut a tagged release",
+                "a body",
+                SkillSource::Project,
+            ),
+            Skill::new(
+                "review",
+                "judge a branch",
+                "a body",
+                SkillSource::Installed(None),
+            ),
+        ])
+        .with_pins(["release"]);
+        let index = r.index(&vocab).expect("an index");
+        assert!(
+            index.contains("- release  [this project]  cut a tagged release"),
+            "{index}"
+        );
+        assert!(index.contains("1 pinned of 3"), "{index}");
+        assert!(index.contains("2 more that `skill list` holds"), "{index}");
+        assert!(
+            !index.contains("- commit") && !index.contains("- review"),
+            "an unpinned skill is not named in the prompt: {index}"
+        );
+        // The verbs are how the rest is reached, so the index says them.
+        assert!(
+            index
+                .contains("`skill` loads a body, `skill list` every one, `skill find` the nearest"),
+            "{index}"
+        );
+        // A box that pins nothing lists no source at all, and still says what it holds.
+        let plain = SkillRegistry::new(vec![Skill::new(
+            "commit",
+            "write a conventional commit",
+            "a body",
+            SkillSource::Operator,
+        )]);
+        let index = plain.index(&vocab).expect("an index");
+        assert!(index.contains("0 pinned of 1"), "{index}");
+        assert!(!index.contains("\n- "), "no row and no source: {index}");
+        assert!(index.contains("1 more that `skill list` holds"), "{index}");
+    }
+
+    /// The index names a pinned skill with its source, and carries no body. The bodies are what
+    /// `skill` is for; a prompt that held them would be a corpus, not an index.
+    #[test]
+    fn the_index_names_each_pinned_skill_with_its_source_and_carries_no_body() {
+        let r = registry().with_pins(["commit"]);
         let vocab = letibot_tokencore::Vocab::bytes([], []);
         let index = r.index(&vocab).expect("an index");
         assert!(
@@ -994,14 +1094,18 @@ mod tests {
         assert!(SkillRegistry::new(Vec::new()).index(&vocab).is_none());
     }
 
-    /// The cap is a count, and the tail says how many it left out: a box with hundreds of
-    /// installed skills must still list the project's own.
+    /// The cap is a count, and the tail says how many it left out: an operator who pins a hundred
+    /// skills must not be handed a prompt that no longer fits.
     #[test]
     fn the_index_stops_at_its_cap_and_says_how_many_more_there_are() {
-        let many: Vec<Skill> = (0..INDEX_MAX_ROWS + 5)
-            .map(|i| {
+        let names: Vec<String> = (0..INDEX_MAX_ROWS + 5)
+            .map(|i| format!("skill-{i:03}"))
+            .collect();
+        let many: Vec<Skill> = names
+            .iter()
+            .map(|name| {
                 Skill::new(
-                    format!("skill-{i:03}"),
+                    name.clone(),
                     "a line",
                     "a body",
                     SkillSource::Installed(None),
@@ -1009,7 +1113,7 @@ mod tests {
             })
             .collect();
         let total = many.len();
-        let r = SkillRegistry::new(many);
+        let r = SkillRegistry::new(many).with_pins(names);
         // The byte vocabulary prices one token per byte, so the token cap binds first here; the
         // count cap is asserted by the same arithmetic, one line up.
         let vocab = letibot_tokencore::Vocab::bytes([], []);
