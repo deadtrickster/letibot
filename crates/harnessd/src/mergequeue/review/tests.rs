@@ -1315,6 +1315,7 @@ fn a_project_that_asks_for_vms_gets_its_reviewer_placed_in_one() {
         settings: &settings,
         clones: clones.clone(),
         slots: &Vec::new,
+        reviewer_skills: &[],
     };
     assert_eq!(
         serve(&pool).expect("a pass").started,
