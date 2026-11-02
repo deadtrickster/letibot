@@ -606,7 +606,7 @@ fn frac(done: usize, total: usize) -> f64 {
     }
 }
 
-/// A tier is green when it is finished, working when something in it is, and quiet otherwise  - 
+/// A tier is green when it is finished, working when something in it is, and quiet otherwise -
 /// including a tier whose rows are all blocked, because "nothing is running" is what that means.
 fn tier_role(tier: &Tier) -> Role {
     let (done, total) = counts(tier);

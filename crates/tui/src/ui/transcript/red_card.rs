@@ -2,7 +2,7 @@
 //! away, in the popup the job card opens.
 //!
 //! The operator, pasting what one red `main` drew - a `target_red` warning that wrapped into a
-//! paragraph with the gate's output under it, and then the session's own `EMERGENCY  - ` notice to
+//! paragraph with the gate's output under it, and then the session's own `EMERGENCY - ` notice to
 //! the model with the same output again in a fenced block: *"please make all this: … a one-line
 //! similar to job - with a popup"*. Two big blocks for one event.
 //!

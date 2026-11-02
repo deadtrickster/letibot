@@ -1092,7 +1092,7 @@ fn the_stood_down_row_sets_and_clears_the_resident_line() {
         choices: Vec::new(),
         tools: Vec::new(),
     };
-    // The guard's finding, as the daemon renders it: the `off  - ` spelling,
+    // The guard's finding, as the daemon renders it: the `off - ` spelling,
     // with the pair.
     a.apply(ServerFrame::Settings {
         rows: vec![stood_row(
