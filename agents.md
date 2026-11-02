@@ -279,6 +279,19 @@ assert on rendered screens: `app()`, `hello()`, `brief()` and `typed()` are the 
 `a.screen(w, h)` both returns the lines and records the click facts, and a refusal is checked
 through `a.notice`. Mirror an existing test's shape before inventing one.
 
+A row of the sessions tree is not a session. `App::session_rows()` draws a project's line, a
+`system` line, a group's line and a session's row into one `Vec<SessionRow>`, and
+`SessionRow::idx` is the index into `App::sessions` while a row's position is not - indexing by
+position panics one past the end, which reads as a fixture with too few sessions. Every reader goes
+through `idx`. Where a row GOES is one function (`App::placements`, taking the project from the root
+of the parent chain, so a review clone under a temp dir is not a project), and `sessions_feed` ships
+both marks to the built-in layer because a guest cannot walk a store. What a row SAYS exists twice,
+because the layer is the copy a project overrides: one equality test holds the two together
+(`sessions_list.rs::the_heads_list_and_the_plugins_list_draw_the_same_rows`) plus two committed
+pictures re-blessed with `LETIBOT_BLESS=1`, so a change to the tree's shape is a change to those
+files. `letibot --sessions` is a third shape over the same marks (`harnessd::cli::grouped`), and one
+session can sit differently in the two pictures.
+
 webfetch's curl transport resolves then pins (`--resolve`), refuses private addresses (the model
 server on loopback is why), walks redirects manually, caps the body, and splits curl's metadata by
 a `-w` sentinel with `rfind`, so a forged body cannot lie about headers.
