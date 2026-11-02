@@ -176,6 +176,15 @@ impl PromptRenderer for QwenAdapter {
     ) -> Vec<RenderSpan> {
         self.renderer.render_incremental(history, new_items)
     }
+    /// The override that matters: a run of consecutive tool results is ONE user turn and only the
+    /// batch knows where the run ends. See `QwenRenderer::render_incremental_by_item`.
+    fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        self.renderer.render_incremental_by_item(history, new_items)
+    }
     fn generation_prompt(&self) -> Vec<RenderSpan> {
         letibot_dialect_qwen::generation_prompt()
     }
@@ -248,5 +257,116 @@ mod tests {
             glm.system_update(1, "now in Russian"),
             TranscriptItem::System { .. }
         ));
+    }
+
+    /// T20.5, at the seam it was reported at: `Session::append_items`.
+    ///
+    /// The ledger keeps one row per tool result - it is append-only and a row is an item - and the
+    /// PROMPT those rows build is the template's ONE user turn for the run. A byte vocabulary
+    /// makes the assertion exact: every id decodes back to the byte that was tokenized, so the
+    /// ledger's whole text can be compared against the template's own bytes.
+    #[test]
+    fn the_ledger_keeps_a_row_per_result_under_one_user_turn() {
+        use letibot_tokencore::Vocab;
+        use letibot_turn::events::NullSink;
+
+        let w = Dialect::Qwen.wiring(None);
+        let spec = w.spec().clone();
+        let literals: Vec<String> = spec
+            .control_tokens
+            .iter()
+            .map(|t| t.literal.to_string())
+            .collect();
+        let eog: Vec<String> = spec
+            .stop_tokens
+            .iter()
+            .map(|t| t.literal.to_string())
+            .collect();
+        let vocab = std::sync::Arc::new(Vocab::bytes(
+            literals.iter().map(String::as_str),
+            eog.iter().map(String::as_str),
+        ));
+        let engine = letibot_turn::TurnEngine::new(
+            vocab.clone(),
+            w.renderer.clone(),
+            w.parser.clone(),
+            letibot_http::Endpoint::new("127.0.0.1", 1),
+            letibot_backend::BackendCaps::OWN_SERVER,
+            "qwen",
+            serde_json::json!({}),
+        )
+        .expect("the fixture resolves against a byte vocabulary");
+        let prefix = StablePrefix {
+            system: "be terse".into(),
+            tools_json: vec![],
+        };
+        let mut session = engine.open("t20", &prefix).expect("a session");
+        let mut sink = NullSink;
+
+        // The assistant asks for two reads in one message.
+        let ask = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![
+                letibot_transcript::ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"a"}"#.into(),
+                },
+                letibot_transcript::ToolCall {
+                    id: "c2".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"b"}"#.into(),
+                },
+            ],
+            truncated: false,
+        };
+        session
+            .append_items(&engine, std::slice::from_ref(&ask), &mut sink)
+            .expect("the ask lands");
+        let before_rows = session.ledger.rows().len();
+        let before = vocab
+            .detokenize(session.ledger.tokens(), true)
+            .expect("the fixture's own bytes");
+
+        // Both results arrive in ONE round, which is the batch `append_items` is handed.
+        let results: Vec<TranscriptItem> = [("c1", "A"), ("c2", "B")]
+            .into_iter()
+            .map(|(call_id, payload)| TranscriptItem::ToolResult {
+                call_id: call_id.into(),
+                name: "read".into(),
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                payload: payload.into(),
+                edit: None,
+                origin: None,
+                media: None,
+            })
+            .collect();
+        session
+            .append_items(&engine, &results, &mut sink)
+            .expect("the results land");
+
+        // One row per item...
+        assert_eq!(
+            session.ledger.rows().len(),
+            before_rows + 2,
+            "the ledger is append-only and takes one row per item"
+        );
+        // ...and ONE user turn carrying both results in the prompt.
+        let after = vocab
+            .detokenize(session.ledger.tokens(), true)
+            .expect("the fixture's own bytes");
+        let added = after
+            .strip_prefix(&before)
+            .expect("appending only ever extends the ledger");
+        assert_eq!(
+            added,
+            "<|im_end|>\n<|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n",
+            "the assistant's turn closes, then the template's one user turn"
+        );
+        assert_eq!(
+            added.matches("<|im_start|>user").count(),
+            1,
+            "the two results must not open a turn each: {added}"
+        );
     }
 }

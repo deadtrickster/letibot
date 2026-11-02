@@ -1,7 +1,7 @@
 //! The seam between the turn engine and whatever turns items into spans.
 //!
 //! The engine depends on this trait and on [`RenderSpan`], never on a concrete renderer: when
-//! the template-driven one lands it implements the same three methods and nothing here changes.
+//! the template-driven one lands it implements the same methods and nothing here changes.
 //!
 //! The one thing this trait must never gain is a method returning `Vec<TokenId>`: `RenderSpan`
 //! is text-plus-control-token so a renderer needs no vocab, and a user message containing the
@@ -26,6 +26,39 @@ pub trait PromptRenderer: Send + Sync {
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan>;
+
+    /// [`Self::render_incremental`], and where each item's spans END, because a dialect may
+    /// merge a RUN of items into one message (T20.5).
+    ///
+    /// Item `i`'s spans are `all[ends[i - 1]..ends[i]]`, with `0` standing in for `ends[-1]`;
+    /// `ends.len() == new_items.len()`, empty for an empty batch. For a non-empty batch
+    /// `ends.last() == Some(&all.len())`, so whatever closes the batch belongs to its last item.
+    /// The batch is rendered in ONE pass for the reason the method exists: the last item of a
+    /// merged run cannot know whether to write the message's closing token until it sees that
+    /// nothing follows it within the batch.
+    ///
+    /// So the ledger's one-row-per-item rule costs nothing and the batch is the unit. A
+    /// caller that appends a merged run in two calls gets two messages; every caller in this
+    /// tree hands `append_items` a whole round's results.
+    ///
+    /// The default renders one item at a time, which is exact for every dialect whose items
+    /// never merge - GLM's runs of tool results share an opening token, which the past
+    /// settles, not the future.
+    fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
+        let mut seen = history.to_vec();
+        let mut all: Vec<RenderSpan> = Vec::new();
+        let mut ends = Vec::with_capacity(new_items.len());
+        for item in new_items {
+            all.extend(self.render_incremental(&seen, std::slice::from_ref(item)));
+            seen.push(item.clone());
+            ends.push(all.len());
+        }
+        (all, ends)
+    }
 
     /// What the model is handed to start speaking, e.g. `<|assistant|><think>`. Not part of a
     /// render: folding it in would break `render_incremental ≡ render` for a conversation whose

@@ -442,6 +442,11 @@ impl Session {
 
     /// [`Session::append_items`], saying how far it has got - `progress(done, total)` after
     /// each item, because a bar fed only by the write that follows sat at zero.
+    ///
+    /// The whole batch is rendered in ONE pass and then cut at the seams the renderer reports, so
+    /// a dialect that merges a run of items into one message (Qwen's runs of tool results) gets the
+    /// merge while the ledger keeps its one-row-per-item rule. Rendering item by item could not:
+    /// the last item of a run owns the message's closing token, and only the batch knows it is last.
     pub fn append_items_reporting(
         &mut self,
         engine: &TurnEngine,
@@ -450,11 +455,23 @@ impl Session {
         progress: &mut dyn FnMut(u64, u64),
     ) -> Result<(), EngineError> {
         let total = new_items.len() as u64;
+        let (spans, ends) = engine
+            .renderer
+            .render_incremental_by_item(&self.items, new_items);
+        if ends.len() != new_items.len() {
+            // A renderer that answers the wrong number of seams cannot be trusted to have put the
+            // items in the order it was handed, so the ledger would record the wrong text.
+            return Err(EngineError::Ledger(format!(
+                "the renderer answered {} seam(s) for {} item(s)",
+                ends.len(),
+                new_items.len()
+            )));
+        }
+        let mut from = 0usize;
         for (done, item) in new_items.iter().enumerate() {
-            let spans = engine
-                .renderer
-                .render_incremental(&self.items, std::slice::from_ref(item));
-            let tokens = engine.tokenize(&spans)?;
+            let to = ends[done];
+            let tokens = engine.tokenize(&spans[from..to])?;
+            from = to;
             let item_id = format!("{}.{}", self.transcript_id, self.items.len());
             let row = self
                 .ledger
@@ -564,12 +581,13 @@ impl TurnEngine {
         })?;
         let mut prompt = session.ledger.tokens().to_vec();
         // The round's tail, rendered by the same renderer the transcript uses and appended
-        // after everything the ledger holds. Each item is rendered against the history as it
-        // stood BEFORE it, which is `render_incremental`'s contract.
-        for item in tail {
-            let spans = self
+        // after everything the ledger holds. One pass for the whole tail, not one per item, for
+        // the reason `append_items_reporting` gives: a run of tail items that merges into one
+        // message needs the batch. The seams are not wanted here - nothing is written.
+        if !tail.is_empty() {
+            let (spans, _) = self
                 .renderer
-                .render_incremental(&session.items, std::slice::from_ref(item));
+                .render_incremental_by_item(&session.items, tail);
             prompt.extend_from_slice(&self.tokenize(&spans)?);
         }
         prompt.extend_from_slice(&lead);

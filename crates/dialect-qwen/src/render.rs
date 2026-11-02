@@ -3,13 +3,16 @@
 //! Every string this renderer emits is either LITERAL (template bytes, which [`lit`] splits
 //! out control literals from, because the training runtime tokenized each as one vocab entry)
 //! or DATA (conversation bytes, which [`data`] never splits, so a user who types `<tool_call>`
-//! gets ordinary tokens and cannot produce a turn boundary). Consecutive tool results are the
-//! one declared divergence - the template merges them into one user turn and we emit one turn
-//! each, because the ledger is append-only and takes one row per item:
+//! gets ordinary tokens and cannot produce a turn boundary).
+//!
+//! A run of consecutive tool results is ONE user turn, as the template writes it:
 //! ```text
-//! template : <|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n
-//! ours     : <|im_start|>user\n<tool_response>\nA\n</tool_response><|im_end|>\n<|im_start|>user\n<tool_response>\nB\n</tool_response><|im_end|>\n
+//! <|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n
 //! ```
+//! The `<|im_end|>` belongs to whichever result has no result after it, so a caller that rendered
+//! one item at a time would write a whole turn per result. [`QwenRenderer::render_incremental_by_item`]
+//! renders the batch and says where each item ends, which is what lets `Session::append_items` keep
+//! one ledger row per item under a prompt that carries one turn per run (T20.5).
 
 use letibot_dialect::{RenderSpan, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
@@ -111,7 +114,7 @@ impl QwenRenderer {
         let mut out = Vec::new();
         self.render_prefix(prefix, &mut out);
         let mut st = State::default();
-        render_items(items, &mut st, &mut out);
+        render_items(items, &mut st, &mut out, None);
         out
     }
 
@@ -123,14 +126,29 @@ impl QwenRenderer {
         history: &[TranscriptItem],
         new_items: &[TranscriptItem],
     ) -> Vec<RenderSpan> {
+        self.render_incremental_by_item(history, new_items).0
+    }
+
+    /// [`Self::render_incremental`], and the span each item ends at.
+    ///
+    /// The template puts a run of consecutive tool results in ONE user turn and only the last of
+    /// the run owns the `<|im_end|>`, so "is another result coming" is a question a single item
+    /// cannot answer - and rendering one at a time wrote a whole user turn per result (T20.5).
+    /// One row per item is the LEDGER's rule; one turn per run is the PROMPT's.
+    pub fn render_incremental_by_item(
+        &self,
+        history: &[TranscriptItem],
+        new_items: &[TranscriptItem],
+    ) -> (Vec<RenderSpan>, Vec<usize>) {
         let mut st = State::default();
         if !history.is_empty() {
             let mut discard = Vec::new();
-            render_items(history, &mut st, &mut discard);
+            render_items(history, &mut st, &mut discard, None);
         }
         let mut out = Vec::new();
-        render_items(new_items, &mut st, &mut out);
-        out
+        let mut ends = Vec::with_capacity(new_items.len());
+        render_items(new_items, &mut st, &mut out, Some(&mut ends));
+        (out, ends)
     }
 
     /// The system turn: reasoning instruction, tools, then the operator's text. The tool block comes
@@ -197,6 +215,11 @@ struct State {
     /// A tool call has already been written in this message, so the next one is not
     /// `loop.first`.
     called: bool,
+    /// A USER message was opened to hold a run of tool results and its `<|im_end|>` is not yet
+    /// written. The template writes ONE user turn per run of consecutive results, so the closing
+    /// token belongs to whichever result has no result after it - the one fact a single item cannot
+    /// supply, and the reason [`QwenRenderer::render_incremental_by_item`] exists.
+    tool_turn_open: bool,
 }
 
 fn close_assistant(st: &mut State, out: &mut Vec<RenderSpan>) {
@@ -204,6 +227,16 @@ fn close_assistant(st: &mut State, out: &mut Vec<RenderSpan>) {
         ctl(out, &tk::IM_END);
         lit(out, "\n");
         *st = State::default();
+    }
+}
+
+/// End a run of tool results. Called before any item that is not a result and at the end of a
+/// batch, which is the whole of "is another result coming".
+fn close_tool_turn(st: &mut State, out: &mut Vec<RenderSpan>) {
+    if st.tool_turn_open {
+        ctl(out, &tk::IM_END);
+        lit(out, "\n");
+        st.tool_turn_open = false;
     }
 }
 
@@ -227,7 +260,15 @@ fn open_assistant(st: &mut State, out: &mut Vec<RenderSpan>, reasoning: &str) {
     st.thought = true;
 }
 
-fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSpan>) {
+/// `ends`, when given, gets the span index each item finished at - the seam
+/// [`QwenRenderer::render_incremental_by_item`] needs to keep one ledger row per item while the
+/// prompt carries one turn per run of results.
+fn render_items(
+    items: &[TranscriptItem],
+    st: &mut State,
+    out: &mut Vec<RenderSpan>,
+    mut ends: Option<&mut Vec<usize>>,
+) {
     for item in items {
         match item {
             // Renders to nothing, by contract.
@@ -238,6 +279,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             // transcript loaded from an older store still renders.
             TranscriptItem::System { text, .. } => {
                 close_assistant(st, out);
+                close_tool_turn(st, out);
                 ctl(out, &tk::IM_START);
                 lit(out, "user\n");
                 lit(out, "<system-update>\n");
@@ -249,6 +291,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
 
             TranscriptItem::User { parts, .. } => {
                 close_assistant(st, out);
+                close_tool_turn(st, out);
                 ctl(out, &tk::IM_START);
                 lit(out, "user\n");
                 render_user_parts(parts, out);
@@ -263,6 +306,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 text, truncated, ..
             } => {
                 close_assistant(st, out);
+                close_tool_turn(st, out);
                 // An abandoned draft is not replayed: the store keeps it, and the prompt gets a sentence instead
                 // of the thought. Reasoning is the one kind that can be elided this way - a killed draft is
                 // referred to by nothing, unlike an assistant turn or a tool result.
@@ -280,6 +324,7 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
             TranscriptItem::Assistant {
                 text, tool_calls, ..
             } => {
+                close_tool_turn(st, out);
                 if !st.assistant_open {
                     open_assistant(st, out, "");
                 }
@@ -300,9 +345,16 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 ..
             } => {
                 close_assistant(st, out);
-                ctl(out, &tk::IM_START);
-                lit(out, "user");
-                lit(out, "\n");
+                if st.tool_turn_open {
+                    // Mid-run: the turn is already open and the template separates two results with
+                    // one newline, which `</tool_response>` and the next `<tool_response>` share.
+                    lit(out, "\n");
+                } else {
+                    ctl(out, &tk::IM_START);
+                    lit(out, "user");
+                    lit(out, "\n");
+                    st.tool_turn_open = true;
+                }
                 ctl(out, &tk::TOOL_RESPONSE_OPEN);
                 lit(out, "\n");
                 // `payload` verbatim: it is already `ToolResult::render`'s envelope
@@ -319,10 +371,21 @@ fn render_items(items: &[TranscriptItem], st: &mut State, out: &mut Vec<RenderSp
                 }
                 lit(out, "\n");
                 ctl(out, &tk::TOOL_RESPONSE_CLOSE);
-                ctl(out, &tk::IM_END);
-                lit(out, "\n");
+                // The `<|im_end|>` is NOT written here: this result does not yet know whether
+                // another follows it. `close_tool_turn` owns it.
             }
         }
+        if let Some(ends) = ends.as_deref_mut() {
+            ends.push(out.len());
+        }
+    }
+    // A batch is always followed by a generation prompt or by more items, never left hanging
+    // inside a user turn - so whatever closes it belongs to the last item of the batch.
+    close_tool_turn(st, out);
+    if let Some(ends) = ends.as_deref_mut()
+        && let Some(last) = ends.last_mut()
+    {
+        *last = out.len();
     }
 }
 
@@ -433,7 +496,7 @@ pub fn generation_prompt() -> Vec<RenderSpan> {
 pub fn ends_mid_turn(items: &[TranscriptItem]) -> bool {
     let mut st = State::default();
     let mut discard = Vec::new();
-    render_items(items, &mut st, &mut discard);
+    render_items(items, &mut st, &mut discard, None);
     st.assistant_open
 }
 
@@ -707,9 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn render_incremental_equals_render_at_every_prefix() {
+    fn the_batch_render_equals_the_whole_render_at_every_prefix() {
         // §18.1-I3b, over a conversation that exercises every item kind this
-        // renderer has a branch for.
+        // renderer has a branch for. The comparison is against the BATCH render, not one item at a
+        // time: the last item of a run of tool results owns the turn's closing token, so item-by-item
+        // replay is no longer - and never was, in the template - the same prompt (T20.5).
         let items = [
             user("Compare a and b."),
             TranscriptItem::Reasoning {
@@ -770,13 +835,118 @@ mod tests {
         for k in 0..=items.len() {
             let whole = spans_to_string(&r.render(&p, &items[..k]));
             let mut built = spans_to_string(&r.render(&p, &[]));
-            for i in 0..k {
-                built.push_str(&spans_to_string(
-                    &r.render_incremental(&items[..i], &items[i..i + 1]),
-                ));
-            }
+            built.push_str(&spans_to_string(&r.render_incremental(&[], &items[..k])));
             assert_eq!(whole, built, "prefix {k} diverges");
+            // And the seams cut that same render back into one slice per item, in order. An empty
+            // batch has no seams and no spans.
+            let (spans, ends) = r.render_incremental_by_item(&[], &items[..k]);
+            assert_eq!(spans, r.render_incremental(&[], &items[..k]));
+            assert_eq!(ends.len(), k);
+            assert_eq!(ends.last().copied().unwrap_or(0), spans.len());
         }
+    }
+
+    /// The template's own bytes for a run of two results, copied from its `messages` loop:
+    /// one `<|im_start|>user`, each result in its own `<tool_response>`, one `<|im_end|>`.
+    #[test]
+    fn consecutive_tool_results_are_one_user_turn() {
+        let calls = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"a"}"#.into(),
+                },
+                ToolCall {
+                    id: "c2".into(),
+                    name: "read".into(),
+                    arguments: r#"{"path":"b"}"#.into(),
+                },
+            ],
+            truncated: false,
+        };
+        let results = [
+            TranscriptItem::ToolResult {
+                call_id: "c1".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "A".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "c2".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "B".into(),
+                edit: None,
+                origin: None,
+                media: None,
+            },
+        ];
+        let history = [user("Compare a and b."), calls];
+        let r = QwenRenderer::new();
+
+        let got = spans_to_string(&r.render_incremental(&history, &results));
+        assert_eq!(
+            got,
+            "<|im_end|>\n<|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n",
+            "the assistant's turn closes, then ONE user turn with one im_end - the template's shape"
+        );
+
+        // And the whole prompt says the same thing, so the ledger and a re-render agree.
+        let p = prefix("Be terse.", &[]);
+        let all = [
+            history[0].clone(),
+            history[1].clone(),
+            results[0].clone(),
+            results[1].clone(),
+        ];
+        assert_eq!(
+            spans_to_string(&r.render(&p, &all)),
+            format!("{}{got}", spans_to_string(&r.render(&p, &history)))
+        );
+
+        // The seam is between the two results and the closing token belongs to the LAST one:
+        // two rows, one turn.
+        let (spans, ends) = r.render_incremental_by_item(&history, &results);
+        assert_eq!(ends.len(), 2);
+        assert_eq!(ends[1], spans.len());
+        assert!(ends[0] < ends[1]);
+        let first = spans_to_string(&spans[..ends[0]]);
+        let second = spans_to_string(&spans[ends[0]..]);
+        // The first row ends on `</tool_response>`: no turn close of its own, because it does not
+        // know yet that a result follows. The second one carries the close.
+        assert!(first.ends_with("</tool_response>"), "{first}");
+        assert!(second.ends_with("</tool_response><|im_end|>\n"), "{second}");
+        // And exactly one row opens the user turn - the one that starts the run.
+        assert_eq!(first.matches("<|im_start|>user").count(), 1, "{first}");
+        assert_eq!(second.matches("<|im_start|>user").count(), 0, "{second}");
+        assert_eq!(format!("{first}{second}"), got);
+    }
+
+    /// The trailing `<|im_end|>` is written by whoever ends the run, so a batch that ends on a
+    /// tool result still closes its turn - otherwise the generation prompt lands inside it.
+    #[test]
+    fn a_batch_that_ends_on_a_tool_result_closes_its_turn() {
+        let r = QwenRenderer::new();
+        let one = [TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "read".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "A".into(),
+            edit: None,
+            origin: None,
+            media: None,
+        }];
+        let got = spans_to_string(&r.render_incremental(&[], &one));
+        assert!(got.ends_with("</tool_response><|im_end|>\n"), "{got}");
+
+        // Items after the run open their own turn rather than landing inside it.
+        let after = spans_to_string(&r.render_incremental(&one, &[user("next")]));
+        assert!(after.starts_with("<|im_start|>user\nnext"), "{after}");
     }
 
     #[test]
