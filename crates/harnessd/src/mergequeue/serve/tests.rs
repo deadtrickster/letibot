@@ -3951,6 +3951,60 @@ fn a_failed_landings_branch_and_tree_are_kept_and_said() {
     );
 }
 
+/// A pass over entries that are already on `main` is not a pass of landings: each settles as
+/// `withdrawn`, at the tip it was already in, and no row records a `landed` it did not do. A
+/// queue that logged the tip would read as one merge per row and per pass.
+#[test]
+fn entries_already_on_main_record_no_landing() {
+    let w = World::new("already-on-main");
+    let (wt_a, base, head_a) = branch(&w.repo, "am-a", "am-a.txt");
+    w.enqueue("am-a", &wt_a, &base, &head_a);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m_a = w.accept("am-a", "test/a");
+    // The project lands the first by hand before the second is even cut.
+    sh(&w.repo, &["merge", "--ff-only", "agent/am-a"]);
+    let base_b = w.tip();
+    let (wt_b, _, head_b) = branch(&w.repo, "am-b", "am-b.txt");
+    w.enqueue("am-b", &wt_b, &base_b, &head_b);
+    pass_until(&q, "the second review to be claimed", || {
+        w.store().review_row("am-b").unwrap().unwrap().state == ReviewState::Reviewing
+    });
+    let m_b = w.accept("am-b", "test/a");
+    // And the second, so both rows are entries `main` already carries.
+    sh(&w.repo, &["merge", "--ff-only", "agent/am-b"]);
+    let tip = w.tip();
+    run(&q, 3);
+    for (m, head) in [(&m_a, &head_a), (&m_b, &head_b)] {
+        let row = w.store().merge_row(m).unwrap().unwrap();
+        assert_eq!(row.state, MergeState::Withdrawn, "{m}: {row:?}");
+        assert!(
+            row.landed_sha.as_deref().unwrap_or("").is_empty(),
+            "`{m}` recorded a landing for a merge the queue did not do, at {head}: {row:?}"
+        );
+        let moves: Vec<String> = w
+            .store()
+            .transitions("merge", m)
+            .unwrap()
+            .into_iter()
+            .map(|t| format!("{} {}", t.to_state, t.why))
+            .collect();
+        assert!(
+            !moves.iter().any(|t| t.starts_with("landed")),
+            "`{m}` is already on `main`, so nothing landed: {moves:?}"
+        );
+        assert_eq!(
+            moves
+                .iter()
+                .filter(|t| t.contains("already on `main`"))
+                .count(),
+            1,
+            "and it is said once, not once a pass: {moves:?}"
+        );
+    }
+    assert_eq!(w.tip(), tip, "nothing landed, so the target did not move");
+}
+
 /// A merge row landed by hand gives its tree back too - the row settles as `withdrawn` (the
 /// queue did not land it, so `landed` would claim a push that never ran), and the resources go
 /// with it: the operator's `git merge --ff-only` mornings, from the merge queue's side.
