@@ -18,12 +18,9 @@ impl App {
         self.invalidate_history_from(0);
     }
 
-    /// The rendered history is stale from row `k` on: rows above it are settled, since nothing this
-    /// head is told can change what they render to.
-    ///
-    /// It is not a repaint. The painter diffs every frame against the glass and writes only rows
-    /// whose text changed, so a rebuild that produces the same lines writes no bytes; this is what
-    /// keeps a session's cost from growing with its square.
+    /// The rendered history is stale from row `k` on, and rows above it are settled.
+    /// Not a repaint: the painter writes only rows whose text changed, so a rebuild that produces
+    /// the same lines writes no bytes.
     pub(crate) fn invalidate_history_from(&mut self, k: usize) {
         if k == 0 {
             self.hist_lines.clear();
@@ -43,12 +40,9 @@ impl App {
             self.call_targets.clear();
             return;
         }
-        // A row the walk has not reached has nothing rendered to throw away, and rewinding to it
-        // would rewind past rows that are fine.
-        //
-        // Unless the head is in tail mode: a tail walk passes no marks, and "no mark" here would
-        // otherwise mean "nothing to do" for a row that changed above the window, so the only
-        // correct answer is to throw the history away and render the tail again.
+        // A row the walk has not reached has nothing to throw away, and rewinding to it would rewind
+        // past rows that are fine. In tail mode there are no marks at all, so the only correct
+        // answer is to throw the history away and render the tail again.
         let Some(mark) = self.hist_marks.get(k).copied() else {
             if self.hist_floor > 0 {
                 self.invalidate_history_from(0);
@@ -67,10 +61,9 @@ impl App {
         self.retarget_before(k);
     }
 
-    /// Put `call_targets` back to what it held when the walk was about to draw row `k`: the calls of
-    /// the nearest assistant row above it that has a body. Derived and not stored, and it has to
-    /// match the walk exactly, which replaces the table at every such row: `call_0` is positional
-    /// within a round, so the scan stops at the first one rather than accumulating.
+    /// Put `call_targets` back to what it held before row `k`: the calls of the nearest assistant
+    /// row above it with a body. Derived, and it must match the walk, which replaces the table at
+    /// every such row because `call_0` is positional within a round.
     pub(crate) fn retarget_before(&mut self, k: usize) {
         self.call_targets = targets_before(&self.items, k);
     }
@@ -91,20 +84,13 @@ impl App {
         start.saturating_sub(1)
     }
 
-    /// The first row whose rendering a change to row `idx` can reach: the row's round, not the row.
-    /// An assistant row asks which of its calls came back and that answer lives in the rows after
-    /// it, so rewinding only to a result leaves a proposal beside its own answer.
-    ///
-    /// Keyed on `kind` rather than the body, because [`round_results`] breaks on an announced
-    /// assistant row whose content has not arrived, and two answers to where a round starts is one
-    /// too many.
+    /// The first row whose rendering a change to row `idx` can reach: the row's round.
+    /// An assistant row asks which of its calls came back and that answer lives after it, so
+    /// rewinding only to a result leaves a proposal beside its own answer.
     pub(crate) fn round_head(&self, idx: usize) -> usize {
-        // A user row is its own head — a conversation of user rows must not
-        // rewind to zero on every one. Anything else belongs to the nearest
-        // assistant row above it, PAST any user rows in between, for the same
-        // reason `round_results` stops only at an assistant row: a result
-        // landing after a mid-round message must reach the row that proposed
-        // its call.
+        // A user row is its own head, or a conversation of user rows would rewind to zero on every
+        // one. Anything else belongs to the nearest assistant row above, past any user rows between:
+        // a result landing after a mid-round message must reach the row that proposed its call.
         if self.items[idx].kind == "user" {
             return idx;
         }
@@ -114,12 +100,9 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// The first history row this turn's pane is drawing, or `None` if it is
-    /// drawing none.
-    ///
-    /// A turn-state transition changes one input to the walk — `drawn_live`, which
-    /// is true only for a row in `TurnPane::appended` — so it can change what those
-    /// rows render to and nothing above the first of them.
+    /// The first history row this turn's pane is drawing, or `None`. A turn-state transition changes
+    /// `drawn_live`, which is true only for a row in `TurnPane::appended`, so it can change those
+    /// rows and nothing above them.
     pub(crate) fn turn_first_row(&self) -> Option<usize> {
         let t = self.turn.as_ref()?;
         if t.appended.is_empty() {
@@ -141,13 +124,8 @@ impl App {
     }
 
     /// Hold the view, or let it follow again: `ctrl-p` and nothing else. While held the head writes
-    /// nothing at all, because one written cell is one lost selection; the events keep arriving and
-    /// folding. Only the reader can know a selection exists, since a Shift-drag never reaches this
-    /// process, so [`App::screen`] composes one frame at the release and this counts what arrived.
-    ///
-    /// The composer's frame, drawn by [`App::main_area`], is the box below: structure rather than
-    /// colour, so it survives the `--replay` pipe, and its border rows carry what would otherwise
-    /// need rows of their own.
+    /// nothing at all, because one written cell is one lost selection; [`App::screen`] composes one
+    /// frame at the release and this counts what arrived.
     ///
     /// ```text
     ///   ╭────────────────────────────────────────────── 1 subagent running ─╮
@@ -176,22 +154,15 @@ impl App {
         None
     }
 
-    /// Render the tail of a conversation instead of all of it: the frame shows the end of a session,
-    /// and walking from row 0 to draw the bottom forty lexes every row above them.
-    ///
-    /// It walks backward from the current floor, rendering whole rows with the same [`item_lines`]
-    /// and the same targets taken by field from [`targets_before`], which is the only thing that made
-    /// direction matter. Returns how many rows it rendered, for a test to count.
+    /// Render the tail of a conversation rather than all of it: the frame shows the end of a session
+    /// and walking from row 0 to draw the bottom forty lexes every row above them. It walks backward
+    /// from the floor with the same renderer and the same targets taken by field. Returns the count.
     pub(crate) fn fill_backward(&mut self, want: usize) -> usize {
         self.fill_backward_until(want, None)
     }
 
-    /// The same walk, with a **row** it must reach — R36.
-    ///
-    /// Two stopping conditions rather than one, because the two callers ask different
-    /// questions: a reader moving by lines wants *a screen's worth*, and a viewport holding
-    /// a row wants *that row*, however few lines it takes. `stop_row` of 0 is the lines-only
-    /// walk.
+    /// The same walk with a row it must reach: a reader moving by lines wants a screen's worth, and a
+    /// viewport holding a row wants that row. `stop_row` of `None` is the lines-only walk.
     pub(crate) fn fill_backward_until(&mut self, want: usize, stop_row: Option<usize>) -> usize {
         if self.hist_floor == 0 {
             return 0;
@@ -204,19 +175,17 @@ impl App {
             .as_ref()
             .map(|t| t.appended.iter().cloned().collect())
             .unwrap_or_default();
-        // **And the turn's rows, for the one question that is about the TURN.** `in_flight` is
-        // this round's — what the live pane is still drawing — while `live_here` asks whether a run
-        // belongs to the turn at all. Two sets because they are two questions, and asking the second
-        // with the first is the defect [`TurnPane::turn_rows`] records.
+        // The turn's rows, for the one question that is about the TURN: `in_flight` is this round's,
+        // while `live_here` asks whether a run belongs to the turn at all. Asking the second with the
+        // first is the defect [`TurnPane::turn_rows`] records.
         let turn_rows: std::collections::HashSet<String> = self
             .turn
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
-        // `(row, class, lines, marker, joinable)`: the block these are assembled into is prepended to
-        // the history, so the records have to be made here rather than recovered later. `joinable`
-        // rides along because the assembly loop has only the row index and the class, and a marker
-        // that joins must not have the separator's blank line.
+        // `(row, class, lines, marker, joinable)`: the block is prepended to the history, so the
+        // records must be made here. `joinable` rides along because the assembly loop has only the
+        // row index and the class, and a marker that joins must not have the separator's blank.
         let mut built: Vec<Built> = Vec::new();
         // Read once, before the loop: the walk needs it per row and recomputing it there
         // would be a scan of `items` for every row drawn.
