@@ -1,5 +1,4 @@
-//! **The loop.** Submit → stream → parse a tool call → execute it → append the
-//! result → resubmit.
+//! The loop: submit, stream, parse a tool call, execute it, append the result, resubmit.
 //!
 //! ```text
 //!   user item ──append──> ledger ──submit──> stream ──parse──> items
@@ -9,32 +8,11 @@
 //!   ToolResult item <──transcript_item── ToolRuntime::invoke ── yes
 //! ```
 //!
-//! `ToolRuntime::transcript_item` and `ToolLogSink` were the two ends of this wire
-//! and both were tested. This file is what runs between them.
-//!
-//! # Three things this file had to decide that no crate had decided
-//!
-//! **1. Item ids are minted by two different rules, and the head needs both.**
-//! `Session::append_items` mints `"{transcript}.{index}"`; the turn engine mints
-//! `"{turn_id}.{n}"`. §4.5's `TranscriptAppended` carries no content, so the daemon
-//! has to call `Hub::record_item(item_id, item)` out of band — and it must use the
-//! *same* id the event carried, or the head shows an empty row forever. Rather than
-//! reimplementing both rules and going stale, [`CapturingSink`] reads the id off
-//! the event on its way past. That is not a workaround for T13.1; T13.1 is the
-//! event having no content channel, and widening it unilaterally is not this
-//! strand's call.
-//!
-//! **2. A failed turn leaves nothing to answer.** When §5.7 refuses a batch, the
-//! engine commits *nothing* — so there are no tool-call rows to attach pi's
-//! "re-issue with complete arguments" notice to. The notice therefore goes in as a
-//! plain user item, which is the only append-only place it fits, and the loop
-//! retries under the engine's own salvage budget rather than a second counter.
-//!
-//! **3. A tool batch is executed in call order and appended in call order.** Not a
-//! style choice: GLM's shipped template *sorts* tool results by tool-call order, so
-//! appending them in any other order would rewrite bytes already in the KV cache.
-//! Keeping call order makes the template's sort a no-op and both properties hold at
-//! once.
+//! Three rules the loop cannot break. Item ids are minted by two different rules, so
+//! [`CapturingSink`] reads the id off the event rather than reimplementing either. A failed turn
+//! commits nothing, so the salvage notice goes in as a plain user item, the only append-only place
+//! it fits. And a tool batch is executed and appended in call order, because GLM's shipped template
+//! sorts tool results by call order and any other order would rewrite bytes already in the KV cache.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -967,48 +945,25 @@ impl DenialSink for HubDenials {
 // Steering
 // ---------------------------------------------------------------------------
 
-/// Steering from the head socket (§5.8), from the intent check, from a fired
-/// monitor, and from a background job of this session's own that has ended.
+/// Steering from the head socket, from the intent check, from a fired monitor, and from a
+/// background job of this session's own that has ended.
 ///
-/// A `Prompt` that arrives while the model is generating is a correction, and it
-/// goes in at the next step boundary. An `Interrupt` is the urgent form: it stops
-/// generation at the next token and the partial output is kept.
+/// A `Prompt` that arrives while the model is generating is a correction and goes in at the next
+/// step boundary; an `Interrupt` is the urgent form, which stops generation at the next token and
+/// keeps the partial output. The hub's queue is drained here only while a turn is running; between
+/// turns the daemon's own worker owns it.
 ///
-/// The hub's queue is drained here *only while a turn is running*; between turns
-/// the daemon's own worker owns it. One drainer at a time, by construction of who
-/// is executing.
+/// The step boundary is the only place any of the four can be injected, so they share this source
+/// rather than each growing a path into the engine. What they do not share is provenance: a head's
+/// prompt is the operator, and the other three are this harness talking to itself. That is recorded
+/// here, at the moment the message is handed over, because after the engine appends it they are four
+/// identical `User` items.
 ///
-/// # Four sources, one queue, and the speaker is recorded as they are drained
-///
-/// The step boundary is the only place any of the four can be injected, so they
-/// share this source rather than each growing a path into the engine. What they do
-/// **not** share is provenance: a head's prompt is the operator, and the intent
-/// check, a monitor firing and a settlement are this harness talking to itself. That
-/// distinction is recorded here, at the moment the message is handed over, because after
-/// the engine appends it they are four identical `User` items. See [`TrailMirror`].
-///
-/// # Why a settlement is here at all, when the session has a wake
-///
-/// For a **root** it is not: [`Harness::wake`] is its door, and
-/// [`JobWatchers::take_mid_turn_completions`] returns nothing for it — a second
-/// delivery path for the R7 turn would be exactly the kind of duplicate this tree
-/// keeps finding. A **child** has a between-turn wake too, and since 2026-10-06 it is one
-/// that ARRIVES: the ring names the child, `Sessions::wake` cannot run its turn (`open`
-/// holds no harness for it), so the daemon hands the wake to the thread that does
-/// ([`letibot_sessionlog::hub::Hub::wake_its_own_reader`], answered by `serve_child`) and
-/// the settlement becomes a turn of the child's own. What that door cannot reach is a turn
-/// already RUNNING — the child's serving thread is inside it — and the round boundary is
-/// the only place a turn in flight can be told anything. This is that place.
-///
-/// That guard is the set's, not this struct's: it is the same question — *is this session
-/// the top of its tree* — and it is answered where the session ids are.
-///
-/// **Since R79 the question here is a different one, and it is asked of roots and children
-/// alike: does the work wait on this result?** Only what it does — a row's `when`/`needs`, a
-/// wait, `wake: "now"`, the failure of one of those — comes in at a round boundary; everything
-/// else is held for the next turn boundary or the starvation cap ([`Deliveries`],
-/// `crate::delivery`). One queue and one sort still mean one delivery: the wake that follows
-/// finds the result taken or held, never untold.
+/// A settlement is here because a child's own wake cannot reach a turn already RUNNING, and the round
+/// boundary is the only place a turn in flight can be told anything. Since R79 the question is asked
+/// of roots and children alike: does the work wait on this result? Only what it does comes in at a
+/// round boundary; everything else is held for the next turn boundary or the starvation cap. One
+/// queue and one sort still mean one delivery.
 pub struct HubSteering {
     hub: Arc<Hub>,
     /// Where the speaker of each injected message is recorded. `None` in a test
@@ -1950,44 +1905,26 @@ impl SteeringSource for HubSteering {
                     Some(SteeringMessage::urgent(reason))
                 }
                 CommandKind::Message { from, text } => {
-                    // **A parent's live correction** — an agent's utterance in a session it is not
-                    // seated in, so it is recorded as `Speaker::Agent` and NOT as the operator.
-                    // That is the whole of the difference between this and the `Prompt` arm
-                    // above, and it is why the variant exists rather than reusing one: an
-                    // operator's words can authorise the act they race, coalesce with other
-                    // operator text, and be taken back — a parent's cannot.
+                    // A parent's live correction: an agent's utterance in a session it is not
+                    // seated in, so it is recorded as `Speaker::Agent` and NOT as the operator. An
+                    // operator's words can authorise the act they race, coalesce with other operator
+                    // text and be taken back; a parent's cannot.
                     //
-                    // `SteeringMessage::normal` is the same door this session's own boundary
-                    // already uses for injected context, so a correction arrives as context at
-                    // the next round boundary rather than as an interruption: a child told to
-                    // change course should finish the call it is in and change, not abandon it.
+                    // It arrives as context at the next round boundary rather than as an
+                    // interruption, because a child told to change course should finish the call it
+                    // is in and change rather than abandon it. The words are the same text the
+                    // between-turns door hands the session: a session that could tell which door they
+                    // came through would be reading the machinery instead of the message.
                     //
-                    // **And the words are [`message_from_a_session`]'s**, which is the same text
-                    // the between-turns door hands the session (`serve_child`'s
-                    // `ChildCommand::Hear`): a session that could tell which door the words came
-                    // through would be reading the machinery instead of the message.
+                    // This arm writes NO row, and the child's transcript gets one anyway, because the
+                    // row and the injection are the same thing: the engine turns the steering message
+                    // into a `User` item and appends it through the writer every other row goes
+                    // through. A row written here would be a copy of the injection.
                     //
-                    // # Which door writes the ROW, and why the row is the injection
-                    //
-                    // MEASURED 2026-10-29 (`message_between_turns`'s
-                    // `a_message_to_a_running_child_lands_in_that_turn`, extended with a
-                    // `transcript_item` read): this arm writes NO row, and the child's
-                    // transcript gets one anyway — because the row and the injection are the
-                    // same thing. The steering message below is handed to the engine, the
-                    // engine's `Pending::take_items` turns it into a `User` item with
-                    // `Speaker::Agent`, and `Session::append_items` appends that item through
-                    // the same writer every other row goes through (`reconcile` + `persist` in
-                    // `Harness::run_rounds`). The model reads that row; a head draws that row;
-                    // the store holds that row. A second row written here would be a COPY of
-                    // the injection, and the child would read its parent's sentence twice.
-                    //
-                    // What that leaves is one window, and it is the reason
-                    // `SteeringMessage::from_a_session` exists: the item is appended at a
-                    // **step boundary**, and a round that fails after taking this message
-                    // hands it back (`SteeringSource::give_back`) without a boundary ever
-                    // arriving. `Harness::run_rounds` closes that window — a message still
-                    // carried when the turn is over is written into the transcript there, in
-                    // these same words, so the row exists whether or not a turn ever read it.
+                    // That leaves one window: the item is appended at a step boundary, and a round
+                    // that fails after taking the message hands it back without a boundary ever
+                    // arriving. `Harness::run_rounds` closes it, writing a message still carried when
+                    // the turn is over into the transcript in these same words.
                     let said = message_from_a_session(&from, &text, self.parent.as_deref());
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Agent, &said, Some(Instant::now()));
@@ -4834,18 +4771,13 @@ impl JobWindow {
     }
 }
 
-/// **The window one read of a job's output answers with** — the decision half of
-/// [`Harness::job_output_window`], which does the two reads (the job's row, its capture
-/// ring) and hands everything to this.
+/// The window one read of a job's output answers with: the decision half of
+/// [`Harness::job_output_window`], which does the two reads and hands everything to this.
 ///
-/// **A job whose command redirects its output to a file: the FILE is the window** (R41),
-/// and the daemon does the reading — a head has no business reading the box's filesystem,
-/// and the path is this side's own record of where the bytes went.
-///
-/// **The redirect is enough; the capture holding bytes must not un-redirect the job.**
-/// The first shape of this answered from the file only when the capture was *completely*
-/// empty, which read the command as if a job either redirects or writes but cannot do
-/// both. The operator's own workbench said otherwise, measured in their store:
+/// A job whose command redirects its output to a file answers with the FILE, and the daemon does the
+/// reading, because a head has no business reading the box's filesystem. The redirect is enough on its
+/// own: reading from the file only when the capture was completely empty took a command as either
+/// redirecting or writing, and a compound command does both.
 ///
 /// ```text
 /// handle  state      produced  redirect
@@ -4854,25 +4786,14 @@ impl JobWindow {
 /// j70     killed      0        /tmp/tpcc-trace-server.log ← this one worked
 /// ```
 ///
-/// j87's command is compound — `sleep 1; head -1 …; echo "=== MIX …"; cd … && ./stroppy
-/// run … > /tmp/tpcc-trace2.log 2>&1` — so a preamble of 2426 bytes reached the capture
-/// before the work's stage sent its own bytes to the file, and entering the job drew the
-/// preamble and never the run. **The trade this takes, stated rather than papered over:
-/// when a command names a file, that file is the window whatever the capture holds, and
-/// the capture's bytes — the preamble — are not drawn.** They are not lost silently:
-/// the fresh read says how many are outside the window and where the window is, the same
-/// *counted, not hidden* rule the jobs listing itself follows. The other shapes were
-/// rejected on this tree's own rule that `produced`/`from`/`dropped` are one story about
-/// one source: splicing the capture in front of the file makes one window out of two
-/// coordinate spaces whose offsets cannot mean the same thing, and switching to the file
-/// only at settlement hands the pane a `produced` that changes stories the moment the job
-/// ends — a livetail of a redirected job wants the file too, because that is where the
-/// work has been going all along.
+/// So when a command names a file, that file is the window whatever the capture holds, and the
+/// capture's bytes are not drawn. They are not lost silently either: the read says how many are
+/// outside the window and where the window is. Splicing the two coordinate spaces together, or
+/// switching to the file only at settlement, would make `produced`/`from`/`dropped` two stories
+/// about one source.
 ///
-/// `offset == 0` is the TAIL — the last `limit` bytes — because that is what an output
-/// pane is for and what a fresh read means. Any other offset is a forward window from
-/// there, so the ring's own convention holds: `→` asks for the offset `next` named, and
-/// a reader can walk to the end of a long log.
+/// `offset == 0` is the TAIL, the last `limit` bytes, because that is what an output pane is for.
+/// Any other offset is a forward window from there, so a reader can walk to the end of a long log.
 fn job_window_for(
     command: &str,
     state: &letibot_tools::exec::JobState,
