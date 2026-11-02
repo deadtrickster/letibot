@@ -350,11 +350,7 @@ mod tests {
         assert!(r.refused[0].why.contains('3'), "{}", r.refused[0].why);
         // The refusal is read by the model: no document section and no placeholder plural.
         for internal in ["§", "(s)"] {
-            assert!(
-                !r.refused[0].why.contains(internal),
-                "{}",
-                r.refused[0].why
-            );
+            assert!(!r.refused[0].why.contains(internal), "{}", r.refused[0].why);
         }
     }
 
