@@ -176,7 +176,7 @@ fn the_offer_is_at_the_tail_and_never_in_the_transcript() {
         "and never quotes the note: {text}"
     );
 
-    // And the transcript is untouched: the items handed in are the ones that would be logged,
+    // And the transcript is untouched: the items handed in are the ones that would be logged
     // which is what makes the offer provisional.
     assert_eq!(items.len(), 1, "no row was appended to the transcript");
     assert!(
@@ -404,7 +404,7 @@ fn the_subject_is_the_prompt_and_this_turns_tool_results() {
         "the harness's own row is not the subject: {said}"
     );
 
-    // And the cut keeps the RECENT text: a turn that produced more than the cap keeps its end,
+    // And the cut keeps the RECENT text: a turn that produced more than the cap keeps its end
     // because what is happening now is the question.
     let mut long = prompt("the prompt");
     long.push(result(&"old ".repeat(SUBJECT_CHARS)));
@@ -433,7 +433,7 @@ fn the_subject_is_the_prompt_and_this_turns_tool_results() {
 #[test]
 fn a_cut_inside_a_character_does_not_panic() {
     // 7_999 bytes of ASCII, then a 3-byte character placed so that byte `SUBJECT_CHARS` falls in
-    // the middle of it: `out.truncate(SUBJECT_CHARS.min(out.len()))` with the boundary 8_000 bytes in.
+    // the middle of it: `out.truncate(SUBJECT_CHARS.min(out.len))` with the boundary 8_000 bytes in.
     let text = format!("{}☃ and on", "a".repeat(SUBJECT_CHARS - 1));
     let said = subject(&[result(&text)]);
     assert!(

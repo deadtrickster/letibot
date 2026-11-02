@@ -1,11 +1,11 @@
 //! The daemon's half of `!term`: the panes a session owns, and how their bytes reach a head.
 //!
 //! [`letibot_sessionlog::TerminalDriver`] is the seam and [`Terminals`] implements it; the pty
-//! itself is [`letibot_tools::exec::term`]. What lives here is what the daemon has to hold:
+//! itself is [`letibot_tools::exec::term`]. What lives here is what the daemon has to hold
 //!
-//! - the panes, several per session, each with a number the session never reuses;
-//! - a pane's boundary, taken from its session's process host when the pane opens;
-//! - `Pane::log`, the bytes the program has drawn, replayed to a head that asks;
+//! - the panes, several per session, each with a number the session never reuses
+//! - a pane's boundary, taken from its session's process host when the pane opens
+//! - `Pane::log`, the bytes the program has drawn, replayed to a head that asks
 //! - `Sink`, which turns the reader thread's bytes into [`ServerFrame::TermOutput`].
 //!
 //! The screen is the daemon's because a program on a pty belongs to the session while a head is
@@ -104,7 +104,7 @@ struct Pane {
 impl Pane {
     /// What the program has drawn, as one block of bytes for a head that asked.
     ///
-    /// Cloned rather than lent: the caller pushes it through the hub, which takes its own lock,
+    /// Cloned rather than lent: the caller pushes it through the hub, which takes its own lock
     /// and a borrow across that would hold the log lock while a head's queue is walked.
     fn screen(&self) -> Vec<u8> {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
@@ -185,7 +185,7 @@ impl TermSink for Sink {
 
 /// Keep the tail of what a program drew, and start it where a parser can read it.
 ///
-/// A cut usually lands inside an escape sequence, and a head parses the tail from ground state,
+/// A cut usually lands inside an escape sequence, and a head parses the tail from ground state
 /// so `[2J` would be painted as three characters. A tail with no `ESC` in it is left alone: that
 /// is a program writing text, and text is what it wrote.
 fn trim(log: &mut Vec<u8>) {

@@ -112,7 +112,7 @@ fn over_the_budget_it_is_an_index_with_line_references() {
     let s = section(&ws, &dir("none"), &no_box(), &vocab()).expect("a section");
     assert!(s.contains(", indexed:"), "the file says it is indexed: {s}");
     assert!(s.contains("headings and line ranges only"), "{s}");
-    // The deep body is absent — that is the whole point of the rule.
+    // The deep body is absent - that is the whole point of the rule.
     assert!(!s.contains(&body), "the index carries no filler body");
     // The references a `read` needs: heading, span, first sentence. The title spans lines 1-4 and
     // Deep runs from 5 to the end of the file.
@@ -222,7 +222,7 @@ fn a_headingless_note_is_indexed_by_its_paragraphs() {
 }
 
 /// A period inside a filename is not a sentence end either: a rule that counted every period ends
-/// the lead at `merge_review.attempts, .`.
+/// the lead at `merge_review.attempts,.`.
 #[test]
 fn the_abstract_never_ends_inside_a_path() {
     let ws = dir("path");
@@ -293,7 +293,7 @@ fn a_missing_source_contributes_nothing() {
     let _ = std::fs::remove_dir_all(&empty);
 }
 
-/// The order is the one `gather` states: `AGENTS.md`, then the box-wide notes, then the project's,
+/// The order is the one `gather` states: `AGENTS.md`, then the box-wide notes, then the project's
 /// each directory newest first and ties by name.
 #[test]
 fn the_sources_keep_the_order_the_rule_states() {
@@ -415,7 +415,7 @@ fn carried_reads_the_section_off_a_composed_prompt() {
 ///
 /// The block is the highest-traffic read of all, delivered at session open and every base rebuild
 /// whether or not a tool is called. Authorship is split by directory, which is what keeps a note the
-/// model wrote from reading as an instruction the operator gave, and the caveat says what a note is:
+/// model wrote from reading as an instruction the operator gave, and the caveat says what a note is
 /// a record of what was true when written. The last sentence is there because the block is verbatim
 /// and indexed at once, and a reader who does not know what `indexed` means reads a heading as the
 /// file's whole content.

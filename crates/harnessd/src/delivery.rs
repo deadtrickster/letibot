@@ -120,7 +120,7 @@ pub struct Facts {
     pub when_row: bool,
     /// An open row `needs` this job or child.
     pub needed: bool,
-    /// What the session said it wants — see [`WantedNow`].
+    /// What the session said it wants - see [`WantedNow`].
     pub wanted: Option<WantedNow>,
 }
 
@@ -140,7 +140,7 @@ impl Facts {
 
 /// The delivery decision, as a function. See the module header for the rules it implements.
 ///
-/// The order of the arms is the order the reasons are recorded in when more than one applies,
+/// The order of the arms is the order the reasons are recorded in when more than one applies
 /// most specific first.
 pub fn decide(f: &Facts) -> Delivery {
     if f.emergency {
@@ -320,7 +320,7 @@ pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
 ///  "waited_ms":…,"rule":"batch","batch":3}
 /// ```
 ///
-/// `batch` is how many results reached the model in the same note. A write that fails is dropped:
+/// `batch` is how many results reached the model in the same note. A write that fails is dropped
 /// the record is measurement, and a delivery must never fail because its measurement could not be
 /// written. A log with no path records nothing.
 #[derive(Debug, Clone)]

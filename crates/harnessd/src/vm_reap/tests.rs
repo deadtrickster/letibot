@@ -268,7 +268,7 @@ fn a_gone_daemons_child_under_a_finished_parent_is_abandoned() {
     assert_eq!(said.len(), 1, "{said:?}");
 }
 
-/// This daemon's child, stalled under a finished parent, is stopped and written `killed` with why,
+/// This daemon's child, stalled under a finished parent, is stopped and written `killed` with why
 /// and only when both clocks have run: the parent finished half an hour ago and the child has
 /// written nothing for as long. A child that is still writing is working.
 #[test]
