@@ -1,9 +1,8 @@
 //! Replays recorded gate decisions through today's parser and gate.
 //!
-//! A change to the reading changes every decision already taken, so this is the instrument
-//! that makes "better" a number: [`sweep`] for the reading itself, [`unasked`] for what a
-//! boundary rule or a standing-answer rule would save. Nothing here writes, asks a model, or
-//! opens a file the corpus does not name.
+//! A change to the reading changes every decision already taken, so this is the instrument that makes
+//! "better" a number: [`sweep`] for the reading, [`unasked`] for what a boundary rule or a standing-answer
+//! rule would save. Nothing here writes, asks a model, or opens a file the corpus does not name.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::BufReader;
@@ -172,10 +171,8 @@ pub struct Recorded {
     pub regions: Option<BTreeSet<String>>,
 }
 
-/// `ask - intents [read_file unknown] over [host_other]` to the two bracketed sets.
-///
-/// `None` when the text is not a baseline summary at all, which the caller counts rather
-/// than silently treating as agreement.
+/// `ask - intents [read_file unknown] over [host_other]` to the two bracketed sets, and `None` when the
+/// text is not a baseline summary at all, which the caller counts rather than treating as agreement.
 pub fn recorded(text: &str) -> Option<Recorded> {
     const INTENTS: &str = " — intents [";
     let start = text.find(INTENTS)? + INTENTS.len();
@@ -270,10 +267,8 @@ pub fn parse_cause(n: &Normalised, u: &Unresolved) -> &'static str {
     "the text is not a command this grammar reads"
 }
 
-/// One session's approvals, replayed in the order they were given, and its variables.
-///
-/// `vars` is a counterfactual ([`Report::env_fixed`]): the assignments the gate read before
-/// this command, first assignment winning, `unset` clearing.
+/// One session's approvals, replayed in the order they were given, and its variables. `vars` is a
+/// counterfactual: the assignments the gate read before this command, first assignment winning.
 #[derive(Default)]
 struct Session {
     grants: Vec<Grant>,
@@ -281,10 +276,8 @@ struct Session {
     vars: BTreeMap<String, String>,
 }
 
-/// The names a command assigns to the shell, as its own text states them.
-///
-/// A value with a space or a glob is skipped, as `parameters::as_one_word` skips it: an
-/// environment holding a value the resolver could never use counts a gain that is not one.
+/// The names a command assigns to the shell, as its own text states them. A value with a space or a glob
+/// is skipped, because one the resolver could never use counts a gain that is not one.
 fn assigned(n: &letibot_code::shell::Normalised, vars: &mut BTreeMap<String, String>) {
     use letibot_code::shell::Word;
     let plain = |v: &str| {
@@ -423,10 +416,9 @@ pub struct Report {
     /// finding, it does not reproduce a session.
     pub notes: Vec<String>,
 
-    // --- the session's environment (a same-session counterfactual) --------------------
-    /// Commands unread under today's reading and readable once the session's own assignments
-    /// are in scope. A labelled counterfactual: the corpus records no environment, so this is
-    /// what a gate would have built had it tracked what it read, not what a shell held.
+    // Commands unread today and readable once the session's own assignments are in scope: a labelled
+    // counterfactual, since the corpus records no environment, so this is what a gate would have built
+    // had it tracked what it read.
     pub env_fixed: usize,
     /// Commands readable today and unread with the environment in scope. Must be zero: the
     /// change is meant to be monotone, and a value that makes a command less readable is a
@@ -735,10 +727,9 @@ pub fn sweep(path: &Path, env: &Surroundings) -> Result<Report, String> {
     Ok(rep)
 }
 
-/// Fold every element of the top-level JSON array, one row at a time.
-///
-/// Streamed rather than parsed into a `Vec`: a corpus is large enough that holding all of
-/// it would make the measurement's own memory the first thing to provision.
+/// Fold every element of the top-level JSON array, one row at a time. Streamed rather than parsed into a
+/// `Vec`, because holding a whole corpus would make the measurement's own memory the first thing to
+/// provision.
 fn each_row(path: &Path, mut f: impl FnMut(&Row)) -> Result<(), String> {
     struct Seq<F>(F);
     impl<'de, F: FnMut(&Row)> serde::de::Visitor<'de> for Seq<F> {
@@ -764,11 +755,9 @@ fn each_row(path: &Path, mut f: impl FnMut(&Row)) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// What a boundary rule and a standing-answer rule would change, over a corpus.
-///
-/// A row records the call, the mode and who decided, never the confinement it ran in, so the
-/// gate's own [`crate::adjudicate::a_command_that_crosses_nothing`] is asked as if the
-/// session had been inside a measured boundary.
+/// What a boundary rule and a standing-answer rule would change, over a corpus. A row records the call,
+/// the mode and who decided but never the confinement, so the gate's own rule is asked as if the session
+/// had been inside a measured boundary.
 #[derive(Debug, Default)]
 pub struct Unasked {
     pub rows: usize,

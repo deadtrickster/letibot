@@ -53,17 +53,13 @@ pub enum Existing {
     Unknown,
 }
 
-/// Read a command as the one file write it might be, or say that it is not one.
-///
-/// Never panics and never guesses: every arm that cannot know the bytes returns
-/// `None`, and the command runs through the shell exactly as it did before this
-/// module existed.
+/// Read a command as the one file write it might be, or say that it is not one. Never panics and never
+/// guesses: every arm that cannot know the bytes returns `None`, and the command runs through the shell
+/// exactly as it did before this module existed.
 pub fn recognise(command: &str) -> Option<HeredocWrite> {
     let normalised = shell::normalise(command);
-    // A command with anything unresolved is not this shape. That covers `$HOME`
-    // anywhere in the command, and - the case that matters - a heredoc whose
-    // delimiter is unquoted and whose body the shell would therefore expand, which
-    // the grammar reports as `Construct::ExpandedHeredoc`.
+    // A command with anything unresolved is not this shape. That covers `$HOME` anywhere in it and a
+    // heredoc whose delimiter is unquoted, whose body the shell would therefore expand.
     if !normalised.is_resolved() {
         return None;
     }
@@ -109,12 +105,8 @@ pub fn recognise(command: &str) -> Option<HeredocWrite> {
     })
 }
 
-/// The `write` call this heredoc stands for, or `None` when the bytes it would
-/// leave are not certainly this command's.
-///
-/// `cwd` is where the session sits - `bash`'s own `cwd`, which is the workspace
-/// unless the call named another. `existing` is asked only for an append, and only
-/// about the path this resolves to.
+/// The `write` call this heredoc stands for, or `None` when the bytes it would leave are not certainly
+/// this command's. `cwd` is where the session sits, and `existing` is asked only for an append.
 pub fn as_a_write(
     recognised: &HeredocWrite,
     cwd: &str,
@@ -148,17 +140,9 @@ pub fn as_a_write(
     Some(FileWrite { path, content })
 }
 
-/// The one line a command that writes a file through a heredoc gets when it is not
-/// converted - the near miss, which is the far more common case.
-///
-/// A question about the shape and not about what the runtime did with it: a
-/// recognised command answers `Some` here too, because it does write a file through
-/// a heredoc. The runtime asks this only on the arm that did not convert, so one
-/// call never carries both the note and the nudge.
-///
-/// Conservative on purpose: a heredoc and a redirect into a file, both in one
-/// command. `cargo build 2>&1 | tee out.log` writes a file and is not this - it is a
-/// program doing its job, not file contents written by hand.
+/// The one line a command that writes a file through a heredoc gets when it is not converted, which is
+/// the far more common case. Conservative on purpose: `cargo build | tee out.log` writes a file and is
+/// not this, since it is a program doing its job rather than file contents written by hand.
 pub fn nudge(command: &str) -> Option<&'static str> {
     let normalised = shell::normalise(command);
     let mut heredoc = false;
@@ -269,11 +253,8 @@ fn heredoc_body(command: &str, stage: &Stage) -> Option<String> {
     }
     let (body, literal) = found?;
     if !literal {
-        // An unquoted delimiter means the shell expands the body before the program
-        // reads it: `$x` becomes its value, backticks and `$(...)` their output, and a
-        // backslash is an escape or a line continuation. Any of the three and the
-        // bytes `cat` reads are not the bytes here - which is why a body with none of
-        // them is still recognised, and one with any is not.
+        // An unquoted delimiter means the shell expands the body before the program reads it, so the bytes
+        // `cat` reads are not the bytes here. A body with none of the three expansions is still recognised.
         if body.contains(['$', '`', '\\']) {
             return None;
         }
@@ -281,10 +262,8 @@ fn heredoc_body(command: &str, stage: &Stage) -> Option<String> {
     Some(body)
 }
 
-/// A path joined to the directory it is relative to, lexically.
-///
-/// Not `Path::join`: the two halves are the command's spelling of a place, and
-/// nothing here may touch the disk or collapse a `~` the backend expands itself.
+/// A path joined to the directory it is relative to, lexically. Not `Path::join`: the two halves are the
+/// command's spelling of a place, and nothing here may touch the disk or collapse a `~`.
 fn join(base: &str, path: &str) -> String {
     // Absolute, or a `~` the backend expands: the base has no say in either.
     if path.starts_with('/') || path == "~" || path.starts_with("~/") {

@@ -1,13 +1,9 @@
 //! The lines this session was shown of each file, and what it may therefore change.
 //!
-//! An `edit` may only replace lines a tool displayed: a `read` window, a search hit with
-//! its context, or the region of this session's own earlier edit. Only the displayed
-//! lines count, never their neighbours - the showing tools carry their own context, so
-//! the boundary is where display stopped.
-//!
-//! One fingerprint per shown line, not an mtime and not a whole-file digest: an mtime
-//! moves on a `touch`, and a whole-file digest answers "did anything change" when the
-//! question is "did these lines change".
+//! An `edit` may only replace lines a tool displayed: a `read` window, a search hit with its context, or
+//! the region of this session's own earlier edit, and never their neighbours. One fingerprint per shown
+//! line, not an mtime and not a whole-file digest: an mtime moves on a `touch`, and the question is "did
+//! these lines change".
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -24,17 +20,12 @@ fn fp_line(line: &str) -> u64 {
     h.finish()
 }
 
-/// What the session was shown of one path, line by line.
-///
-/// `table[n - 1]` is line `n`: `Some(fp)` when a tool displayed that line with
-/// exactly those bytes, `None` when it did not. Line numbers are the
-/// `str::lines()` numbers every showing tool numbers by.
+/// What the session was shown of one path, line by line: `table[n - 1]` is line `n`, `Some(fp)` when a
+/// tool displayed that line with exactly those bytes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Seen {
-    /// Fingerprint of the whole file at the last whole-file fact (`read` that
-    /// showed all of it, or this session's own write). `write`'s staleness check
-    /// reads this: an overwrite discards everything, so its question is about the
-    /// whole file.
+    /// Fingerprint of the whole file at the last whole-file fact, which `write`'s staleness check reads:
+    /// an overwrite discards everything, so its question is about the whole file.
     pub digest: String,
     pub bytes: usize,
     table: Vec<Option<u64>>,
@@ -135,10 +126,8 @@ pub enum Cover {
     Stale,
 }
 
-/// Per-session: the lines shown, per path.
-///
-/// Interior mutability because [`crate::runtime::Tool::invoke`] takes `&self` -
-/// tools are values in a registry and are shared across calls.
+/// Per-session: the lines shown, per path. Interior mutability because [`crate::runtime::Tool::invoke`]
+/// takes `&self`, since tools are values in a registry shared across calls.
 #[derive(Debug, Default)]
 pub struct FileLedger {
     seen: Mutex<BTreeMap<String, Seen>>,
@@ -201,10 +190,8 @@ impl FileLedger {
         }
     }
 
-    /// This session's own edit landed: reseat the table across the change and
-    /// mark the region the result displayed. `mark_from`/`mark_to` are line numbers
-    /// in `after`; `on_disk` is what was written, whose whole-file digest must
-    /// match what a later `read` hashes.
+    /// This session's own edit landed: reseat the table across the change and mark the region the result
+    /// displayed. `mark_from`/`mark_to` are line numbers in `after`; `on_disk` is what was written.
     pub fn mark_edit(
         &self,
         path: &str,
@@ -272,11 +259,8 @@ impl FileLedger {
     }
 }
 
-/// The key two spellings of one path share.
-///
-/// `./src/lib.rs`, `src//lib.rs` and `src/lib.rs` are one file, and a ledger keyed
-/// on the model's spelling would let a re-spelling walk past the guard. This is
-/// lexical only: the backend's own `stat` is what resolves a symlink.
+/// The key two spellings of one path share, because a ledger keyed on the model's spelling would let a
+/// re-spelling walk past the guard. Lexical only: the backend's own `stat` resolves a symlink.
 pub fn normalise(path: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     for seg in path.split('/') {

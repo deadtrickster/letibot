@@ -1,11 +1,8 @@
 //! Resource leases on a shared host, against a fake ssh and a fake docker.
 //!
-//! The fake ssh runs the command locally against a temporary remote home, and the fake docker
-//! sits first on that home's `PATH`: a teardown's job is what it removed, so the answer has to
-//! come from the program that would have removed it. Nothing here reaches another machine.
-//!
-//! The ephemeral range and the ports are this box's real ones, and the store is a real file, so
-//! a restart is a second connection rather than a second map.
+//! The fake ssh runs the command locally against a temporary remote home and the fake docker sits first
+//! on that home's `PATH`, because a teardown's job is what it removed. The ephemeral range and the ports
+//! are this box's real ones and the store is a real file, so a restart is a second connection.
 
 #[path = "support/fake_remote.rs"]
 mod fake_remote;
@@ -129,12 +126,9 @@ impl Leases for StoreLeasesAt {
     }
 }
 
-/// The fake docker, and the two lists it answers from.
-///
-/// `docker ps -a` prints the container list and `docker compose ls` the project list; `rm -f` and
-/// `compose -p ... down` remove from them and append to a log the test reads. Written with
-/// [`letibot_tools::testing::write_stub`] because a script written and then exec'd races every
-/// fork in this binary.
+/// The fake docker, and the two lists it answers from: `docker ps -a` prints the containers and `docker
+/// compose ls` the projects, and both removals append to a log the test reads. Written with `write_stub`
+/// because a script written and then exec'd races every fork in this binary.
 fn fake_docker(rig: &Rig) -> PathBuf {
     let containers = rig.bin().join("containers");
     let projects = rig.bin().join("projects");
@@ -328,10 +322,9 @@ fn a_lease_survives_a_new_engine_over_the_same_store() {
     assert_eq!(held.len(), 2, "both blocks are held: {held:?}");
 }
 
-/// Releasing frees the block for the next caller, and removes only what the block created.
-///
-/// Three containers are planted: one under this lease's prefix, one under another session's and
-/// one the operator's. Only the first is removed.
+/// Releasing frees the block for the next caller and removes only what the block created: of three
+/// planted containers, one under this lease's prefix, one under another session's and one the
+/// operator's, only the first goes.
 #[test]
 fn a_release_frees_the_block_and_removes_only_its_own_prefix() {
     let rig = Rig::new("lease-tidy", &["fake1"]);
@@ -401,10 +394,8 @@ fn a_release_frees_the_block_and_removes_only_its_own_prefix() {
     );
 }
 
-/// A name on the never-touch list is left alone, and the refusal names the pattern.
-///
-/// The list is the second wall behind the prefix: the prefix says what is mine, the operator's
-/// list says what is not, and the list wins.
+/// A name on the never-touch list is left alone and the refusal names the pattern: the prefix says what
+/// is mine, the operator's list says what is not, and the list wins.
 #[test]
 fn a_never_touch_name_survives_a_teardown_that_would_have_had_it() {
     let rig = Rig::new("lease-never", &["fake1"]);
@@ -458,11 +449,8 @@ fn a_never_touch_name_survives_a_teardown_that_would_have_had_it() {
     assert!(!left.contains(&format!("{}-db", lease.prefix)), "{left}");
 }
 
-/// A host that has nothing of ours left is a sentence, not a refusal, and the block still goes
-/// back. A container that went with its process is the ordinary case.
-///
-/// The fake docker is planted so this cannot reach a real one: the far side's `PATH` puts the
-/// rig's `bin` first.
+/// A host with nothing of ours left is a sentence, not a refusal, and the block still goes back. The
+/// fake docker is planted so this cannot reach a real one.
 #[test]
 fn a_host_with_nothing_of_ours_left_is_a_sentence() {
     let rig = Rig::new("lease-nothing", &["fake1"]);
@@ -488,10 +476,8 @@ fn a_host_with_nothing_of_ours_left_is_a_sentence() {
     assert!(Book::new(&store).held().is_empty());
 }
 
-/// A container another session made under ITS prefix is never touched, whatever the order.
-///
-/// Two sessions whose prefixes share a head is the shape a prefix check can get wrong, and it is
-/// `starts_with`'s job: a `contains` here would remove a stranger's work.
+/// A container another session made under ITS prefix is never touched: two prefixes sharing a head is
+/// the shape a prefix check gets wrong, and a `contains` here would remove a stranger's work.
 #[test]
 fn a_prefix_that_is_a_prefix_of_another_is_still_not_it() {
     let rig = Rig::new("lease-prefix", &["fake1"]);
