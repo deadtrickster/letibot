@@ -1,51 +1,12 @@
-//! The vocabulary, and the two tokenization entry points the dialect contract
-//! depends on being different.
-//!
-//! # The split, and why it is not a convenience
-//!
-//! `RenderSpan::Text` and `RenderSpan::Control` reach the tokenizer by two
-//! functions that cannot produce each other's output:
-//!
-//! * [`Vocab::tokenize_text`] asks the backend with `parse_special = false`
-//!   (`llama_tokenize`'s own flag, on the GGUF backend). A user message containing the literal `<|im_start|>` becomes the
-//!   six ordinary tokens `[27, 91, 316, 4747, 91, 29]`, measured. It cannot
-//!   become the control id 248045 however it is spelled, because the flag that
-//!   would let it is off on this path and there is no argument to turn it on.
-//! * [`Vocab::resolve_control`] calls it with `parse_special = true` and then
-//!   *rejects anything that is not exactly one id*. It is the only path that
-//!   can yield a control id, it takes a `&'static str` literal that came from a
-//!   dialect rather than from a conversation, and it runs at startup.
-//!
-//! That is the structural half of the argument the dialect crate makes in
-//! types. A flag argument on one shared `tokenize` would have made the two
-//! paths one path with a bool, and the bool is exactly the thing a bug flips.
-//!
-//! # No implicit specials, ever
-//!
-//! `add_special` is hard-wired to `false` on both paths. Whether a BOS is
-//! prepended is a *dialect* decision expressed as `ControlRole::BeginOfText`,
-//! not a property of the GGUF that silently changes when the model file is
-//! re-quantized. Letting libllama add one would also break the `/apply-template`
-//! diff, which compares our rendered string against the server's -- the server's
-//! string has no invisible prefix to compare against.
+//! The vocabulary, and the two tokenization entry points the dialect contract needs different:
+//! [`Vocab::tokenize_text`] asks with `parse_special = false`, so `<|im_start|>` in a user
+//! message becomes ordinary tokens and cannot become a control id. [`Vocab::resolve_control`]
+//! parses specials, demands exactly one id, and takes a literal from a dialect, not from a
+//! conversation. `add_special` is `false` on both paths - a BOS is a dialect decision, not a
+//! property of the GGUF.
 
-//!
-//! # Two backends, one type
-//!
-//! [`Vocab`] is the type every caller holds; what answers it is a [`VocabBackend`]:
-//!
-//! * **a GGUF**, through llama.cpp — `letibot_llama::load`. The only backend whose ids a
-//!   llama-server can read, so the only one a local model can run on.
-//! * **bytes** — [`Vocab::bytes`], pure Rust, no file. Ids 0–255 are the bytes of the
-//!   text; the dialect's control and stop literals get reserved ids from 256 up, marked
-//!   CONTROL. It exists for a session whose turns go to a **cloud provider**: there the
-//!   ids never leave this machine — they are the ledger's record, its hash chain and
-//!   the compaction arithmetic's units, and the provider's own `usage` already rescales
-//!   the counts (`Config::ledger_scale`) — so a model's tokenizer buys nothing and costs
-//!   a GGUF on every box.
-//!
-//! Both keep the split above: a byte backend's `tokenize_text` can only produce ids
-//! below 256, and only [`Vocab::resolve_control`] can name a reserved one.
+//! A [`VocabBackend`] answers [`Vocab`]: a GGUF through llama.cpp, or [`Vocab::bytes`] for a
+//! session whose turns go to a cloud provider.
 
 use crate::ledger::hex;
 
@@ -138,10 +99,9 @@ impl Vocab {
         }
     }
 
-    /// **The byte vocabulary**, for a session whose model is a cloud provider. See the
-    /// module docs. `literals` are every control and stop literal the dialect will ask
-    /// [`Vocab::resolve_control`] for; each gets one reserved id, in the order given,
-    /// duplicates once. `eog` are the literals that end generation.
+    /// The byte vocabulary, for a session whose model is a cloud provider. `literals` are every
+    /// control and stop literal the dialect will ask [`Vocab::resolve_control`] for, each getting
+    /// one reserved id in the order given; `eog` are the literals that end generation.
     pub fn bytes<'a>(
         literals: impl IntoIterator<Item = &'a str>,
         eog: impl IntoIterator<Item = &'a str>,
@@ -211,21 +171,15 @@ impl Vocab {
         self.backend.gguf_would_add_eos()
     }
 
-    /// Tokenize a `RenderSpan::Text` payload.
-    ///
-    /// `parse_special = false`, `add_special = false`. Nothing in `text` can
+    /// Tokenize a `RenderSpan::Text` payload: `parse_special = false`, so nothing in `text` can
     /// become a control token.
     pub fn tokenize_text(&self, text: &str) -> Result<Vec<TokenId>, VocabError> {
         self.backend.tokenize(text, false)
     }
 
-    /// Tokenize allowing special-token parsing.
-    ///
-    /// Private on purpose: the only legitimate caller is
-    /// [`Vocab::resolve_control`], which additionally demands a single id. If
-    /// this were public somebody would eventually reach for it to tokenize a
-    /// rendered prompt in one go, and that is the injection this crate exists
-    /// to make impossible.
+    /// Tokenize allowing special-token parsing. Private on purpose: the only legitimate caller is
+    /// [`Vocab::resolve_control`], which additionally demands a single id. Public, it would be
+    /// reached for to tokenize a whole rendered prompt, which is the injection this crate prevents.
     fn tokenize_with_specials(&self, text: &str) -> Result<Vec<TokenId>, VocabError> {
         self.backend.tokenize(text, true)
     }
@@ -249,54 +203,22 @@ impl Vocab {
         String::from_utf8(self.piece_bytes(id, render_special)?).map_err(|_| VocabError::NotUtf8)
     }
 
-    /// One token's BYTES, undecoded.
-    ///
-    /// The distinction is not pedantry: a multi-byte character can straddle two
-    /// tokens, so each half is invalid UTF-8 on its own and only the pair decodes.
-    /// Anything assembling a run of tokens must join the bytes and decode ONCE —
-    /// see [`Vocab::detokenize`], which did not, for about ninety minutes on
-    /// 2026-09-15, and turned every message containing a non-ASCII character into
-    /// `<undecodable N token(s)>`.
+    /// One token's BYTES, undecoded: a multi-byte character can straddle two tokens, so each half
+    /// is invalid UTF-8 on its own and only the pair decodes. Anything assembling a run of tokens
+    /// must join the bytes and decode once - see [`Vocab::detokenize`].
     pub fn piece_bytes(&self, id: TokenId, render_special: bool) -> Result<Vec<u8>, VocabError> {
         self.backend.piece_bytes(id, render_special)
     }
 
-    /// Tokens back to text, by concatenating [`Vocab::piece_bytes`].
-    ///
-    /// `render_special = true` reproduces the exact string a dialect rendered,
-    /// which is the "ours" side of the `/apply-template` fidelity diff.
-    /// `false` reproduces what a reader is meant to see.
-    ///
-    /// # Why this is not `llama_detokenize`
-    ///
-    /// **It used to be, and it silently ate spaces before punctuation.** Measured
-    /// 2026-09-15 on GLM-5.3-Flash:
-    ///
+    /// Tokens back to text, by concatenating [`Vocab::piece_bytes`]. `render_special = true` reproduces
+    /// the exact string a dialect rendered; `false` what a reader is meant to see. It is not
+    /// `llama_detokenize`, which ate the space before punctuation through `clean_up_tokenization_spaces`:
     /// ```text
     /// tokenize("… self.session_id != s …")  ->  [.., 842, 961, 274, ..]
     /// piece(961)              = " !="      <- faithful
     /// llama_detokenize([961]) = "!="       <- space gone
     /// llama_detokenize([842, 961]) = "_id!="   <- gone mid-sequence too
     /// ```
-    ///
-    /// That is `clean_up_tokenization_spaces`, a HuggingFace post-processing rule
-    /// that strips the space before `!`, `?`, `.`, `,` and friends. It is right
-    /// for showing prose to a person and catastrophic here, because this function
-    /// is how a MODEL'S OWN OUTPUT becomes text: the ids the server streamed are
-    /// detokenized to get the assistant's message, tool calls and their arguments
-    /// included. So a model that correctly emitted ` !=` had the space removed on
-    /// the way out, wrote `old_string: "self.x!= y"` against a file holding
-    /// `self.x != y`, and `edit` refused it byte-for-byte — over and over.
-    ///
-    /// The operator's report is what identified it: *"glm in opencode has zero
-    /// problems editing files"*. opencode reads the server's JSON text and never
-    /// detokenizes, so it never met this. Being token-native is what exposed us
-    /// to it, and `tokenize` was faithful throughout — ` !=` and `!=` are 961 and
-    /// 5824, distinct ids — so the model was always SHOWN the right thing. Only
-    /// the way back was lossy.
-    ///
-    /// `piece` per token has neither problem and is what the ledger's own
-    /// invariants already compare against.
     pub fn detokenize(
         &self,
         tokens: &[TokenId],
@@ -305,14 +227,9 @@ impl Vocab {
         if tokens.is_empty() {
             return Ok(String::new());
         }
-        // **Bytes first, decode once.** Concatenating `piece` — which decodes each
-        // token on its own — was a regression of exactly ninety minutes on
-        // 2026-09-15: a character whose bytes straddle two tokens makes both halves
-        // invalid UTF-8, so a message containing any non-ASCII text became
-        // `<undecodable N token(s)>`. The space fidelity this function exists for
-        // comes from using `piece` at all rather than `llama_detokenize`; it does
-        // not require decoding one token at a time, and decoding one at a time is
-        // wrong.
+        // Bytes first, decode once: decoding each token on its own makes a character that
+        // straddles two tokens invalid UTF-8 in both halves. The space fidelity comes from using
+        // `piece` at all rather than `llama_detokenize`, not from decoding one token at a time.
         let mut bytes = Vec::new();
         for &t in tokens {
             bytes.extend_from_slice(&self.piece_bytes(t, render_special)?);
@@ -320,24 +237,9 @@ impl Vocab {
         String::from_utf8(bytes).map_err(|_| VocabError::NotUtf8)
     }
 
-    /// Resolve one control literal to its exact single id.
-    ///
-    /// Three conditions, all of which fail at startup rather than at generation
-    /// time:
-    ///
-    /// 1. the literal must tokenize (with specials parsed) to exactly one id;
-    /// 2. that id's vocabulary text must be the literal, byte for byte;
-    /// 3. that id must be marked `CONTROL` or `USER_DEFINED`.
-    ///
-    /// Condition 3 is not decoration and it is not `llama_vocab_is_control`,
-    /// which was measured to be *false* for Qwen's `<think>` and `<tool_call>`
-    /// (they are `USER_DEFINED`, attr 16, while `<|im_start|>` is `CONTROL`,
-    /// attr 8). A check written against `is_control` would have rejected half of
-    /// a correct dialect. What condition 3 does reject is a dialect that names
-    /// an ordinary word as a boundary: `"hi"` is one id whose text is `"hi"`,
-    /// and it passes 1 and 2. A `NORMAL` token as a turn boundary makes the
-    /// `Text`/`Control` distinction meaningless for that dialect, so it is a bug
-    /// and it should be loud.
+    /// Resolve one control literal to its exact single id: it must tokenize to exactly one id,
+    /// that id's vocabulary text must be the literal byte for byte, and that id must be marked
+    /// `CONTROL` or `USER_DEFINED` (not `llama_vocab_is_control`, false for Qwen's `<think>`).
     pub fn resolve_control(&self, literal: &str) -> Result<TokenId, ResolveCause> {
         let ids = self
             .tokenize_with_specials(literal)

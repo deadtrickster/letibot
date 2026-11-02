@@ -1,25 +1,8 @@
-//! Resolving a dialect's control tokens once, at startup, tokenizing a rendered
-//! span sequence, and handing a parser the vocabulary it is not allowed to own.
+//! Control tokens resolved once at startup, a rendered span tokenized, and a parser handed the
+//! vocabulary it is not allowed to own.
 //!
-//! # Why this fails at startup and not at generation time
-//!
-//! A control literal that is absent from the vocabulary, or that is really a
-//! *sequence*, does not produce an error at the point of use -- it produces a
-//! prompt in which a turn boundary is spelled out as ordinary text. The model
-//! sees no boundary, answers as though the conversation were one long user
-//! message, and every downstream number looks fine. The ledger hashes agree
-//! with themselves forever, because they are hashing exactly what was sent.
-//!
-//! So [`resolve`] runs over the *whole* `ControlTokens` set before a single
-//! token is appended to a ledger, and it reports *every* failure rather than
-//! the first. A dialect with three broken literals should cost one startup, not
-//! three.
-//!
-//! [`resolve_stops`] is the same rule for the other direction. A stop token that
-//! silently is not one token never fires and the turn runs to `n_ctx`, so it is
-//! resolved at the same moment, against the same vocabulary, and reported with
-//! the same machinery -- and since a [`StopToken`] carries its role, the report
-//! can say *which boundary* was lost rather than printing a bare string.
+//! A control token that is silently two ids never fires, so resolution happens once, at start,
+//! and fails loudly there rather than at the turn that would have used it.
 
 use std::collections::HashMap;
 
@@ -29,14 +12,8 @@ use letibot_dialect::{
 
 use crate::vocab::{ResolveCause, TokenId, Vocab};
 
-/// Every control token of one dialect, resolved to exact ids.
-///
-/// Constructed only by [`resolve`], so a `ControlMap` in hand is proof that the
-/// vocabulary agreed with the dialect at startup.
-///
-/// Keyed by **literal**, in both directions that matter. A role is a label a
-/// dialect chose; a literal is what the template emits and what the vocabulary
-/// answers for, and one role may own several of them.
+/// Every control token of one dialect, resolved to exact ids. Constructed only by [`resolve`],
+/// so a `ControlMap` in hand is proof that the vocabulary agreed.
 #[derive(Debug, Clone)]
 pub struct ControlMap {
     by_literal: HashMap<String, TokenId>,
@@ -54,11 +31,8 @@ impl ControlMap {
         self.by_literal.get(literal).copied()
     }
 
-    /// Every id carrying a role, in the order the dialect declared them.
-    ///
-    /// This replaced a `role(role) -> Option<TokenId>` that returned whichever of
-    /// them happened to be inserted last into a `HashMap` -- which is to say, an
-    /// arbitrary one, silently.
+    /// Every id carrying a role, in the order the dialect declared them. It replaced a lookup that
+    /// returned whichever of them came first.
     pub fn ids_for_role(&self, role: ControlRole) -> &[TokenId] {
         self.by_role.get(&role).map_or(&[], Vec::as_slice)
     }
@@ -94,12 +68,8 @@ impl ControlMap {
     }
 }
 
-/// One literal that would not resolve.
-///
-/// `literal` is the dialect's own `Cow`, cloned: a compile-time dialect borrows
-/// and allocates nothing even on the failure path, and a dialect loaded from a
-/// GGUF can be reported at all -- which under the old `&'static str` it could
-/// not be.
+/// One literal that would not resolve. `literal` is the dialect's own `Cow`, so a
+/// compile-time dialect allocates nothing even on the failure path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlFailure {
     pub role: ControlRole,
@@ -175,13 +145,8 @@ pub fn resolve(vocab: &Vocab, tokens: &ControlTokens) -> Result<ControlMap, Cont
     }
 }
 
-/// Resolve a dialect's stop tokens the same way.
-///
-/// Same rules, same startup timing. A stop token that is silently a sequence
-/// never fires, and a turn that never stops is a turn that runs to `n_ctx` --
-/// so this is not a convenience, it is the only moment the failure is cheap.
-/// The role travels with the literal so the report names the boundary that was
-/// lost.
+/// Resolve a dialect's stop tokens the same way, at startup: a stop token that is silently a
+/// sequence never fires, and the turn it was meant to end runs on.
 pub fn resolve_stops(
     vocab: &Vocab,
     stops: &[StopToken],
@@ -205,12 +170,8 @@ pub fn resolve_stops(
     }
 }
 
-/// The real [`TokenDecoder`]: the one implementation that has a vocabulary.
-///
-/// `letibot-dialect` declares the trait and cannot implement it -- it has no
-/// vocab by design -- and a parser needs it to turn ids back into `Content`.
-/// This is where the two meet, and it is the only place in the tree that knows
-/// both.
+/// The real [`TokenDecoder`], the one implementation with a vocabulary. `letibot-dialect`
+/// declares the trait and cannot implement it: it has no vocab.
 pub struct VocabDecoder<'a> {
     vocab: &'a Vocab,
     map: &'a ControlMap,
@@ -232,13 +193,8 @@ impl std::fmt::Debug for VocabDecoder<'_> {
 }
 
 impl TokenDecoder for VocabDecoder<'_> {
-    /// `render_special = true`: this reproduces the exact bytes that were sent,
-    /// which is what a round-trip check compares against.
-    ///
-    /// The trait's signature is infallible, so a detokenization that fails becomes
-    /// a **visible** marker rather than a silent gap. An id the vocabulary rejects
-    /// is a wiring bug; text that quietly loses a span is the failure class this
-    /// crate exists to abolish, and the two must not look the same downstream.
+    /// `render_special = true` reproduces the exact bytes that were sent, which is what a
+    /// round-trip check compares against.
     fn decode(&self, tokens: &[u32]) -> String {
         match self.vocab.detokenize(tokens, true) {
             Ok(s) => s,
@@ -278,13 +234,8 @@ impl std::fmt::Display for SpanTokenizeError {
 
 impl std::error::Error for SpanTokenizeError {}
 
-/// Turn a dialect's rendered spans into token ids.
-///
-/// This is the whole seam between W4 and W5, and it is three lines because the
-/// hard part was done in the type: `Text` and `Control` are different variants,
-/// so there is no branch here that could be taken wrongly by adversarial
-/// content. The only way to get a control id out of this function is to have
-/// put a `RenderSpan::Control` into it.
+/// Turn a dialect's rendered spans into token ids: the whole seam between W4 and W5, and three
+/// lines because the hard part is in the types.
 pub fn tokenize_spans(
     vocab: &Vocab,
     map: &ControlMap,

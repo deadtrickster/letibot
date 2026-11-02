@@ -1,20 +1,9 @@
-//! **Where each project sits, and where each session does** (schema 27) — the permission
-//! modes, in the store every daemon shares.
+//! Where each project sits, and where each session does: the permission modes.
 //!
-//! They were a file, `modes.tsv`, that each daemon read once at its start and rewrote whole from
-//! its own copy — and there is a daemon per workspace. The operator's `allow-all` for peerdb was
-//! written by peerdb's daemon and then rewritten away by letim's, started earlier, writing its
-//! own row: *"and again peerdb allow-all lost after restart/reseat"*. Here a write is one row and
-//! a read is the table as it is, so nothing one daemon writes can be undone by another's copy.
-//!
-//! Two tables:
-//!
-//! * `project_mode` — the point a NEW session in a project opens at: the longest ancestor's row
-//!   wins (`harnessd::modes`). `consented_at` is the operator's own answer to the question
-//!   `allow-all` asks on a bare host.
-//! * `session_mode` — the point THIS session was put at, with its answer. A session's mode is
-//!   the session's fact, like the provider it was switched to: a restart or a reseat brings it
-//!   back at that point whatever the project row says now.
+//! They were `modes.tsv`, which each daemon rewrote whole from the copy it read at start, so one
+//! daemon's write undid another's. Here a write is one row: `project_mode` is the point a NEW
+//! session in a project opens at, and `session_mode` the point THIS session was put at, which is
+//! the session's fact and comes back with it on a restart.
 
 use rusqlite::{OptionalExtension, params};
 

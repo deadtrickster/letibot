@@ -90,12 +90,9 @@ fn hold_write_lock(path: &std::path::Path) -> (mpsc::Sender<()>, std::thread::Jo
     (go, h)
 }
 
-/// **The failure: a deferred transaction that reads, then writes, is refused AT ONCE while
-/// another connection holds the write lock — the busy timeout is never consulted.** Both
-/// connections carry a five-second timeout and the refusal comes back in well under one,
-/// because a connection already inside a (read) transaction is not offered the busy handler.
-/// This is why a timeout of any length is not a fix for this shape, and why every write
-/// transaction in the store begins IMMEDIATE.
+/// **The failure: a deferred transaction that reads, then writes, is refused AT ONCE while another
+/// connection holds the write lock - the busy timeout is never consulted**, because a connection
+/// already inside a (read) transaction is not offered the busy handler. So every write begins IMMEDIATE.
 #[test]
 fn a_deferred_read_then_write_is_refused_at_once_whatever_the_timeout() {
     let db = TempDb::new("deferred");
@@ -156,10 +153,9 @@ fn a_write_tx_waits_for_the_lock_and_then_reads_and_writes() {
     holder.join().unwrap();
 }
 
-/// **A store write outlasts its own busy timeout.** The connection's timeout is cut to 100 ms
-/// and another connection holds the lock for 700 ms: before this change `append_item` came
-/// back `database is locked` after the timeout, and a child's turn ended on it (row 878 of
-/// `s-1789919514688401228-sub-1791757785761179646`). Now the store takes it again.
+/// **A store write outlasts its own busy timeout.** The connection's timeout is cut to 100 ms and
+/// another connection holds the lock for 700 ms: before this change `append_item` came back
+/// `database is locked` and a child's turn ended on it. Now the store takes it again.
 #[test]
 fn an_append_outlasts_a_lock_held_past_the_busy_timeout() {
     let db = TempDb::new("outlast");
@@ -189,17 +185,8 @@ fn an_append_outlasts_a_lock_held_past_the_busy_timeout() {
 }
 
 /// **A queue write waiting on another process's lock does not hold this process's connection.**
-///
-/// `acquire_queue_lease` took the store's one connection and *then* began retrying
-/// `BEGIN IMMEDIATE` inside it, so every wait in the ladder — the busy timeout of each attempt
-/// and the backoff between them — happened with the whole process locked out. A read in this
-/// daemon then waited out another daemon's commit, and WAL's one-writer-many-readers was gone
-/// exactly when the contention that needs it arrived. The transaction is begun inside the retry
-/// closure now, so a wait holds nothing.
-///
-/// The read is repeated for as long as the claim is outstanding, because the measurement is the
-/// WORST wait, not the first: the claim takes the connection at some point after its thread
-/// starts, and the loop is what makes the test indifferent to when.
+/// `acquire_queue_lease` used to take the one connection and *then* retry `BEGIN IMMEDIATE` inside it,
+/// so every wait locked the whole process out. The transaction is begun inside the retry closure now.
 #[test]
 fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     let db = TempDb::new("queue-wait");
@@ -320,25 +307,9 @@ fn the_busy_retry_retries_busy_only_and_stops_at_its_budget() {
     assert!(!StoreError::NotFound("x".into()).is_busy());
 }
 
-/// **The long copy commits in chunks, and lands the same rows as the per-row path.**
-///
-/// 5000 rows with 2000-token blobs — the size of a long session's transcript — written once
-/// per row through `append_item` and once through `append_items`. The test's temp dir is tmpfs
-/// on this box, where an fsync is free, so the wall clock here cannot show what the change is
-/// for; the numbers that do were measured on the ext4 volume `sessions.db` lives on,
-/// 2026-10-12 ~01:30, with several workspace test runs going (`synchronous = FULL`, ~11 KB
-/// rows):
-///
-/// | shape                        | rows | total     | longest single lock hold |
-/// |------------------------------|------|-----------|--------------------------|
-/// | one autocommit per row       | 500  | 205.7 s   | ~0.41 s, 500 times       |
-/// | one transaction              | 1000 | 2.7 s     | 2.7 s                    |
-/// | `APPEND_CHUNK` (64) per tx   | 1000 | 6.8 s     | 0.95 s                   |
-///
-/// So the per-row shape is what took the rano reseat six and a half minutes for 971 rows, and
-/// the chunked one is that copy in seconds without any one hold growing with the copy. The
-/// assertions are on what does not depend on the disk: every row reads back identically, and
-/// the batched copy is not slower than the per-row one.
+/// **The long copy commits in chunks, and lands the same rows as the per-row path.** The temp dir
+/// here is tmpfs, so the wall clock cannot show what the change is for; the assertions are on what
+/// does not depend on the disk: every row reads back identically and the batched copy is not slower.
 #[test]
 fn a_long_copy_commits_in_chunks_and_lands_every_row() {
     const ROWS: usize = 5000;

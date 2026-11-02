@@ -1,74 +1,11 @@
 //! The SQLite store for the transcript and its ledger rows.
 //!
-//! §4.4 names the tables and says what each holds, in prose. It does not give
-//! columns, and `docs/workstreams.md` §7 item 11 flags that: *"whoever writes W5
-//! writes the schema; anyone else who touches it will guess columns."* This
-//! module is the schema, and this comment is the reasoning.
-//!
-//! # Scope: four tables, not eight
-//!
-//! §4.4 lists eight persisted tables. Four of them belong to this strand --
-//! `stable_prefix`, `session`, `transcript`, `transcript_item` -- and four
-//! belong to strands that are not written yet: `event` (W7), `turn_metrics`
-//! (W6), `adjudication_request` / `adjudication_decision` (W11), `tool_spill`
-//! (W9), `segment` (W13). Those are **deliberately absent**. Inventing their
-//! columns here would be the exact failure the workstreams document warns about,
-//! one strand guessing another's contract, except worse, because a guess that is
-//! already in a migration is harder to correct than one that is not. They arrive
-//! as `migrate()` steps 2, 3, ... written by the people who know what goes in
-//! them.
-//!
-//! # The decisions worth arguing about
-//!
-//! **The tokens are stored.** `transcript_item.tokens` holds the item's token
-//! ids as a blob, and it is not redundant with the rendered text. §4.3 clause 6
-//! says a restart rebuilds the region *by replaying the ledger's spans*, not by
-//! re-rendering, and that is only possible if the ids are durable. Storing only
-//! the text and re-tokenizing on restart would reintroduce the renderer
-//! non-determinism the hash chain exists to detect, during recovery, when nobody
-//! is watching. The cost is 4 bytes per token, about 800 KB for a 200 k-token
-//! conversation, which is nothing next to the failure it prevents.
-//!
-//! **Per item, not one blob per transcript.** An append is one row insert; a
-//! restart is one ordered scan. The ledger row and the tokens it describes are
-//! written in the *same statement*, so they cannot disagree -- which is the one
-//! way `restore` could be fed a lie it is unable to detect.
-//!
-//! **The stable prefix is content-addressed on `(dialect_sha, system, tools)`,
-//! not on `(system, tools)`.** The tokens in that row were produced by a
-//! particular renderer. Two dialects rendering the same system text and the same
-//! tool schemas produce different tokens, so keying on the text alone would let
-//! a GLM session inherit a Qwen session's prefix tokens and be structurally
-//! unable to notice. §4.4 says the dialect id *is* the `template_sha`; this puts
-//! it where it changes an answer.
-//!
-//! **`transcript.forked_at_seq` is mine and is not in the plan.** §5.5 says a
-//! truncation produces a new transcript with a `parent_transcript_id`, but
-//! nothing records *where* the fork happened. Without it a fork is
-//! indistinguishable from a fresh transcript that happens to name a parent, and
-//! the question "which items did these two share?" -- which is the question the
-//! prefix cache is answering -- can only be recovered by comparing token blobs.
-//! The `CHECK` makes the two fields live or die together.
-//!
-//! **Append-only is enforced in SQL, not only in Rust.** Three triggers:
-//! `UPDATE` and `DELETE` on `transcript_item` `RAISE(ABORT)`, and an insert
-//! trigger refuses any row whose `seq` is not the previous `seq + 1` or whose
-//! `tok_offset` is not the previous `tok_offset + tok_len`. The last one is the
-//! prefix invariant written as a constraint: a hole, an overlap, a reordering or
-//! a re-insert at an old index is rejected by the database, whatever the caller
-//! believed it was doing. `crate::ledger`'s type makes a rewrite blocked
-//! in this process; the triggers make it blocked in `sqlite3` on the
-//! command line too.
-//!
-//! **WAL, `synchronous = FULL`.** §4.4 says WAL. `FULL` rather than `NORMAL`
-//! because the durable copy of the tokens is the *only* copy -- the region is
-//! volatile by design -- so a lost commit is a lost turn, not a re-derivable
-//! cache.
-//!
-//! # Times
-//!
-//! `created_at` is milliseconds since the Unix epoch, `INTEGER`. Not a string:
-//! this column is only ever ordered and differenced.
+//! The schema is here and so is the reasoning. The tokens are stored as ids because a restart
+//! replays the ledger's spans rather than re-rendering, and per item because an append is one
+//! insert and a restart is one ordered scan; append-only is enforced by triggers, so the prefix
+//! invariant holds in `sqlite3` as well as in Rust. The prefix is content-addressed on the
+//! dialect too, since two renderers produce different tokens for one text. WAL with
+//! `synchronous = FULL`, because the durable copy of the tokens is the only copy.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -105,24 +42,9 @@ pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use procs::{Check, PROCS_SQL, ProcState, ProcessRecord};
 pub use told::Told;
 
-/// Why `session.role` is nullable, and why the comment is here and not in the DDL.
-///
-/// A role belongs to the SESSION and not to the process. The runtime was already
-/// shaped for that: `Sessions` holds one `Harness` per session and a `ToolRuntime`
-/// is per-`Harness`, so two sessions in one daemon can already carry different tool
-/// sets — they all resolved from the same `--role` flag only because there was
-/// nowhere to record anything else. `stable_prefix` has keyed on `tools_json` since
-/// v1, so two roles in one daemon get two content-addressed prefix rows with no
-/// coordination needed.
-///
-/// **NULL is not `coder`.** It means *unrecorded*, which is what every session
-/// written before v2 is, and it has to keep meaning "the daemon's own role" or a
-/// resume would silently re-seat an old conversation.
-///
-/// The prose lives in Rust because SQLite's `ALTER TABLE ... DROP COLUMN` rewrites
-/// the stored `CREATE TABLE` text and fails with `incomplete input` when a
-/// multi-line comment sits inside the parens. That is not hypothetical: it broke
-/// the migration test's fixture, which builds a v1 store by dropping this column.
+/// Why `session.role` is nullable: a role belongs to the SESSION and not to the process, and
+/// `NULL` is *unrecorded* rather than `coder`, so a resume does not re-seat an old
+/// conversation. The prose is here because a multi-line SQL comment breaks `ALTER TABLE`.
 pub const ROLE_COLUMN: () = ();
 
 /// One corpus row as stored. `trail_json` stays serialised: a reader that wants
@@ -156,12 +78,9 @@ pub struct StoredAdjudication {
     /// column existed — "not recorded" — which is a different statement from
     /// `Some(false)`, "recorded, and nobody asked a model".
     pub consulted: Option<bool>,
-    /// **Which of the four `Unsure`s the answer was** (R12, v11), verbatim as stored.
-    /// `None` means either an answered verdict or a row from before the column — the first
-    /// is `consulted = 1` with a `verdict_basis` that is not an unsure sentence, and the
-    /// second says so in `corpus_version`. Read with
-    /// [`letibot_tools::authorise::UnsureKind::parse`], which refuses a token this build
-    /// does not know rather than guessing.
+    /// Which of the four `Unsure`s the answer was, verbatim as stored. `None` means an answered
+    /// verdict or a row from before the column. Read with `UnsureKind::parse`, which refuses a
+    /// token this build does not know rather than guessing.
     pub oracle_reading: Option<String>,
     /// **What the oracle answered, verbatim** (R11, v9). `None` means either that
     /// no oracle was consulted — `verdict_by` says which — or that one was asked and
@@ -175,25 +94,13 @@ pub struct StoredAdjudication {
     pub corpus_version: i64,
 }
 
-/// **The three predicates every count of the corpus is built from, in one place.**
-///
-/// A `WHERE` clause copied into a second file is a count that drifts, and these did:
-/// `harnessd/src/decision_source.rs` kept its own copies and two of them measured
-/// something other than what they were named after — `measured` was
-/// `oracle_ms IS NOT NULL`, which matches **every** row because `oracle_ms` is `0` and
-/// never NULL, and `disagreements` was `operator_kind IS NOT NULL`, which counts a
-/// ruling the operator *agreed* with. Measured on this box 2026-09-21: the scoped count
-/// read `1863` ruled-against where the true figure was `1294`.
-///
-/// The store's own comments already say the thing that generalises: **a count is not
-/// measuring what its NAME says, it is measuring what its PREDICATE says.** So the
-/// predicate is written once, next to the schema it reads, and both callers interpolate
-/// it.
+/// The three predicates every count of the corpus is built from, in one place: a `WHERE` clause
+/// copied into a second file is a count that drifts, and these did. A count measures what its
+/// PREDICATE says and not what its name says, so the predicate is written once, by the schema.
 pub const ASKED_SQL: &str = "asked = 1";
-/// An oracle **actually spoke**. Not "a model adjudicator was in the chain" and not "a
-/// model decided" — the two are different facts and both were counted as this one.
-/// `consulted` is written from `ModelAdvice::consulted`, which is the flag the whole
-/// distinction exists for.
+/// An oracle actually spoke: not "a model adjudicator was in the chain" and not "a model
+/// decided", which are different facts and were both counted as this one. Written from
+/// `ModelAdvice::consulted`, which is the flag the distinction exists for.
 pub const MEASURED_SQL: &str = "consulted = 1";
 /// **The rows a fine-tune is for**: the operator ruled *against* what the model would
 /// have done. `granted` and `revoked` only — `upheld` is the operator agreeing, and
@@ -204,35 +111,17 @@ pub const DISAGREEMENT_SQL: &str = "operator_kind IN ('granted', 'revoked')";
 /// the oracle only advises while a person decides.
 pub const MODEL_DECIDED_SQL: &str = "verdict_by LIKE 'model%'";
 
-/// What the corpus holds, for the disclosure and for `/gate corpus`.
-///
-/// Four numbers rather than three, because the earlier three answered the wrong
-/// question. `labelled` counted `operator_kind IS NOT NULL`, which only fills when
-/// there is a model verdict to agree or disagree with — so a session at `always-ask`
-/// where the operator personally answered four hundred calls read as
-/// *"412 decisions, 0 ruled on"*. Every one of those was a decision a human made.
-///
-/// The split that matters is **who decided** against **what it was measured against**,
-/// and they are independent:
-///
-/// | | |
-/// |---|---|
-/// | `decided_by_operator` | a person answered THIS call. The primary dataset: input → decision |
-/// | `measured` | an oracle also gave a verdict on it. What calibration needs |
-/// | `disagreements` | the two differ. What a fine-tune is for |
-///
-/// A row can be in all three, in `decided_by_operator` alone (`always-ask`, no
-/// oracle), or in `measured` alone (`automode`, nobody watching).
+/// What the corpus holds, for the disclosure and `/gate corpus`. The split that matters is
+/// who DECIDED against what it was MEASURED against, and they are independent: a row can be
+/// a person's own decision, an oracle's verdict on it, and a disagreement between the two.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CorpusCounts {
     pub total: u64,
     /// `asked = 1`: a person was put in front of this call and answered it.
     pub decided_by_operator: u64,
-    /// **An oracle was actually consulted** — [`MEASURED_SQL`], from
-    /// `ModelAdvice::consulted`, which is what that flag is for. **`NULL` before schema
-    /// v10**, so rows written earlier read `0` here and `model_decided` below is the
-    /// count that speaks for them; a reader who sees the two apart is seeing the flag's
-    /// arrival date, which is a fact and not a defect.
+    /// Whether an oracle was actually consulted, from `ModelAdvice::consulted`. `NULL` before
+    /// the column existed, so those rows read `0` and `model_decided` is the count that
+    /// speaks for them.
     pub measured: u64,
     /// The operator ruled against what the model would have done — [`DISAGREEMENT_SQL`].
     pub disagreements: u64,
@@ -241,13 +130,9 @@ pub struct CorpusCounts {
     pub model_decided: u64,
 }
 
-/// The write shape for one decision. A struct rather than an argument list
-/// because there are twenty of them and two adjacent `Option<String>`s passed
-/// positionally is a defect waiting for the day somebody adds a twenty-first.
-///
-/// Separate from [`StoredAdjudication`] for [`SessionRecord`]'s reason: the read
-/// shape carries what the row became, including the operator's ruling, which by
-/// construction cannot exist yet at the moment this one is built.
+/// The write shape for one decision: a struct rather than twenty positional arguments, since
+/// two adjacent `Option<String>`s passed positionally is a defect waiting for the next
+/// field. Separate from [`StoredAdjudication`], whose read shape carries what it became.
 #[derive(Debug, Clone, Default)]
 pub struct NewAdjudication {
     pub request_id: String,
@@ -271,10 +156,8 @@ pub struct NewAdjudication {
     pub oracle_ms: Option<i64>,
     pub oracle_model: Option<String>,
     pub brief_sha: Option<String>,
-    /// **Whether an oracle was actually consulted** (R11), from
-    /// `ModelAdvice::consulted` — the flag that separates *the oracle said ask* from
-    /// *nobody asked a model*. Without it the only way to ask was a regex over
-    /// `model_verdict`'s prose.
+    /// Whether an oracle was actually consulted, from `ModelAdvice::consulted`: the flag that
+    /// separates *the oracle said ask* from *nobody asked a model*.
     pub consulted: Option<bool>,
     /// **Which of the four `Unsure`s the answer was** (R12), or `None` for an answered
     /// verdict. `CorpusRow::oracle_reading`, which is `UnsureKind::as_str`.
@@ -305,145 +188,14 @@ pub struct ShapelessAdmit {
     pub arguments_json: String,
 }
 
-/// **16** since the **merge queue** is a table of its own — `merge_queue`, one row per
-/// entry, described at its migration arm below and in `MergeEntry` (v16–v23; archived at v24, see [`queues`]). **15** since the
-/// session's **job history** is a table of its own — `job`, one row per
-/// handle, described at its migration arm below and in [`JobRecord`]. **14** since a session's
-/// resolved **context window** is on its row — `context_window`,
-/// additive, described at its migration arm below. A child's window belongs to the model
-/// that answers it, and the number was otherwise knowable only at the moment it was used.
-/// **12** since the session row pairs its provider count with the LEDGER that count
-/// was measured against — `context_ledger`, additive, described at its migration arm
-/// below. **11** since the corpus records **which of the four `Unsure`s** an oracle's answer was
-/// (R12) — `oracle_reading`, additive, described at its migration arm below. **10** since it
-/// records whether an oracle was consulted and what it answered (R11), and **9** added
-/// `oracle_reply` for the same requirement.
-///
-/// **19** since the session row carries the pair that stood its automatic compaction
-/// down — `auto_compact_resident`/`auto_compact_after`, additive, described at its
-/// migration arm below. The pair is written once, when the no-progress guard fires, and
-/// nothing clears it but a fresh session or a raised window: a reader asking *why does
-/// this session not compact* can only answer it from here once the daemon that decided
-/// it is gone.
-///
-/// **21** since the session row carries the FROZEN prefix's fingerprint —
-/// `prefix_fingerprint`, additive, described at its migration arm below. See
-/// [`StoredSession::prefix_fingerprint`] for what is in it and why the live half of the
-/// prompt is not.
-///
-/// **22** since the merge-queue entry carries the **landing half's own rows** —
-/// `merge_queue.gate_steps_json`, additive, described at its migration arm below and at the
-/// column in [`SCHEMA_SQL`]. One row per gate step (the command, its outcome, the tail of its
-/// output, when it started and how long it took) so that a landing can be DRAWN and not merely
-/// judged: a row that records only `failed` can only ever draw `failed`.
-///
-/// **23** since a store that predates the review/merge SPLIT has its queue **cleared once**,
-/// on the first open of it by this build. This is the one arm that REMOVES rows rather than
-/// adding a column or a table, and its arm is where the operator's ruling and the reason it is
-/// the honest act are written down.
-///
-/// **It is 23 rather than 22 because the two migrations were in flight together.** `22` was
-/// taken by `merge_queue.gate_steps_json` (`agent/per-step-landing-rows`, `af2144b`) before
-/// this one reached main, and two migrations numbered 22 would each read the other's store as
-/// *current* and never run. So this arm is written `from < 23` rather than against a pair of
-/// numbers: a store left at 21 by the base, at 22 by that branch, or at anything older is
-/// cleared on the first open by this build either way.
-///
-/// **24** since **review and merge are two queues** (R61): `review_queue`, a new `merge_queue`,
-/// `queue_transition` (append-only), `queue_lease` and `target_health` — see [`queues`]. The
-/// v23 `merge_queue`/`merge_review` are RENAMED to `merge_queue_v23`/`merge_review_v23`, every row
-/// kept (the operator's decision 13: *"archive, don't delete"*), and the rows still waiting are
-/// carried forward as reviews. The new `merge_queue` shares no column list with the old one, so a
-/// daemon of an older build that was already running when the file was migrated fails its own
-/// reads and writes of it rather than serving it.
-///
-/// **25** since the session row carries **the operator's pause of the idle plan-check** —
-/// `nags_paused_until`, additive, described at its migration arm below and at
-/// [`StoredSession::nags_paused_until`]. A pause is the operator's own act on one session, and
-/// one that lived in the daemon's memory would come back as nags after the restart it was
-/// typed to outlast.
-///
-/// **26** since a session's subagents are **rows of their own** — `subagent_run`, a new table,
-/// additive, described at [`subagents`] and at its migration arm below. The operator: *"we
-/// should bring subagents back - i cant afford to wait till they finish. we should record them
-/// (session persist anyway) and restart automatically"*. A child's session was always here; what
-/// was not was the fact that it was mid-task, what it had been asked and how it was spawned.
-///
-/// **27** since the permission modes are **rows of their own** — `project_mode` and
-/// `session_mode`, new tables, additive, described at [`modes`]. They were `modes.tsv`, a file
-/// each daemon rewrote whole from the copy it read at start, so one daemon's write undid
-/// another's: *"and again peerdb allow-all lost after restart/reseat"*.
-///
-/// **28** since a background job's row says **whether its ending reached the model** —
-/// `job.delivered`, additive, described at its migration arm below and at
-/// [`Store::deliver_job`]. A job that settled and was HELD (R79) when the daemon stopped had
-/// a row saying `exited 0` and nothing saying the model never heard it, so the next daemon
-/// passed it over as finished business and the result was never delivered (TODO.md R91.5).
-/// `subagent_run.delivered` (v26) is the same fact for a child.
-///
-/// **29** since what the queues have SAID is a row — `queue_told`, a new table, additive,
-/// described at [`told`]. The rings and the notices were deduped in the daemon's memory, so every
-/// restart re-rang the same red tip and resumed dormant sessions to re-tell it (TODO R92.7).
-///
-/// **30** since the lines a reply cited are a row — `citation`, a new table, additive, described
-/// at [`citations`]. A citation is a snapshot taken when the reply lands, kept beside the reply so
-/// the model's own text is never rewritten.
-///
-/// **31** since a session can LIVE SOMEWHERE ELSE — `session.lives_on` and
-/// `session.moved_ms`, additive, described at its migration arm below and at
-/// [`StoredSession::lives_on`]. A session's whole daemon can be moved to a remote host and
-/// back (`docs/remote-hosts.md` RH4), and what is left behind is a marker: the rows stay,
-/// because a migration that deleted them would have no way back when the far side turned
-/// out to be a host that could not build.
-///
-/// **32** since the store keeps **one writer per session** — `session_writer`, a new table,
-/// described in [`writers`]. Every daemon on this box shares this file, and two of them opened
-/// the same session (the review queue's, whose id was one constant for the whole box) and
-/// appended to one transcript: the append-only trigger refused the second writer's rows
-/// *after* the first writer's were in, and the conversation it left behind does not restore.
-/// A row naming the process that holds a session is what lets the second open be REFUSED
-/// instead of half-written.
-///
-/// **33** since a session records **who it is for** — `session.origin`, additive, described at
-/// its migration arm and at [`StoredSession::origin`]. A picker that lists everything a daemon
-/// has ever held draws the operator's own conversations and the harness's own work in one
-/// undifferentiated column, and the harness's work is most of the rows: the operator's words
-/// are *"in session view the automatic sessions must be grouped somehow, so my vs auto.
-/// otherwise im lost in subagents"*. The parent edge already says *subagent* and the id
-/// convention says *review queue*; what no column could say is *a package started this* or
-/// *this is a one-shot's*, and those are the two the daemon knows at creation and nowhere
-/// afterwards.
-/// **Nobody bumps this alone.** The number says what the file holds; [`floor`] says what a
-/// reader must know to read it, and the two are separate on purpose. A migration that only
-/// ADDS — a table, a nullable column, an index — leaves the floor where it was, so a daemon
-/// from an older build keeps serving a store that a newer build has already migrated. A
-/// migration that takes away or rewrites something older code reads declares itself in
-/// [`READER_ARMS`], and from then on the store refuses a reader below it, by name. Read the
-/// module doc before writing an arm here: *did I change something an older reader READS* is the
-/// one question, and it is not the same question as *did I delete a row*.
-///
-/// **34** since **every process the daemon supervises is a row** — `process`, a new table,
-/// described at [`procs`]. RH7's supervisor: the `job` table answers *what became of a handle*,
-/// and it is written twice per job by two callers who each know half. It cannot say where a
-/// process runs, what makes a reused pid not it, which group a teardown signals, when it must be
-/// gone, or how it was last looked at — and it has no row at all for a process a restarted daemon
-/// ADOPTED rather than started. Those are one record's questions, and that record is this table.
-///
-/// **35** since **a block of a shared host's ports is a row** — `host_lease`, described at
-/// [`leases`]. Agents on the operator's hosts collided over ports (`address already in use` ×18 in
-/// one session) because each picked its own, and a lock in one process is a lock for half the
-/// callers: two daemons on this box share this file. So the block is a record, taken inside
-/// `BEGIN IMMEDIATE` — that transaction is the per-host lock — and a lease outlives a restart
-/// because the row does.
+/// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
+/// two are separate on purpose: a migration that only adds leaves the floor alone, and one
+/// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
 pub const SCHEMA_VERSION: i64 = 35;
 
-/// **What this row's columns mean.** Stamped on every corpus row.
-///
-/// Distinct from [`SCHEMA_VERSION`], which says what the *file* holds. A column
-/// can keep its name and its type and change what it records — a `p_allow` that
-/// switched from a raw softmax to a calibrated one is the same schema and a
-/// different dataset. A trainer that pools two meanings under one name produces a
-/// model fitted to the seam.
+/// What this row's columns mean. Stamped on every corpus row, because a column can keep its
+/// name and its type while changing what it records, and a trainer that pools two meanings
+/// under one name fits a model to the seam.
 pub const CORPUS_VERSION: i64 = 1;
 
 pub const SCHEMA_SQL: &str = r#"
@@ -768,22 +520,14 @@ pub enum StoreError {
     /// A blob whose byte length is not a whole number of token ids, or a hash
     /// that is not 32 bytes. Means the file was written by something else.
     Corrupt(String),
-    /// The store is fine and the operation is not allowed. Separate from
-    /// [`StoreError::Corrupt`] because they send a reader to opposite places: one is
-    /// "your database is damaged", the other is "the database is doing its job".
-    /// Printing a refused delete as corruption is how an operator ends up running
-    /// `PRAGMA integrity_check` on a healthy file.
+    /// The store is fine and the operation is not allowed. Separate from [`StoreError::Corrupt`]
+    /// because they send a reader to opposite places, and printing a refused delete as
+    /// corruption is how an operator runs `PRAGMA integrity_check` on a healthy file.
     Refused(String),
     NotFound(String),
-    /// The file was written by a newer build.
-    ///
-    /// **`floor` is the store's reader floor** ([`floor`]): the lowest schema a reader may know
-    /// and still read this file. It is here rather than folded into `found` because the two
-    /// numbers say different things and the sentence a person needs depends on both — a store at
-    /// 34 whose floor is 24 is *fine for this build* and is not an error at all, and a store whose
-    /// floor is 34 is refused **by name** whichever way round the versions are. `None` is a store
-    /// written before floors existed: this build cannot tell, and says so instead of assuming the
-    /// best case.
+    /// The file was written by a newer build. `floor` is the lowest schema a reader may know and
+    /// still read this file, so the sentence a person needs depends on both numbers: a store at
+    /// 34 whose floor is 24 is fine here. `None` predates floors, and this build cannot tell.
     SchemaTooNew {
         found: i64,
         known: i64,
@@ -901,16 +645,9 @@ pub struct StablePrefixRecord {
 }
 
 impl StablePrefixRecord {
-    /// The content address: `H(dialect_sha || 0 || system || 0 || tool || 0 ...)`.
-    ///
-    /// The dialect is in the address because the *tokens* are what this row
-    /// stores, and two dialects render the same text to different tokens.
-    ///
-    /// **So is the vocabulary, when it is the byte one**, for the same reason: the byte
-    /// vocabulary and a GGUF tokenize one rendering to different ids, and without this a
-    /// session moved between them would reuse a row whose tokens are the other's. It is
-    /// hashed in only for a `bytes:` source so that every id written before the byte
-    /// vocabulary existed — all of them GGUF rows — is the id it always was.
+    /// The content address: a hash over dialect, system, tools and the rest. The dialect is in
+    /// it because the row stores TOKENS, and two dialects render one text to different ones;
+    /// the byte vocabulary is hashed in only for a `bytes:` source, so GGUF ids never move.
     pub fn id(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.dialect_sha.as_bytes());
@@ -947,12 +684,9 @@ pub struct SessionRecord {
     pub parent_session_id: Option<String>,
 }
 
-/// A session as the store holds it: enough to list it, pick it and resume it.
-///
-/// Separate from [`SessionRecord`], which is the *write* shape. This one carries
-/// three things that are computed rather than stored — the transcript id, the row
-/// count and the last activity — because every caller that lists sessions needs all
-/// three and would otherwise write the same three subqueries slightly differently.
+/// A session as the store holds it: enough to list, pick and resume. Separate from
+/// [`SessionRecord`], the write shape, and carrying three computed things (transcript id,
+/// row count, last activity) that every list would otherwise re-derive differently.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredSession {
     pub id: String,
@@ -970,16 +704,9 @@ pub struct StoredSession {
     /// session.
     pub parent_session_id: Option<String>,
     pub created_ms: i64,
-    /// **Who this session is for** — the daemon's word for it, written once at creation: the
-    /// operator's own conversation, a package's, the review queue's, or a one-shot's. `None`
-    /// for a row written before the column existed, which is not *any of those* — a reader
-    /// falls back to the facts that were always there (the parent edge, the queue's id
-    /// convention) and calls what is left the operator's, because before v33 that is what
-    /// every row was.
-    ///
-    /// Stored rather than derived because two of the four cannot be derived at all: nothing
-    /// else on a row says a program started it, and nothing says a `--prompt` run did. See
-    /// `letibot_sessionlog::SessionOrigin`, which is the vocabulary, and `SCHEMA_VERSION` 33.
+    /// Who this session is for, written once at creation. `None` predates the column, so a
+    /// reader falls back to the parent edge and the id convention and calls the rest the
+    /// operator's own.
     pub origin: Option<String>,
     /// The newest transcript for this session, or `None` if it has none at all.
     pub transcript_id: Option<String>,
@@ -991,13 +718,9 @@ pub struct StoredSession {
     /// nothing ran in. Never `Option`: "never used" is a time, not an absence, and
     /// an `Option` here would make every caller invent the same fallback.
     pub last_activity_ms: i64,
-    /// **The current transcript's last row**, or `None` for a session with no rows.
-    ///
-    /// What a list can say about how a session's last turn ended without loading the
-    /// transcript: an answer with no calls after it is a finished turn, anything else is
-    /// a turn that was still going when the rows stopped. The subagents pane reads it for
-    /// a child its head did not watch end — after a daemon restart, every one of them.
-    /// `None` too for a row this build cannot parse, which is a fact it has not got.
+    /// The current transcript's last row, or `None` for a session with no rows: what a list can
+    /// say about how the last turn ended without loading the transcript. `None` too for a row
+    /// this build cannot parse, which is a fact it has not got.
     pub last_item: Option<TranscriptItem>,
     /// The last turn's prompt tokens, or `None` before a turn has finished (or on
     /// a row that predates the column). A head that attaches after a restart shows
@@ -1005,134 +728,49 @@ pub struct StoredSession {
     pub context_tokens: Option<u64>,
     /// The last turn's cached tokens, for the cache %. `None` with `context_tokens`.
     pub context_cached: Option<u64>,
-    /// **The fingerprint of the FROZEN prefix this session was seated with**, or `None`
-    /// for a session seated before this column existed.
-    ///
-    /// **What it is:** one hash over the composed system instructions and the tool schemas
-    /// this seat hands this session, plus the seat's own name — computed by
-    /// `letibot_harnessd`'s `prefix_fingerprint`, which is the only thing that ever writes
-    /// or reads it. Message 0 is frozen at creation, so a daemon that has since changed
-    /// what it would seat composes a different one, and this is how that is detected
-    /// without rendering either.
-    ///
-    /// **What it is not:** the standing notes. Those are re-read at session open, at every
-    /// base rebuild and on every provider turn, so a fingerprint that covered them would
-    /// cry stale every time a note was written. The frozen/live split is the whole reason
-    /// this is a column rather than a hash of the stored prefix row — that row's `system`
-    /// carries the notes as they were, and the section markers that would have to be
-    /// stripped out of it belong to the daemon, not to this file.
-    ///
-    /// `None` means *nobody recorded one here*, which a reader must not render as *the
-    /// prefix is unchanged*: the resume path falls back to the session's own stored
-    /// `stable_prefix` row for exactly this case, and says nothing at all when neither is
-    /// there.
+    /// The fingerprint of the FROZEN prefix this session was seated with: the system
+    /// instructions, the tool schemas and the seat's name. The standing notes are NOT in it,
+    /// because they are re-read at every open and every turn and would always read stale.
     pub prefix_fingerprint: Option<String>,
-    /// **The ledger this box counted for the same prompt** — the other half of the
-    /// measurement [`StoredSession::context_tokens`] is one side of.
-    ///
-    /// The ratio between the two is what turns a provider's window into a ledger
-    /// size, and a ratio needs BOTH numbers from the same prompt. Recovering it from
-    /// a provider count alone silently pairs that count with today's ledger, which is
-    /// only the same conversation if nothing has been appended since — and at a
-    /// resume it usually is not. `None` for a row written before this column existed,
-    /// which is *unverifiable* rather than wrong: such a pair is refused rather than
-    /// guessed at, and the next turn measures afresh.
+    /// The ledger this box counted for the same prompt, the other half of
+    /// [`StoredSession::context_tokens`]: a ratio needs both numbers from one prompt, and
+    /// pairing a provider count with today's ledger is only right if nothing was appended.
     pub context_ledger: Option<u64>,
-    /// **The provider this session was switched to**, `name` or `name/model`, or
-    /// `None` for a session that never chose one — which resumes on the daemon's
-    /// own default, as it always did. `Some("local")` is the deliberate switch
-    /// BACK to the local server, kept distinct from `None` because the two answer
-    /// different questions at a resume: *no opinion* against *the local server,
-    /// by name*.
+    /// The provider this session was switched to, `name` or `name/model`. `None` means it never
+    /// chose one and resumes on the daemon's default; `Some("local")` is the deliberate switch
+    /// back, kept apart because the two answer different questions at a resume.
     pub provider_choice: Option<String>,
-    /// **The window this session plans its compaction against**, in tokens — resolved when
-    /// it opened, or when it was spawned.
-    ///
-    /// Written down because the number was otherwise knowable only at the moment it was
-    /// used: `/props` on the daemon's own server, or a catalogue row for a cloud model. A
-    /// child's window belongs to the model that ANSWERS it rather than to its parent's, and
-    /// the measurement behind that rule is this column's reason: three children of one
-    /// session ran to 911,522 / 910,486 / 911,708 tokens **with no compaction item in their
-    /// logs at all**, because their wall was computed from the parent's cloud window. A
-    /// reader asking *why did this session run past its wall* can only answer it from here
-    /// once the process that resolved the number is gone.
-    ///
-    /// `None` is **nobody recorded one**, and it is not the same fact as a large window:
-    /// every check that would compact reads `let Some(window) = …` and is skipped, so a
-    /// `None` here says the record cannot answer rather than that the session had room.
+    /// The window this session plans its compaction against, resolved when it opened: a child's
+    /// window belongs to the model that ANSWERS it, not to its parent's. `None` is nobody
+    /// recorded one, and the checks skip on it rather than reading it as a large window.
     pub context_window: Option<u64>,
-    /// **The pair that stood this session's automatic compaction down** —
-    /// `(resident, after)`, both LEDGER tokens — or `None` when the no-progress guard
-    /// has never fired for it.
-    ///
-    /// On the row because the guard's old fact was `auto_compact = false` in the
-    /// daemon's memory: it died with the process, so a restart silently re-armed the
-    /// looping the guard existed to stop — and, worse, the same restart was the ONLY
-    /// thing that cleared it, so a wedged session came back wedged with nothing saying
-    /// why. MEASURED 2026-10-09, session `s-1789919514688401228`: one `compacting:`
-    /// line in the whole log, then thirty provider 400s (1,048,624 tokens against a
-    /// 1,048,576 limit, attributed first to `monitor` and last to `todo check`), none
-    /// of them recovered. The pair says what the guard saw, in the units it decided
-    /// in, so the next daemon — and the operator, on `/status` — read the finding
-    /// rather than inferring it from a silence.
-    ///
-    /// `None` is *the guard has not fired*, which is not the same fact as
-    /// `auto_compact` being on: a `--no-auto-compact` session has the flag off and
-    /// this pair absent, and the two readers that care (the settings row, the
-    /// resident line a head draws) keep them apart on purpose.
+    /// The pair that stood this session's automatic compaction down, `(resident, after)` in
+    /// ledger tokens, or `None` when the no-progress guard never fired. On the row because the
+    /// guard's fact used to live in the daemon's memory and died with it, re-arming the loop.
     pub auto_compact_stood_down: Option<(u64, u64)>,
-    /// **The operator paused this session's idle plan-check** — `None` when they have not (or
-    /// have resumed it), `Some(0)` for a pause that lasts until they resume it, and `Some(ms)`
-    /// for one that ends by itself at that unix millisecond.
-    ///
-    /// On the row for `auto_compact_stood_down`'s reason: a pause in the daemon's memory alone
-    /// would die with the process, and the nags the operator turned off would come back after a
-    /// restart they never asked to be nagged across. A `Some(ms)` already in the past is a pause
-    /// that ENDED while nobody held the session; the daemon that opens it reads that as resumed
-    /// and says so, rather than as a pause that never ends.
+    /// The operator's pause of this session's idle plan-check: `None` for no pause or a resumed
+    /// one, `Some(0)` for a pause until they resume it, `Some(ms)` for one that ends by itself.
+    /// On the row so a restart does not bring back the nags they turned off.
     pub nags_paused_until: Option<i64>,
-    /// **Where this session's live copy is**, when it is not in this store's own box —
-    /// `None` here means the copy in front of you IS the live one.
-    ///
-    /// A migration (`store::transfer`, `letibot migrate`) does not delete the rows it
-    /// leaves behind: it marks them, so `--sessions` says *lives on lab2x1 since …* instead
-    /// of offering a copy that is not being appended to. The mark is what every surface
-    /// follows — the listing, `--continue`, and a head — and `Some("local")` is a real
-    /// value: a session that came home from a host to a laptop is a copy whose live twin
-    /// is on the laptop, and the host's store records that in the same column.
+    /// Where this session's live copy is, when it is not in this store's box: `None` means the
+    /// copy in front of you is the live one. A migration marks the rows it leaves behind rather
+    /// than deleting them, and `Some("local")` is a real value for a session that came home.
     pub lives_on: Option<String>,
     /// When it moved there, unix ms. `None` with [`Self::lives_on`].
     pub moved_ms: Option<i64>,
 }
 
-/// **One job's row, as the session store keeps it** — the durable half of the process table.
-///
-/// The daemon's job table lives in the process host and dies with it, so a handle the pane
-/// listed a second ago answered `no job ... here` to the next daemon — *about a job whose
-/// ending was written down*. What the store holds is what the daemon cannot re-derive: that a
-/// job ran, what it was, and how it ended.
-///
-/// **Two writes, one row.** A job is on disk from the moment it is backgrounded (`state` is
-/// the listing's own word, `running` while it has not ended), and the settlement updates that
-/// same row; so a job still running when the daemon dies is on disk, and one that ended is not
-/// lost because nobody was watching.
-///
-/// **A `running` row here is a job the daemon was watching when it died — not a claim that it
-/// runs now.** Only the live process host can say that. This row answers what *happened*, which
-/// is why a reader that needs *is it running* asks the host first and reads this second.
-///
-/// `redirect` is here for R41's reason: a job whose output went to a file has a window that is
-/// empty by construction, and the path is the only thing that can say where to read instead.
+/// One job's row as the store keeps it: the durable half of the process table, which dies with
+/// the daemon. A job is on disk from the moment it is backgrounded and its settlement updates
+/// that one row, so `running` means the daemon was watching when it died, not that it runs now.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct JobRecord {
     /// The handle `bash background: true` handed back, and the one `job_list` prints.
     pub handle: String,
     /// What was run, verbatim — the row the model asked for and the operator reads.
     pub command: String,
-    /// Who backgrounded it: the listing's own phrase for it — *you asked for this to run in the
-    /// background*, *the RUNTIME moved this to the background*. **Empty means *not recorded
-    /// here***, which is why it is not overwritten by a write that does not know it; see
-    /// [`Store::put_job`].
+    /// Who backgrounded it, in the listing's own phrase. Empty means not recorded here, which is
+    /// why a write that does not know it does not overwrite it: see [`Store::put_job`].
     pub how: String,
     /// The listing's own word for how it ended, or `running` while it has not.
     pub state: String,
@@ -1144,23 +782,9 @@ pub struct JobRecord {
     pub redirect: Option<String>,
 }
 
-/// **What kind of merge an entry is, out of a closed set** — the queue's priority.
-///
-/// The operator's ask, in their words: *"we need a gated merge to main, and worktree
-/// cleanup. for this we might need a merge queue. look how flowy does it - it has a nice
-/// queue with priorities and dependencies."*
-///
-/// A closed set rather than a number, for the reason flowy's `category` is one and the
-/// reason [`Verbosity`]'s ladder is one list: a priority that is a free integer is a
-/// priority nobody can count or route on, and `3` and `high` and `urgent` are three
-/// populations that each look like a confident answer. The set is held closed by the
-/// column's own vocabulary, and a word outside it is a refusal rather than a guess.
-///
-/// **Two rungs, and the order is the rule.** An operator's urgent entry jumps subagent
-/// work — that is the whole of the scheduling, and it is why there are exactly two: a
-/// third rung would need a sentence about what the queue does differently with it, and
-/// there is not one. Ties inside a rung break by age, which is the queue's own `created_ms`
-/// and not a second number to keep in step.
+/// What kind of merge an entry is, out of a closed set: the queue's priority. A closed set and
+/// not a free integer, because `3`, `high` and `urgent` are three populations that each look
+/// like an answer. Two rungs; an urgent entry jumps subagent work, and ties break by age.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergePriority {
@@ -1172,12 +796,9 @@ pub enum MergePriority {
 }
 
 impl MergePriority {
-    /// **Every priority, in the order the queue climbs** — the one list, the one answer.
-    ///
-    /// The seeding, the parse and the ordering all ask *which of the values is this*, and a
-    /// second list is a second answer. `ALL[0]` is the highest priority: the queue sorts by
-    /// position in this list, so a rung added here is reachable by every reader and a rung
-    /// outside it is reachable by none.
+    /// Every priority, in the order the queue climbs: the one list, the one answer. `ALL[0]` is
+    /// the highest and the queue sorts by position in it, so a rung outside this list is
+    /// reachable by none.
     pub const ALL: [MergePriority; 2] = [MergePriority::Urgent, MergePriority::Subagent];
 
     /// The queue's rank: lower is taken first. A priority nobody recorded reads as the
@@ -1203,33 +824,20 @@ impl MergePriority {
     }
 }
 
-/// **One step of the gate, as the landing ran it** — the row the landing half records, one per
-/// command `main`'s `AGENTS.md` declared.
-///
-/// The note's argument for the merge half is that *"the merge queue is a machine. Rebase, then
-/// the gate's steps, then land. Nothing is being decided; something is being run. And a thing
-/// that is being run can be drawn well"* — and a drawing needs the steps, not a verdict. A
-/// landing that records only `failed` can only ever draw `failed`: the niceness is impossible by
-/// construction, not by taste. The review half already carries `commands_json` and `evidence`;
-/// this is the landing half's own.
-///
-/// **The rows live on the merge row** ([`MergeRow::gate_steps`]) and on the target's health row
-/// ([`TargetHealth::gate_steps`]).
+/// One step of the gate, as the landing ran it: one row per command `main`'s `AGENTS.md`
+/// declared. A landing that records only `failed` can only ever draw `failed`, and the drawing
+/// is the point. The rows live on the merge row and on the target's health row.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MergeGateStep {
-    /// **The command as `main`'s `AGENTS.md` spells it** — the step's identity, and the string
-    /// a person would paste into a shell to reproduce the row.
-    ///
-    /// Empty for exactly one row: the [`MergeGateOutcome::NoGate`] one, where there was no
-    /// command to run. See that variant.
+    /// The command as `main`'s `AGENTS.md` spells it: the step's identity, and the string a person
+    /// would paste into a shell to reproduce the row. Empty for exactly one row, the `NoGate`
+    /// one, where there was no command to run.
     pub command: String,
     /// What became of it, out of [`MergeGateOutcome`]'s closed set.
     pub outcome: MergeGateOutcome,
-    /// **What the step wrote, bounded** — see `mergequeue::gate::excerpt`, which is where the
-    /// truncation and its admission come from: a failing test step leads with the failing target,
-    /// the first failing test of each and its panic (taken from the whole stream), and then as
-    /// much of the end as the cap allows. Empty on a step that never ran, which is what `not_run`
-    /// says rather than an empty output.
+    /// What the step wrote, bounded by the gate's excerpt: the failing target first, then its
+    /// first failing test and panic, then as much of the end as the cap allows. Empty on a step
+    /// that never ran, which `not_run` says rather than an empty output.
     pub output: String,
     /// When the step started, Unix ms. `0` on a step that never ran.
     pub started_ms: u64,
@@ -1238,14 +846,9 @@ pub struct MergeGateStep {
     pub elapsed_ms: u64,
 }
 
-/// **What became of one gate step** — the closed set the landing's rows are written in.
-///
-/// Four words, and each is a different fact: a step that ran and was green, a step that ran and
-/// was red, a step the gate never reached because an earlier one was red, and the one row a
-/// repository with **no gate** records. The last is a variant rather than an empty list because
-/// *"the gate declared nothing to run"* and *"the gate has not run yet"* are different facts,
-/// and an empty checklist reads as a third one — *all steps passed* — which is the lie the
-/// operator's own rule forbids.
+/// What became of one gate step, as a closed set: ran green, ran red, never reached because an
+/// earlier step was red, or the one row a repository with no gate records. The last is a
+/// variant because an empty checklist reads as *all steps passed*, which is the lie here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeGateOutcome {
@@ -1257,74 +860,32 @@ pub enum MergeGateOutcome {
     /// that did not run is not a step that was green, and drawing the two the same way is how a
     /// gate that stopped at the first failure comes to look like a gate that ran everything.
     NotRun,
-    /// **The repository's `main` declares no gate at all.** One row, with an empty `command` and
-    /// the queue's own sentence in `output`, because there is no command to name — and a row
-    /// rather than an empty list, because the empty list is the row's word for *the gate has not
-    /// run on this entry*.
+    /// The repository's `main` declares no gate at all: one row, an empty `command` and the
+    /// queue's own sentence in `output`. A row and not an empty list, because the empty list is
+    /// the row's word for *the gate has not run on this entry*.
     NoGate,
     /// **It was still running at the gate's deadline and was killed** with its whole process
     /// group (R61 decision 9: thirty minutes, then `timed out` — an outcome of its own).
     TimedOut,
-    /// **It was killed before it finished** because the daemon was stopping or lost the
-    /// repository's lease — or because the kernel killed it at the gate's own memory cap
-    /// (`[memory] gate`, R76 item 6; its `output` ends saying so, with the peak). It judged
-    /// nothing.
+    /// It was killed before it finished, because the daemon was stopping or lost the lease, or
+    /// because the kernel killed it at the gate's memory cap (its `output` ends saying so, with
+    /// the peak). It judged nothing.
     Killed,
 }
 
-/// **How long a row's TITLE may be** — 135, and it is the pane's own row rather than a round number.
-///
-/// A board row is drawn by rano's todos pane at the width the head hands it — `w = term_w - 2 *
-/// GUTTER`, and `GUTTER` is 2 (`tui/src/ui/screen.rs`) — so what a row has to fit in is the
-/// terminal less four columns. **The operator's terminal is 160 cells**: their own words, and the
-/// number `SUBAGENT_TITLE_MAX` is written from (*"for example my terminal is 160 cells wide, make
-/// the cap 256"*, 2026-10-03). The pane therefore draws a row at 156 columns, and a row spends 21
-/// of them before its own words: 8 for the cursor mark and the `/todo` number (`"  ▸ 12  "`), 3 for
-/// the checkbox and the space after it, 3 for the two spaces before the author's name, and 7 for
-/// `— model` — read off rano's own row, whose test asserts `"        [~] write the port  — model"`.
-/// 156 − 21 = **135**, and a title longer than that is a row the pane CUTS at its right edge, with
-/// nothing anywhere saying it did.
-///
-/// **It is a bound on the TITLE, not on the row.** A row may carry a detail after
-/// [`TODO_DETAIL_SEP`], and the detail is not capped: it is not what the operator scans the list
-/// by, and a row whose title fits is a row that can still be told apart from its neighbours when
-/// its detail runs off the edge. A row's `· waits on <handle>` tail is the same case — a condition
-/// the operator set, drawn after the words, and the first thing the cut takes.
-///
-/// **Counted in `char`s, not in columns**, which is the honest limit of what a writer can be held
-/// to: a title of wide characters can still overflow the pane, and the head cuts what it draws
-/// either way. What this bounds is the WORDS, at the door they are written.
+/// How long a row's TITLE may be: 135, which is the pane's own row and not a round number. The
+/// pane draws a row at the terminal less four columns, and 21 of those go before the words, so
+/// a longer title is a row it CUTS with nothing saying it did. Counted in `char`s.
 pub const TODO_TITLE_MAX: usize = 135;
 
-/// **The separator between a row's title and its detail** — `title — detail`, the spelling this
-/// tree already writes in two places: the head's new-todo card (`tui/src/app/keys/cards.rs`, *"the
-/// card already made this head's choice for a typed detail"*) and the template seed
-/// (`tui/src/app/todos.rs`). So this is one existing convention with two writers, named once here
-/// rather than re-spelled by every reader of a row.
-///
-/// **The board has no second field for a detail and does not need one.** `TodoItem` is
-/// `content`/`status`/`by`/`when`/`needs`, the wire's `TodoEntry` is the same five, and the words
-/// are the row's one key — `needs` names a row by its exact `content`, `resolve` matches a quote by
-/// its trimmed text, and `/todo rm N` addresses the operator's rows by number over that same list.
-/// A detail field would be a second thing the key does not cover, on every row of every board
-/// already in a store; and rano's pinned `TodoLine` — the board's row — has no body to draw it in
-/// (`RepoRow`, the file's row, is the one row in that pane that has one). So the detail rides in
-/// the same string, after this separator, and the pane draws it after the title. `panes/todos.rs`
-/// says what would give it a line of its own.
+/// The separator between a row's title and its detail. The board has no second field and needs
+/// none: `content` is the row's one key, since a need names a row by its exact text, so the
+/// detail rides after this separator and the pane draws it after the title.
 pub const TODO_DETAIL_SEP: &str = " — ";
 
-/// **A row's TITLE**: the words before [`TODO_DETAIL_SEP`], or the whole row when it has none.
-///
-/// This is the string [`TODO_TITLE_MAX`] bounds, and it is a function rather than a rule each
-/// writer spells for itself because there are three writers — the model's `todo_write`, a parent's
-/// `target` write, and the operator's own rows — and a second spelling is how one of them ends up
-/// bounding a different string than the others.
-///
-/// **A newline is not a separator, and that is deliberate.** The pane flattens one — rano's
-/// `clean_line` replaces it with a space before a row is drawn — so a second line is not a body the
-/// row has: it is words the operator will read run together, and a reader that split a title at a
-/// newline would be honouring a structure nothing else in the tree knows about. The row's words are
-/// its title, newlines and all, up to the one separator the head actually writes.
+/// A row's TITLE: the words before [`TODO_DETAIL_SEP`], or the whole row. A function rather
+/// than a rule each writer spells, because three writers bound this string. A newline is NOT
+/// a separator: the pane flattens it, so a second line is not a body the row has.
 pub fn todo_title(content: &str) -> &str {
     content
         .split_once(TODO_DETAIL_SEP)
@@ -1333,15 +894,9 @@ pub fn todo_title(content: &str) -> &str {
         .trim()
 }
 
-/// **The rows that wait on the OPERATOR right now** — every open row (not `Completed`, not
-/// `Cancelled`) with a [`TodoNeed::Operator`] edge, and the question it asks, in board order.
-///
-/// **One reading, used by every door that has to be LOUD about it** — the daemon's settings row
-/// and its `waiting_on_operator` row, the picker's mark (through the store's
-/// [`Store::sessions_waiting_on_operator`]), and the answer's own validation — so a row cannot be
-/// waiting on one screen and not on another. A done or struck-off row asks nobody anything: its
-/// question is moot, and a loud line about it would be a person asked to answer for work nobody
-/// is going to do.
+/// The rows that wait on the OPERATOR right now: every open row with a [`TodoNeed::Operator`]
+/// edge and the question it asks, in board order. One reading for every door that has to be
+/// loud about it, so a row cannot wait on one screen and not another.
 pub fn operator_asks(todos: &[TodoItem]) -> Vec<(&TodoItem, &str, &[String])> {
     let mut out = Vec::new();
     for row in todos {
@@ -1357,295 +912,87 @@ pub fn operator_asks(todos: &[TodoItem]) -> Vec<(&TodoItem, &str, &[String])> {
     out
 }
 
-/// One line of a session's todo list, as the model wrote it.
-///
-/// Stored as mutable session metadata — the `set_title` class, not the
-/// append-only class: a todo list the model revised three times is one list with
-/// a history nobody asked to keep. **The whole list is sent on every write, and it
-/// is an UPSERT**: a row whose text matches one already there moves that row's
-/// state, a new text is added, and a row left out is NOT removed — the operator's
-/// rule is *"only i should be able to delete todo items. as a rule everything that
-/// ever created stays in history."*
+/// One line of a session's todo list, as the model wrote it: mutable session metadata, the
+/// `set_title` class rather than append-only. The whole list is sent on every write and it is
+/// an UPSERT, and a row left out is NOT removed: only the operator deletes rows.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TodoItem {
     pub content: String,
     pub status: TodoStatus,
-    /// **WHO PUT IT ON THE BOARD.** The operator's ruling is that there is ONE list — *"the existing
-    /// getter should return mine and yours, and the rest is also the same. the only difference is who
-    /// created and that is it"* — so the two authors share a list and a format, and this field is the
-    /// whole of the difference between them.
-    ///
-    /// `serde(default)` and `Model`, so every list already in a store — and every list a head sends
-    /// that predates this field — reads back as the model's, which is what it was.
+    /// Who put it on the board. There is ONE list and the two authors share it, so this field is
+    /// the whole of the difference between them. `serde(default)` and `Model`, so every list
+    /// already in a store reads back as the model's, which is what it was.
     #[serde(default)]
     pub by: TodoBy,
-    /// **What this row is WAITING FOR**, when it is waiting for something rather than simply
-    /// being undone.
-    ///
-    /// The operator's own framing, 2026-10-06: *"if you are telling me 'job ends and i do this
-    /// and that' then 'this and that' is a todo item, which is conditioned by job status
-    /// (end)"*. So the condition is not a note ABOUT the row — it is what makes the row *due*,
-    /// and the row is the intent.
-    ///
-    /// **An enum rather than a string, and tagged**, so a kind can be added without a new
-    /// field on every row and a reader that does not know one can SAY SO rather than misread
-    /// it: a condition nobody can evaluate must never read as *met*, because a row that fires
-    /// immediately makes the model act on something that did not happen — worse than a row
-    /// that never fires, since the second is visible and the first is not.
-    ///
-    /// **It is EVALUATED, not observed** — the operator, 2026-10-06: *"a todo conditioned on
-    /// job end, and then i restart head and harnessd. once server is back it should fire - job
-    /// is gone"*. A firing that needed a live `JobSettled` would be lost by exactly that
-    /// restart; a firing that asks *is this handle still running here* survives it, because a
-    /// job that is not running — **including one this session has never heard of, which is what
-    /// a handle looks like after a restart** — is a job that ended. The two are reported apart
-    /// (ended, with its word and its output; or unknown, so a reader knows the result is not
-    /// here) because *"if you want to distinguish - you either follow the job result up
-    /// manually (which is more robust) if next steps depend on it or just do your things if it
-    /// was just a timeline"*.
-    ///
-    /// **A POSTPONED row KEEPS its condition and does not fire while it is postponed.** Nothing
-    /// here is cleared and nothing is guessed at: the condition is left exactly as it is, the
-    /// evaluator skips the row while the operator has it set aside, and lifting the postponement
-    /// hands the same question back to the evaluator. That is what makes the state reversible
-    /// rather than a quiet way to drop a firing — a postponed row that had lost its handle would
-    /// be a condition nobody could ever answer.
-    ///
-    /// `None` is the ordinary row — a thing to do, not a thing to do *when* — and
-    /// `serde(default)` makes every row already in a store read back that way.
+    /// What this row is WAITING FOR: the condition that makes it due, EVALUATED and not observed
+    /// so a firing survives a restart. An unresolvable condition must never read as met. `None`
+    /// is the ordinary row, a thing to do rather than a thing to do when.
     #[serde(default)]
     pub when: Option<TodoCondition>,
-    /// **The rows this one waits for** — the plan's edges, and the whole of why the idle check asks
-    /// for a READY SET rather than the head of the list.
-    ///
-    /// A row is *ready* when every need is met, and the check offers the ready rows and says what is
-    /// blocked on what — so an old blocked row no longer heads the line for ever. What it replaces
-    /// is `open_priority(todos).first()`, under that function's own comment *"THE QUEUE, served one
-    /// at a time"*: head-of-line blocking is now structural, and a row nobody can start is not
-    /// asked for at all.
-    ///
-    /// **An unresolvable need is never met.** A name that matches no row, a name that matches two,
-    /// or a kind this build cannot evaluate leaves the row BLOCKED and is SAID to be — see
-    /// [`TodoNeed`]. The rule is `TodoCondition`'s, learned there first: *a condition nobody can
-    /// evaluate must never read as met*, because a silently satisfied dependency makes the graph a
-    /// lie and the check asks for work that cannot be started.
-    ///
-    /// `serde(default)`, the `by` precedent: every row already in a store, and every row a head
-    /// older than this field sends, reads back as **having no edges** — which is what it was. A plan
-    /// with no edges anywhere is therefore read exactly as it was before this field existed, which
-    /// is what the compatibility test asserts.
+    /// The rows this one waits for: the plan's edges, and why the idle check asks for a READY
+    /// SET rather than the head of the list. A need that resolves to nothing, or to two, leaves
+    /// the row BLOCKED and is SAID to be, because a silent edge makes the graph a lie.
     #[serde(default)]
     pub needs: Vec<TodoNeed>,
 }
 
-/// **What a row waits on** — one entry of [`TodoItem::needs`], and one edge of the plan's DAG.
-///
-/// **A tagged kind, exactly like [`TodoCondition`], and for that enum's own reason**: a kind can be
-/// added without a new field on every row, and a reader that does not know one must *say so* rather
-/// than misread it. The rule the two share is the load-bearing one — **an edge nobody can evaluate
-/// must never read as met** — and it is why this is a kind rather than a bare string: a bare string
-/// has no way to say *I do not know what this means*, and a dependency whose meaning is unknown
-/// would then be the one dependency that is silently satisfied.
-///
-/// **The next kind is named when something can EVALUATE it.** The one still shaped for and not
-/// built, so it does not have to be designed again:
-///
-/// * a **wasm predicate** — the host passes values and the module answers a verdict, and a trap, a
-///   failed call or a fuelled-out one is unresolvable, which is this same rule a third time.
-///
-/// (Two others on that list are BUILT, and both are [`TodoNeed`]'s: a **child session**
-/// ([`TodoNeed::Child`]) and a **background job** ([`TodoNeed::Job`]). What evaluates them is the
-/// daemon — a board cannot know whether a session or a process is running, so the facts are handed
-/// in from outside rather than read here.)
-///
-/// **The edge is a row's WORDS, and that is a decision rather than a shortcut.** The board has one
-/// key and it is `content`: `TodoBoard::set_operator_states` resolves the operator's rows by their
-/// exact trimmed text, `TodoBy`'s own doc says why (*"the words are the key, and that is not a
-/// shortcut — there is no other key"*), and the wire's `TodoEntry` is `content`/`status`/`by`, so a
-/// row the operator types into the pane has no id to type. An id field would be a second identity
-/// rule for the same rows, and on every board already in a store it would be empty — an id that is
-/// not a key at all until something synthesises one. What text costs is that a re-worded row breaks
-/// every edge into it; what it buys is that the break is SAID, naming the need, and repaired by one
-/// word in a plan the model is already looking at.
+/// What a row waits on: one entry of [`TodoItem::needs`], one edge of the plan's DAG. A tagged
+/// kind like [`TodoCondition`], for its reason: an edge nobody can evaluate must never read as
+/// met, and a kind can be added without a new field on every row. The name is the row's WORDS.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TodoNeed {
-    /// **Another row on this board, named by its own words** — the exact `content`, trimmed, the
-    /// way `set_operator_states` quotes one back.
-    ///
-    /// **The name must resolve to exactly ONE row.** A name that matches none, and a name that
-    /// matches two, are both *unresolvable*: the row is blocked and the check says which need it
-    /// could not place. That is the house rule for an ambiguous name — `set_operator_states`
-    /// refuses one and names the candidates — read one step earlier, where the guess it refuses to
-    /// make is a row silently starting on the strength of a name that meant something else.
+    /// Another row on this board, named by its own exact `content`, the way
+    /// `set_operator_states` quotes one back. A name matching none or two is unresolvable: the
+    /// row is blocked and the check names the need it could not place, rather than a guess.
     Row { content: String },
-    /// **A CHILD session, named by its session id** — the dispatch case this enum's doc names first:
-    /// a row that is a dispatch is not work, it waits on a session's completion, and that is what
-    /// makes a parent's row for a running child silent *because it is not ready* rather than
-    /// because the operator postponed it.
-    ///
-    /// **The id is the handle `task` handed back**, in FULL: `task_result` is what reads it, and
-    /// the same rule `TodoBy::Parent` keeps for the author string applies — a shortened id is a
-    /// name the model cannot quote back to the tool that has to act on it.
-    ///
-    /// **Whether that child is RUNNING is not on this board, and this variant does not pretend it
-    /// is.** The daemon is the only thing that knows — its task journal records the spawn and the
-    /// finish, and its registry holds when the session was opened — so the caller hands both facts
-    /// in and `unmet_needs` reads them there. What a board alone can say about a child need is
-    /// nothing, which is why a board with no daemon behind it (every test of the tool crate) treats
-    /// the child as finished: there are no children there, and a need nobody can answer must not
-    /// read as met *or* as a row that waits for ever — see the doc on [`TodoItem::needs`].
+    /// A CHILD session, by its session id: a row that is a dispatch waits on a session's
+    /// completion, which makes a parent's row silent because it is not ready. The id is the
+    /// handle `task` handed back, in full; whether it runs is the daemon's fact, handed in.
     Child { id: String },
-    /// **A background JOB, named by the handle `bash background: true` and `job_list` print** —
-    /// [`TodoNeed::Child`]'s sibling one layer down: the row cannot start until that job ENDS, any
-    /// ending, and while it runs the idle check stays silent about the row rather than asking for
-    /// work that is blocked on something the plan cannot move.
-    ///
-    /// **The distinction from a `when` is the whole of why this variant exists**, because the two
-    /// read the SAME handle out of the same table and mean opposite things. `when: TodoCondition::Job`
-    /// is the operator's clock — the row FIRES when the job ends, and the check is asked for it. A
-    /// `needs` entry is an EDGE — the row cannot start until the job is over, and the check is
-    /// silent about it while it is not. Measured, 2026-10-11: the operator's own long jobs each had
-    /// a row nagging while they ran, and there was no way to say *this waits on that job*.
-    ///
-    /// **The handle is the full one** `bash background: true` and `job_list` print, the same rule
-    /// [`TodoNeed::Child`] keeps for a session id and for the same reason: it is what `job_output`
-    /// and `job_kill` are given, so a shortened handle is a name nothing answers to.
-    ///
-    /// **Whether that job is RUNNING is not on this board, and this variant does not pretend it
-    /// is** — the process table is the daemon's and the store holds only what outlived it, so the
-    /// caller hands a snapshot in and `unmet_needs` reads it there. What a board alone can say
-    /// about a job need is nothing, and a caller with no daemon behind it treats the job as ended:
-    /// **a handle that is not running — including one this session has never heard of, which is
-    /// what a handle looks like after a restart — is a job that ended**, which is
-    /// [`TodoCondition::Job`]'s own ruling one variant up and the reason the two cannot disagree.
+    /// A background JOB, by the handle `bash background: true` prints: the row cannot start until
+    /// that job ends, and while it runs the check is silent. The distinction from a `when` is
+    /// the whole of why this exists: the two read one handle and mean opposite things.
     Job { handle: String },
-    /// **A MONITOR, by the name it was armed under** — the row cannot start until that monitor
-    /// ENDS: fires, expires or is retired. A timer, a file, a port, a pull request: whatever a
-    /// monitor watches, a row can wait on it, and while it watches the idle check is silent about
-    /// the row (its firing wakes the session by itself). The operator's *"come with it later"* is a
-    /// row waiting on a one-shot timer. **A name that is not watching is a monitor that ended**,
-    /// [`TodoNeed::Job`]'s own ruling for a handle after a restart.
+    /// A MONITOR, by the name it was armed under: the row cannot start until it ends, fires,
+    /// expires or is retired. While it watches the check is silent, because its firing wakes the
+    /// session by itself. A name that is not watching is a monitor that ended.
     Monitor { name: String },
-    /// **A ROOM ITEM the holder has on its board** — the edge the daemon's room pass puts on the
-    /// row it writes for a claim (`you hold `ram` #3 — 8 GB`), so the reminder the operator asked
-    /// for (*"just like with todo top level session get reminds"*) arrives through the idle check
-    /// and needs no model call.
-    ///
-    /// **`working` is the whole of quiet-or-loud, and it is ON THE ROW rather than handed in from
-    /// outside.** `true` means the holder told the room what it is waiting for (`room waiting`) and
-    /// its claim's beat is fresh: the room is carrying it, so the row is BLOCKED and the check says
-    /// nothing. `false` means nothing outside is going to move this item — no declared wait, or a
-    /// beat that has stopped and a room that will take it back at its next sweep — so the row is
-    /// READY and the check names it. That is why this variant is unlike [`TodoNeed::Job`] and
-    /// [`TodoNeed::Child`]: the fact is the ROW's, because the daemon that wrote the row is the one
-    /// that asked the room, and a board that had to be handed a room snapshot would be a second
-    /// reader of one answer.
-    ///
-    /// **The edge is on every room row, loud or quiet**, and that is what lets a board that has
-    /// just been rebuilt from a store still find the rows the pass wrote: retirement is *a row whose
-    /// room edge names an item this session no longer holds*, which needs no memory to survive a
-    /// daemon restart.
-    ///
-    /// **The number is the room's item id**, `#3`'s `3`: the name `room`'s own verbs take (`done`,
-    /// `beat`, `abandon`), so the model can act on it from the reminder without looking anything up.
+    /// A ROOM ITEM the holder has on its board, so the reminder arrives through the idle check and
+    /// needs no model call. `working` is the whole of quiet-or-loud and it is on the ROW, because
+    /// the daemon that wrote it is the one that asked the room. The number is the item's id.
     Room { item: u64, working: bool },
-    /// **The OPERATOR, asked a question** — the row cannot start until a person answers it.
-    ///
-    /// The operator's ask, verbatim: *"a todo can be dependent on todo, and todo can be dependend
-    /// on ME. if model says todo is dependent on ME the other heads of the todo DAG keep firing,
-    /// model told to try to figure it out anyways, and the heads show loud notification that im
-    /// waited. i guess we will force models to do choice for todo - so when it says it waits for
-    /// ME it give me that choice list with an optioin to enter my freetext. and then when i submit
-    /// todo becomes unblocked with reply attached"*.
-    ///
-    /// **`options` are the model's offered choices, and there are always at least two** — *"we
-    /// will force models to do choice"*: `todo_write` refuses fewer, so the operator is never
-    /// handed an open-ended question where a choice would do. Free text and an abstention are
-    /// offered by the head's card IN ADDITION, which is `QuestionAnswer`'s vocabulary and not
-    /// this row's: the card is the same one `ask_user_question` draws.
-    ///
-    /// **Whether it is answered is ON THE BOARD, unlike a child or a job** — nothing outside the
-    /// row knows, so nothing has to be handed in: the edge is unmet while it is here, and the
-    /// operator's answer REPLACES it with [`TodoNeed::Answered`]. That is also what makes it
-    /// survive a restart: the store holds the row, the row holds the question.
+    /// The OPERATOR, asked a question: the row cannot start until a person answers it. An edge and
+    /// not words appended to the row, because the answer has to arrive as the reply the row
+    /// carries and unblock it.
     Operator {
         question: String,
         options: Vec<String>,
     },
-    /// **An [`TodoNeed::Operator`] edge the operator has ANSWERED** — met, always, and kept on the
-    /// row as the reply: *"when i submit todo becomes unblocked with reply attached"*.
-    ///
-    /// **An edge rather than words appended to the row, and the reason is the key.** A row's
-    /// words are its identity — `Row` edges, `update` and the operator's own pane all resolve a
-    /// row by its exact `content` — so writing the reply into `content` would re-name the row
-    /// under every edge into it and under the model's next restatement of its plan (which would
-    /// then ADD the old words back as a new row, still waiting). Kept here, the title and the
-    /// key are untouched and the reply rides with the row wherever the row goes.
-    ///
-    /// **The model cannot write one and cannot clear one** — `todo_write` refuses the kind, and a
-    /// restatement of the row keeps the answers it already has — because an answer is the
-    /// operator's word. A question the operator already answered on this row is therefore not
-    /// asked again by restating it: the restatement's `operator` edge is dropped against the
-    /// answer with the same question.
-    ///
-    /// `reply` is the answer as a sentence — the option chosen and the note on it, the words the
-    /// operator typed, or that they abstained — the same words the model was told.
+    /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
+    /// as the reply, so a submitted row becomes unblocked with its answer attached.
     Answered { question: String, reply: String },
-    /// **A kind this build does not know** — a need written by a build that has one this one does
-    /// not, and it is here because the alternative is worse in a way that is MEASURED, not imagined:
-    /// `Harness::new` restores a resumed session's board with `store.todos(id).unwrap_or_default()`,
-    /// so a `TodoNeed` that refused to deserialize would not fail loudly — it would empty the whole
-    /// PLAN, silently, on the first resume after a newer daemon wrote a kind this one lacks. That is
-    /// the one outcome the fail-loud rule exists to prevent, and it is a bigger loss than this one.
-    ///
-    /// **What is lost is the kind's own payload** — `#[serde(other)]` catches the tag and nothing
-    /// else, so a round trip through this build spells the need `unknown`. What is NOT lost is the
-    /// ANSWER: the row is blocked, and the check says the kind cannot be evaluated. A need nobody
-    /// can answer must never read as met, and this is how a reader that does not know one SAYS SO
-    /// rather than misreading it — which is exactly the promise [`TodoCondition`] makes in its own
-    /// words, kept here where the cost of breaking it is a plan rather than a row.
+    /// A kind this build does not know: a need written by a newer build. It is a variant because
+    /// the alternative is worse — a resumed session's board would lose the row — and a need
+    /// nobody can evaluate must never read as met.
     #[serde(other)]
     Unknown,
 }
 
-/// **What a row waits on.** See [`TodoItem::when`] for what evaluating one means.
-///
-/// Internally tagged (`kind`), so the wire is self-describing, a new kind is a new variant
-/// rather than a new field on every row, and a reader can tell *a condition I do not know*
-/// from *no condition at all*.
-///
-/// **One variant, and the next is named when something can EVALUATE it.** A condition kind is
-/// only as good as the thing that can answer it: a `time` variant with nothing holding a clock,
-/// or a `port` variant in a layer that cannot see the network, is a row that waits for ever
-/// while looking like a row that is waiting.
+/// What a row waits on: see [`TodoItem::when`] for what evaluating one means. Internally tagged,
+/// so the wire is self-describing, a new kind is a variant rather than a new field, and a reader
+/// can tell *a condition I do not know* from *no condition at all*.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TodoCondition {
-    /// **Due when this job is no longer running** — the handle `bash background: true` and
-    /// `task` hand back, and the one `job_list` prints.
-    ///
-    /// **Absence is the condition, and that is what makes it survive a restart.** A handle the
-    /// session knows nothing about reads as *gone*, not as *not yet* — the job ended before the
-    /// daemon came back, or the handle is wrong, and both are reported rather than guessed at.
+    /// Due when this job is no longer running: the handle `bash background: true` and `task` hand
+    /// back. Absence is the condition, which is what survives a restart: a handle this session
+    /// knows nothing about reads as gone, not as not yet.
     Job { handle: String },
 }
 
-/// Who authored a todo. See `TodoItem::by`.
-///
-/// Three authors, and the third is a STRING: the operator's ruling — *"yes - i want parent
-/// agents to be able to create todos for subagents. throught tree author - (Parent
-/// <session-id-of-parent>)"* — names the author as `Parent <session-id>`, the FULL session id and
-/// not a short form or a display name, because a child reading its own board has to be able to
-/// tell what it decided from what it was told and by whom.
-///
-/// **Serialised as one bare string, and that is deliberate.** `by` reads in `sqlite3` as
-/// `"model"` and `"operator"` today, and the parent's rows sit beside those as
-/// `"Parent s-…"` — a `#[serde(rename_all)]` tuple variant would spell `{"parent": "…"}`
-/// instead, putting an object where every other author is a word. Custom impls on purpose, in
-/// both places that own a copy of this vocabulary (here and `letibot_sessionlog::event::TodoBy`):
-/// an unknown word is refused NAMING the word, the house rule, rather than read as the model's
-/// (`TodoItem::by`'s `#[serde(default)]` still covers a list that predates the field entirely).
+/// Who authored a todo. Three authors, and the third is a STRING (`Parent <session-id>`), which is
+/// how a parent writes on a child's board without a second kind of author.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum TodoBy {
     /// The model wrote it with the `todo` tool.
@@ -1655,50 +1002,13 @@ pub enum TodoBy {
     /// tool — the model can mark the operator's item done, and the nag in `harness.rs` picks it up
     /// like any other, because it reads the board and the board no longer cares who wrote a row.
     Operator,
-    /// **A PARENT session wrote it on a CHILD's board** — the string is the author exactly as the
-    /// operator specified it, `Parent <full parent session id>`, built by [`TodoBy::parent_of`]
-    /// and never taken from a tool call: the daemon knows which session is calling, so it stamps
-    /// the author itself and a model cannot claim another one.
-    ///
-    /// Same board, same statuses, same nag as the other authors. What differs is the WRITE: a
-    /// parent's `todo_write` with a `target` is an UPSERT scoped to this authorship (rows matched
-    /// by exact text), and it reaches neither the child's rows nor the operator's — see
-    /// `TodoBoard::upsert_parent`.
+    /// A PARENT session wrote it on a CHILD's board: the author is `Parent <full parent session
+    /// id>`, built by [`TodoBy::parent_of`] and never taken from a tool call, because the daemon
+    /// knows which session is calling.
     Parent(String),
-    /// **The merge queue wrote it on the GATEKEEPER SESSION's board.** The fourth author, and it
-    /// is not a session at all: the daemon's queue is the object the operator's merge-queue pane
-    /// already draws, and its rows on a session's board are that queue seen as work.
-    ///
-    /// # The design this comes from, in the operator's words
-    ///
-    /// *"reviews are subagents managed by the main gatekeeper session which is hardcoded … it is a
-    /// normal auto-driving session that treats review queue as todo list - so nags and all"*, and
-    /// *"parents with children sending their homework to the teachers. School administration doesnt
-    /// teach or checks homework. it just makes sure pencils are here and rooms are warm"*. So the
-    /// daemon is the ADMINISTRATION: it fills the queue, keeps the worktrees and runs the gates —
-    /// and the teacher is a session, whose board is the queue.
-    ///
-    /// # Why it is its own word and not one of the three
-    ///
-    /// * **Not the model's.** A row of the model's is a row the model wrote about its own plan, and
-    ///   `todo_write` disposes of it. A queue row is not the session's to strike off: the VERDICT
-    ///   takes it off, and a session that could close its own queue row could close a review nobody
-    ///   made.
-    /// * **Not the operator's.** That half is replaced wholesale by the head on every push
-    ///   (`TodoBoard::set_operator`), so a daemon writing queue rows there would have them erased by
-    ///   the next `HELLO` and would erase the operator's own rows in between.
-    /// * **Not a `Parent`'s.** `Parent <session-id>` is a claim about a session that wrote a child's
-    ///   board. The daemon is not that session and does not write on its behalf, and the house rule
-    ///   for an author string is that it says what is TRUE.
-    ///
-    /// # The rows are a VIEW, and the STATE is not here
-    ///
-    /// A queue row is written from the store's own queue tables every pass and the half is
-    /// REPLACED, not accumulated — so a row leaves the board when its entry leaves the queue, and
-    /// any write to it is corrected by the next pass. **The state of an entry is `ReviewRow::state`
-    /// and `ReviewRow::verdict` in the store and nowhere else**: the board is a projection a
-    /// session can be nagged about, never a second place a state can be read from. What counts the
-    /// queue — a status line, a pane, a head that is not this daemon — counts the store.
+    /// The merge queue wrote it on the GATEKEEPER SESSION's board: the fourth author, and not a
+    /// session at all. Its rows on a session's board are the operator's queue seen as work, so one
+    /// queue is not a second board.
     Queue,
 }
 
@@ -1747,39 +1057,12 @@ pub enum TodoStatus {
     Pending,
     InProgress,
     Completed,
-    /// **Set aside by the OPERATOR — the row persists, and it stops asking.**
-    ///
-    /// The operator's ask: *"can we handle postponed todo item properly? i.e. they persist but
-    /// without nag and with some counter visible to me"*. So this is a fourth word and not a
-    /// quieter spelling of one of the three: `Completed` is work that is answered, `Postponed` is
-    /// work still owed and deliberately not being asked for. The row stays on the board and the
-    /// model still sees it (marked), while the idle check stays silent about it — the `[todo
-    /// check]` nudge, the firing of a condition it carries, and the `[todo]` notice.
-    ///
-    /// **It is the operator's act and not the model's.** `todo_write` still takes the three other
-    /// words: a model that could postpone its own row would have a way to silence the check that
-    /// exists to stop it abandoning a plan, and that is the one thing the check must not offer.
-    /// Lifting it is the same act, spelled the other way — see the head's `/todo resume N`.
+    /// Set aside by the OPERATOR: the row persists and stops asking, with a counter they can see. A
+    /// fourth word rather than a quieter spelling of one of the three, because the state has to be
+    /// reversible: lifting it hands the same question back.
     Postponed,
-    /// **Struck off by the OPERATOR — and the row STAYS.**
-    ///
-    /// The operator's two rulings, and this word is the one that makes them both true: *"only i
-    /// should be able to delete todo items. as a rule everything that ever created stays in
-    /// history"*, and *"so done items or canceled items should be kept"*. So `/todo rm N` is not a
-    /// removal any more — it is this status. The row keeps its words, its author and its place on
-    /// the board, the model still sees it (marked, with the mark's meaning spelled out under the
-    /// list), and the idle check never asks about it again.
-    ///
-    /// **A fifth word rather than a quieter `Postponed`.** `Postponed` is work still owed and
-    /// deliberately not being asked for — the operator intends to come back to it; `Cancelled` is
-    /// work the operator has decided against. They draw differently, they read differently to the
-    /// model, and one is the other's undo: `/todo resume N` lifts either, which is what makes a
-    /// `rm` a decision rather than an accident nobody can take back.
-    ///
-    /// **It is the operator's act and not the model's**, on `Postponed`'s own argument: a model
-    /// that could strike off a row would have a way to retire work it was asked for, and the whole
-    /// point of the row staying on the board is that a person can see it was there. `todo_write`
-    /// still takes the three words it took before.
+    /// Struck off by the OPERATOR, and the row STAYS: only the operator deletes rows, and everything
+    /// that was ever created stays in history, so a struck-off row is a word and not a removal.
     Cancelled,
 }
 
@@ -1815,21 +1098,13 @@ impl LoadedTranscript {
     }
 }
 
-/// **The one connection this process holds to a store file, and everything that reaches it.**
-///
-/// A `Store` is a handle onto this, and [`Store::open`] hands every caller in the process the
-/// same one. Two facts made it a `Mutex` around the connection rather than a bare `Connection`:
-/// `rusqlite::Connection` is `Send` and not `Sync`, so a connection cannot be reached from two
-/// threads without a lock; and SQLite caches a descriptor per inode inside the process, released
-/// only when the process's *last* connection to the file closes
-/// (`crates/tokencore/tests/connection_fds.rs` measures that). A daemon that opened four
-/// connections per session therefore held a descriptor for every session it had ever opened.
+/// The one connection this process holds to a store file, and everything that reaches it: a
+/// `Store` is a handle onto this, and [`Store::open`] hands every caller the same one. It is a
+/// `Mutex` because `Connection` is `Send` and not `Sync`, so two threads need a lock.
 struct Shared {
-    /// **`ManuallyDrop`, so the close is OURS and its failure can be said.** `rusqlite`'s own
-    /// `Drop` calls `sqlite3_close` and *discards* the answer, and `sqlite3_close` fails with
-    /// `SQLITE_BUSY` whenever a statement is still outstanding — leaving the connection, and its
-    /// descriptors, open with no error anywhere. [`Drop for Shared`] takes the connection and
-    /// calls `Connection::close`, which reports that failure instead of swallowing it.
+    /// `ManuallyDrop`, so the close is OURS and its failure can be said: `rusqlite`'s own `Drop`
+    /// calls `sqlite3_close` and discards the answer, and `SQLITE_BUSY` then leaves the connection
+    /// and its descriptors open with nobody told.
     conn: std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
     /// **Where this store lives**, so a second caller can be handed this connection instead of
     /// opening a new one — see [`Store::path`]. `None` for `open_in_memory`, which is a store
@@ -1849,11 +1124,9 @@ pub struct Store {
     shared: std::sync::Arc<Shared>,
 }
 
-/// **The process's store lock, held** — what [`Store::connection`] answers and what every method of
-/// this type takes for the length of one statement or one transaction.
-///
-/// A newtype rather than the `MutexGuard` itself so a caller reaches a `Connection` in one `Deref`
-/// step, and so the `ManuallyDrop` the guard holds is this module's business.
+/// The process's store lock, held: what [`Store::connection`] answers and what every method takes
+/// for one statement or transaction. A newtype rather than the guard, so a caller reaches a
+/// `Connection` in one `Deref` step.
 pub struct Conn<'a>(std::sync::MutexGuard<'a, std::mem::ManuallyDrop<Connection>>);
 
 impl std::ops::Deref for Conn<'_> {
@@ -1863,23 +1136,14 @@ impl std::ops::Deref for Conn<'_> {
     }
 }
 
-/// **How many connections to a store file this process holds open** — [`Store::live`]'s counter.
-///
-/// Process-wide and not per-store, because the question it answers is a daemon's: *does the
-/// number of connections grow with the number of sessions?* Since [`Store::open`] shares one
-/// connection per file per process, this number is a function of how many store FILES the process
-/// has opened, and no longer of how many sessions it has served. A `Relaxed` fetch is enough — a
-/// test reads it on one thread after the work it measured has ended.
-///
-/// **The add is unconditional in the same region as the struct, because the sub is**: `Drop`
-/// gives the count back on every path, so `from_connection` takes it the moment a `Shared`
-/// exists — an add after the first `?` that can return with one wraps this to `MAX`.
+/// How many connections to a store file this process holds open: [`Store::live`]'s counter, and a
+/// daemon's own question — does this grow with the number of sessions? Process-wide because one
+/// file is one connection.
 static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// **The connection goes with the last handle**, and **the close is this impl's**: see the field's
-/// doc for the `SQLITE_BUSY` that `rusqlite`'s own `Drop` swallows. A close that fails is said on
-/// stderr — there is no caller to return it to — because the alternative is the shape that cost
-/// the operator 205 of 256 descriptors: connections nobody knows are still open.
+/// The connection goes with the last handle, and the close is this impl's: see the field's doc
+/// for the `SQLITE_BUSY` `rusqlite` swallows. A close that fails is said on stderr, because
+/// there is no caller to return it to.
 impl Drop for Shared {
     fn drop(&mut self) {
         LIVE.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
@@ -1904,11 +1168,9 @@ impl Drop for Shared {
 }
 
 impl Shared {
-    /// **The connection, held for as long as the guard lives** — the one place this process's
-    /// access to the store is serialised. A poisoned lock is a thread that panicked inside a
-    /// statement: SQLite's own state is fine (the panic was ours, and a statement that panicked
-    /// has been rolled back), so the count is taken back rather than every later read of the
-    /// store being refused.
+    /// The connection, held for as long as the guard lives: the one place this process's access is
+    /// serialised. A poisoned lock is a thread that panicked inside a statement, and SQLite's own
+    /// state is fine because that statement was rolled back.
     fn conn(&self) -> std::sync::MutexGuard<'_, std::mem::ManuallyDrop<Connection>> {
         lock_shared(&self.conn)
     }
@@ -1932,10 +1194,9 @@ fn lock_shared(
     conn.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// **Every store file this process has open, by canonical path** — see [`Store::open`].
-///
-/// A `Weak` and not an `Arc`: the connection lives exactly as long as something holds a `Store`
-/// for it, and the entry is dropped when the next open finds it dead.
+/// Every store file this process has open, by canonical path. A `Weak` and not an `Arc`: the
+/// connection lives exactly as long as something holds a `Store` for it, and the entry is
+/// dropped when the next open finds it dead.
 fn shared_stores()
 -> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Shared>>>
 {
@@ -1974,39 +1235,9 @@ fn file_id(path: &Path) -> Option<(u64, u64)> {
 }
 
 impl Store {
-    /// **The process's one connection to this store file.**
-    ///
-    /// # Why one, and not one per caller
-    ///
-    /// MEASURED 2026-10-30 on the operator's Mac and again on lab2x1: SQLite caches a descriptor
-    /// per inode *inside the process*, and releases it only when the process's last connection to
-    /// that file closes — so a connection that is closed does not give its descriptor back while
-    /// any other connection to the same file lives. A daemon keeps one for its whole life (its
-    /// registry's), which means **every descriptor it has ever opened is held until it exits**. The
-    /// operator's own daemon: 253 descriptors, 210 of them on `sessions.db`/`-wal`, and on the Mac
-    /// this ended in `ENFILE` — the whole box out of file table — three times in a day.
-    ///
-    /// `Harness::open` opens the store four times per session (its own, the corpus, the
-    /// `transcript` tool's reader and the `decisions` tool's), so a daemon's descriptor count was a
-    /// function of how many sessions it had ever served. Sharing one connection per file per
-    /// process makes it a function of how many store FILES it has open — three descriptors, for a
-    /// WAL store, whatever the session count.
-    ///
-    /// # What it costs
-    ///
-    /// **Every store access in the process now serialises behind one lock.** The four connections
-    /// existed for two reasons and only one of them was `Send`-ness: `transcript_source`'s own doc
-    /// says a search that takes a second must not hold the lock a turn needs to append its next
-    /// row, and that is no longer true — a search on one session now delays an append on another
-    /// for as long as the search runs. The busy ladder is unchanged (see [`busy`]): a write that
-    /// meets `SQLITE_BUSY` from *another process* still waits [`BUSY_RETRY_TOTAL`] rather than
-    /// failing, but the wait is now the whole process's. That is the trade this makes, and it is
-    /// the one the measurement says to make: a descriptor is a resource the box runs out of, and a
-    /// lock is one it does not.
-    ///
-    /// A store that is `open_in_memory` has no file and is never shared; two of them are two
-    /// databases. [`Store::open_private`] is the same file opened on a connection of its own, for
-    /// the tests that measure what two connections to one file do.
+    /// The process's one connection to this store file: SQLite caches a descriptor per inode inside
+    /// the process and releases it only when the last connection closes, so a connection per caller
+    /// is a descriptor leak wearing a pool's clothes.
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_sharing(path, true)
     }
@@ -2044,17 +1275,8 @@ impl Store {
         Self::from_connection(Connection::open_in_memory()?, None)
     }
 
-    /// **The file this store is**, when it has one.
-    ///
-    /// A PATH and not a handle because the caller that needs one is on another thread — the
-    /// watcher threads settle jobs, the todo resolver flushes — and a `rusqlite::Connection` is
-    /// `Send` and not `Sync`. What [`Store::open`] answers on that path is this process's own
-    /// connection, not a second one: the path is how a thread that cannot be handed a `Store`
-    /// reaches the store, and the cost of sharing it is the lock `open` documents.
-    ///
-    /// `None` for an in-memory store, which nobody else can reach. That is an honest
-    /// absence rather than an error: a store with no file has no path to give, and a caller
-    /// that needs one must say so.
+    /// The file this store is, when it has one: a PATH because the caller that needs one is on
+    /// another thread, and a `Connection` is `Send` and not `Sync`.
     pub fn path(&self) -> Option<&Path> {
         self.shared.path.as_deref()
     }
@@ -2066,63 +1288,24 @@ impl Store {
         Conn(self.shared.conn())
     }
 
-    /// **How many connections to store files this process holds open right now** — the census a
-    /// test measures a session's lifetime by, because a descriptor count is a proxy and this is
-    /// the thing.
-    ///
-    /// A `Store` is a handle onto the process's one connection per FILE (see [`Store::open`]), so
-    /// this counts CONNECTIONS, and one store file contributes one however many sessions hold a
-    /// handle on it: two `Store`s for one path are `live() == 1`. A WAL connection holds **three
-    /// descriptors** on its file — the db, the `-wal` and the `-shm` — so *how many descriptors
-    /// does the daemon hold?* is three for each store file it has opened, whatever its session
-    /// count, plus whatever else it has open. A test that asserts this number is asserting that a
-    /// session's store did not outlive the session; it is not asserting that a descriptor was
-    /// given back, which only the process's last connection to the file does.
-    ///
-    /// A count and not a registry of paths: the caller that needs to know *which* store is a
-    /// leak already knows which path it passed, and a table of live paths would be a lock in the
-    /// middle of every open. `None` is `open_in_memory`'s, which is still a connection and still
-    /// counted.
+    /// How many connections to store files this process holds open right now: the census a test
+    /// measures a session's lifetime by, because a descriptor count is a proxy and this is the
+    /// thing.
     pub fn live() -> usize {
         LIVE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// **How long a connection waits for the write lock before giving up** — MEASURED, not chosen.
-    ///
-    /// Five seconds was the right number when a box held a "third connection": WAL plus this
-    /// timeout was what made a third harmless. On 2026-10-10 the same box held **478 sessions
-    /// across 48 projects in one 2.1 GB store, ~11 daemons and dozens of connections** wanting
-    /// the single write lock SQLite allows — and five seconds stopped being enough. Four
-    /// CHILDREN of one session died mid-work on
-    /// `store: row N (…#t0.N): sqlite: database is locked`, and one of them was the child sent
-    /// to fix exactly this; the same sentence appears for the queue (*"the queue could not be
-    /// served"*) and for a live session's own row.
-    ///
-    /// A transcript append that waits twenty seconds and then succeeds is strictly better than
-    /// one that fails and takes the turn with it: this timeout is what BOUNDS the wait, and the
-    /// alternative to waiting is losing the work.
-    ///
-    /// **This is the stopgap, not the answer.** The structural fix is the shared store splitting
-    /// the transcript tables out per session, leaving the queue, the corpus and the session index
-    /// in the one file; and the retry discipline is `store/busy.rs` — every write retried on
-    /// busy for [`BUSY_RETRY_TOTAL`], write transactions `BEGIN IMMEDIATE`, long copies chunked
-    /// by [`Store::append_items`] — because on 2026-10-12 thirty seconds was not enough either:
-    /// a commit cost ~411 ms of fsync and the busy handler is a poll, not a queue.
+    /// How long a connection waits for the write lock before giving up: MEASURED, not chosen. On a
+    /// box holding hundreds of sessions across many daemons the wait is real, and failing at once
+    /// turns a busy file into a failed turn.
     pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// **The one place a `Shared` is built**, and therefore the one place [`LIVE`] is counted:
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
     fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
-        // WAL lets readers and the writer run at once, but two *writers* still
-        // serialise — this process's behind the store's lock, another daemon's or an
-        // `open_private` connection's in SQLite itself — and rusqlite's default is to
-        // fail immediately rather than wait. So a rename landing during a turn's
-        // `append_item` must wait a moment rather than come back as SQLITE_BUSY on a
-        // database that is working exactly as intended.
-        //
-        // The timeout FIRST: `journal_mode` and `migrate` below already touch the file, and
-        // an open that lands while another daemon commits must wait like any other statement
-        // rather than run on rusqlite's default.
+        // WAL lets readers and the writer run at once, but two WRITERS still serialise — this
+        // process's behind the store's lock, another daemon's inside SQLite — and rusqlite's
+        // default is to fail at once rather than wait.
         conn.busy_timeout(Self::BUSY_TIMEOUT)?;
         busy::retry_sql(|| conn.pragma_update(None, "journal_mode", "WAL"))?;
         // The region is volatile by design, so this file is the only copy of the
@@ -2137,20 +1320,16 @@ impl Store {
                 newer: std::sync::Mutex::new(None),
             }),
         };
-        // **Taken here and not on success**: `Drop` gives it back on every path and `migrate`
-        // below may refuse and drop this store, so an add after the `?` would leave that drop
-        // subtracting from a counter nobody added to — a wrap to `MAX`, and every later
-        // `Store::live` in the process is nonsense. Nothing above returns with a `Store` alive.
+        // Taken here and not on success: `Drop` gives it back on every path, and `migrate` may
+        // refuse and drop this store, so an add after the `?` would leave that drop subtracting
+        // from a counter nobody added to.
         LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         store.migrate()?;
         Ok(store)
     }
 
-    /// **Run the migrations again on this store's own connection** — for the one test that unwinds
-    /// a schema and checks the migration carries it forward. `from_connection` is where `migrate`
-    /// is called from, and that constructor consumes a `Connection`; this is the same act on a
-    /// connection that is already configured, and it exists so the test does not have to take the
-    /// connection apart to reach it.
+    /// Run the migrations again on this store's own connection, for the one test that unwinds a
+    /// schema and checks the migration carries it forward.
     #[cfg(test)]
     fn remigrate(self) -> Result<Self> {
         self.migrate()?;
@@ -2158,11 +1337,9 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        // **Only a missing table is a fresh store.** This was `.unwrap_or(None)`, which read
-        // EVERY failure as "no schema yet" — including `database is locked` from an open that
-        // landed on a busy store, after which the arm below stamped the current version over
-        // a store whose migrations had not run. A busy read is waited out; anything else that
-        // is not "no such table" is reported.
+        // Only a missing table is a fresh store. `.unwrap_or(None)` read EVERY failure as "no
+        // schema yet", including `database is locked`, and then stamped the current version over
+        // a store whose migrations had not run.
         let found: Option<i64> = match busy::retry_sql(|| {
             self.conn()
                 .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
@@ -2173,19 +1350,11 @@ impl Store {
             Err(e) => return Err(e.into()),
         };
         match found {
-            // **A store AHEAD of this build is opened when its reader floor allows it.** The rule
-            // used to be unconditional: *any* version above `SCHEMA_VERSION` was refused, so one
-            // nullable column in a newer build stopped every daemon on the box
-            // (`store schema is version 33; this build knows 32`, 2026-10-26). See [`floor`] for
-            // what the floor is, why it is recorded outside `schema_version`, and what is refused
-            // here instead — a store whose floor is above this build, and one too old to carry a
-            // floor at all. **Nothing is written on this path**: not the version, not the floor.
+            // A store AHEAD of this build is opened when its reader floor allows it: one nullable
+            // column in a newer build used to stop every daemon on the box.
             Some(v) if v > SCHEMA_VERSION => return self.open_newer(v),
-            // An older store is MIGRATED, not left alone and not rebuilt. Before v2
-            // this arm was `Some(_) => return Ok(())`, so `SCHEMA_SQL` only ever ran
-            // on an empty file and there was no way to add a column to a store that
-            // already held conversations. The rows are append-only and cannot be
-            // recreated, so a migration is the only shape this can take.
+            // An older store is MIGRATED, not left alone and not rebuilt: the rows are append-only
+            // and cannot be recreated, and before v2 `SCHEMA_SQL` only ran on an empty file.
             Some(v) if v < SCHEMA_VERSION => {
                 self.migrate_from(v)?;
                 self.conn().execute("DELETE FROM schema_version", [])?;
@@ -2193,13 +1362,9 @@ impl Store {
                     "INSERT INTO schema_version (version) VALUES (?1)",
                     params![SCHEMA_VERSION],
                 )?;
-                // **The floor AFTER the version, never before.** A floor above the version it sits
-                // beside would refuse an older build a store that has not been migrated yet — and
-                // the two writes cannot share a transaction without holding the file's single
-                // write lock across the whole migration. So a crash between them leaves the
-                // version right and the floor behind, which the next opener repairs
-                // (`ensure_reader_floor`); the other order would leave a store that lies about
-                // what its readers may know.
+                // The floor AFTER the version, never before: a floor above the version beside it
+                // would refuse an older build a store that has not been migrated yet, and the two
+                // writes cannot share a transaction without holding the write lock across it.
                 let floor = self.ensure_reader_floor(SCHEMA_VERSION)?;
                 debug_assert!(
                     floor <= SCHEMA_VERSION,
@@ -2207,10 +1372,8 @@ impl Store {
                 );
                 return Ok(());
             }
-            // A store this build knows is also a store that RECORDS its floor — the repair for
-            // one created by a build from before [`READER_FLOOR_SQL`], which a newer build could
-            // not tell apart from a store whose schema silently broke it. Costs one `SELECT` on
-            // the ordinary open and writes nothing then.
+            // A store this build knows records its floor too: the repair for one created before the
+            // floor existed, which a newer build could not tell from a store whose schema broke it.
             Some(_) => {
                 self.ensure_reader_floor(SCHEMA_VERSION)?;
                 return Ok(());
@@ -2238,20 +1401,9 @@ impl Store {
         Ok(())
     }
 
-    /// Apply the steps from `from` up to [`SCHEMA_VERSION`].
-    ///
-    /// One arm per version, each idempotent on its own, so a store two versions
-    /// behind is carried forward by running both rather than by a special case.
-    ///
-    /// **An arm that breaks an older READER declares itself in [`READER_ARMS`]** — this
-    /// function is not where the floor is set, [`Store::ensure_reader_floor`] is, but the list is
-    /// read against these arms and an arm with no row there is a store a lower build will be
-    /// handed something it cannot read. `the_floor_names_every_arm` in `store/tests.rs` reads this
-    /// file and refuses one that is missing — in either direction.
-    ///
-    /// **A step may add and it may not destroy.** `transcript_item` carries a
-    /// `BEFORE DELETE` trigger that raises, so a migration that wanted to rewrite
-    /// rows could not, and that is the guarantee rather than a convention here.
+    /// Apply the steps from `from` up to [`SCHEMA_VERSION`]: one arm per version, each idempotent on
+    /// its own, so a store two versions behind is carried forward by running both. An arm that
+    /// breaks an older READER declares itself in [`READER_ARMS`].
     fn migrate_from(&self, from: i64) -> Result<()> {
         if from < 2 {
             // v2: a session records its own role. `ALTER TABLE ... ADD COLUMN` with
@@ -2322,19 +1474,8 @@ impl Store {
             )?;
         }
         if from < 6 {
-            // v6: the SHAPE of the command a decision was about — the parse with its
-            // literals replaced by holes, so `grep -n P -A 22 a.rs` and `grep -n Q
-            // -A 3 b.rs` are one row and two calls. Collected before anything is
-            // built on it: the operator's question was whether the same question is
-            // being asked repeatedly, and that is a thing to count rather than
-            // assume. NULL on every existing row, which is "recorded before this
-            // column existed" and not "no shape".
-            // **Idempotent, because a migration is not always run on a file that
-            // has never seen this column.** The v1/v2 fixtures build a CURRENT
-            // store, reverse two steps by hand and set the version back — so the
-            // table already carries `shape` and the plain `ALTER` fails with
-            // "duplicate column name". Asking the file what it has is cheap and is
-            // the only thing that is true for both paths.
+            // v6: the SHAPE of the command a decision was about — the parse with its literals
+            // replaced by holes, so two `grep`s differing only in pattern and range are one row.
             let has: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape'")
@@ -2361,11 +1502,8 @@ impl Store {
             }
         }
         if from < 8 {
-            // v8: the last turn's context, on the session row. A head that attaches
-            // after a restart must be able to say how big the prompt is without
-            // waiting for a turn; the in-memory view loses it, so the row keeps it.
-            // NULL in every existing row: "no turn has finished since the column
-            // existed", which a head renders as no number rather than zero.
+            // v8: the last turn's context on the session row, so a head that attaches after a
+            // restart can say how big the prompt is without waiting for a turn.
             let has: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_tokens'")
@@ -2376,30 +1514,8 @@ impl Store {
                     "ALTER TABLE session ADD COLUMN context_tokens INTEGER;
                      ALTER TABLE session ADD COLUMN context_cached INTEGER;",
                 )?;
-                // **Backfill the column for the sessions that already exist.** A
-                // store being upgraded has conversations whose last turn finished
-                // before the column existed, so their row reads `NULL` — "no turn
-                // has finished" — which is false and would leave an attaching head
-                // with no context to show until the next turn. The prompt the next
-                // round would send is the stable prefix plus the current
-                // transcript's items, and both are on disk: the prefix's own
-                // `n_tokens` and each item's `tok_len`. That sum is the context,
-                // measured from the same rows the encoder reads, and the next
-                // turn's real `prompt_tokens` replaces it.
-                //
-                // Only the current transcript, by the same `created_at DESC, rowid
-                // DESC` rule `list_sessions` uses: a compaction fork is written in
-                // the same millisecond as its parent, and counting both would put
-                // the history a compaction stopped carrying back into the number.
-                // `context_cached` is left `NULL`: the cache fraction of a prompt
-                // that was never sent is not a measurement, and a head renders
-                // `NULL` as no percentage rather than a zero.
-                // The `EXISTS` is load-bearing, not belt-and-braces: an aggregate
-                // without a GROUP BY returns one row even over an empty input, so
-                // the subquery alone would answer `0` for a session with no
-                // transcript and a head would show `0 ctx` for a conversation that
-                // never had one. The gate keeps such a row `NULL` — "no turn has
-                // finished" — which is the true state.
+                // Backfill it for the sessions that already exist: `NULL` reads as "no turn has
+                // finished", which is false for a conversation upgraded mid-life.
                 self.conn().execute(
                     "UPDATE session
                      SET context_tokens = (
@@ -2424,14 +1540,8 @@ impl Store {
             }
         }
         if from < 9 {
-            // v9: **what the oracle answered, verbatim** (R11). `shown` was meant to be
-            // the other half and held the operator's card instead; the brief now goes
-            // where that column's own doc says it goes, so what needed a column was the
-            // reply.
-            //
-            // NULL on every existing row: "recorded before this column existed", and
-            // indistinguishable from "the oracle did not answer" — which `verdict_by`
-            // separates, because that names whether an oracle was consulted at all.
+            // v9: what the oracle answered, verbatim. `shown` was meant to be the other half and
+            // held the operator's card instead, so the reply needed a column of its own.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2446,11 +1556,9 @@ impl Store {
             }
         }
         if from < 10 {
-            // v10: **whether an oracle was consulted** (R11), as a column rather than a
-            // reading of `model_verdict`'s prose. NULL-able on purpose: a row written
-            // before this cannot say, and "we did not keep it" must not look like "no
-            // model was asked". `CorpusCounts::measured` counts `= 1`, so an old store
-            // reports 0 there and `model_decided` is the count that speaks for its rows.
+            // v10: whether an oracle was consulted, as a column rather than a reading of the
+            // verdict's prose. NULL-able on purpose: "we did not keep it" must not look like
+            // "nobody asked".
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2465,12 +1573,9 @@ impl Store {
             }
         }
         if from < 11 {
-            // v11: **which of the four `Unsure`s** (R12), as a token. NULL-able and NULL on
-            // everything written before it, which is the honest reading: those rows recorded
-            // the reason in a sentence and not in a column, and the two are not
-            // interchangeable — that is the whole finding. A row with `consulted = 1` and no
-            // `oracle_reading` is an answered verdict or an old row, and
-            // `verdict_basis`/`model_verdict` is where a reader of the old ones goes.
+            // v11: which of the four `Unsure`s the answer was, as a token. NULL on everything before
+            // it, because those rows recorded the reason in a sentence and the two are not
+            // interchangeable.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2485,30 +1590,8 @@ impl Store {
             }
         }
         if from < 12 {
-            // v12: **the ledger that `context_tokens` was measured against.**
-            //
-            // `Config::ledger_scale` is recovered at startup by pairing the stored
-            // provider count with the ledger the daemon has just rebuilt, which is
-            // the same conversation only if nothing was appended between the measure
-            // and the restart — and at a resume it usually is not. Measured
-            // 2026-10-02: a store holding `context_tokens = 940211`, measured on a
-            // ~950k-token conversation, was paired with a rebuilt ledger of
-            // 1,486,369, giving a ratio of 0.63 where the truth was 1.016. The
-            // window came out 1,580,888 instead of ~1,015,628 — so a session 1.46M
-            // tokens deep planned against a window it was already far past, never
-            // compacted, and died at the provider's 400 on every attempt.
-            //
-            // **NULL on every existing row, and not backfilled.** A backfill would
-            // have to assert that a count from whenever that row was written
-            // measures the transcript as it stands now, and that assertion IS the
-            // bug being fixed. NULL reads as "unverifiable", the recovery refuses
-            // such a pair instead of guessing at it, and the next turn writes a real
-            // one. The cost is bounded and lands the safe way: an unverified session
-            // falls back to the unscaled window, which compacts EARLY rather than
-            // late (see `Config::tokens_are_unscaled`).
-            //
-            // Idempotent for the same reason v6 is: the fixtures build a current
-            // store and walk the version back, so the column can already be there.
+            // v12: the ledger `context_tokens` was measured against, because a provider count paired
+            // with today's ledger is only the same conversation if nothing was appended since.
             let has: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_ledger'")
@@ -2520,13 +1603,8 @@ impl Store {
             }
         }
         if from < 13 {
-            // v13: the provider this session was switched to. The operator switched a session
-            // to a cloud provider, restarted the daemon, and the session came back on the CLI
-            // default — `set_provider` was in-memory and the session row had nowhere to record
-            // the choice. NULL in every existing row is exactly "never switched": such a
-            // session resumes on the daemon's own default, which is what it always did.
-            // Idempotent for the same reason v6 and v12 are: a fixture can walk the version
-            // back over a store that already has the column.
+            // v13: the provider this session was switched to. `set_provider` was in-memory and the
+            // row had nowhere to record the choice, so a restart came back on the CLI default.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2540,24 +1618,8 @@ impl Store {
             }
         }
         if from < 14 {
-            // v14: **the window a session plans its compaction against.**
-            //
-            // The rule that produced it — a child's window belongs to the model that answers
-            // it and never to its parent's — was fixed at the spawn (`child_window_refusal`,
-            // `subagent_model`), and the number itself lived only in the spawn line, which is
-            // not durable. So a child that ran past its wall left nothing behind that said
-            // which wall it had been planning against. See `StoredSession::context_window`
-            // for the measurement.
-            //
-            // **NULL in every existing row, and deliberately not backfilled.** A closed-form
-            // guess is available — a daemon's own `/props`, or the catalogue row for the model
-            // the session records — and every one of them would write TODAY's number onto a
-            // row describing a session that ran then, which is the same class of lie the
-            // column exists to stop, and in the direction that looks authoritative. *Nobody
-            // recorded one* is the true state of a pre-v14 row.
-            //
-            // Idempotent for the same reason v6, v12 and v13 are: a fixture walks a current
-            // store backwards, so the column can already be here.
+            // v14: the window a session plans its compaction against. The number lived only in the
+            // spawn line, and a child's window belongs to the model that answers it.
             let has: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_window'")
@@ -2569,15 +1631,8 @@ impl Store {
             }
         }
         if from < 15 {
-            // v15: **the job history** — see [`JobRecord`] for what it is for.
-            //
-            // A table rather than a column, because a session has many jobs and each is its own
-            // row: the `todo` shape (one JSON blob per session) would make *one handle's fate* a
-            // whole-list read, and the reader that wants it is answering a question about one
-            // handle.
-            //
-            // `IF NOT EXISTS` for the same reason v6, v12, v13 and v14 are idempotent: a fixture
-            // walks a current store backwards, so the table can already be here.
+            // v15: the job history, a table because a session has many jobs and each is its own
+            // row: one JSON blob per session would make a single handle's fate a whole-list read.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS job (
                      session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
@@ -2594,18 +1649,8 @@ impl Store {
             )?;
         }
         if from < 16 {
-            // v16: **the merge queue** — see `MergeEntry` (v16–v23; archived at v24, see [`queues`]) for what it is for.
-            //
-            // A table rather than a column, for the reason v15's job history is one: the
-            // daemon has many entries and each is its own row, and the reader that wants one
-            // entry's fate is not reading the whole queue.
-            //
-            // `session_id` is a plain column here and not a foreign key, and that is the
-            // deliberate difference from `job`: an entry is about a branch, and a session that
-            // is deleted does not un-merge a branch that still needs merging.
-            //
-            // `IF NOT EXISTS` for the same reason v6, v12, v13, v14 and v15 are idempotent: a
-            // fixture walks a current store backwards, so the table can already be here.
+            // v16: the merge queue, a table for v15's reason: the daemon has many entries, and the
+            // reader that wants one entry's fate is not reading all of them.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                      id          TEXT PRIMARY KEY,
@@ -2626,15 +1671,8 @@ impl Store {
             )?;
         }
         if from < 17 {
-            // v17: **the ask a branch was produced under.**
-            //
-            // `merge_queue.brief` — the ask the child was given, carried on the entry because
-            // the gatekeeper reviews the artifact AGAINST the ask and nothing else can supply
-            // it once the child's session is gone. Added with a guard rather than a bare
-            // `ALTER TABLE`: a fixture walks a current store backwards by dropping columns and
-            // lowering the version, and a fixture that dropped only some of them would
-            // otherwise fail here with "duplicate column name" — which reads as corruption
-            // rather than as the idempotence every other step in this function has.
+            // v17: the ask a branch was produced under, on the entry, because the gatekeeper reviews
+            // the artifact AGAINST the ask and nothing else can supply it once the child is gone.
             let has_brief: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'brief'")
@@ -2647,15 +1685,8 @@ impl Store {
             }
         }
         if from < 18 {
-            // v18: **the reviewer's verdict** — see [`ReviewRecord`] and the table's own
-            // comment in [`SCHEMA_SQL`]. A table rather than a column for the reason v16's
-            // entry table is one: the queue and the review have different writers, and the
-            // question a reader asks ("what did the gatekeeper say about this entry") is about
-            // one row and not about the entry's state.
-            //
-            // `IF NOT EXISTS` for the same reason v6, v12, v13, v14, v15 and v16 are
-            // idempotent: a fixture walks a current store backwards, so the table can already
-            // be here.
+            // v18: the reviewer's verdict, a table for v16's reason: the queue and the review have
+            // different writers and different readers.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
@@ -2672,21 +1703,8 @@ impl Store {
             )?;
         }
         if from < 21 {
-            // v21: **the frozen prefix's fingerprint** — see
-            // [`StoredSession::prefix_fingerprint`] for what is in it and why the standing
-            // notes are not. Written where a session's transcript row is written (its
-            // creation, and every fork onto a new prompt), so that a session opened by a
-            // later build can be told its message 0 is not what this daemon would seat now.
-            //
-            // **NULL on every existing row, and deliberately not backfilled here.** A
-            // session seated before this column existed has the same fact on disk already —
-            // its `stable_prefix` row holds the system text and the tool schemas it was
-            // seated with — and the reader falls back to that rather than a migration
-            // guessing at a hash it would have to re-derive from text this file cannot see
-            // the markers of. *Nobody recorded one here* is the true state of such a row.
-            //
-            // Idempotent for the reason v6, v12, v13, v14 and v19 are: a fixture walks a
-            // current store backwards, so the column can already be here.
+            // v21: the frozen prefix's fingerprint, written where a session's transcript row is
+            // written, so a later build can detect a prompt it would compose differently.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2701,23 +1719,8 @@ impl Store {
             }
         }
         if from < 20 {
-            // v20: **the failed attempt, which is not a verdict** — see [`ReviewRecord`]'s
-            // `attempts`/`failed_ms`/`failure` and the `merge_review` comment in [`SCHEMA_SQL`].
-            //
-            // Three columns rather than one, because the three answer different questions:
-            // *may the queue ask again* (`attempts`), *has it waited long enough* (`failed_ms`),
-            // and *what should a person read on the row* (`failure`, verbatim).
-            //
-            // Guarded rather than a bare `ALTER TABLE`, for the reason v17's `brief` is: a
-            // fixture walks a current store backwards by dropping columns and lowering the
-            // version, and a fixture that dropped only some of them would otherwise fail here
-            // with "duplicate column name" — which reads as corruption rather than as the
-            // idempotence every other step in this function has.
-            // **The table first, in its v20 shape, `IF NOT EXISTS`** — the v5 and v16 arms'
-            // posture, for their reason: a migrated store never runs `SCHEMA_SQL`, and a fixture
-            // may arrive at this version with no table at all (the stood-down fixture builds a
-            // bare v18 store and jumps straight here). On a real v18 store this is a no-op and
-            // the guarded `ALTER`s below do the work; on a bare one it IS the work.
+            // v20: the failed attempt, which is not a verdict. Three columns because they answer
+            // three questions: may the queue ask again, when did it fail, and what did it say.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
@@ -2741,10 +1744,8 @@ impl Store {
                 .and_then(|mut st| st.exists([]))
                 .unwrap_or(false);
             if !has {
-                // **Every existing row reads as *no failed attempt*.** A row written before
-                // these columns existed has a `decision` and an `answered_ms` — it is a verdict,
-                // and a verdict is not a failure. `attempts = 0` says the queue has not spent an
-                // attempt on it, which is the true state of a row whose ask was answered.
+                // Every existing row reads as no failed attempt: it has a decision and an answered
+                // stamp, and a verdict is not a failure.
                 self.conn().execute_batch(
                     "ALTER TABLE merge_review ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
                      ALTER TABLE merge_review ADD COLUMN failed_ms INTEGER;
@@ -2753,17 +1754,8 @@ impl Store {
             }
         }
         if from < 19 {
-            // v19: **the pair that stood automatic compaction down** — see
-            // [`StoredSession::auto_compact_stood_down`] for the wedge it answers.
-            //
-            // Two columns rather than one JSON blob, because the pair is two numbers a
-            // reader compares (`did it shrink?`), and a reader comparing them should not
-            // have to parse first. NULL in every existing row, and deliberately not
-            // backfilled: a session that predates v19 never had the guard fire on it, and
-            // *the guard has not fired* is the true state of such a row.
-            //
-            // Idempotent for the same reason v6, v12, v13 and v14 are: a fixture walks a
-            // current store backwards, so the columns can already be here.
+            // v19: the pair that stood automatic compaction down, two columns because a reader
+            // compares them and should not parse a blob to do it.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2779,29 +1771,8 @@ impl Store {
             }
         }
         if from < 22 {
-            // v22: **the landing half's own rows** — see the `merge_queue` comment in
-            // [`SCHEMA_SQL`] for where they live and why, and [`MergeGateStep`] for what one row
-            // is.
-            //
-            // **`'[]'` on every existing row, and that is the true state of such a row.** A
-            // queue entry written before this column existed has no gate rows because nothing
-            // recorded any: `[]` is the entry's own word for *the gate has not run on this
-            // entry* (`MergeEntry::gate_steps`), which is exactly what a row from an older
-            // build can honestly say. Backfilling a `no_gate` row or a row per step would be
-            // this migration inventing a landing it did not witness.
-            //
-            // Guarded rather than a bare `ALTER TABLE`, for the reason v17's `brief` and v20's
-            // `failure` are: a fixture walks a current store backwards by dropping columns and
-            // lowering the version, and a fixture that dropped only some of them would otherwise
-            // fail here with "duplicate column name" — which reads as corruption rather than as
-            // the idempotence every other step in this function has.
-            //
-            // **The table first, in its v22 shape, `IF NOT EXISTS`** — the v5, v16 and v20 arms'
-            // posture, for their reason: a migrated store never runs `SCHEMA_SQL`, and a fixture
-            // may arrive at this version with no `merge_queue` table at all (the stood-down
-            // fixture builds a bare v18 store and jumps straight here). On a real v21 store this
-            // is a no-op and the guarded `ALTER` below does the work; on a bare one it IS the
-            // work.
+            // v22: the landing half's own rows, so a landing can be DRAWN and not merely judged.
+            // `'[]'` on every existing row is the true state of one that ran no gate.
             self.conn().execute_batch(
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                       id          TEXT PRIMARY KEY,
@@ -2836,46 +1807,9 @@ impl Store {
             }
         }
         if from < 23 {
-            // v23: **the queue a pre-split store was holding is CLEARED — once, on the first
-            // open of it by this build.**
-            //
-            // **`from < 23`, and deliberately not a pair of numbers.** The arm above (v22,
-            // `merge_queue.gate_steps_json`) was written while this one was in flight and took
-            // the number 22. The newest a store this build opens can be is therefore 22 — one
-            // the v22 arm has just migrated — or older still, and it is the RANGE that clears
-            // it either way: a pair of numbers would have to be re-derived every time another
-            // migration lands between them. See [`SCHEMA_VERSION`].
-            //
-            // The operator's ruling, verbatim: *"after it all built we need a way out for the
-            // pg-noop session. basically i suggest on the first start to reset the whole
-            // queue, we are splitting it to reviews and merges anyway."* The split is what
-            // makes those rows unreadable rather than merely stale: once an entry is a REVIEW
-            // that hands off to a merge, the single-queue states this build wrote
-            // (`waiting`/`taken`/`failed`/`conflict`/`stale`/`landed`/`vetoed`) describe a
-            // machine it no longer has, and a pane has no honest way to draw one.
-            //
-            // **Clearing is the honest act here, and it is the operator's own decision rather
-            // than a tidy-up nobody asked for.** Those rows belonged to a DIFFERENT MACHINE;
-            // clearing them says exactly that, and does not say *this work never happened*.
-            // The work is in git — this arm deletes from two tables and touches no branch and
-            // no worktree — and that is what makes the clear safe to run on a real store's
-            // first open.
-            //
-            // **`DELETE FROM` is the route taken, and the trigger list is why.** The doc above
-            // says a `BEFORE DELETE` trigger raises, so that a migration cannot quietly rewrite
-            // history. VERIFIED against [`SCHEMA_SQL`]: the only triggers in this store are
-            // `transcript_item_no_update`, `transcript_item_no_delete` and
-            // `transcript_item_append_only_insert`, all three on `transcript_item`. Neither
-            // `merge_queue` nor `merge_review` carries one, so the drop-and-recreate route (and
-            // the drop-the-trigger, delete, restore-it one) is NOT needed and is deliberately
-            // not taken: recreating a table means restating its column list, and a restated
-            // list drifts from [`SCHEMA_SQL`] the first time one of those columns changes.
-            //
-            // **Guarded on the table being there at all.** A migrated store never runs
-            // [`SCHEMA_SQL`], and a fixture may arrive at this version with no queue in it —
-            // the v1, v4 and v20 fixtures build bare stores and jump straight here. `DELETE
-            // FROM` a table that does not exist is an error, and a migration that refused an
-            // empty file would be a worse bug than the one this arm exists to fix.
+            // v23: the queue a pre-split store held is CLEARED once, on the first open by this
+            // build. `from < 23` and not a pair of numbers, because v22 took that number while this
+            // was in flight, and the arm must run for a store left at 21 or 22 either way.
             for table in ["merge_queue", "merge_review"] {
                 let there: bool = self
                     .conn()
@@ -2888,22 +1822,13 @@ impl Store {
             }
         }
         if from < 24 {
-            // v24: **review and merge are two queues** (R61) — the v23 pair archived under `_v23`
-            // names, the new tables created, and the rows decision 13 carries forward re-enqueued
-            // for review. The whole of the argument is at [`queues`]'s module docs and at
-            // `Store::migrate_queues_to_v24`; nothing is deleted.
+            // v24: review and merge are two queues: the v23 pair archived under `_v23` names, the
+            // new tables created, and the waiting rows re-enqueued for review. Nothing is deleted.
             self.migrate_queues_to_v24()?;
         }
         if from < 25 {
-            // v25: **the operator's pause of the idle plan-check** — see
-            // [`StoredSession::nags_paused_until`] for the three spellings and why the pause is the
-            // session's fact rather than the daemon's.
-            //
-            // NULL in every existing row, and that is the true state of such a row: nobody has
-            // paused a session that predates the verb. Guarded rather than a bare `ALTER TABLE`,
-            // for the reason v19 and v22 give — a fixture walks a current store backwards — and
-            // because the guard is what makes this arm safe to RENUMBER if another migration takes
-            // 25 first: it asks whether the column is there, not which number the file carries.
+            // v25: the operator's pause of the idle plan-check. NULL in every existing row, because
+            // nobody has paused a session yet.
             let has: bool = self
                 .conn()
                 .prepare(
@@ -2917,12 +1842,8 @@ impl Store {
             }
         }
         if from < 26 {
-            // v26: **a session's subagents, as rows that outlive the daemon** — see
-            // [`subagents`]. A new table and an index, both `IF NOT EXISTS`, so the arm is safe to
-            // renumber if another migration takes 26 first and safe on a store that somehow already
-            // has them. Nothing existing is read or rewritten: a store from before this build has
-            // no record of its children, and its running children are not resumed — there is
-            // nothing to resume them FROM.
+            // v26: a session's subagents as rows that outlive the daemon. A new table and an index,
+            // both `IF NOT EXISTS`; nothing existing is read or rewritten.
             self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
         }
         if from < 27 {
@@ -2932,13 +1853,9 @@ impl Store {
             self.conn().execute_batch(modes::MODES_SQL)?;
         }
         if from < 28 {
-            // v28: **whether a job's ending reached the model** — `job.delivered`, see
-            // [`Store::deliver_job`]. Every EXISTING row is stamped delivered (`DEFAULT 1`), and
-            // that is the conservative reading: this build cannot know which of them were told,
-            // and a restart that re-announced every job a store ever ran would bury the one that
-            // matters. Rows written from here on are inserted undelivered by `put_job`. Guarded on
-            // the column rather than the number, for the reason v25 gives — and on the table: a
-            // fixture that is only a `session` table has no `job` to add it to.
+            // v28: whether a job's ending reached the model. Every existing row is stamped
+            // delivered, the conservative reading: this build cannot know, and a restart must not
+            // re-announce every job a store ever held.
             let has = |sql: &str| -> bool {
                 self.conn()
                     .prepare(sql)
@@ -2954,10 +1871,8 @@ impl Store {
             }
         }
         if from < 29 {
-            // v29: **what the queues have said, as rows** — see [`told`]. One new table,
-            // `IF NOT EXISTS`; nothing existing is read or rewritten. A store from before it has
-            // no record of what was rung, so the first daemon on this build may say each
-            // standing alert once more — and then never again across a restart.
+            // v29: what the queues have said, as rows. One new table; a store from before it may
+            // say each standing alert once more, and then never again across restarts.
             self.conn().execute_batch(told::TOLD_SQL)?;
         }
         if from < 30 {
@@ -2967,12 +1882,8 @@ impl Store {
             self.conn().execute_batch(citations::CITATIONS_SQL)?;
         }
         if from < 31 {
-            // v31: **a session can live somewhere else** — [`StoredSession::lives_on`]. Two
-            // additive columns, NULL in every existing row, and NULL is the true state of such
-            // a row: no session that predates this verb was ever migrated. Guarded on the
-            // column rather than the number, for the reason v25, v28 and v19 give — a fixture
-            // walks a current store backwards, and the guard is what makes the arm safe to
-            // renumber if another migration takes 31 first.
+            // v31: a session can live somewhere else. Two additive columns, NULL in every existing
+            // row, which is true: no session that predates this verb was ever migrated.
             let has = |sql: &str| -> bool {
                 self.conn()
                     .prepare(sql)
@@ -2989,23 +1900,13 @@ impl Store {
             }
         }
         if from < 32 {
-            // v32: **one writer per session**, as a row — [`writers`] carries the whole of it.
-            // A migrated store never runs `SCHEMA_SQL`, so the table is created here, and
-            // `IF NOT EXISTS` keeps a store that somehow already has one honest (the fixtures
-            // walk a current store backwards, and this arm must be safe to run on one).
+            // v32: one writer per session, as a row. A migrated store never runs `SCHEMA_SQL`, so
+            // the table is created here.
             self.conn().execute_batch(writers::WRITERS_SQL)?;
         }
         if from < 33 {
-            // v33: **who a session is for**, on the session's own row — see
-            // [`StoredSession::origin`]. `NULL` in every existing row, and that is the honest
-            // value: it means "written before anybody could say", and a reader falls back to
-            // the facts the row already carries (the parent edge, the review queue's id
-            // convention) before calling it the operator's.
-            //
-            // `pragma_table_info`-guarded like v6-v8, because a migration is not always run on
-            // a file that has never seen this column: the fixtures build a CURRENT store,
-            // reverse a step by hand and set the version back, so a plain `ALTER` here would
-            // fail with "duplicate column name".
+            // v33: who a session is for. `NULL` in every existing row is the honest value, and a
+            // reader falls back to the parent edge and the queue's id convention.
             let has: bool = self
                 .conn()
                 .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'origin'")
@@ -3017,22 +1918,13 @@ impl Store {
             }
         }
         if from < 34 {
-            // v34: **every process the daemon supervises, as a row** — [`procs`] carries the
-            // whole of it. One new table, `IF NOT EXISTS`, and nothing existing is read or
-            // rewritten: a store from before it has no record of a process, which is the honest
-            // state of a store whose daemons never wrote one down. The jobs such a store was
-            // running are `job` rows and are reminded as ever — the supervisor adopts nothing it
-            // has no record of, because a pid it was never told and cannot identify is a pid it
-            // has no business signalling.
+            // v34: every process the daemon supervises, as a row. One new table; a store from before
+            // it has no record of a process, which is the honest state.
             self.conn().execute_batch(procs::PROCS_SQL)?;
         }
         if from < 35 {
-            // v35: **a block of a shared host's ports, held by one session** — [`leases`] carries
-            // the whole of it. One new table, `IF NOT EXISTS`, and nothing existing is read or
-            // rewritten: a store from before it has no lease, which is the honest state of a store
-            // whose sessions picked their ports and wrote nothing down. Those ports are still
-            // taken on the host by whatever is listening on them, and the first lease on this
-            // build finds that out the way it always does — by asking `ss -ltn` there.
+            // v35: a block of a shared host's ports, held by one session. One new table; a store from
+            // before it has no lease.
             self.conn().execute_batch(leases::LEASES_SQL)?;
         }
         Ok(())
@@ -3058,20 +1950,9 @@ impl Store {
                 now_ms(),
             ],
         )?;
-        // **A row written with no tokens is repairable, and only that row is.**
-        //
-        // `INSERT OR IGNORE` is right for a content-addressed table: the id is the
-        // hash of the system text and the tool schemas, so a second write of the
-        // same id is the same prefix and there is nothing to change. It was NOT
-        // right for one case, and that case happened: a caller that wrote the row
-        // with an empty token list and a zero `h_init` produced a prefix a resume
-        // verifies as a broken chain at row 0, and `IGNORE` meant no later, correct
-        // write could ever fix it.
-        //
-        // So an existing row with `n_tokens = 0` is filled in. Nothing else is ever
-        // overwritten: an id whose row already has tokens describes a prefix that
-        // has been spoken, and rewriting that would change the history of every
-        // transcript hanging off it.
+        // A row written with no tokens is repairable, and only that row. `INSERT OR IGNORE` is
+        // right for a content-addressed table: the id is the hash of the system text and the
+        // tools, so a second write of it is the same prefix and not a repair.
         if !rec.tokens.is_empty() {
             self.exec(
                 "UPDATE stable_prefix SET n_tokens = ?2, tokens = ?3, h_init = ?4
@@ -3105,13 +1986,9 @@ impl Store {
         Ok((blob_to_tokens(&blob)?, blob_to_hash(&hash)?))
     }
 
-    /// The whole stable-prefix row, for a caller rebuilding the prefix a session
-    /// was actually created with.
-    ///
-    /// A compaction fork keeps the session's own prefix rather than the one the
-    /// running daemon would render now — the same rule a resume follows — and
-    /// building that fork needs the record's `system` and `tools_json`, which the
-    /// token-and-hash getter above does not carry.
+    /// The whole stable-prefix row, for a caller rebuilding the prefix a session was created with:
+    /// a compaction fork keeps the session's own prefix rather than the one the running daemon
+    /// would render now, the same rule a resume follows.
     pub fn stable_prefix_record(&self, id: &str) -> Result<StablePrefixRecord> {
         let (dialect_sha, system, tools_json, tokens, h_init, vocab_source): (
             String,
@@ -3181,10 +2058,8 @@ impl Store {
         self.insert_transcript(transcript_id, session_id, stable_prefix_id, None)
     }
 
-    /// A transcript that came from a fork (§5.5).
-    ///
-    /// Separate entry point rather than an `Option` argument, so that recording
-    /// the divergence is not something a caller can forget by passing `None`.
+    /// A transcript that came from a fork (§5.5). A separate entry point rather than an `Option`
+    /// argument, so recording the divergence is not something a caller can forget.
     pub fn put_fork(
         &self,
         transcript_id: &str,
@@ -3201,15 +2076,9 @@ impl Store {
         )
     }
 
-    /// **A fork that is not the session's conversation until it is sealed** (R91.2).
-    ///
-    /// [`Store::put_fork`] made the new transcript the session's newest — the one a resume
-    /// opens ([`Store::current_transcript_id`], `created_at DESC, rowid DESC`) — before a single
-    /// row of it was written, so a daemon that died during a long carry (a `/reseat` of 971 rows,
-    /// or a wait on a busy store) came back onto a truncated or empty conversation. This writes the
-    /// row with `created_at = 0`, which no live transcript has, so every "newest" query keeps
-    /// answering with the parent until [`Store::seal_transcript`] stamps it once its rows are all
-    /// stored. A fork that is never sealed is a dead branch, never the conversation.
+    /// A fork that is not the session's conversation until it is sealed: `put_fork` made it the
+    /// newest transcript, which a resume opens, before its first row was written. Sealing is what
+    /// says the fork is complete.
     pub fn put_fork_unsealed(
         &self,
         transcript_id: &str,
@@ -3247,10 +2116,9 @@ impl Store {
         Ok(())
     }
 
-    /// **The prefix a transcript was seated with** — `None` when the transcript is not there.
-    ///
-    /// The id and not the record: it is compared with what this daemon would compose now, which
-    /// is content-addressed, so two ids that differ are two different prompts.
+    /// The prefix a transcript was seated with, or `None` when the transcript is not there. The id
+    /// and not the record: it is content-addressed, so two ids that differ are two different
+    /// prompts, and that is the whole comparison a daemon needs.
     pub fn transcript_prefix_id(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -3262,22 +2130,8 @@ impl Store {
             .optional()?)
     }
 
-    /// **Re-seat a transcript that has no rows onto another prefix** — the one prefix
-    /// change that costs nothing.
-    ///
-    /// A session's message 0 is frozen because every row under it was tokenized against it
-    /// and `restore` rebuilds the chain from it. With **zero rows** nothing depends on the
-    /// frozen value: there is no chain to rebuild and no cache to keep, and the first turn
-    /// prefills cold either way. So an empty transcript whose stored prefix is not the one
-    /// this daemon composes is re-seated rather than kept — `Harness::open` does it, and
-    /// the alternative (`prefix_stale`'s ruling, keeping the old prompt for a session with
-    /// rows) would hand a brand-new conversation a message 0 the model cannot call the
-    /// current tools from, plus a `prefix_stale` sentence for a conversation nobody has had.
-    ///
-    /// **Refuses when a row exists**, and that refusal is the whole guarantee: this is the
-    /// only writer of `transcript.stable_prefix_id` that is not an INSERT, so it has to be
-    /// unable to move a prefix out from under a row. `NotFound` for an unknown transcript,
-    /// `Refused` naming the row count for one that holds rows.
+    /// Re-seat a transcript that has no rows onto another prefix: the one prefix change that costs
+    /// nothing. A session's message 0 is frozen once a row exists under it, so this refuses then.
     pub fn set_transcript_prefix(&self, transcript_id: &str, stable_prefix_id: &str) -> Result<()> {
         let n = self.exec(
             "UPDATE transcript SET stable_prefix_id = ?2
@@ -3309,14 +2163,9 @@ impl Store {
         }
     }
 
-    /// **Every stored prefix that is exactly `n_tokens` long** — the candidates a transcript
-    /// is checked against when its rows do not rebuild under the prefix it names.
-    ///
-    /// A length and not an id because the id is content-addressed on the prompt's *text*,
-    /// which is exactly what a mis-seated transcript cannot tell us: all it records of the
-    /// prefix its rows were written under is where its first row starts. The caller picks
-    /// among the answers by rebuilding, which is the only test that can tell two prefixes of
-    /// one length apart.
+    /// Every stored prefix exactly `n_tokens` long: the candidates a transcript is checked against
+    /// when its rows do not rebuild under the prefix it names. A length and not an id, because
+    /// the id is content-addressed on the prompt's text.
     pub fn stable_prefix_ids_of_len(&self, n_tokens: u32) -> Result<Vec<String>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -3350,12 +2199,9 @@ impl Store {
         Ok(())
     }
 
-    /// **Where row `seq` of this transcript must start**, from the store's own numbers —
-    /// the transcript's stable-prefix length plus the `tok_len` of every row before it.
-    ///
-    /// This is the one number `TokenLedger::restore` checks a chain against (`cursor`
-    /// starts at `prefix_tokens.len()`), so a row written anywhere else is a row a resume
-    /// refuses. `NotFound` when the transcript itself is not there.
+    /// Where row `seq` must start, from the store's own numbers: the transcript's prefix length
+    /// plus the `tok_len` of every row before it. This is the one number `restore` checks a chain
+    /// against.
     fn anchored_offset(&self, transcript_id: &str, seq: u32) -> Result<u32> {
         // `LENGTH` of the blob, not `n_tokens`: the bytes are what a restore replays, and
         // the two can only differ for a prefix row somebody wrote by hand.
@@ -3379,27 +2225,9 @@ impl Store {
         Ok((prefix_len + before) as u32)
     }
 
-    /// **The append refuses a run of rows that does not start where the transcript's
-    /// prefix ends.**
-    ///
-    /// MEASURED 2026-10-26, in the operator's own store: `s-gatekeeper#t0` was seated
-    /// 2026-10-11 under a 24,407-token prefix, had no rows, and a daemon running newer
-    /// binaries opened it on 2026-10-25 and appended fourteen rows starting at **32162** —
-    /// the prefix *that* build composes. Every one of those rows is correctly hashed and
-    /// the trigger accepted all of them, because the trigger's offset rule starts at
-    /// `seq > 0`: there was nothing for row 0 to continue, so nothing checked it. The
-    /// transcript has never been restorable since, and `restore.rs` says so every run:
-    /// `row 0 starts at 32162, should start at 24407`.
-    ///
-    /// So the anchor is checked here, where the store still knows the prefix and the rows
-    /// before this one: `tok_offset` must equal the prefix's length plus what is already
-    /// stored. A row anywhere else is refused by name rather than written — the store's job
-    /// is to hold a chain a resume can rebuild, and a chain that cannot be rebuilt is
-    /// exactly what row 0 at the wrong offset creates.
-    ///
-    /// Checked before the INSERT rather than inside it, and that is not a hole: a
-    /// concurrent append between this read and the write is refused by the trigger's own
-    /// `seq` rule (the seq is taken), so the only thing a race can produce is a refusal.
+    /// The append refuses a run of rows that does not start where the transcript's prefix ends: a
+    /// repair for the store an older build left, where a session seated under one prefix appended
+    /// rows computed under another.
     fn assert_anchored(&self, transcript_id: &str, seq: u32, tok_offset: u32) -> Result<()> {
         let expected = self.anchored_offset(transcript_id, seq)?;
         if tok_offset == expected {
@@ -3416,12 +2244,9 @@ impl Store {
         )))
     }
 
-    /// Append one item and its ledger row, together.
-    ///
-    /// One statement, so the row and the tokens it describes cannot end up
-    /// disagreeing; and the insert trigger refuses it if `seq` or `tok_offset`
-    /// does not continue the previous row. `seq` 0 has no previous row to continue, so
-    /// [`Store::assert_anchored`] is what refuses it at the wrong offset.
+    /// Append one item and its ledger row together: one statement, so the row and the tokens it
+    /// describes cannot disagree, and the insert trigger refuses it if `seq` or `tok_offset` does
+    /// not continue the previous row.
     pub fn append_item(
         &self,
         transcript_id: &str,
@@ -3449,32 +2274,9 @@ impl Store {
         Ok(())
     }
 
-    /// **Many rows, appended in as few commits as possible** — the same rows, the same
-    /// triggers and the same order [`Store::append_item`] writes them in, `first_seq` onward.
-    ///
-    /// `rows` is `(item, ledger row, tokens)` per row. Committed in chunks of
-    /// [`Store::APPEND_CHUNK`] rows, each its own `BEGIN IMMEDIATE` transaction, so the
-    /// write lock is taken once per chunk instead of once per row and is never held for a
-    /// whole long copy. MEASURED on this box, 2026-10-12, with several workspace test runs
-    /// going: an autocommit costs ~411 ms of fsync under `synchronous = FULL`, so the
-    /// rano reseat's 971 per-row commits held the lock back to back for six and a half
-    /// minutes, which is the window a child died in on `database is locked`.
-    ///
-    /// A chunk that fails busy is retried whole (nothing of it was committed); a chunk that
-    /// fails otherwise stops the append with the rows before it committed, and the error
-    /// names the row's `seq`, the way a per-row loop's would.
-    ///
-    /// **Each chunk lands whole or not at all**, and the insert trigger checks every row of it
-    /// exactly as it checks [`Store::append_item`]'s: a chunk that half-landed would leave the
-    /// harness's `persisted` count disagreeing with the store, which is the one state a resume
-    /// cannot rebuild honestly. A caller that wants a run to be one transaction hands it at most
-    /// [`Store::APPEND_CHUNK`] rows (`Harness::persist` does, so that each of its chunks is one
-    /// commit and one progress tick).
-    ///
-    /// The same report made the case a second time, from the head's side: the rano session's
-    /// bare `/reseat`, 2026-10-12 01:17, carried 971 rows whose render took two seconds and
-    /// whose per-row write took from 01:17:48 to 01:24:07, while the head showed the old
-    /// conversation and a `queued` prompt and nothing else.
+    /// Many rows, appended in as few commits as possible: the same rows, triggers and order
+    /// [`Store::append_item`] writes, from `first_seq` on. Committed in chunks so one huge commit
+    /// cannot hold the write lock for the whole batch.
     pub fn append_items<'a, I>(&self, transcript_id: &str, first_seq: u32, rows: I) -> Result<()>
     where
         I: IntoIterator<Item = (&'a TranscriptItem, &'a LedgerRow, &'a [TokenId])>,
@@ -3611,12 +2413,8 @@ impl Store {
         Ok(n as u32)
     }
 
-    /// **The transcript this one was forked from**, or `None` for a session's first.
-    ///
-    /// One indexed lookup rather than `load_transcript`, which reads every row and every
-    /// token of a transcript to answer this one column. A resume walks the chain to put the
-    /// conversation back on the screen, and the walk asks this once per step before it
-    /// decides whether the parent's rows are needed at all.
+    /// The transcript this one was forked from, or `None` for a session's first: one indexed lookup
+    /// rather than a whole transcript load, because a resume walks the chain.
     pub fn parent_of(&self, transcript_id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -3629,18 +2427,9 @@ impl Store {
             .flatten())
     }
 
-    /// **One row's JSON, by ordinal — the read behind `FetchRow`** (R19.2b).
-    ///
-    /// One indexed lookup: `transcript_item`'s primary key is
-    /// `(transcript_id, seq)`, so this is not a scan and not a transcript load. That
-    /// distinction is the whole point of the frame — the daemon's *view* is bounded
-    /// (2,000 rows, 8 MB of bodies), so an ordinal it trimmed was previously
-    /// unanswerable, and the two ways to answer it are `load_transcript` (every row
-    /// of the session, to return one) or this.
-    ///
-    /// `None` for an ordinal this transcript does not have. **Not an empty string**: a
-    /// row the store does not hold and a row whose body is empty must not look alike,
-    /// which is the same rule `RowFetched`'s own doc states for the wire.
+    /// One row's JSON by ordinal, the read behind `FetchRow`: one indexed lookup on
+    /// `(transcript_id, seq)`, so it is neither a scan nor a transcript load, and that is the
+    /// whole point of it.
     pub fn row_json_at(&self, transcript_id: &str, seq: u32) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -3652,15 +2441,9 @@ impl Store {
             .optional()?)
     }
 
-    /// **The session's current transcript id**, which is what a row ordinal is
-    /// relative to.
-    ///
-    /// The **newest** transcript, because a fork replaces the conversation: after a
-    /// compaction, ordinal 3 is a row of the new base and not of the history it
-    /// summarised, so reading the old transcript's row 3 would answer with a row
-    /// nobody asked about. Ordered the same way `list_sessions` orders its subquery —
-    /// `created_at DESC, rowid DESC`, the rowid because a fork is written in the same
-    /// millisecond as the row that caused it.
+    /// The session's current transcript id, which is what a row ordinal is relative to: the NEWEST,
+    /// because a fork replaces the conversation, so ordinal 3 after a compaction is a row of the
+    /// new base.
     pub fn current_transcript_id(&self, session_id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -3672,42 +2455,24 @@ impl Store {
             .optional()?)
     }
 
-    /// Every session in the store, newest activity first: what a picker or
-    /// `letibot --sessions` is drawn from.
-    ///
-    /// Ordered by the **last row written**, not by `session.created_at`. "Which one
-    /// was I just in" is the question this list is asked, and a session created on
-    /// Monday and used ten minutes ago is the answer to it; ordering by creation
-    /// puts it at the bottom.
-    ///
-    /// `LEFT JOIN`, so a session whose transcript row exists but holds nothing still
-    /// appears — with `items: 0` and `last_activity_ms` falling back to its creation
-    /// time. Those are exactly the sessions somebody wants to delete, and a list that
-    /// hides them is a list that cannot be acted on.
+    /// Every session in the store, newest activity first: what a picker or `letibot --sessions` is
+    /// drawn from. Ordered by the last row written and not `created_at`, because the question is
+    /// which one I was just in.
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
         self.sessions_matching("", &[])
     }
 
-    /// **The one query behind both [`Store::list_sessions`] and [`Store::session`]**,
-    /// with an optional `WHERE` over `s` appended — so the 20-column positional reader
-    /// below exists once. Two copies of a reader that is read BY POSITION would drift the
-    /// first time somebody appended a column to one of them.
+    /// The one query behind both [`Store::list_sessions`] and [`Store::session`], with an optional
+    /// `WHERE` appended, so the 20-column positional reader exists once: two copies read BY
+    /// POSITION would drift the first time a column was added.
     fn sessions_matching(
         &self,
         filter: &str,
         args: &[&dyn rusqlite::ToSql],
     ) -> Result<Vec<StoredSession>> {
-        // The "current transcript" subquery orders by `created_at DESC, rowid
-        // DESC`, and the rowid is not decoration: a compaction fork is written in
-        // the same millisecond as the transcript it forked from, and a
-        // created-at-only order breaks that tie arbitrarily — a resume could come
-        // back on the parent, putting the full history behind the next prompt.
-        // Insertion order is what "newest" means here.
-        //
-        // The item count is the **current transcript's** rows, not every
-        // transcript's: since forks exist, a cross-transcript count double-counts
-        // the history a compaction just stopped carrying, and a picker row that
-        // grew because the conversation got shorter is a lie.
+        // The "current transcript" subquery orders by `created_at DESC, rowid DESC`, and the rowid
+        // is not decoration: a fork is written in the same millisecond as the transcript it forked
+        // from, and a created-at-only order breaks that tie randomly.
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT s.id, s.title, s.model_id, s.dialect_sha, s.workspace_root, s.owner,
@@ -3774,12 +2539,8 @@ impl Store {
                         (Some(resident), Some(after)) => Some((resident as u64, after as u64)),
                         _ => None,
                     },
-                    // **Index 19, after the stood-down pair at 17 and 18.** This list is
-                    // read BY POSITION and both changes appended to it: the pair came from
-                    // the compaction work, the last item from the pane that says how a
-                    // child ended. The pair goes first because it is one fact in two
-                    // columns — splitting it around an unrelated subquery would be a
-                    // reading waiting to be shifted by the next person who appends here.
+                    // Index 19, after the stood-down pair at 17 and 18. This list is read BY POSITION and
+                    // both changes appended to it; the pair comes first because it is the older change.
                     last_item: r
                         .get::<_, Option<String>>(19)?
                         .and_then(|j| serde_json::from_str(&j).ok()),
@@ -3793,11 +2554,9 @@ impl Store {
                     // for the reason every index above was: the list is read BY POSITION.
                     lives_on: r.get(22)?,
                     moved_ms: r.get(23)?,
-                    // **Index 24**, the newest column on the row — appended for the reason
-                    // 22 and 23 were, and read as a string because the vocabulary is
-                    // `letibot_sessionlog::SessionOrigin`'s and this crate does not depend on
-                    // it. A value this build does not know reads as `None`, which is the same
-                    // answer as a row written before the column: *nobody has said*.
+                    // Index 24, appended for the reason 22 and 23 were, and read as a string because the
+                    // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
+                    // on it. A value this build does not know reads as unknown.
                     origin: r.get(24)?,
                 })
             })?
@@ -3806,11 +2565,9 @@ impl Store {
         Ok(out)
     }
 
-    /// The name on disk right now, or `None` for a session nobody has named.
-    ///
-    /// Read rather than remembered: a head can set a title from its own thread while a harness
-    /// holds an older idea of it, and a derivation that trusted its cached copy would overwrite a
-    /// name the operator had just typed.
+    /// The name on disk right now, or `None` for a session nobody has named. Read rather than
+    /// remembered: a head can set a title from its own thread while a harness holds an older idea,
+    /// and trusting the cached copy would overwrite it.
     pub fn title(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
@@ -3824,16 +2581,9 @@ impl Store {
             .filter(|t: &String| !t.is_empty()))
     }
 
-    /// One session, or `None` — **keyed**, so it reads one session's rows and no others.
-    ///
-    /// It was `list_sessions()` and a `find`, which made every lookup of ONE session a
-    /// walk of EVERY session's transcripts: the listing computes a `MAX(created_at)` per
-    /// session over its items, and nothing indexes `created_at`, so it reads the whole
-    /// `transcript_item` table. MEASURED 2026-10-11 on the operator's 3.3 GB store: 0.54 s
-    /// per call with the file hot in the page cache — and the merge queue's review pass made
-    /// dozens of them every 30 s (see [`Store::session_parent`]), which held a daemon's only
-    /// worker at 100% of a core and left an operator's prompt queued for up to a minute with
-    /// nothing on the screen to say why.
+    /// One session, or `None`, KEYED: it reads one session's rows and no others. It was
+    /// `list_sessions()` and a `find`, which made every lookup of one session a walk of every
+    /// session's transcripts.
     pub fn session(&self, id: &str) -> Result<Option<StoredSession>> {
         Ok(self
             .sessions_matching(" WHERE s.id = ?1", &[&id])?
@@ -3841,13 +2591,9 @@ impl Store {
             .next())
     }
 
-    /// **A session's parent, and nothing else** — `Some(None)` for a root, `None` for an
-    /// id this store does not hold.
-    ///
-    /// For the callers that walk a parent chain. They were calling [`Store::session`] at
-    /// every step, which built a whole [`StoredSession`] — the transcript joins, the last
-    /// item, the activity time — to read one column of the `session` row. This reads that
-    /// column off the primary key and nothing else.
+    /// A session's parent, and nothing else: `Some(None)` for a root, `None` for an id this store
+    /// does not hold. For the callers that walk a parent chain, which were loading a whole
+    /// `StoredSession` at every step.
     pub fn session_parent(&self, id: &str) -> Result<Option<Option<String>>> {
         Ok(self
             .conn()
@@ -3873,12 +2619,9 @@ impl Store {
             .optional()?)
     }
 
-    /// Name a session, or clear its name with an empty string.
-    ///
-    /// `session` carries no append-only trigger and is not part of the chain: a
-    /// title is metadata *about* a conversation and changing it changes no prompt
-    /// byte. That is the whole reason renaming is allowed here while
-    /// [`Store::append_item`]'s rows cannot be touched at all.
+    /// Name a session, or clear its name with an empty string. `session` carries no append-only
+    /// trigger and is not part of the chain: a title is metadata about a conversation, and
+    /// changing it changes no prompt byte.
     pub fn set_title(&self, id: &str, title: &str) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET title = ?2 WHERE id = ?1",
@@ -3890,26 +2633,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Write down who this session is for** — see [`StoredSession::origin`].
-    ///
-    /// # Set once, and the `AND origin IS NULL` is the guarantee
-    ///
-    /// How a session came to exist does not change: a conversation a package started is the
-    /// operator's conversation from the moment it opens, and a picker that re-grouped it the
-    /// first time they typed in it would be the row-renames-itself defect in a new column. So
-    /// a second write is a no-op rather than an overwrite.
-    ///
-    /// # Why it is an UPDATE and not a column on `put_session`
-    ///
-    /// The daemon knows a session's origin when it is CREATED and the row is written when it is
-    /// OPENED — `Work::Open` is the worker's, behind whatever turn it is running — so the fact
-    /// arrives before there is a row to put it on. An UPDATE after the open is the shape that
-    /// needs no second ordering: zero rows affected means *no row yet*, and the caller says the
-    /// same thing again when the worker gets there. A column on the insert would have needed
-    /// every `SessionRecord` in the tree to carry a field that most of them cannot know.
-    ///
-    /// `NotFound` when the id is not a session at all, because a caller that named the wrong
-    /// id should hear it; zero rows on a session that ALREADY has one is not an error.
+    /// Write down who this session is for. Set once, and the `AND origin IS NULL` is the guarantee:
+    /// how a session came to exist does not change.
     pub fn set_session_origin(&self, id: &str, origin: &str) -> Result<()> {
         let there: bool = self
             .conn()
@@ -3925,15 +2650,9 @@ impl Store {
         Ok(())
     }
 
-    /// Record the last turn's context on the session row, so a head that attaches
-    /// after a restart can show how big the prompt is without waiting for a turn.
-    /// `None` clears it (a session that has run no turn since the column existed).
-    ///
-    /// **`ledger` is not decoration and must be passed whenever `tokens` is.**
-    /// `tokens` is the PROVIDER's count and `ledger` is this box's for the same
-    /// prompt; only the two together give a ratio, and a ratio recovered from the
-    /// provider's half alone is one measured against a different conversation. Pass
-    /// `None` for both when clearing. See [`StoredSession::context_ledger`].
+    /// Record the last turn's context on the session row, so a head that attaches after a restart
+    /// can show how big the prompt is without waiting for a turn. `ledger` is the other half the
+    /// ratio needs; see [`StoredSession::context_ledger`].
     pub fn set_context(
         &self,
         id: &str,
@@ -3959,15 +2678,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Write the window this session plans its compaction against.** See
-    /// [`StoredSession::context_window`].
-    ///
-    /// A setter of its own rather than a fifth parameter on [`Store::set_context`], because
-    /// the two facts have different lifetimes and folding them together would say they were
-    /// measured together: the context counts are replaced by **every turn**, and a window is
-    /// a property of the session that changes only when the model underneath it moves.
-    ///
-    /// `None` clears it — what a session whose window nobody can name records.
+    /// Write the window this session plans its compaction against. A setter of its own rather than
+    /// a parameter on [`Store::set_context`], because the two facts have different lifetimes.
     pub fn set_window(&self, id: &str, window: Option<u64>) -> Result<()> {
         // `i64` on the wire for the same reason `set_context` gives: rusqlite's `ToSql` has
         // no `u64`, and a window that does not fit an `i64` is not a window any server has.
@@ -3981,20 +2693,9 @@ impl Store {
         Ok(())
     }
 
-    /// **Write the fingerprint of the frozen prefix this session is seated with.** See
-    /// [`StoredSession::prefix_fingerprint`] for what it is.
-    ///
-    /// **Written where a session's transcript row is written, and nowhere else.** That is
-    /// the whole rule, and it is what makes the column mean one thing: *the prefix the
-    /// session's CURRENT transcript was opened under*. Two callers obey it — the open that
-    /// creates a session, and the fork that re-seats one onto a new prompt — and a caller
-    /// that wrote it anywhere else would be recording a prefix no transcript speaks.
-    ///
-    /// A setter of its own rather than a field on [`SessionRecord`], for the reason
-    /// [`Store::set_window`] is one: a `SessionRecord` is the session's creation and this
-    /// fact outlives it — a re-seat writes it again, long after the row exists. Keeping it
-    /// out of `put_session` also keeps it out of the twenty-odd fixtures that build a
-    /// `SessionRecord` to test something else.
+    /// Write the fingerprint of the frozen prefix this session is seated with, where the transcript
+    /// row is written and nowhere else: a later build compares it against what it would compose
+    /// now.
     pub fn set_prefix_fingerprint(&self, id: &str, fingerprint: &str) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET prefix_fingerprint = ?2 WHERE id = ?1",
@@ -4006,18 +2707,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Write the pair that stood automatic compaction down.** See
-    /// [`StoredSession::auto_compact_stood_down`].
-    ///
-    /// A setter of its own for the same reason [`Store::set_window`] has one: the two
-    /// facts have different lifetimes, and folding them into another setter's
-    /// parameter list would say they were written together. This pair is written
-    /// when the wall controller goes `Stuck` (every fold MEASURED still at the wall),
-    /// and `None` clears it when the controller is released — by a measured count
-    /// comfortably below the wall, `/compact` or `/auto-compact on`. It used to be
-    /// written once and never cleared, and on 2026-10-11 it was written on an
-    /// estimate (pg-noop: ≈ 1,039,055, measured 507,355): a finding that cannot
-    /// expire must not be made on a number nobody measured.
+    /// Write the pair that stood automatic compaction down. A setter of its own for
+    /// [`Store::set_window`]'s reason: the two facts have different lifetimes.
     pub fn set_auto_compact_stood_down(&self, id: &str, pair: Option<(u64, u64)>) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET auto_compact_resident = ?2, auto_compact_after = ?3 \
@@ -4030,13 +2721,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Pause this session's idle plan-check, or end the pause** —
-    /// [`StoredSession::nags_paused_until`]'s setter, in its spelling: `None` clears it, `Some(0)`
-    /// is until the operator resumes, `Some(ms)` ends at that unix millisecond.
-    ///
-    /// A setter of its own for [`Store::set_auto_compact_stood_down`]'s reason: it is written by
-    /// one act (the operator's `/nag`) and cleared by its two ends (the verb, or the pause's own
-    /// deadline), and nothing else on the row moves with it.
+    /// Pause this session's idle plan-check, or end the pause: `None` clears it, `Some(0)` is until
+    /// the operator resumes, `Some(ms)` ends at that unix millisecond.
     pub fn set_nags_paused_until(&self, id: &str, until: Option<i64>) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET nags_paused_until = ?2 WHERE id = ?1",
@@ -4064,12 +2750,8 @@ impl Store {
             .filter(|s: &String| !s.is_empty()))
     }
 
-    /// Record the provider this session was switched to, or clear it with `None`.
-    ///
-    /// **The choice is a session's fact, not the daemon process's.** Before this
-    /// column a switch lived in `Harness::provider` alone, so a restart brought the
-    /// session back on the CLI default and the first turn quietly went to a model
-    /// nobody chose for that conversation.
+    /// Record the provider this session was switched to, or clear it with `None`. The choice is a
+    /// session's fact and not the daemon's: a switch lived in a harness, and a restart lost it.
     pub fn set_provider_choice(&self, id: &str, choice: Option<&str>) -> Result<()> {
         let n = self.exec(
             "UPDATE session SET provider_choice = ?2 WHERE id = ?1",
@@ -4081,11 +2763,8 @@ impl Store {
         Ok(())
     }
 
-    /// The session's todo list, in the order the model last wrote it.
-    ///
-    /// Empty when the session has none — "never wrote one" and "cleared it" are
-    /// the same state from the outside, and pretending they differ is a pane
-    /// showing a distinction nothing stands behind.
+    /// The session's todo list, in the order the model last wrote it. Empty covers both "never
+    /// wrote one" and "cleared it": from outside they are the same state.
     pub fn todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {
         let json: Option<String> = self
             .conn()
@@ -4101,15 +2780,8 @@ impl Store {
             .unwrap_or_default())
     }
 
-    /// **Every session with a row waiting on the operator, and how many questions are open** —
-    /// the picker's mark, read for all sessions in one pass.
-    ///
-    /// **Narrowed in SQL, decided in Rust.** The `LIKE` is only the cheap half: it keeps the rows
-    /// the JSON could hold an `operator` edge in, and [`operator_asks`] — the one reading every
-    /// other door uses — decides, so a done row's leftover question or a string that merely
-    /// contains the tag is not counted. A list that cannot be parsed counts nothing rather than
-    /// failing the listing: a picker that refused to draw over one bad row would hide every
-    /// session to report one.
+    /// Every session with a row waiting on the operator, and how many questions are open: the
+    /// picker's mark, read for all sessions in one pass. Narrowed in SQL, decided in Rust.
     pub fn sessions_waiting_on_operator(&self) -> Result<BTreeMap<String, usize>> {
         let conn = self.conn();
         let mut st = conn.prepare(
@@ -4142,12 +2814,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Every job this session has recorded**, ordered by when its row last moved — see
-    /// [`JobRecord`].
-    ///
-    /// `handle` breaks the tie, so two jobs written in the same millisecond do not come back in
-    /// an order that changes between calls: a listing that reorders itself costs the model its
-    /// prefix cache, which is the same reason the monitor registry orders by name.
+    /// Every job this session has recorded, ordered by when its row last moved. `handle` breaks
+    /// the tie, so two jobs written in the same millisecond do not come back arbitrarily.
     pub fn jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
         self.jobs_where(session_id, "")
     }
@@ -4165,10 +2833,9 @@ impl Store {
                 command: r.get(1)?,
                 how: r.get(2)?,
                 state: r.get(3)?,
-                // `i64` out of SQLite and back into the `u64` the wire spells: rusqlite's
-                // `FromSql` has no `u64`, and a byte count that does not fit an `i64` is not
-                // a job this box will ever run — the same reading `Store::set_context` takes
-                // for a token count.
+                // `i64` out of SQLite and back into the `u64` the wire spells: rusqlite's `FromSql`
+                // has no `u64`, and a byte count that does not fit an `i64` is not a job this box
+                // will ever run.
                 produced: r.get::<_, i64>(4)? as u64,
                 elapsed_ms: r.get::<_, i64>(5)? as u64,
                 redirect: r.get(6)?,
@@ -4181,22 +2848,8 @@ impl Store {
         Ok(out)
     }
 
-    /// **Write one job's row, replacing that handle's last one — field by field.**
-    ///
-    /// An upsert rather than an append: the row is a job and not a log line, so a job has one
-    /// state at a time and the settlement is the same job as the start. *The append-only record
-    /// of every ending* is the session's own log, which is a different question from *where is
-    /// this handle's row now* — and the reader that wants the second one is the pane.
-    ///
-    /// **An EMPTY text field is *not recorded here*, so the row keeps what it had.** The two
-    /// writers know different things and neither knows both: the START is told who backgrounded
-    /// the job (`how`) and never its command, and the SETTLEMENT is told the command — read from
-    /// the live view, which is the last moment it exists — and not `how`. Without this the second
-    /// write erased the first and no row could ever hold both, which is the whole reason a row
-    /// would be written twice.
-    ///
-    /// The numbers are not merged: `state`, `produced`, `elapsed_ms` and `redirect` are facts of
-    /// the write that is happening, and the later write's are the true ones.
+    /// Write one job's row, replacing that handle's last one, field by field: an upsert and not an
+    /// append, because the row is a job and not a log line, and a job has one state at a time.
     pub fn put_job(&self, session_id: &str, job: &JobRecord) -> Result<()> {
         self.exec(
             "INSERT INTO job
@@ -4223,10 +2876,8 @@ impl Store {
         Ok(())
     }
 
-    /// **This job's ending has reached the model** (v28) — set where that is true
-    /// (`JobWatchers::read_now`, beside `deliver_subagent_run`), and by a restart that said it.
-    /// `put_job` never touches the flag after the insert, so a settlement written after the
-    /// delivery does not undo it. A handle with no row writes nothing.
+    /// This job's ending has reached the model: set where that is true, and by a restart that said
+    /// so. `put_job` never touches it.
     pub fn deliver_job(&self, session_id: &str, handle: &str) -> Result<()> {
         self.exec(
             "UPDATE job SET delivered = 1 WHERE session_id = ?1 AND handle = ?2",
@@ -4235,10 +2886,8 @@ impl Store {
         Ok(())
     }
 
-    /// **The jobs of this session that ENDED and were never delivered** — what a daemon that
-    /// stopped while holding a result (R79) left for the next one to say (TODO.md R91.5). A
-    /// `running` row is not here: that is a job the daemon was watching when it died, which
-    /// `jobs` already answers.
+    /// The jobs of this session that ENDED and were never delivered: what a daemon that stopped
+    /// while holding a result left for the next one to say. A `running` row is not one of them.
     pub fn undelivered_jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
         self.jobs_where(session_id, "AND state <> 'running' AND delivered = 0")
     }
@@ -4259,19 +2908,9 @@ impl Store {
         Ok(max)
     }
 
-    /// Remove a session that holds no transcript rows.
-    ///
-    /// **A session with rows cannot be deleted, and that is not an omission.**
-    /// `transcript_item` carries a `BEFORE DELETE` trigger that raises — §4.1's
-    /// "immutable, with exactly one mutation: append", said in SQL — so there is no
-    /// statement this method could run that would remove a conversation. Offering a
-    /// `--delete` that quietly left the rows behind and dropped only the `session`
-    /// row would be worse than refusing: the tokens would still be on disk, orphaned
-    /// and unreachable, and the operator would believe they were gone.
-    ///
-    /// What *is* deletable is a session nothing ever ran in — the row a daemon
-    /// writes at startup and a `/new` that was never used. Those accumulate, they
-    /// are the ones a picker is cluttered by, and removing them destroys nothing.
+    /// Remove a session that holds no transcript rows. A session with rows cannot be deleted, and
+    /// that is not an omission: `transcript_item` refuses a delete by trigger, so the rows this
+    /// would orphan cannot go.
     pub fn delete_empty_session(&self, id: &str) -> Result<()> {
         let Some(s) = self.session(id)? else {
             return Err(StoreError::NotFound(format!("session {id}")));
@@ -4313,24 +2952,8 @@ impl Store {
             .optional()?)
     }
 
-    // Escape hatch for the tests below and for `EXPLAIN`. Read-only by
-    // convention only, which is why the append-only guarantees live in triggers
-    // rather than in whoever holds this reference.
-    // ----------------------------------------------------------- adjudication
-    ///
-    /// Record one decision. Called when the gate acts, not when the operator
-    /// answers — the two are separate events and sometimes separate turns.
-    ///
-    /// Idempotent on `request_id`: a retried write must not produce a second row
-    /// for one decision, and must not clobber an operator ruling that arrived in
-    /// between, which is why this is INSERT OR IGNORE rather than REPLACE.
-    ///
-    /// **Returns whether a row was actually written.** `INSERT OR IGNORE` answers
-    /// `Ok(0)` when the key is already there, and the caller read only `is_ok()`
-    /// — so a decision that collided was counted as kept. That is the exact
-    /// shape `lost` exists to make impossible, and it hid a total corpus outage
-    /// for a whole session (see `AdjudicatedGate::next_id`). `false` here means
-    /// the row is NOT in the table and never will be.
+    // Escape hatch for the tests below and for `EXPLAIN`. Read-only by convention only, which
+    // is why the append-only guarantees live in triggers and not in whoever holds this.
     pub fn record_adjudication(&self, a: &NewAdjudication) -> Result<bool> {
         let changed = self.exec(
             "INSERT OR IGNORE INTO adjudication
@@ -4379,18 +3002,8 @@ impl Store {
         Ok(changed == 1)
     }
 
-    /// **The highest decision number this session has already stored.**
-    ///
-    /// `AdjudicatedGate` numbers its requests `adj-<session_id>-<seq>` from an
-    /// in-memory counter, so a resumed session restarts at 1 and re-emits ids
-    /// that are already in the table. This is what a gate seeds that counter
-    /// from, so a restart continues the sequence instead of colliding with it.
-    ///
-    /// The `+ 6` is `adj-` (4) + the session id + `-` (1), one-based: it reads
-    /// the numeric tail of the id this crate's own writer produced. A row whose
-    /// tail does not parse contributes 0, which only ever makes the seed lower
-    /// and the next write collide once more — never silently wrong in the
-    /// direction that loses data, because that collision is now reported.
+    /// The highest decision number this session has already stored: `AdjudicatedGate` numbers
+    /// requests from an in-memory counter, so a resumed session re-emits ids that are taken.
     pub fn max_adjudication_seq(&self, session_id: &str) -> Result<u64> {
         let n: Option<i64> = self.conn().query_row(
             "SELECT MAX(CAST(substr(request_id, length(?1) + 6) AS INTEGER))
@@ -4401,14 +3014,8 @@ impl Store {
         Ok(n.unwrap_or(0).max(0) as u64)
     }
 
-    /// The operator's ruling on a decision already recorded. **This is the
-    /// label**, and it never touches `model_verdict`: a row where the two differ
-    /// is the row a fine-tune is for, and overwriting one with the other would
-    /// destroy exactly the signal being collected.
-    ///
-    /// Only fills columns that are NULL. An operator who rules twice on one
-    /// request keeps the first ruling, because the first is the one the session
-    /// acted on.
+    /// The operator's ruling on a decision already recorded. This is the LABEL and it never
+    /// touches `model_verdict`: a row where the two differ is the row a fine-tune is for.
     pub fn record_operator_ruling(&self, request_id: &str, kind: &str, note: &str) -> Result<bool> {
         let now = now_ms();
         let n = self.exec(
@@ -4428,16 +3035,8 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// **One half of one decision's oracle exchange** — R11's locator, leticl's ask.
-    ///
-    /// `column` is the field's own name and is matched against a closed pair rather than
-    /// interpolated: a caller that could name any column would be a caller that could read the
-    /// whole table through a locator, and this one is for two fields.
-    ///
-    /// **`None` is "not recorded" and not "empty".** The column is `NULL` on every row written
-    /// before R11 kept it, and an oracle that never answered has no reply either — a reader has
-    /// to be able to tell *"nobody kept this"* from *"here it is, and it is empty"*, which is
-    /// why this answers `Option<String>` and the wire answers `Option<String>`.
+    /// One half of one decision's oracle exchange. `column` is matched against a closed pair
+    /// rather than interpolated, so a caller cannot name an arbitrary column.
     pub fn diagnostic(&self, request_id: &str, column: &str) -> Result<Option<String>> {
         let field = match column {
             "brief" => "shown",
@@ -4460,10 +3059,8 @@ impl Store {
         Ok(out.flatten())
     }
 
-    /// The corpus, newest first. `only_labelled` narrows to rows the operator
-    /// ruled on — the labelled set — because "every decision" and "every
-    /// decision a human checked" are different datasets and a caller must say
-    /// which it wants.
+    /// The corpus, newest first. `only_labelled` narrows to rows the operator ruled on, because
+    /// "every decision" and "every decision a human checked" are different datasets.
     pub fn corpus(&self, only_labelled: bool, limit: usize) -> Result<Vec<StoredAdjudication>> {
         const COLS: &str = "request_id, session_id, turn_id, decided_ms, action, baseline,
                     tier, trail_json, shown, oracle_reply, tool, arguments_json, mode,
@@ -4523,35 +3120,8 @@ impl Store {
         Ok(rows)
     }
 
-    /// **Shapes this operator approved by hand, under this workspace** — the warm
-    /// start for the shape cache.
-    ///
-    /// The cache was in-memory, so it died with the process. That made it useless
-    /// to the person it was built for: the operator restarts a session precisely
-    /// when a session has gone wrong, and was then asked again about every shape
-    /// they had already approved. Persisting it is the feature; the bounds below
-    /// are what keep persisting it honest.
-    ///
-    /// Every bound the live rule applies is applied HERE too, in SQL, so a warm
-    /// start can never be wider than the session that earned it:
-    ///
-    /// * `verdict_by LIKE 'human%'` — only a person's approval is remembered. The
-    ///   guard's own admits are excluded for the same reason they are kept out of
-    ///   the brief: a mechanism that learns from itself drifts.
-    /// * `tier = 'may_approve'` — an `always_ask` a human admitted was admitted for
-    ///   that one call. It is re-checked live as well; this is the second lock.
-    /// * `effect = 'admit'` — a refusal is not an approval.
-    /// * `baseline NOT LIKE '%destroy%'` — a shape holes its operands, so a
-    ///   destructive call is never settled by one.
-    /// * **the same `workspace_root`** — this is the bound the old in-memory cache
-    ///   got for free and a persisted one does not. `host_project` means *this*
-    ///   project, so without the join a shape approved in one checkout would admit
-    ///   the same shape in another. The class is compared for equality by the
-    ///   caller, and `host_project` is equal to `host_project` across two different
-    ///   projects — hence the join rather than trust in the class alone.
-    ///
-    /// Newest first, so a caller keeping the first answer per shape keeps the most
-    /// recent ruling.
+    /// Shapes this operator approved by hand, under this workspace: the warm start for the shape
+    /// cache, which was in-memory and died with the process, exactly when a restart needed it.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -4573,13 +3143,8 @@ impl Store {
         Ok(rows)
     }
 
-    /// **Human admits recorded before the shape column was filled in.** The input
-    /// to the backfill, and nothing else reads it.
-    ///
-    /// Carries the workspace from the session rather than assuming one: a shape is
-    /// only ever an approval *within a project*, and these rows span more than one.
-    /// The row's own arguments come back unparsed — deciding what a command means is
-    /// the intent layer's job and this module does not have an opinion.
+    /// Human admits recorded before the shape column was filled in: the input to the backfill, and
+    /// nothing else reads it. It carries the workspace from the session rather than assuming one.
     pub fn shapeless_human_admits(&self) -> Result<Vec<ShapelessAdmit>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
@@ -4605,13 +3170,9 @@ impl Store {
         Ok(rows)
     }
 
-    /// Write a shape and its class onto a row that has neither.
-    ///
-    /// `WHERE shape IS NULL` is the whole safety property: this can only ever fill a
-    /// hole, never change an answer. Running it twice fills nothing the second time,
-    /// and a row whose shape was recorded live is untouchable by it. Returns whether
-    /// a row was actually filled, so a backfill can report what it did rather than
-    /// what it attempted.
+    /// Write a shape and its class onto a row that has neither. `WHERE shape IS NULL` is the whole
+    /// safety property: this fills a hole and never changes an answer, and a second run finds
+    /// nothing.
     pub fn backfill_shape(&self, request_id: &str, shape: &str, class: &str) -> Result<bool> {
         let n = self.exec(
             "UPDATE adjudication SET shape = ?2, shape_class = ?3
@@ -4633,25 +3194,8 @@ impl Store {
             decided_by_operator: one(&format!(
                 "SELECT COUNT(*) FROM adjudication WHERE {ASKED_SQL}"
             ))?,
-            // **`measured` is `consulted`, not `verdict_by LIKE 'model%'`.**
-            //
-            // That predicate was a tautology and this banner said so out loud:
-            // "60 decisions recorded: 3 you answered yourself, 60 measured against
-            // a model" on a box where `verdict_by LIKE 'model%'` matched ZERO rows.
-            // `AdjudicationRow::corpus` fills `model_verdict` from whatever DECIDED
-            // when there is no advice, so it is always `Some` and the count was the
-            // total wearing another name.
-            //
-            // It was replaced by `verdict_by LIKE 'model%'`, which is exact for "a
-            // model decided" and still not the thing this number is named after: at
-            // `/supervised` the oracle is consulted and a PERSON decides, so that
-            // predicate silently dropped every row where the guard spoke and was
-            // overruled — the rows the operator calls *"the rows a fine-tune is for"*.
-            // The fact is `ModelAdvice::consulted` and it is a column now (**v10**),
-            // so this reads the fact. `model_decided` carries the other one.
-            //
-            // **A count is not measuring what its NAME says, it is measuring what its
-            // PREDICATE says** — and the predicate lives in one place now, above.
+            // `measured` is `consulted`, not `verdict_by LIKE 'model%'`: that predicate was a
+            // tautology which counted every row as measured, and this banner said so.
             measured: one(&format!(
                 "SELECT COUNT(*) FROM adjudication WHERE {MEASURED_SQL}"
             ))?,
@@ -4664,37 +3208,14 @@ impl Store {
         })
     }
 
-    /// **One autocommit write statement, taken again while the store is busy** — see
-    /// [`busy`](self::busy) for the report this answers and why a retry writes once.
-    ///
-    /// Every write method of this store that is a single statement goes through here; a
-    /// write that is several statements goes through [`Store::write_tx`] instead.
+    /// One autocommit write statement, taken again while the store is busy. Every write method
+    /// takes this, and a retry writes once because the statement either ran or did not.
     fn exec<P: Params + Clone>(&self, sql: &str, p: P) -> rusqlite::Result<usize> {
         busy::retry_sql(|| self.conn().execute(sql, p.clone()))
     }
 
-    /// **A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT` — the whole of it taken
-    /// again while the store is busy.**
-    ///
-    /// IMMEDIATE because a deferred transaction that READS first holds a snapshot, and its
-    /// first write must then promote that snapshot to the write lock. SQLite refuses that
-    /// promotion at once when another connection holds the lock — the busy handler is not
-    /// consulted, because the connection is already inside a transaction — so the thirty
-    /// seconds of `BUSY_TIMEOUT` never apply to it. `BEGIN IMMEDIATE` takes the write lock
-    /// before the first read, and waiting for it is what the busy handler does.
-    ///
-    /// The body is run again from the top on a busy failure, so it must be a pure function of
-    /// the store (it is: it is given only the transaction).
-    ///
-    /// **The connection is taken inside the closure**, which is what makes the retry a wait and
-    /// not a wedge: a `BEGIN IMMEDIATE` that comes back busy drops the process's store lock before
-    /// the backoff sleep, so another process holding the write lock costs this one nothing but the
-    /// statement it was making. Taking the guard first and retrying the `BEGIN` inside it would
-    /// hold the lock across every sleep of the ladder — for up to [`BUSY_RETRY_TOTAL`] plus one
-    /// [`Store::BUSY_TIMEOUT`] — and every reader in the daemon would wait with it. That is why
-    /// the queue's write transactions ([`Store::acquire_queue_lease`], `enqueue_review`,
-    /// `approve_review`, `cas`, the lease's releases, `set_target_health`, `allocate_lease`) go
-    /// through here rather than beginning their own.
+    /// A write transaction: `BEGIN IMMEDIATE`, the body, `COMMIT`, taken again while busy.
+    /// IMMEDIATE because a deferred transaction that reads first holds a lock it cannot upgrade.
     pub fn write_tx<T>(
         &self,
         mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
@@ -4708,13 +3229,8 @@ impl Store {
         })
     }
 
-    /// **The connection, with the process's lock held for as long as the guard lives.**
-    ///
-    /// A guard and not `&Connection`: there is one connection per store file per process (see
-    /// [`Store::open`]), so handing out a bare reference would let two threads reach it at once.
-    /// Everything a `Connection` offers is reachable through the guard by `Deref`, which is what
-    /// every caller of this needs — but **a caller must not call another method of this store
-    /// while it holds one**, or it waits on a lock it already has.
+    /// The connection, with the process's lock held for as long as the guard lives. A guard and
+    /// not `&Connection`, because there is one connection per store file per process.
     pub fn connection(&self) -> Conn<'_> {
         self.conn()
     }
@@ -4748,13 +3264,8 @@ mod corpus_tests {
         id
     }
 
-    /// **A resumed session must not silently drop every decision it makes.**
-    ///
-    /// `AdjudicatedGate` numbers requests `adj-<session>-<seq>` from an in-memory
-    /// counter, so a restart re-emits ids that are already stored, and
-    /// `INSERT OR IGNORE` answers `Ok` for each one. Measured 2026-09-20 in the
-    /// operator's store: a session with 646 rows recorded nothing at all after a
-    /// restart, and `lost` stayed at zero the whole time.
+    /// A resumed session must not silently drop every decision it makes: the gate numbers requests
+    /// from an in-memory counter, so the store is asked for the highest id already taken.
     #[test]
     fn a_repeated_request_id_is_reported_and_the_seq_can_be_resumed_from() {
         let s = store();
@@ -4803,18 +3314,8 @@ mod corpus_tests {
         }
     }
 
-    /// **R11: the exchange is on the row, and an older row says so honestly.**
-    ///
-    /// The corpus table already had a column for the brief — `shown` — and it was being
-    /// filled with the operator's decision card, because the gate asked its *decider* for
-    /// `last_brief` and the decider is a person at a supervised point. Measured on this box
-    /// 2026-09-21: set on 147 of 5785 rows, `NULL` on every row an oracle decided, and all
-    /// 147 were rows a human answered. The reply had no column at all.
-    ///
-    /// So there are two assertions here and they are different statements: a row written
-    /// now carries both halves through the round trip, and a row written before the column
-    /// existed reads `NULL` for the reply — *"recorded before this was kept"* — which is
-    /// what a reader has to be able to tell apart from *"the oracle did not answer"*.
+    /// R11: the exchange is on the row, and an older row says so honestly. The table already had
+    /// `shown` and it held the operator's decision instead, so the reply needed its own column.
     #[test]
     fn the_oracles_brief_and_reply_round_trip_and_an_older_row_says_null() {
         let s = store();
@@ -4872,17 +3373,8 @@ mod corpus_tests {
         );
     }
 
-    /// **R12: which of the four `Unsure`s it was, as a column.**
-    ///
-    /// The operator: *an oracle that ran out of budget is not an oracle that could not be
-    /// read.* The sentence that distinguished them was already on the row — in
-    /// `model_verdict`, as prose — and a sentence is not something a `GROUP BY` can count.
-    /// That is exactly the argument `verdict` has beside `model_verdict`, and this is the
-    /// same move one requirement later.
-    ///
-    /// Three assertions, and the middle one is the requirement: the four values round trip;
-    /// **the rate of each is a query**; and a row from before the column reads `NULL`, which
-    /// is a different statement from any of the four.
+    /// R12: which of the four `Unsure`s it was, as a column. An oracle that ran out of budget is
+    /// not one that could not be read, and a sentence could not be counted.
     #[test]
     fn the_reading_of_an_unsure_is_a_column_and_the_rate_of_each_is_a_query() {
         let s = store();
@@ -4933,12 +3425,8 @@ mod corpus_tests {
             "an answered verdict has no reading"
         );
 
-        // **The rate of each**, which is the thing the column exists for: one query, and
-        // the answer is a count per token rather than a regex over a sentence.
-        //
-        // **The guard's scope is this block, and that is load-bearing**: the store is one
-        // connection for the whole process, so a guard alive across a later `s.conn()` in this
-        // function would wait on the lock it is itself holding.
+        // The rate of each, which is what the column exists for: one query, and the answer is a
+        // count per token rather than a regex over a sentence. The guard's scope is this block.
         let counts: Vec<(String, i64)> = {
             let conn = s.conn();
             let mut stmt = conn
@@ -4980,10 +3468,8 @@ mod corpus_tests {
         assert_eq!(row.oracle_reading, None);
     }
 
-    /// **Who a session is for is written once, and a row from before the column says
-    /// `NULL`** — which is not "the operator's": it is *nobody has said*, and the reader is
-    /// the one that falls back to the marks the row does carry (the parent edge, the review
-    /// queue's id convention). See `letibot_sessionlog::origin`.
+    /// Who a session is for is written once, and a row from before the column says `NULL`, which
+    /// is not "the operator's": it is nobody has said, and the reader does the falling back.
     #[test]
     fn a_sessions_origin_is_written_once_and_read_back() {
         let s = store();
@@ -5009,10 +3495,8 @@ mod corpus_tests {
         assert!(s.set_session_origin("s-nobody", "operator").is_err());
     }
 
-    /// **A store from the version before gains the column**, and its rows read `NULL` — the
-    /// migration's half of the test above, and the reason the arm is `pragma_table_info`-guarded
-    /// like v6–v8: the fixtures walk a CURRENT store backwards, so the `ALTER` must be safe on a
-    /// file that already has the column.
+    /// A store from the version before gains the column and its rows read `NULL`: the migration's
+    /// half of the test above, and the reason the arm is `pragma_table_info`-guarded.
     #[test]
     fn an_older_store_gains_the_origin_column_and_its_rows_say_nobody_has_said() {
         let path = std::env::temp_dir().join(format!(
@@ -5070,13 +3554,8 @@ mod corpus_tests {
         );
     }
 
-    /// **A store written before R12 gains the column and says so.**
-    ///
-    /// The v11 arm is `pragma_table_info`-guarded like every other one, and the thing worth
-    /// asserting is not that the `ALTER` runs — it is that a store from the version before
-    /// comes back with the column and with its old rows **`NULL`**, which is a different
-    /// statement from any of the four readings. The old rows recorded their reason in a
-    /// sentence (`model_verdict`), and that is where a reader of them goes.
+    /// A store written before R12 gains the column and says so: the v11 arm is guarded like every
+    /// other one, and what is worth asserting is the reading, not that the `ALTER` ran.
     #[test]
     fn an_older_store_gains_the_reading_and_its_rows_say_null() {
         let path = std::env::temp_dir().join(format!(
@@ -5145,13 +3624,8 @@ mod corpus_tests {
         assert_eq!(fresh.oracle_reading.as_deref(), Some("out_of_room"));
     }
 
-    /// **The warm start is exactly as wide as the session that earned it.**
-    ///
-    /// Six rows, one per bound, and only the first may come back. Each of the other
-    /// five is a way the shape cache could quietly grow across a restart into
-    /// something nobody approved — which is the failure that matters here, because
-    /// it is silent: a cache that is too wide does not ask, and not being asked is
-    /// indistinguishable from things working.
+    /// The warm start is exactly as wide as the session that earned it: six rows, one per bound,
+    /// and only the first may come back. Each other one is a way the cache could go wrong.
     #[test]
     fn a_warm_start_carries_only_what_the_operator_themselves_approved() {
         let s = store();
@@ -5352,19 +3826,14 @@ mod corpus_tests {
         );
     }
 
-    /// **Who decided and what it was measured against are independent counts.**
-    ///
-    /// The earlier version of this reported one number for both, so a session at
-    /// `always-ask` where the operator personally answered every call read as
-    /// "0 ruled on". Every one of those was a decision a human made.
+    /// Who decided and what it was measured against are independent counts. Reporting one number
+    /// for both made a session at `always-ask` read as "412 decisions, 0 ruled on".
     #[test]
     fn counts_separate_who_decided_from_what_was_measured() {
         let s = store();
         let sid = a_session(&s);
-        // **`consulted` is the third axis, and it is what `measured` reads (R11).** Here
-        // "the model said something" and "an oracle was consulted" are the same row
-        // shape, so the fixture sets both together; `m2` below is the row where they
-        // come apart — `model_verdict` written by the GATE, nobody asked.
+        // `consulted` is the third axis and what `measured` reads. Here "the model said
+        // something" and "an oracle was consulted" are one row shape, so the fixture sets both.
         let add = |id: &str, asked: bool, verdict: Option<&str>, rule: Option<&str>| {
             s.record_adjudication(&NewAdjudication {
                 asked,
@@ -5416,10 +3885,8 @@ mod corpus_tests {
             "s2 alone — an `upheld` is the operator AGREEING, and counting it here is the \
              defect this predicate was fixed for (R11: 1863 reported against a true 1294)"
         );
-        // **The count that speaks for rows written before v10.** Every row here carries
-        // `verdict_by: model:test`, so "a model decided" is 3 where "an oracle was
-        // consulted" is 3 — the two agree in this fixture and are different fields in
-        // the schema, which is the whole reason both are reported.
+        // The count that speaks for rows written before v10. Every row here carries
+        // `verdict_by: model:test`, so "a model decided" and "an oracle was consulted" agree.
         assert_eq!(c.model_decided, 3, "m1 s1 s2: a model decided these");
         // The two always-ask rows are in neither `measured` nor `disagreements` and
         // are still the primary dataset: input → the operator's decision.

@@ -1,20 +1,11 @@
-//! **A store whose migration fails was never a store this process counted** — the census
+//! **A store whose migration fails was never a store this process counted** - the census
 //! `Store::live()` answers must come back to exactly where it was, because `Drop` gives the count
-//! back on every path, including the one that returns `Err` out of `Store::open`.
-//!
-//! # Why this is a test binary of its own
-//!
-//! `Store::live()` is the PROCESS's count, and `cargo test --lib` runs a crate's tests in parallel
-//! threads: a sibling opening a store inside the window between the two reads below would be
-//! counted as this test's arithmetic, and the numbers could only be bounded, not pinned. One test
-//! in one binary is a quiet process, so the arithmetic here is exact.
-//!
-//! # What the two failures are, kept apart
-//!
-//! * a store that was never counted must leave the census where it found it — before the fix this
-//!   read `usize::MAX`, because `Drop` subtracted from a counter the failing open never added to;
-//! * and a store that DOES open must still be counted, so "always zero" is not a way to pass the
-//!   first assertion.
+//! back on every path, including the one that returns `Err` out of `Store::open`. `Store::live()` is
+//! the PROCESS's count and `cargo test --lib` runs a crate's tests in parallel threads, so one test
+//! in one binary is the only way the arithmetic is exact. Two failures are kept apart: a store that
+//! was never counted must leave the census where it found it (before the fix this read `usize::MAX`,
+//! because `Drop` subtracted from a counter the failing open never added to), and a store that DOES
+//! open must still be counted, so "always zero" is not a way to pass the first assertion.
 
 use std::path::{Path, PathBuf};
 
@@ -46,11 +37,9 @@ impl Drop for TempDir {
     }
 }
 
-/// **A store of this build's own, walked forward to one this build may not read.**
-///
-/// The refusal is `migrate`'s own — a floor above this build — and not a hand-written error: the
-/// file is written by `Store::open` first, so what is refused is a real store, and what fails is
-/// the migration `from_connection` runs before it hands the store back.
+/// **A store of this build's own, walked forward to one this build may not read.** The refusal is
+/// `migrate`'s own - a floor above this build - and not a hand-written error: the file is written by
+/// `Store::open` first, so what is refused is a real store.
 fn a_store_this_build_may_not_read(dir: &Path) -> PathBuf {
     let path = dir.join("refused.db");
     drop(Store::open(&path).expect("the fixture store is written by this build"));

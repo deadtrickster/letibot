@@ -1,50 +1,10 @@
-//! **The subagents a session started, as rows that outlive the daemon** (schema 26).
+//! The subagents a session started, as rows that outlive the daemon.
 //!
-//! The operator, 2026-10-12: *"and here is one more thing about restart - we should bring
-//! subagents back - i cant afford to wait till they finish. we should record them (session
-//! persist anyway) and restart automatically"*.
-//!
-//! A child's SESSION was always in the store — its transcript, its workspace, its parent — but
-//! nothing said that the child was in the middle of its task, what it had been asked, or how it
-//! was spawned. The task journal (`harnessd::tasks`) is a dashboard file rewritten from memory and
-//! the slots `task_result` reads are in-memory too, so a restarted daemon came back with the
-//! child's conversation and no idea that anybody was waiting on it. This table is that record: one
-//! row per child, written when it is started and moved when its first turn settles, and read by
-//! the parent when a daemon opens it again.
-//!
-//! # What a row's `state` means
-//!
-//! * `running` — **the daemon that owned the child did not see its task end**: the turn was in
-//!   flight when that daemon crashed, was killed, or was stopped in an orderly way (an orderly stop
-//!   leaves the row `running` on purpose — see `harnessd`'s `SubagentRecord`). The parent's next
-//!   open resumes it.
-//! * `done` / `failed` — the first turn settled, and `outcome` is the answer or the reason.
-//!   `delivered` says whether the parent's model has been handed that settlement; a row that is
-//!   settled and undelivered is delivered on the next open, and never respawned.
-//! * `killed` — stopped by a person or by a parent's stop. **Never resumed.**
-//! * `abandoned` — a resume was refused (its worktree is gone, or it crashed the daemon too many
-//!   times in a row). `outcome` says why, and the parent was told.
-//!
-//! `instance` is the daemon instance (`Registry::instance`) that last owned the row, which is how
-//! a parent reopened inside the SAME daemon — a parked session coming back, a head's `/resume` —
-//! tells "this child is live in this process" from "this child was lost with the last one".
-//!
-//! `resumes` counts the restarts a child has been brought back from **without an orderly stop in
-//! between**: an orderly shutdown resets it to zero, so it counts crashes, and a child at the
-//! limit is abandoned rather than resumed into the crash a fourth time.
-//!
-//! # And beside it, the rest of what a restart needs (the operator, widening the ask: *"to make
-//! restarts as much painless as possible - by default we restore agents, monitors, and remind the
-//! model about jobs"*)
-//!
-//! * `session_monitor` — each `monitor` declaration's own arguments, so a restart can make the
-//!   same call again;
-//! * `job_context` — a background job's slug, directory and owning daemon, which the `job` row
-//!   does not hold, so a reminder can say how to run it again;
-//! * `daemon_life` — each daemon's start, last heartbeat and orderly stop, so how long a daemon
-//!   was down is a reading and not a guess.
-//!
-//! Additive: new tables, and nothing in them is read by a build that predates them.
+//! A child's session was always in the store; what was not was the fact that it was
+//! mid-task, what it had been asked, and how it was spawned. So a restart can list the
+//! children it owes an answer to, and a child whose record was never written is still found
+//! by its own session row. The window is the oldest record this store holds, because before
+//! it nothing was recording children and a missing row says nothing.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -133,33 +93,20 @@ pub struct JobContext {
     pub started_ms: u64,
 }
 
-/// **What the store can say about a child it holds no `subagent_run` row for** — the two classes,
+/// What the store can say about a child it holds no `subagent_run` row for: the two classes,
 /// and the reason the window exists at all.
-///
-/// `subagent_run` is schema 26, so every store holds child sessions from before any build
-/// recorded children. A child with no row is therefore either *a record that went missing* or
-/// *a child from before there were records*, and only the window tells them apart: MEASURED
-/// 2026-11-01 on the operator's box, one session had 517 children older than its first record
-/// and exactly one inside it — and that one is the child the daemon lost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NoRecord {
     /// **Created at or after this store's first `subagent_run` row** — the store was recording
     /// children by then, so this child's row was due and is missing.
     Due,
-    /// **Created before it** — no build was recording children then, so having no row is the
-    /// ordinary state and says nothing about a write. A store that has never recorded a child
-    /// answers this for every child it holds, which is what keeps a fresh box from calling every
-    /// child it ever had lost.
+    /// Created before it: no build was recording children then, so having no row is the ordinary
+    /// state and says nothing about a write.
     BeforeTheStore,
 }
 
-/// **A child the store names and the subagent record does not** — a spawn whose row is missing,
-/// or a child older than the record itself.
-///
-/// The record is written before a child's thread exists (`harnessd`'s `record_start`), so a
-/// store that refused that write leaves a child with no row at all: nothing lists it, nothing
-/// answers for it, and nothing can resume it. Its own session row is a different write, made by
-/// the child when it opens, so it is usually still there — and it is all a reader has.
+/// A child the store names and the subagent record does not: a spawn whose row is missing, or
+/// a child older than the record itself.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnrecordedChild {
     pub id: String,
@@ -261,17 +208,8 @@ impl Store {
         Ok(())
     }
 
-    /// **A settled child has started another turn** — a parent's `task_message`, a later prompt,
-    /// a wake or its plan-check, served on the child's own thread after its first answer. The row
-    /// goes back to `running` so that a daemon stopping in the middle of that turn leaves a child
-    /// the next daemon resumes, instead of a `done` row that says nothing was in flight (the SLT
-    /// sweep of 2026-10-14: woken by its parent at 02:01:41, interrupted by the restart at
-    /// 02:06:05, and left by the next daemon as finished). The outcome and the delivered flag are
-    /// the first turn's and are kept.
-    ///
-    /// Answers the state it was in (`done` or `failed`) when it moved, so the turn's end can put it
-    /// back; `None` when nothing moved — no row, or a row that is not settled (still running from
-    /// its first turn, killed, abandoned, paused).
+    /// A settled child has started another turn: a parent's `task_message`, a later prompt, a
+    /// wake or its plan-check, served on the child's own thread after its first task ended.
     pub fn reopen_subagent_run(&self, child_id: &str) -> Result<Option<String>> {
         let Some(run) = self.subagent_run(child_id)? else {
             return Ok(None);
@@ -348,16 +286,8 @@ impl Store {
         Ok(out)
     }
 
-    /// **When this store began recording children** — the oldest `subagent_run` row's start, or
-    /// `None` for a store that has never recorded one.
-    ///
-    /// **The window, and both readers take it themselves** — [`Store::children_without_runs`] and
-    /// [`Store::child_without_run`] each call this rather than being handed a number, so a list
-    /// and a keyed read cannot disagree about it. Before this instant no build recorded children
-    /// at all, so a child from before it has no row because none was ever written for anybody —
-    /// not because a write was lost. Measured on the operator's box, 2026-11-01: one session had
-    /// 517 child sessions older than its first record and exactly one inside the window, and that
-    /// one is the child the daemon lost.
+    /// When this store began recording children: the oldest `subagent_run` row's start, or `None`
+    /// for a store that never did. This is the window a missing row is read against.
     pub fn first_subagent_run_ms(&self) -> Result<Option<u64>> {
         let at: Option<i64> =
             self.conn()
@@ -365,29 +295,14 @@ impl Store {
         Ok(at.map(|v| v as u64))
     }
 
-    /// **The children of `parent_id` the store names and no `subagent_run` row does**, newest
-    /// first — the ones whose record was DUE, i.e. created at or after
-    /// [`Store::first_subagent_run_ms`].
-    ///
-    /// The read is the *second witness*: a spawn whose record was lost still opened a session,
-    /// and that session's row says it is this parent's child, where it worked, and — from its
-    /// current transcript's last row — how its last turn ended.
-    ///
-    /// **The window is what keeps this small**, and it is the same one [`Store::child_without_run`]
-    /// reads: children from before this store recorded any are not this reader's subject, and on
-    /// the operator's box they are the overwhelming majority: 517 of one session's 573 child
-    /// sessions predate its first record. A store that has never recorded a child lists NOTHING —
-    /// every child it holds is from before it, so no row of theirs was ever due.
+    /// The children of `parent_id` the store names and no `subagent_run` row does, newest first:
+    /// the ones whose record was DUE, created at or after the store's first record.
     pub fn children_without_runs(&self, parent_id: &str) -> Result<Vec<UnrecordedChild>> {
         self.unrecorded_of(parent_id, None, true)
     }
 
-    /// [`Store::children_without_runs`] for one id — `None` unless it is a child of `parent_id`
+    /// [`Store::children_without_runs`] for one id: `None` unless it is a child of `parent_id`
     /// the record does not hold. Keyed, so reading one child does not list its siblings.
-    ///
-    /// **It answers for both classes**, because the caller named the child: a child from before
-    /// this store recorded any is still one this session started, and what it is told is which
-    /// class it is in ([`UnrecordedChild::why`]) rather than a cause nobody measured.
     pub fn child_without_run(
         &self,
         parent_id: &str,
@@ -399,23 +314,16 @@ impl Store {
             .next())
     }
 
-    /// **The one read both doors take** — every child of `parent_id` the store names and no
-    /// `subagent_run` row does, each carrying the class [`Store::first_subagent_run_ms`] puts it
-    /// in.
-    ///
-    /// `due_only` is the LIST's filter, and it is applied in SQL so a store with years of child
-    /// sessions does not pay to read them; the keyed read asks for one child and reports its
-    /// class instead.
+    /// The one read both doors take: every child of `parent_id` the store names and no
+    /// `subagent_run` row does, each carrying the class that says why the row is missing.
     fn unrecorded_of(
         &self,
         parent_id: &str,
         child_id: Option<&str>,
         due_only: bool,
     ) -> Result<Vec<UnrecordedChild>> {
-        // **`None` is "nothing is due", not "everything is".** A store that has never recorded a
-        // child is bound as `i64::MAX`, which puts every child it holds on the
-        // before-the-store side — the other reading is the one that manufactures a wall of lost
-        // children on exactly the stores that never lost one.
+        // `None` is "nothing is due", not "everything is": a store that never recorded a child
+        // is bound as `i64::MAX`, which puts every child before the window.
         let since = match self.first_subagent_run_ms()? {
             // `u64` past `i64::MAX` wraps NEGATIVE, which would make the window everything rather
             // than nothing.
@@ -598,10 +506,8 @@ impl Store {
         Ok(())
     }
 
-    /// **Every daemon's life this store has seen** — so a reader can ask *did a daemon other than me
-    /// ever stop here?*, which is what makes a restart a fact rather than an inference from a
-    /// session's creation time (a seeded or long-lived session is older than this daemon without
-    /// anything having restarted).
+    /// Every daemon's life this store has seen, so a reader can ask whether a daemon other than
+    /// this one ever stopped here, which is what makes a restart a fact rather than a guess.
     pub fn lives(&self) -> Result<Vec<DaemonLife>> {
         let conn = self.conn();
         let mut st = conn.prepare(
@@ -681,14 +587,8 @@ mod tests {
         }
     }
 
-    /// **A child whose record was never written is still named by its own session** — the second
+    /// A child whose record was never written is still named by its own session: the second
     /// witness, and the window that keeps it to the children a record was due for.
-    ///
-    /// MEASURED 2026-11-01 on the operator's daemon: `s-…-sub-1793488007308855461` ran for six
-    /// and a half minutes, wrote 1456 rows, left four commits in its worktree — and had no
-    /// `subagent_run` row at all, because the write came back `sqlite: database is locked` and
-    /// `record_start` prints and carries on. No record, so nothing listed it, nothing answered
-    /// for it, and `task_resume` could not bring it back.
     #[test]
     fn a_child_with_no_record_is_named_by_its_own_session() {
         use crate::ledger::hash_tokens;
@@ -773,11 +673,9 @@ mod tests {
         assert_eq!(all[1].workspace_root, "/w/agent-lost");
         assert_eq!(all[1].role.as_deref(), Some("coder"));
 
-        // **The window, and it is ONE rule in both doors** — `s-1-sub-old` predates this store's
-        // first record, so the LIST does not carry it (a list that ignored the window would, and
-        // that is the wall of rows this class used to be) while the keyed read still answers for
-        // it and says WHICH class it is in, which is what keeps a model from being told a write
-        // was refused about a child whose row was never due.
+        // The window, and it is ONE rule in both doors: a child that predates this store's first
+        // record is not carried by the list, because a list that ignored the window would
+        // report every child a store ever held.
         assert!(!ids.contains(&"s-1-sub-old"), "{all:?}");
         let old = store
             .child_without_run("s-1", "s-1-sub-old")
@@ -951,13 +849,8 @@ mod tests {
         assert_eq!(store.life("i-1").unwrap().unwrap().stopped_ms, Some(170));
     }
 
-    /// **Every write here outlasts a lock held past the busy timeout** (R91.6). They went to
-    /// `self.conn().execute` directly, so each had one 30 s busy-timeout attempt — the single
-    /// lottery ticket `busy.rs` describes — and a lost one cost a redelivery
-    /// (`deliver_subagent_run`), a crash counted against `RESUME_LIMIT`
-    /// (`interrupt_subagent_run`) or a child that could never be restored (`put_subagent_run`).
-    /// The connection's timeout is cut to 50 ms and another connection holds the write lock for
-    /// 600 ms; every write must wait it out.
+    /// Every write here outlasts a lock held past the busy timeout: they went to `execute`
+    /// directly, so each had one busy-timeout attempt and a long-held write failed.
     #[test]
     fn every_write_outlasts_a_lock_held_past_the_busy_timeout() {
         let path = std::env::temp_dir().join(format!(

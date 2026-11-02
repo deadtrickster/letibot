@@ -1,11 +1,10 @@
 //! The memfd-backed, append-only token region.
 //!
-//! The plan (§4.3) says "one region per transcript, appended by the harness,
-//! mapped read-only by the server" and stops there. `docs/workstreams.md` §7
-//! item 3 names the gap: *"that is a policy, not a format"*. This module is the
-//! format, and this comment is the written-down decision.
-//!
-//! # Layout
+//! One region per transcript, appended by the harness and mapped read-only by the server. The
+//! public surface is deliberately tiny: no `truncate`, no `clear`, no `pop`, no insert at
+//! an index. Growth remaps, and a reader's `(len, head)` is read as a consistent pair, so an
+//! append across a growth cannot be seen half-done. A non-Linux box gets the same contract
+//! over a file unlinked as soon as it is open.
 //!
 //! ```text
 //!   byte 0                                                        byte 64
@@ -16,107 +15,8 @@
 //!   byte 64 .. 64 + capacity*4 : token ids, native-endian u32, index 0 first
 //! ```
 //!
-//! `magic` is `LETITOK1`. `token_size` is 4 and exists so a reader that finds a
-//! different one refuses rather than reading garbage at half stride. Header and
-//! payload are in one file so that a reader needs one fd and one mapping.
-//!
-//! ## Why a header at all
-//!
-//! A bare array gives a reader no way to know how much of it is valid. The file
-//! length cannot serve: it is rounded up to a page and grown *before* the tokens
-//! that fill it are written, so at every growth there is a window in which the
-//! file is larger than the data. `len` is the published length, and it is what
-//! makes "the bytes the reader sees" a well-defined set.
-//!
-//! ## Publication order, and the seqlock on (len, head_hash)
-//!
-//! A writer appends in exactly this order: **tokens, then `head_hash`, then a
-//! release store to `len`**. A reader acquire-loads `len` first, so any `len` it
-//! observes is backed by tokens that were already written. Because the region is
-//! append-only, a reader that saw `len = N` at any past instant can read
-//! `[0, N)` at any future instant and get the same ids: the writer never goes
-//! back.
-//!
-//! `head_hash` is the one field that is *not* monotone -- it is replaced on every
-//! append -- so reading it together with `len` needs a seqlock, and
-//! [`TokenRegion::read_published`] does the standard two-load version of one:
-//! load `len`, read the hash, load `len` again, retry if they differ. Without it
-//! a reader could pair length N with the hash of N+1 and conclude the two
-//! processes were looking at different conversations, which is precisely the
-//! alarm §4.3 clause 4 wants to be trustworthy.
-//!
-//! # Growth
-//!
-//! Capacity starts at 16 KiB of tokens (64 KiB + one page, ~1 % of a small
-//! conversation) and doubles. Growth is `ftruncate` up, then
-//! `mremap(MREMAP_MAYMOVE)` in the writer. A 200 k-token conversation reaches
-//! its final size in seven growths.
-//!
-//! **Growth never invalidates a reader.** The first N pages of the file are
-//! byte-identical before and after an `ftruncate` up, so a reader's existing
-//! mapping stays valid and stays correct; it only needs to re-`mmap` when it
-//! wants to read past what it mapped, and `capacity` tells it what to ask for.
-//! In *this* process the mapping may move, which is why [`TokenRegion::append`]
-//! takes `&mut self` and [`TokenRegion::as_slice`] borrows `&self`: the borrow
-//! checker, not a convention, is what stops a slice from outliving a remap.
-//!
-//! A reserve-a-huge-`PROT_NONE`-range-up-front scheme was considered, which
-//! would keep the writer's base pointer stable and let a reader map once. It was
-//! rejected: it buys nothing here (no slice can outlive `&mut self` anyway), and
-//! it puts a hard ceiling on conversation length in exchange.
-//!
-//! # Sealing: the kernel enforces the invariant, not just the API
-//!
-//! The memfd is created with `MFD_ALLOW_SEALING` and immediately sealed
-//! `F_SEAL_SHRINK`. Measured on this box: after that seal, `ftruncate` **up**
-//! still succeeds and `ftruncate` **down** returns `EPERM`. So the file
-//! underlying a transcript cannot be shortened by this process, by a bug in this
-//! process, or by anyone holding the fd -- the impossibility is in the kernel,
-//! below every line of Rust in this crate.
-//!
-//! [`TokenRegion::readonly_fd`] reopens the memfd through `/proc/self/fd/N` with
-//! `O_RDONLY`. Also measured: a `MAP_SHARED | PROT_WRITE` mapping of that fd
-//! fails with `EACCES` and `ftruncate` on it fails with `EINVAL`. That is the fd
-//! to send to the server over `SCM_RIGHTS`; the reader is then structurally a
-//! reader.
-//!
-//! ## Off Linux (macOS)
-//!
-//! There is no memfd, no seal and no `mremap`. The region is an unlinked file
-//! in the temp dir (volatile in the same way: no path, gone with its last fd);
-//! growth maps the grown file anew and unmaps the old range; the read-only fd
-//! is one opened `O_RDONLY` before the unlink. **The shrink seal is lost**:
-//! append-only is enforced by this API alone, not by the kernel, and the test
-//! that measures the seal runs on Linux only.
-//!
-//! # Lifecycle, and what a restart rebuilds from
-//!
-//! **The region is deliberately volatile.** A memfd is anonymous: it dies with
-//! the process, and there is no path to it on disk. The durable copy of the
-//! tokens is the `transcript_item.tokens` column (`crate::store`), written in
-//! the same transaction as the ledger row that describes it, so the two can
-//! never disagree.
-//!
-//! The alternative -- a file-backed mapping that survives a restart -- was
-//! rejected because it creates a second durable copy of the truth. A crash
-//! between "tokens are in the file" and "row is in SQLite" leaves two stores
-//! that disagree, and reconciling them means deciding which one is right, which
-//! is a decision nobody can make correctly after the fact. pi's durable-harness
-//! rule quoted in §4.4 -- *"there is no third place"* -- is the same argument.
-//!
-//! So on restart the region is recreated empty and refilled by **replaying the
-//! ledger's spans** (§4.3 clause 6), never by re-rendering. Re-rendering would
-//! reintroduce exactly the renderer non-determinism the hash chain exists to
-//! catch, and it would do so during recovery, when nobody is looking.
-//! [`crate::ledger::TokenLedger::restore`] re-verifies the whole chain as it
-//! replays, so a store that has been edited underneath us is caught at startup.
-//!
-//! # Ownership
-//!
-//! One writer, created by whoever creates the `TokenLedger` (harnessd). The
-//! region is not `Clone` and appending needs `&mut`, so a second writer would
-//! have to be a second `TokenRegion` over a second memfd, which is a different
-//! transcript. Readers get an fd, never a `&mut`.
+//! `magic` is `LETITOK1`, and `token_size` is 4 so a reader finding another refuses rather than
+//! reading garbage at half stride. Header and payload are in one file, so a reader needs one fd.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -144,12 +44,8 @@ struct Header {
 
 const _: () = assert!(size_of::<Header>() == HEADER_BYTES);
 
-/// A growing, append-only vector of token ids in a sealed memfd.
-///
-/// The public surface is deliberately tiny. There is no `truncate`, no `clear`,
-/// no `pop`, no `insert`, no `as_mut_slice`, no `IndexMut`, and
-/// `crate::ledger`'s `no_rewrite_operation_exists` test fails the build if
-/// anybody adds one without changing the test's allowlist on purpose.
+/// A growing, append-only vector of token ids in a sealed memfd. The public surface is tiny by
+/// design: no `truncate`, `clear`, `pop` or insert at an index.
 pub struct TokenRegion {
     fd: OwnedFd,
     /// Off Linux: a read-only fd opened on the backing file before it was
@@ -171,11 +67,8 @@ pub struct TokenRegion {
 unsafe impl Send for TokenRegion {}
 
 impl TokenRegion {
-    /// Create an empty region.
-    ///
-    /// `name` is cosmetic (it shows up in `/proc/<pid>/fd` as
-    /// `memfd:<name>`) and should carry the transcript id so a `lsof` tells you
-    /// which conversation a mapping belongs to.
+    /// Create an empty region. `name` is cosmetic (it shows in `/proc/<pid>/fd` as `memfd:<name>`)
+    /// and should carry the transcript id, so a `lsof` says which transcript it is.
     pub fn create(name: &str) -> io::Result<Self> {
         let cname = std::ffi::CString::new(format!("letibot-tokens-{name}"))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "region name has a NUL"))?;
@@ -279,33 +172,20 @@ impl TokenRegion {
         self.capacity
     }
 
-    /// **Bytes this region is mapped at** — the file's length, and the ceiling the kernel can
-    /// charge this process for it.
-    ///
-    /// What it is NOT: the bytes actually resident. The mapping is `MAP_SHARED` over a memfd, so
-    /// a page costs memory only once it is written, and [`len`](Self::len) × `size_of::<TokenId>()`
-    /// (+ [`HEADER_BYTES`]) is the resident figure for a fully written region. The difference is
-    /// the tail of the last doubling, which is capacity nobody asked for yet — reported because
-    /// that is what a memory census must show (R66), and named here so nobody reads it as
-    /// resident.
+    /// Bytes this region is mapped at: the file's length and the ceiling the kernel charges this
+    /// process for it. What it is NOT is the bytes actually resident.
     pub fn bytes(&self) -> usize {
         self.mapped
     }
 
-    /// Every token appended so far, in order.
-    ///
-    /// Borrows `&self`, so it cannot be alive across an [`append`](Self::append)
-    /// -- which is what makes the remap on growth safe without any convention
-    /// for callers to remember.
+    /// Every token appended so far, in order. Borrows `&self`, so it cannot be alive across an
+    /// append, which is what makes the remap on growth safe.
     pub fn as_slice(&self) -> &[TokenId] {
         unsafe { std::slice::from_raw_parts(self.tokens_ptr() as *const TokenId, self.len) }
     }
 
-    /// Append tokens and publish the new chain head.
-    ///
-    /// The **only** mutation this type has. Appending zero tokens is legal and
-    /// meaningful: a `SegmentMark` renders to nothing but still takes a ledger
-    /// row and still advances the hash chain.
+    /// Append tokens and publish the new chain head: the only mutation this type has. Appending zero
+    /// tokens is legal and meaningful, because a `SegmentMark` renders to nothing.
     pub fn append(&mut self, tokens: &[TokenId], head_hash: &[u8; 32]) -> io::Result<()> {
         let needed = self.len + tokens.len();
         if needed > self.capacity {
@@ -387,12 +267,8 @@ impl TokenRegion {
         self.header().head_hash
     }
 
-    /// Read `(len, head_hash)` the way a *reader* must: as a consistent pair.
-    ///
-    /// See the module docs on the seqlock. In-process this can never spin, since
-    /// appending needs `&mut self`; it exists so the reader-side algorithm is
-    /// written down in one place and testable here rather than reinvented in the
-    /// server.
+    /// Read `(len, head_hash)` the way a reader must: as a consistent pair. In-process this never
+    /// spins, since appending takes the same lock.
     pub fn read_published(&self) -> (usize, [u8; 32]) {
         loop {
             let first = self.header().len.load(Ordering::Acquire);
@@ -404,16 +280,8 @@ impl TokenRegion {
         }
     }
 
-    /// A read-only duplicate of the fd, for the server.
-    ///
-    /// Reopened through `/proc/self/fd/N` with `O_RDONLY`, which is what makes
-    /// it genuinely read-only rather than merely intended to be: measured, a
-    /// `MAP_SHARED | PROT_WRITE` mapping of the result fails `EACCES` and
-    /// `ftruncate` fails `EINVAL`.
-    ///
-    /// Off Linux there is no `/proc`, and `/dev/fd/N` is a `dup` that keeps the
-    /// write access, so this duplicates the fd that was opened `O_RDONLY` on
-    /// the backing file before it was unlinked.
+    /// A read-only duplicate of the fd, for the server: reopened through `/proc/self/fd/N` with
+    /// `O_RDONLY`, which makes it genuinely read-only rather than by convention.
     #[cfg(not(target_os = "linux"))]
     pub fn readonly_fd(&self) -> io::Result<OwnedFd> {
         self.ro.try_clone()
@@ -436,10 +304,8 @@ impl TokenRegion {
     }
 }
 
-/// The non-Linux stand-in for a memfd: a file in the temp dir, unlinked as soon
-/// as it is open, so it has no path and dies with its last fd exactly as a
-/// memfd does. (`shm_open` is not it: macOS lets an shm object be sized once,
-/// and the region grows.) Returns the read-write fd and a read-only one.
+/// The non-Linux stand-in for a memfd: a file in the temp dir, unlinked as soon as it is open,
+/// so it has no path and dies with its last fd exactly as a memfd does.
 #[cfg(not(target_os = "linux"))]
 fn unlinked_file(name: &std::ffi::CStr) -> io::Result<(OwnedFd, OwnedFd)> {
     let name = name.to_string_lossy().replace('/', "_");
@@ -566,12 +432,8 @@ mod tests {
         unsafe { libc::munmap(ro_map, bytes) };
     }
 
-    /// The reader's side of the contract, played out in one process: map the
-    /// region read-only, let the writer append across a growth, and confirm the
-    /// reader's *old* mapping is still correct for its old length while a fresh
-    /// mapping sees the new one. This is what "growth never invalidates a
-    /// reader" means, and it is the property that lets the server hold a
-    /// mapping across a turn.
+    /// The reader's side of the contract in one process: map read-only, let the writer append across
+    /// a growth, and confirm the reader's old mapping still answers.
     #[test]
     fn growth_never_invalidates_a_readers_existing_mapping() {
         let mut r = TokenRegion::create("reader").unwrap();

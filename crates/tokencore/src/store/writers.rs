@@ -1,51 +1,11 @@
-//! **One writer per session's transcript, and the writer is a row** (schema 32).
-//!
-//! # The defect this exists for, measured
-//!
-//! Every daemon on this box shares one store, and until 2026-10-26 every daemon also opened the
-//! review queue's session under ONE id (`s-gatekeeper`). Two of them appended to one transcript:
-//!
+//! One writer per session's transcript, and the writer is a row: a claim another live process
+//! holds refuses the open by name. The trigger caught the old interleaving only after the damage:
 //! ```text
 //! store: rows 11..12 (s-gatekeeper#t0.11..): row 11 of s-gatekeeper#t0: sqlite: transcript_item
 //!        seq must be the next one
 //! store: rows 11..12 (s-gatekeeper#t0.11..): sqlite: transcript_item tok_offset must continue the
 //!        previous row
 //! ```
-//!
-//! **The trigger was the only thing that noticed, and it noticed after the damage.** It refuses
-//! a `seq` that is not the next one — which means the second writer's row is *rejected*, not
-//! interleaved; what survives is one conversation with holes in it and a session that "fails to
-//! restore" from then on, because the canary (`crates/turn/tests/restore.rs`) walks the chain and
-//! finds a row that does not continue the one before it. Nothing told either daemon that another
-//! process held the same session, and nothing could: the store had no record of WHO was writing.
-//!
-//! So the store keeps one now. A session's writer is claimed when a daemon (or a head, or a
-//! single-session binary) opens the session, released when the harness goes, and **a claim
-//! another live process holds refuses the open by name** — the refusal is `harnessd`'s
-//! (`crate::writer`), which is the only caller — rather than letting the two write and hoping the
-//! trigger's complaint is read.
-//!
-//! # Why this is not the queue lease
-//!
-//! [`QueueLease`](super::QueueLease) is per REPOSITORY and says who serves a queue; this is per
-//! SESSION and says who may append to a transcript. They have the same shape on purpose (owner,
-//! pid, host, heartbeat, and a compare-and-swap that never displaces a live holder), because a
-//! reader who has learned one should not have to learn a second convention to read the other.
-//!
-//! # What the row cannot say, said here rather than discovered
-//!
-//! * **Liveness is the pid's, on this host, and the heartbeat's elsewhere.** A claim whose
-//!   heartbeat is older than the caller's TTL is taken over only if its process is gone — and
-//!   *gone* is a question only this host can answer. A claim from another host is taken over on
-//!   the TTL alone, exactly as the queue lease's sweep does it, because a pid from another box
-//!   means nothing here.
-//! * **A pid the kernel has reused** reads as alive. That is the same trade the queue lease
-//!   makes: refusing a takeover nobody needs is cheap, and stealing a live transcript is not.
-//! * **Only a build that knows this table claims it.** A daemon of an older build appends
-//!   without claiming, so during a rolling upgrade the guard narrows the window and does not
-//!   close it. The `session_writer` row's `schema` column is not kept for that reason — the
-//!   *store's* version is what an older binary fails on first (`StoreError::SchemaTooNew`), and
-//!   the daemons that were already running are the ones no row can reach.
 
 use rusqlite::{OptionalExtension, params};
 
@@ -72,10 +32,9 @@ CREATE TABLE IF NOT EXISTS session_writer (
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionWriter {
     pub session_id: String,
-    /// The claim's identity — `host/pid/ns`, and **unique per claim** rather than per process:
-    /// two `Sessions` in one process that open one session must be two claims, or the guard
-    /// would admit the second and the interleaving it exists to stop would happen inside a
-    /// single process, where no pid can see it.
+    /// The claim's identity - `host/pid/ns`, unique per CLAIM rather than per process: two
+    /// `Sessions` in one process that open one session must be two claims, or the guard would
+    /// admit the second and the interleaving would happen where no pid can see it.
     pub owner: String,
     pub pid: u32,
     pub host: String,
@@ -111,23 +70,9 @@ fn writer_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionWriter> {
 }
 
 impl Store {
-    /// **Claim, or renew, the right to append to `session_id`'s transcript.**
-    ///
-    /// In ONE immediate transaction, so the read that decides and the write that records are the
-    /// same act — the shape [`Store::acquire_queue_lease`](super::Store::acquire_queue_lease) has,
-    /// and for its reason. The row is taken when nobody holds it, when the claimant already does,
-    /// or when the holder's heartbeat is older than `expired_before_ms`; **a holder that beat in
-    /// between keeps its claim**, because the delete-and-take is guarded on the heartbeat the
-    /// caller judged, not on the one it read.
-    ///
-    /// `expired_before_ms` is the CALLER's judgement (a zero never expires anything), because
-    /// whether a holder is really gone is a question about a process, and this crate knows no
-    /// processes. `harnessd`'s `writer` module is the one caller: it asks the pid, on this host,
-    /// and hands the answer here as a cutoff — `0` for a holder whose process is alive, and
-    /// `u64::MAX` for one whose pid is dead, which is *every claim is older than this*. **The
-    /// value is clamped to `i64::MAX`** because the column is an INTEGER and `u64::MAX as i64`
-    /// is `-1`, a cutoff nothing is below: the clamp is what makes "take it over" expressible at
-    /// all rather than a comparison that silently never fires.
+    /// Claim, or renew, the right to append to `session_id`'s transcript, in one immediate
+    /// transaction - a holder that beat in between keeps its claim. `expired_before_ms` is the
+    /// caller's judgement (0 never expires), clamped to `i64::MAX` so `u64::MAX` means take it now.
     pub fn claim_session_writer(
         &self,
         session_id: &str,
@@ -285,11 +230,8 @@ mod tests {
         assert_eq!(s.session_writer("s-1").unwrap().unwrap().owner, "h/2/900");
     }
 
-    /// **`u64::MAX` is "every claim is older than this", and it has to survive the cast.** The
-    /// caller passes it when a holder's pid is dead on this host — a killed daemon's claim is the
-    /// next daemon's at once, not after a TTL. The column is an INTEGER, so the value is clamped
-    /// to `i64::MAX`: without that, `u64::MAX as i64` is `-1` and the comparison would never fire,
-    /// which reads exactly like a takeover rule that does not work.
+    /// `u64::MAX` is "every claim is older than this": the caller passes it for a dead pid, and the
+    /// clamp to `i64::MAX` is what keeps `u64::MAX as i64` from being `-1` and never firing.
     #[test]
     fn the_largest_cutoff_means_take_it_now() {
         let s = store();

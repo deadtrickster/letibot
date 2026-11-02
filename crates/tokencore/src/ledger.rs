@@ -1,48 +1,12 @@
-//! The token ledger (§4.3).
+//! The token ledger: a chain from the stable prefix through every item's tokens.
 //!
 //! ```text
 //! TokenLedger = [ (item_id, tok_offset, tok_len, h_k) ]
 //!    h_k  = H(h_{k-1} || tokens(item_k)),   h_{-1} = H(tokens(stable_prefix))
 //! ```
 //!
-//! # The design constraint, stated as an API rule
-//!
-//! §4.3's first clause is that *"there is no rewrite operation to call"* -- a
-//! prefix violation must be **blocked**, not merely detected. Three
-//! mechanisms carry that here, at three different depths, and they are listed in
-//! order of how hard they are to defeat:
-//!
-//! 1. **The kernel.** The memfd is sealed `F_SEAL_SHRINK`
-//!    (`crate::region`), so the file cannot be shortened at all.
-//! 2. **The store.** `transcript_item` carries `BEFORE UPDATE` and
-//!    `BEFORE DELETE` triggers that `RAISE(ABORT)`, and an insert trigger that
-//!    refuses any row whose `seq` or `tok_offset` does not continue the previous
-//!    one (`crate::store`). SQL cannot rewrite history either.
-//! 3. **This type.** [`TokenLedger`] exposes exactly one mutation, `append`.
-//!    There is no `truncate`, `pop`, `remove`, `splice`, `drain`, `set`,
-//!    `resize` or `as_mut_slice`, no `IndexMut`, and `tokens()` hands out
-//!    `&[TokenId]`. Its public surface is pinned by the
-//!    `no_rewrite_operation_exists` test below, which reads this file and
-//!    `region.rs` and fails if a public method appears that is not on an
-//!    explicit allowlist. Adding one is then a deliberate, reviewable act rather
-//!    than a diff nobody notices -- which is the whole point of clause 1.
-//!
-//! # Fork, not truncate (§5.5)
-//!
-//! The operation people actually want when they reach for `truncate` is
-//! [`TokenLedger::fork`], and it is a different thing: it builds a **new**
-//! ledger over a **new** region with a **new** id, leaving this one untouched.
-//! That is the correct shape because a truncation *is* a cache divergence, and
-//! the design says a divergence must be visible as one rather than smuggled
-//! through the same object. A fork of the same ledger twice produces two
-//! ledgers; nothing anywhere gets shorter.
-//!
-//! # The span that goes on the wire
-//!
-//! [`PromptSpan`] has no settable offset. `offset()` returns `0`, always,
-//! because request *N+1* is `(region, 0, len_{N+1})` over the same memory that
-//! request *N* read as `(region, 0, len_N)`. A caller cannot ask for a window
-//! that starts elsewhere, so it cannot ask for a window that is not a prefix.
+//! The chain is fed forward only, so a row rewritten in place breaks every link after it, and
+//! an append is the one mutation this type has.
 
 use sha2::{Digest, Sha256};
 
@@ -190,11 +154,8 @@ pub fn hex(bytes: &[u8; 32]) -> String {
     s
 }
 
-/// `H(tokens)` -- the seed of the chain, over the stable prefix.
-///
-/// Tokens are hashed as little-endian `u32`, explicitly and not via a
-/// `bytemuck`-style cast, so the digest is the same on any machine that ever
-/// reads this store back.
+/// `H(tokens)`, the seed of the chain over the stable prefix. Tokens are hashed as
+/// little-endian `u32`, explicitly and not via a cast, so the seed is stable.
 pub fn hash_tokens(tokens: &[TokenId]) -> [u8; 32] {
     let mut h = Sha256::new();
     for t in tokens {
@@ -203,11 +164,8 @@ pub fn hash_tokens(tokens: &[TokenId]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// `h_k = H(h_{k-1} || tokens(item_k))`.
-///
-/// The previous head is the *only* input from the past (§4.3 clause 3: the
-/// hasher is fed forward only), so the chain cannot be recomputed differently by
-/// feeding it history in another order.
+/// `h_k = H(h_{k-1} || tokens(item_k))`. The previous head is the only input from the past, so
+/// the chain cannot be repaired from anything but the rows themselves.
 pub fn chain(previous: &[u8; 32], tokens: &[TokenId]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update(previous);
@@ -241,12 +199,8 @@ impl TokenLedger {
         })
     }
 
-    /// The one mutation.
-    ///
-    /// A zero-length append is legal: a `SegmentMark` renders to nothing, takes
-    /// a row, and still advances the chain -- `H(h_{k-1} || <>)` is well defined
-    /// and is not `h_{k-1}`, so the mark is part of the identity of everything
-    /// after it.
+    /// The one mutation. A zero-length append is legal: a `SegmentMark` renders to nothing, takes a
+    /// row, and still advances the chain.
     pub fn append(&mut self, item_id: &str, tokens: &[TokenId]) -> Result<&LedgerRow, LedgerError> {
         let h_prev = self.head();
         let h_k = chain(&h_prev, tokens);
@@ -320,12 +274,8 @@ impl TokenLedger {
         &self.region
     }
 
-    /// The full re-hash of §4.3 clause 5.
-    ///
-    /// Run it on every request in debug and every 25th in production. It is what
-    /// turns "the chain agrees with itself" into "the chain agrees with the
-    /// tokens", and a failure here points at the renderer, which is where §7.2's
-    /// CI diff already points.
+    /// The full re-hash: on every request in debug and every 25th in production. It is what turns
+    /// the chain agreeing with itself into the chain agreeing with the tokens.
     pub fn verify_chain(&self) -> Result<(), LedgerError> {
         let tokens = self.region.as_slice();
         let recomputed_init = hash_tokens(&tokens[..self.prefix_len as usize]);
@@ -362,12 +312,8 @@ impl TokenLedger {
         Ok(())
     }
 
-    /// Rebuild a ledger from what was persisted (§4.3 clause 6).
-    ///
-    /// Replays the rows' spans into a fresh region and re-verifies every link as
-    /// it goes. It never re-renders: re-rendering during recovery would
-    /// reintroduce the renderer non-determinism the chain exists to catch, at
-    /// the one moment nobody is watching.
+    /// Rebuild a ledger from what was persisted by replaying the rows' spans into a fresh region and
+    /// re-verifying every link: it never re-renders, because the ids are the record.
     pub fn restore(
         name: &str,
         prefix_tokens: &[TokenId],
@@ -428,11 +374,8 @@ impl TokenLedger {
         })
     }
 
-    /// Fork at a row boundary: a **new** ledger, over a **new** region.
-    ///
-    /// This is what §5.5 means by "fork, not truncate". `self` is untouched --
-    /// note the `&self` -- and the caller gets a second object it must give a
-    /// new transcript id, so the divergence has to be recorded to be used.
+    /// Fork at a row boundary: a new ledger over a new region, with `self` untouched. This is what
+    /// §5.5 means by fork and not truncate.
     pub fn fork(&self, name: &str, keep_rows: usize) -> Result<TokenLedger, LedgerError> {
         if keep_rows > self.rows.len() {
             return Err(LedgerError::ForkPastEnd {
@@ -663,10 +606,8 @@ mod tests {
 
     #[test]
     fn a_forked_ledger_diverges_visibly_rather_than_silently() {
-        // The point of "fork, not truncate": once the two ledgers append
-        // different things, their heads differ, which is what the daemon checks
-        // before submitting. A truncate-in-place would have produced one object
-        // whose head silently became the head of a different conversation.
+        // The point of fork and not truncate: once the two ledgers append different things their heads
+        // differ, which is what the daemon checks before submitting.
         let mut l = ledger();
         for k in 0..4u32 {
             l.append(&format!("i{k}"), &[k]).unwrap();
@@ -705,16 +646,8 @@ mod tests {
         assert_eq!(head, l.region().head_hash());
     }
 
-    /// The test §4.3 clause 1 asks for: one that fails if somebody later adds a
-    /// rewrite operation.
-    ///
-    /// It reads this crate's two append-only modules and pins their public
-    /// method surfaces to an allowlist. A `truncate`, `pop`, `splice`, `drain`,
-    /// `set_len`, `as_mut_slice` or `IndexMut` added to either one fails this
-    /// test by name; anything else added fails it by not being on the list. The
-    /// second half is the part that matters -- a rewrite dressed up as
-    /// `rollback_to` or `rebase` is caught too, because the list is a list of
-    /// what is allowed and not a list of what is forbidden.
+    /// The test §4.3 clause 1 asks for: one that fails if somebody later adds a rewrite operation.
+    /// It reads this crate's two append-only modules and pins their public surface.
     #[test]
     fn no_rewrite_operation_exists() {
         const LEDGER_ALLOWED: &[&str] = &[

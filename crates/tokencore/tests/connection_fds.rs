@@ -1,42 +1,19 @@
 //! **A closed connection does not give its descriptor back while this process still holds one to
-//! the same file** — the SQLite fact [`Store::open`](letibot_tokencore::store::Store::open)'s
-//! sharing exists for, measured here rather than argued.
-//!
-//! # What the daemon's `ENFILE` was
-//!
-//! MEASURED 2026-10-30 on the operator's Mac and again on lab2x1: `sqlite3`'s unix VFS caches the
-//! descriptor it opened for a file in the inode's own record, and releases it when the *last*
-//! connection to that inode in the process closes — not when the connection that opened it does.
-//! A daemon keeps one connection for its whole life (its registry's), so a descriptor from every
-//! connection it had ever opened was held until it exited. `Harness::open` opened the store four
-//! times per session, and the operator's daemon reached 253 descriptors with 210 of them on
-//! `sessions.db`/`-wal`, which on the Mac ended in `ENFILE` — the whole box out of file table.
-//!
-//! # The two facts, and the second is why "close it properly" was never the fix
-//!
-//! * **Sequential** open/close leaves ONE descriptor behind: MEASURED here, one keeper connection
-//!   held 3 and twenty more opened one at a time and closed left 4. The next open takes the one
-//!   the last close left, so a daemon that opens and closes one at a time does not grow.
-//! * **Concurrent** connections are each their own descriptor, and closing them returns nothing
-//!   while the keeper lives: 43 while twenty-one were open, 23 after closing the twenty.
-//!
-//! So the count is the **high-water mark of concurrent connections**. The operator's daemon held
-//! 210 descriptors on `sessions.db` because it had 105 connections alive at once — four per
-//! session, and sessions that never closed — not because it had ever opened 105.
-//!
-//! Both are measured on raw `rusqlite::Connection`s, not on `Store`: they are facts about
-//! `sqlite3`, and the fix is a decision about how many connections to make.
+//! the same file** - the SQLite fact [`Store::open`](letibot_tokencore::store::Store::open)'s sharing
+//! exists for, measured here rather than argued. `sqlite3`'s unix VFS caches the descriptor in the
+//! inode's own record and releases it when the process's *last* connection to that inode closes, so
+//! a daemon keeping one connection for its whole life held a descriptor from every connection it had
+//! ever opened: 253 descriptors, 210 on `sessions.db`/`-wal`, which on the Mac ended in `ENFILE`.
+//! **Sequential** open/close leaves ONE descriptor behind; **concurrent** ones are each their own and
+//! return nothing while the keeper lives. So the count is the high-water mark of CONCURRENT connections.
 
 use std::path::Path;
 
 use rusqlite::Connection;
 
-/// **This process's descriptors on `path` and its WAL companions** — `/proc/self/fd` on Linux,
-/// `/dev/fd` on Darwin, both of which list one entry per open descriptor.
-///
-/// Matched on the DIRECTORY and the file name, not on the name alone: every fixture in this binary
-/// opens a `sessions.db`, and a census that counted its neighbours' would make two tests that run
-/// in parallel read each other's connections.
+/// **This process's descriptors on `path` and its WAL companions** - `/proc/self/fd` on Linux,
+/// `/dev/fd` on Darwin. Matched on the DIRECTORY and the file name, not on the name alone: every
+/// fixture here opens a `sessions.db`, and a census that counted its neighbours' would read theirs.
 fn descriptors_on(path: &Path) -> usize {
     let dir = if cfg!(target_os = "linux") {
         "/proc/self/fd"
@@ -119,18 +96,9 @@ impl Drop for Scratch {
     }
 }
 
-/// **Twenty connections opened one after another and closed leave ONE descriptor behind** — the
-/// next `open` takes the one the last `close` left in the inode's cache, so a daemon that opens
-/// and closes one at a time does not grow.
-///
-/// This is the half that makes the number a **high-water mark of concurrent connections** rather
-/// than a debt per connection ever made, and it is why the operator's daemon needed 105 connections
-/// alive at once (four per session, twenty-six sessions, none of them closed) to hold 210
-/// descriptors.
-///
-/// **The census must match the DIRECTORY, not the file's name** — MEASURED while writing this: a
-/// census that matched `sessions.db` alone counted the sibling test's twenty connections as this
-/// one's and read 39 where the truth is 4.
+/// **Twenty connections opened one after another and closed leave ONE descriptor behind** - the next
+/// `open` takes the one the last `close` left, so the count is a high-water mark of CONCURRENT
+/// connections. **The census must match the DIRECTORY**: matching the file name read a sibling's 39.
 #[test]
 fn sequential_open_and_close_reuses_the_descriptor() {
     let scratch = Scratch::new("letibot-fds-sequential");
