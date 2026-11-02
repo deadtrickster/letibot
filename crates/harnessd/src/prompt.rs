@@ -457,6 +457,15 @@ impl PromptDriver for Prompts {
         }
         Ok(settled)
     }
+
+    /// **The run in flight, for the stop that is about to end it.** The host's ender names the
+    /// jobs it ends; this is the operator's own command, which the same stop kills and which no
+    /// other table knows is the person's. See the trait's own docs.
+    fn in_flight(&self) -> Option<(String, String)> {
+        self.lock()
+            .as_ref()
+            .map(|run| (run.job.clone(), run.command.clone()))
+    }
 }
 
 impl std::fmt::Debug for Prompts {

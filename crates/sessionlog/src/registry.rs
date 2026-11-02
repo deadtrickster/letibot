@@ -1008,6 +1008,20 @@ pub trait PromptDriver: Send + Sync {
         req: Option<&str>,
         line: &str,
     ) -> Result<Option<String>, String>;
+
+    /// **The run this session has in flight**, if any: its handle and the command as the person
+    /// typed it.
+    ///
+    /// A *second* witness of the same fact the host's [`RunEnder`] reports, and it exists because
+    /// they are different tables: the ender knows the jobs the process host started, and this knows
+    /// the operator's own run, which the `!send` door is what holds. `None` by default, so a driver
+    /// that has no runs says nothing.
+    ///
+    /// [`Registry::close`] asks it when the ender named nothing for a session, which is how a stop
+    /// that ends a run still says so.
+    fn in_flight(&self) -> Option<(String, String)> {
+        None
+    }
 }
 
 /// **What a session must do when this daemon is asked to stop.**
@@ -1141,11 +1155,17 @@ pub struct Registry {
     /// **One per session that has a process host**, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
-    /// **`close` is not idempotent where the enders are concerned.** It is called by the
-    /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending
-    /// every run three times would be three reap records for one decision. The turns are
-    /// ended under this same guard: one stop, one interrupt per session holding one.
-    ended_runs: std::sync::atomic::AtomicBool,
+    /// **The close runs ONCE and every other caller waits for it to finish.** It is called by the
+    /// `Stop` frame, by `catch_signals` and again by `ServerHandle::shutdown`, and ending every run
+    /// three times would be three reap records for one decision; the turns are ended under this
+    /// same guard, one stop and one interrupt per session holding one.
+    ///
+    /// **The waiting is the other half, and it is not tidiness.** A caller that lost the race used
+    /// to skip the guarded block and go straight to closing the hubs, while the winner was still
+    /// ending the runs it had to name: the sentence went into a hub whose writer had already said
+    /// `Bye`. MEASURED on a box with cgroups, `Bye` 11.7 ms after the stop and the run ended at
+    /// 300, with the sentence never delivered.
+    close_once: std::sync::Once,
     /// Set once at startup by the daemon. `None` in every head and every test that
     /// predates resume, and the registry then lists only what it holds.
     source: Mutex<Option<Arc<dyn SessionSource>>>,
@@ -1319,7 +1339,7 @@ impl Registry {
             notes: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
-            ended_runs: std::sync::atomic::AtomicBool::new(false),
+            close_once: std::sync::Once::new(),
             source: Mutex::new(None),
             rows: Mutex::new(None),
             diagnostics: Mutex::new(None),
@@ -2637,16 +2657,20 @@ impl Registry {
         // below end must be able to tell its daemon's stop from a person's (`is_stopping`).
         self.stopping
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // **The order this must keep is one closer's to keep**: every run it ends is named before
+        // any hub says `Bye`, and a caller that merely waits cannot break that. See the field.
+        self.close_once.call_once(|| self.close_hubs_and_runs());
+    }
+
+    /// The body of [`Registry::close`], run by exactly one thread; every other caller waits for it
+    /// here and then returns.
+    fn close_hubs_and_runs(&self) {
         let hubs: Vec<Arc<Hub>> = self
             .lock()
             .entries
             .iter()
             .map(|(_, e)| e.hub.clone())
             .collect();
-        // Once, and only once, for the reason the field gives.
-        if !self
-            .ended_runs
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
             // **THE TURNS FIRST, THE RUNS SECOND** (2026-10-26). A stop queued AFTER the run
             // enders was measured to arrive too late to matter: the enders kill the command the
@@ -2661,7 +2685,7 @@ impl Registry {
             // **Inside the once-guard with the run enders, and not outside it.** `close` is
             // called three times on the way out — by the `Stop` frame, by `catch_signals` and
             // again by `ServerHandle::shutdown` — and a resubmission would be a second
-            // `CommandIssued` for one decision, which is exactly what `ended_runs` exists to
+            // `CommandIssued` for one decision, which is exactly what `close_once` exists to
             // stop for the runs.
             //
             // **`submit` is the only door that reaches a turn in flight**, and the steering poll
@@ -2689,14 +2713,27 @@ impl Registry {
                     );
                 }
             }
-            let enders: Vec<RunEnder> = self
-                .runs
-                .lock()
-                .expect("run enders")
-                .drain()
-                .map(|(_, f)| f)
-                .collect();
-            let said: Vec<String> = enders.iter().flat_map(|f| f()).collect();
+            let enders: Vec<(String, RunEnder)> =
+                self.runs.lock().expect("run enders").drain().collect();
+            let mut said: Vec<String> = Vec::new();
+            for (session, ender) in &enders {
+                let named: Vec<String> = ender();
+                if !named.is_empty() {
+                    said.extend(named);
+                    continue;
+                }
+                // **The ender is the HOST's table, and the operator's own run is a second one.**
+                // A `!` command is a job of the process host too, so the ender usually names it —
+                // and when it does not, asking this driver is the difference between a stop that
+                // says what it ended and one that says nothing while a run is in flight.
+                let driver = self.prompts.lock().expect("prompts").get(session).cloned();
+                if let Some((job, command)) = driver.and_then(|d| d.in_flight()) {
+                    said.push(format!(
+                        "`{command}` (`{job}`) was still running when the daemon was asked to \
+                         stop, so it is being ended with it"
+                    ));
+                }
+            }
             // To every hub this registry holds — the ones collected above, not `list()`, which
             // read every stored session from the source to find the live ones (R68.8). Still
             // before the hubs close, so each sentence reaches the heads that are watching.
@@ -2747,6 +2784,152 @@ mod tests {
 
     fn reg() -> Arc<Registry> {
         Registry::new()
+    }
+
+    /// **An operator run in flight when the registry closes is named**, even though `Prompts` and
+    /// the host's ender are two different tables.
+    ///
+    /// This is the xmg failure in one test: the run's card was up (`job=j1 reading=Blocked`), the
+    /// daemon closed its hubs, and nothing said the run was being ended. The ender is the host's
+    /// and it named nothing here; the session's `PromptDriver` is what holds the operator's own
+    /// run, and `close` asks it for exactly this case.
+    #[test]
+    fn an_operator_run_in_flight_is_named_when_the_registry_closes() {
+        /// The operator's own run, as the `!send` door knows it: one run in flight, and nothing
+        /// else this fixture needs.
+        struct ARun(String, String);
+        impl PromptDriver for ARun {
+            fn send(
+                &self,
+                _s: &str,
+                _r: Option<&str>,
+                _line: &str,
+            ) -> Result<Option<String>, String> {
+                Err("nothing is running in this fixture".into())
+            }
+            fn in_flight(&self) -> Option<(String, String)> {
+                Some((self.0.clone(), self.1.clone()))
+            }
+        }
+
+        let r = reg();
+        r.create("s-1", "", SessionWiring::default()).unwrap();
+        let hub = r.get("s-1").expect("the session is held");
+        let head = hub.attach("tui", "dead", Caps::default(), 0);
+        r.set_prompt("s-1", Arc::new(ARun("j1".into(), "/bin/cat".into())));
+        // The ender says nothing at all: the run is not in the table the host knows.
+        r.watch_runs("s-1", Arc::new(|| Vec::<String>::new()));
+
+        r.close();
+
+        let codes: Vec<String> = std::iter::from_fn(|| match hub.next_batch(&head.head_id, 64) {
+            Delivery::Events(batch) => Some(
+                batch
+                    .events()
+                    .iter()
+                    .filter_map(|env| match &env.event {
+                        crate::event::SessionEvent::Warning { code, detail, .. } => {
+                            Some(format!("{code}: {detail}"))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<String>>(),
+            ),
+            Delivery::Resync { .. } | Delivery::Frames(_) => Some(Vec::new()),
+            Delivery::Closed => None,
+        })
+        .flatten()
+        .collect();
+        assert_eq!(codes.len(), 1, "one row for one run: {codes:?}");
+        assert!(
+            codes[0].starts_with("daemon_stopping_runs: "),
+            "the code is the register's: {codes:?}"
+        );
+        assert!(
+            codes[0].contains("/bin/cat") && codes[0].contains("j1"),
+            "it names the command the person typed and the handle: {codes:?}"
+        );
+        assert!(
+            codes[0].contains("stop") && codes[0].contains("ended"),
+            "what happened and why: {codes:?}"
+        );
+    }
+
+    /// **A stop that still has a run to end says so before any hub closes**, even when a second
+    /// caller asks for the stop while the first is still ending that run.
+    ///
+    /// `close` is called from three places on the way out (the `Stop` frame, a signal, the
+    /// `ServerHandle`), and the guard used to cover only the MESSAGE: a caller that lost the race
+    /// skipped the guarded block and went straight on to `h.close()`, so the sentence about the
+    /// run the winner was still ending was published into a hub whose writer had already said
+    /// `Bye`. MEASURED on a box with cgroups: `Bye` 11.7 ms after the stop, the operator's run
+    /// ended at 300, and the sentence never reached the head.
+    ///
+    /// The ender here takes a beat on purpose: it stands in for `HostProcesses::end_running`
+    /// waiting for a killed tree to leave its cgroup, and it is what gives the loser time to close
+    /// the hub under the winner.
+    #[test]
+    fn a_run_the_stop_ends_is_named_before_the_hubs_close() {
+        let r = reg();
+        r.create("s-1", "", SessionWiring::default()).unwrap();
+        let hub = r.get("s-1").expect("the session is held");
+        let head = hub.attach("tui", "dead", Caps::default(), 0);
+        r.watch_runs(
+            "s-1",
+            Arc::new(|| {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                vec![
+                    "a command of this session was running, so it was ended: `j1` killed \
+                      by the daemon stopping"
+                        .to_string(),
+                ]
+            }),
+        );
+
+        // **A head's writer thread, from the schema's own side**: a loop that stops at the first
+        // `Closed`, which is what `server.rs` does with `Delivery::Closed` (`return` — the socket
+        // then says nothing more, whatever the hub queues afterwards). A test that drains only
+        // after the close would see the sentence even in the broken order, because the hub keeps
+        // queuing to a closed head; the writer never asks again.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let reader = {
+            let (hub, head_id, seen) = (Arc::clone(&hub), head.head_id.clone(), Arc::clone(&seen));
+            std::thread::spawn(move || {
+                loop {
+                    match hub.next_batch(&head_id, 64) {
+                        Delivery::Events(batch) => {
+                            for env in batch.events() {
+                                if let crate::event::SessionEvent::Warning { code, .. } = &env.event
+                                {
+                                    seen.lock().unwrap().push(code.clone());
+                                }
+                            }
+                        }
+                        Delivery::Resync { .. } | Delivery::Frames(_) => continue,
+                        Delivery::Closed => return,
+                    }
+                }
+            })
+        };
+
+        // The winner, and a second caller that arrives while it is inside the ender.
+        let loser = {
+            let r = Arc::clone(&r);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                r.close();
+            })
+        };
+        r.close();
+        loser.join().expect("the second caller returns");
+        reader.join().expect("the reader stops at the close");
+
+        let codes = seen.lock().unwrap().clone();
+        assert_eq!(
+            codes,
+            ["daemon_stopping_runs"],
+            "the run the stop ended must be named, and named before the hub closes: {codes:?}"
+        );
     }
 
     /// **The rule, in the one place it is decided** — a session a session started has that session
