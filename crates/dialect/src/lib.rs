@@ -1,50 +1,22 @@
-//! What a per-model dialect is: **rendering is data, parsing is code.**
+//! What a per-model dialect is: rendering is data, parsing is code.
 //!
-//! # Why this crate has no vocab, no FFI and no model
+//! [`RenderSpan`] is text-plus-control-token rather than token ids, which keeps dialect
+//! work off the critical path: a renderer that emits `[Text | Control]` is a pure
+//! function needing no tokenizer, no vocab, no daemon and no GPU.
 //!
-//! `RenderSpan` is deliberately **text-plus-control-token, not token ids**. That one
-//! choice is what keeps dialect work off the critical path: a renderer that emits
-//! `[Text | Control]` is a pure function, needs no tokenizer, no vocab, no daemon and
-//! no GPU, and can be acceptance-tested from Python against the shipped template.
-//! Had rendering returned `Vec<llama_token>`, every dialect would block on the token
-//! core's FFI for no reason at all.
+//! The larger reason is correctness: a user message containing the literal text
+//! `<|assistant|>` must never become the assistant control token. `Text` is tokenized
+//! with special-token parsing off and a control token resolves to an exact id, so
+//! neither path can produce the other's output.
 //!
-//! There is a second, larger reason, and it is a correctness one.
+//! A dialect is a value ([`DialectSpec`]) because we run the model's own shipped jinja
+//! instead of a renderer written per model. Jinja has no incremental mode, so there is
+//! no incremental render to specify; parsing stayed code, because a tool-call grammar
+//! has to be walked by something that knows its shape.
 //!
-//! **A user message containing the literal text `<|assistant|>` must never become the
-//! assistant control token.** If a renderer produced one flat string that was later
-//! tokenized with special-token parsing enabled, it would — and the model would see a
-//! turn boundary the harness never wrote. Splitting `Text` from `Control` makes that
-//! *structurally impossible* rather than something a test has to catch: `Text` is
-//! tokenized with special-token parsing OFF, and control tokens are resolved to exact
-//! ids by the token core. Neither path can produce the other's output.
-//!
-//! # Why there is no `render` here (T1/D11)
-//!
-//! T1 settled that we run the **model's own shipped jinja** through a Rust Jinja
-//! engine rather than hand-writing a renderer per model
-//! (`experiments/minijinja-fidelity/RESULTS.md`). Three things followed immediately,
-//! and they are why this file looks the way it does:
-//!
-//! * **Rendering became data.** Everything a renderer needs about a model — the
-//!   template source, the control-token set, the stop tokens, the system-update rule,
-//!   the guards — is a value now, [`DialectSpec`], not a set of methods. A dialect
-//!   read out of a GGUF at runtime is then a *value someone constructs*, not a type
-//!   someone writes.
-//! * **There is no incremental render to specify.** Jinja has no incremental mode, so
-//!   there is no boundary state for a `render_incremental` signature to carry, and no
-//!   place for the generation prompt to hide: it is a template argument
-//!   (`add_generation_prompt`).
-//! * **Parsing stayed code**, and every unresolved defect in the old contract was on
-//!   that side. Hence [`Parser`], which is small, and [`TokenDecoder`], which is the
-//!   thing that makes it implementable at all.
-//!
-//! Because a runtime-loaded template cannot produce a `&'static str`, every literal
-//! this crate traffics in is [`Cow<'static, str>`]. Compile-time dialects use
-//! `Cow::Borrowed` and pay nothing; a GGUF-loaded one uses `Cow::Owned` and is
-//! expressible at all.
-//!
-//! See `docs/implementation-plan.md` §7 and `docs/workstreams.md` §3.
+//! Every literal is [`Cow<'static, str>`] because a template read out of a GGUF at
+//! runtime cannot produce a `&'static str`. Compile-time dialects use `Cow::Borrowed`
+//! and allocate nothing.
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -63,27 +35,26 @@ pub struct StablePrefix {
 
 /// One piece of a rendered prompt, before tokenization.
 ///
-/// Still the renderer's output type and still what `tokencore` consumes. What changed
-/// under T1 is only *who* produces it: a template-driven renderer splits the template's
-/// output on control-token literals instead of emitting the spans directly.
+/// A template-driven renderer splits the template's output on control-token literals
+/// to build these, so no backend needs to know a model's boundary spelling.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderSpan {
-    /// Literal text. **Tokenized with special-token parsing disabled**, so nothing
-    /// inside it can become a control token however it is spelled.
+    /// Literal text, tokenized with special-token parsing disabled, so nothing inside
+    /// it can become a control token however it is spelled.
     Text(String),
     /// A control token, resolved to an exact id by the token core.
     Control(ControlToken),
 }
 
-/// A control token, identified symbolically *and* literally.
+/// A control token, identified symbolically and literally.
 ///
-/// The `literal` is what the shipped jinja emits and is what the fidelity gate checks
-/// against. The `role` is what [`Parser`] and the invariant tests reason about, so a
-/// dialect that spells a boundary differently is still comparable to one that does not.
+/// The `literal` is what the shipped jinja emits and what the fidelity gate checks
+/// against; the `role` is what [`Parser`] and the invariant tests reason about, so two
+/// dialects that spell a boundary differently stay comparable.
 ///
-/// `literal` is a [`Cow`] because a dialect loaded from a GGUF at runtime cannot
-/// produce a `&'static str`. Compile-time dialects build these in `const` context with
-/// [`ControlToken::borrowed`] and allocate nothing.
+/// `literal` is a [`Cow`] because a dialect loaded at runtime cannot produce a
+/// `&'static str`; a compile-time table uses [`ControlToken::borrowed`] and allocates
+/// nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ControlToken {
     pub role: ControlRole,
@@ -100,7 +71,7 @@ impl ControlToken {
         }
     }
 
-    /// A control token whose literal was discovered at runtime — read out of a GGUF's
+    /// A control token whose literal was discovered at runtime: read out of a GGUF's
     /// token table, or out of a config file.
     pub fn owned(role: ControlRole, literal: impl Into<String>) -> Self {
         ControlToken {
@@ -112,19 +83,17 @@ impl ControlToken {
 
 /// The structural boundaries a parser can recognise.
 ///
-/// Every variant here is a boundary some model spells as a **single vocab entry**, so
-/// every one of them has to be emitted as [`RenderSpan::Control`] rather than as text:
-/// spelling `<arg_key>` as text tokenizes it as six ordinary tokens and diverges from
-/// training.
+/// Each variant is a boundary some model spells as a single vocab entry, so each has to
+/// be emitted as [`RenderSpan::Control`]: spelling `<arg_key>` as text tokenizes it as
+/// six ordinary tokens and diverges from training.
 ///
-/// `Ord` is derived so a diagnostic listing several roles — a failed control-token
-/// resolution, say — can sort rather than depend on declaration order in some table.
-/// The order itself carries no meaning beyond determinism.
+/// `Ord` is derived so a diagnostic listing several roles can sort instead of depending
+/// on a table's declaration order. The order carries no meaning beyond determinism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ControlRole {
     BeginOfText,
     /// GLM's `<sop>`: the start-of-prompt token that follows `[gMASK]`. One vocab
-    /// entry, no turn semantics, and it is not a `BeginOfText` — both are emitted.
+    /// entry with no turn semantics, and not a `BeginOfText` - both are emitted.
     SequenceStart,
     TurnStartSystem,
     TurnStartUser,
@@ -137,8 +106,8 @@ pub enum ControlRole {
     ToolCallClose,
     ToolResultOpen,
     ToolResultClose,
-    /// `<arg_key>` — GLM writes tool-call arguments as a flat sequence of
-    /// key/value pairs rather than as JSON, and each delimiter is one vocab entry.
+    /// `<arg_key>`: GLM writes tool-call arguments as flat key/value pairs rather than
+    /// JSON, and each delimiter is one vocab entry.
     ArgKeyOpen,
     ArgKeyClose,
     ArgValueOpen,
@@ -149,24 +118,19 @@ pub enum ControlRole {
     EndOfTurn,
     /// A single-entry token with no structural role this contract models.
     ///
-    /// Named rather than smuggled in under some unrelated variant. The predecessor of
-    /// this enum had no `Other`, so `dialect-glm` declared eight tokens as `TurnEnd`
-    /// — a role it never otherwise used — and the only way to find out was to read a
-    /// comment. `Other` is greppable, and `all_with_role(Other)` lists exactly the
-    /// tokens nobody has modelled yet.
+    /// Named rather than carried under an unrelated variant, so
+    /// [`ControlTokens::all_with_role`] lists exactly the tokens nobody has modelled.
     Other,
 }
 
-/// Every control token a dialect uses, so the token core can resolve them once at
-/// startup and fail loudly if the vocab does not contain one.
+/// Every control token a dialect uses, so the token core resolves them once at startup
+/// and fails loudly if the vocab does not hold one.
 ///
-/// A slice rather than a struct of named fields: models disagree about which
-/// boundaries exist at all, and an `Option` per role invites a renderer to quietly
-/// skip one it should have emitted. A [`Cow`] slice rather than `&'static`, for the
-/// same reason [`ControlToken::literal`] is one.
+/// A slice rather than named fields: models disagree about which boundaries exist, and
+/// an `Option` per role invites a renderer to skip one it should have emitted. [`Cow`]
+/// for the same reason [`ControlToken::literal`] is.
 ///
-/// **One role may own many literals** and that is the case that matters — see
-/// [`ControlTokens::all_with_role`].
+/// One role may own several literals - see [`ControlTokens::all_with_role`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlTokens(pub Cow<'static, [ControlToken]>);
 
@@ -196,25 +160,19 @@ impl ControlTokens {
         self.0.is_empty()
     }
 
-    /// **The primary lookup.** A literal is what the template emits and what the
-    /// vocabulary resolves to exactly one id, so this is the direction that is always
-    /// unambiguous in the way that matters.
+    /// The primary lookup: a literal is what the template emits and what the vocab
+    /// resolves to one id, so this direction is always unambiguous.
     ///
-    /// Two entries may share a literal under different roles — a model that ends a
-    /// turn and ends a message with the same token — and that is legal. They resolve
-    /// to the same id; only the label differs, and this returns the first.
+    /// Two entries may share a literal under different roles, which is legal: they
+    /// resolve to the same id and only the label differs, so this returns the first.
     pub fn by_literal(&self, literal: &str) -> Option<&ControlToken> {
         self.0.iter().find(|t| t.literal == literal)
     }
 
     /// Every token carrying a role.
     ///
-    /// This replaces a `get(role) -> Option<ControlToken>` that returned *whichever
-    /// entry came first*. `dialect-glm` kept its table in an order chosen so that the
-    /// canonical entry won — a convention held up by a comment, which is exactly the
-    /// kind of guarantee that stops being true when somebody sorts the table.
-    /// Returning an iterator makes "this role has three literals" a thing the caller
-    /// must look at rather than a thing it silently gets one of.
+    /// An iterator rather than the first match, so "this role has three literals" is a
+    /// thing the caller must look at instead of one it silently gets a single of.
     pub fn all_with_role(&self, role: ControlRole) -> impl Iterator<Item = &ControlToken> {
         self.0.iter().filter(move |t| t.role == role)
     }
@@ -222,11 +180,9 @@ impl ControlTokens {
 
 /// A literal that ends generation, with the role it plays.
 ///
-/// The role is not decoration. A stop token that fails to resolve — absent from the
-/// vocabulary, or silently a multi-token *sequence* rather than one entry — never
-/// fires, and the turn runs to `n_ctx` with nothing in the logs saying why. Carrying
-/// the role means the startup failure can name what was lost ("the tool-call boundary
-/// `<|observation|>` is not one token") instead of printing a bare string.
+/// A stop token that fails to resolve - absent from the vocabulary, or silently a
+/// multi-token sequence rather than one entry - never fires, and the turn runs to
+/// `n_ctx` saying nothing. The role lets the startup failure name what was lost.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StopToken {
     pub literal: Cow<'static, str>,
@@ -251,15 +207,13 @@ impl StopToken {
 
 /// What `parse` recovers from a decoded token stream.
 ///
-/// `parse ∘ render` must be the identity on the round-trippable parts: render an
-/// assistant turn with reasoning and two tool calls, parse it back, get the same
-/// structure. That property catches a control-token mistake before a model does.
+/// `parse` after `render` must be the identity on the round-trippable parts, which
+/// catches a control-token mistake before a model does.
 ///
-/// Every span carries the `Range<usize>` of the token ids it was parsed from —
-/// indices into the slice handed to [`Parser::parse`]. The ledger needs to know
-/// which tokens belong to an item, and only the parser walks the ids; without the
-/// offsets, the caller had to re-segment the stream on control roles and parse
-/// segment by segment, which is a second parser in every consumer.
+/// Each span carries the `Range<usize>` of ids it came from, indices into the slice
+/// handed to [`Parser::parse`]. The ledger needs to know which tokens belong to an
+/// item, and only the parser walks the ids, so without the offsets every consumer would
+/// carry a second parser that re-segments on control roles.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParsedSpan {
     Reasoning {
@@ -284,28 +238,22 @@ pub enum ParsedSpan {
 
 /// The vocabulary, as much of it as a parser is allowed to know.
 ///
-/// A parser is handed token **ids** and must return `Content(String)`, which is not
-/// implementable in a crate with no vocab — that was the oldest unfixed hole in the
-/// old contract. This is the smallest interface that closes it, and the token core is
-/// the only thing that implements it for real.
+/// A parser is handed ids and must return text, which is not implementable in a crate
+/// with no vocab; this is the smallest interface that closes that hole.
 ///
-/// Note `decode` takes a **slice**, not one id. Detokenization is not per-token
-/// concatenation on a BPE vocabulary, so decoding a run and joining the pieces are
-/// different operations, and only the first one is correct.
+/// `decode` takes a slice, not one id: detokenization is not per-token concatenation on
+/// a BPE vocabulary, so decoding a run and joining its pieces are different operations.
 pub trait TokenDecoder {
-    /// Text for a run of ids. Infallible on purpose: a parser that could fail here
-    /// would have to choose between dropping bytes and propagating an error through
-    /// every caller, and dropping bytes is the failure this whole design exists to
-    /// abolish. An implementation that cannot decode something must render a visible
-    /// marker instead.
+    /// Text for a run of ids. Infallible on purpose: dropping bytes is the failure this
+    /// design exists to abolish, so an implementation that cannot decode something must
+    /// render a visible marker instead.
     fn decode(&self, tokens: &[u32]) -> String;
 
     /// The role of a single id, if it is one of this dialect's control tokens.
     ///
-    /// By id, not by matching decoded text: a control token is one vocab entry, so
-    /// text that merely *spells* `</think>` is several ids and can never be mistaken
-    /// for the boundary. That is the same guarantee [`RenderSpan`] gives on the way
-    /// out, restated on the way back in.
+    /// By id, not by matching decoded text: text that merely spells `</think>` is
+    /// several ids, so it can never be mistaken for the boundary. That is the guarantee
+    /// [`RenderSpan`] gives on the way out, restated on the way back in.
     fn control_role(&self, token: u32) -> Option<ControlRole>;
 }
 
@@ -313,18 +261,18 @@ pub trait TokenDecoder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemUpdateMode {
     /// The model reads the latest `system` message wherever it sits, so a change is
-    /// **appended** after the cached history. DeepSeek's choice, and the reason it
-    /// matters: adding one line to an `<env>` block by rewriting message 0 cost a
-    /// full cold re-prefill of a 179k-token conversation when measured.
+    /// appended after the cached history. Rewriting message 0 instead would cost a full
+    /// cold re-prefill of a long conversation.
     InHistory,
     /// The model only honours a system prompt at position 0, so a change forces a
     /// re-render. A dialect declaring this is declaring a known, priced cost.
     Envelope,
 }
 
-/// A declared, model-specific mitigation. Declarative on purpose: the dialect says
-/// *what* to watch for, the turn engine owns *what to do*, so a dialect stays data and
-/// guards stay testable without a running model.
+/// A declared, model-specific mitigation.
+///
+/// Declarative on purpose: the dialect says what to watch for and the turn engine owns
+/// what to do, so a dialect stays data and guards stay testable without a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guard {
     /// Stop when the same token repeats `run` times consecutively.
@@ -332,19 +280,16 @@ pub enum Guard {
     /// Stop when an n-gram of `window` tokens repeats `times` times.
     RepetitionNgram { window: u32, times: u32 },
     /// Reasoning ran past `tokens` without producing a content or tool-call span.
-    /// Not a cap on thinking — a signal that the turn is not progressing. Long
-    /// thinking is fine; silent non-termination is not.
+    /// Not a cap on thinking: long thinking is fine, silent non-termination is not.
     ReasoningStall { tokens: u32 },
 }
 
 /// Which wire field a model replays its own reasoning into.
 ///
-/// A per-model fact, which is why [`DialectSpec`] carries it and the engine reads
-/// it from there rather than from configuration. `letibot-transcript` has a
-/// mirrored enum it stamps on `TranscriptItem::Reasoning` rows as provenance —
-/// this crate cannot see that one without taking a dependency, which its
-/// Cargo.toml declines, so `crates/turn` maps between them at its single
-/// `produce` call. Keep the variants in step.
+/// A per-model fact, so [`DialectSpec`] carries it and the engine reads it from there
+/// rather than from configuration. `letibot-transcript` mirrors this enum for the
+/// provenance it stamps on reasoning rows, and `crates/turn` maps between them. Keep
+/// the variants in step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningField {
     /// GLM: replayed as `reasoning_content`.
@@ -353,23 +298,19 @@ pub enum ReasoningField {
     Inline,
 }
 
-/// Everything about a model that rendering needs — as a value.
+/// Everything about a model that rendering needs, as a value.
 ///
-/// This is the half of the old `Dialect` trait that T1 dissolved. There is no method
-/// here because there is nothing left to implement: the renderer is one template
-/// engine shared by every model, and what distinguishes GLM from Qwen is the
-/// `template` string plus the tables beside it.
-///
-/// The practical consequence is that a **new model needs no code**. Extract the
-/// template and the token table from its GGUF, construct one of these, and the
-/// renderer works — which is the whole reason T1 was run.
+/// There are no methods because there is nothing left to implement: one template engine
+/// serves every model, and what distinguishes GLM from Qwen is the `template` string
+/// plus the tables beside it. A new model therefore needs no code - extract the template
+/// and token table from its GGUF and construct one of these.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DialectSpec {
     pub name: Cow<'static, str>,
     /// The jinja source, as shipped in the GGUF's `tokenizer.chat_template`.
     pub template: Cow<'static, str>,
     /// SHA-256 of `template`. A model update that changes the template invalidates the
-    /// spec automatically, and §4.4 makes this the dialect's identity in the store.
+    /// spec automatically, and this is the dialect's identity in the store.
     pub template_sha: [u8; 32],
     pub control_tokens: ControlTokens,
     pub stop_tokens: Vec<StopToken>,
@@ -379,21 +320,18 @@ pub struct DialectSpec {
     pub guards: Vec<Guard>,
 }
 
-/// Token ids in, spans out. The half of the old contract that stayed code.
+/// Token ids in, spans out.
 ///
 /// Parsing is not data because it is not a template: the shipped jinja says how a turn
-/// is written, never how to read one back, and every model's `<tool_call>` grammar has
-/// to be walked by something that knows its shape.
+/// is written, never how to read one back.
 pub trait Parser: Send + Sync {
     /// Takes `u32` rather than a `llama_token` alias so this crate stays free of the
     /// FFI, and takes the `decoder` because it must: see [`TokenDecoder`].
     ///
-    /// `reasoning_open` is the channel the model is speaking on **before the first
-    /// token of the slice**: a generation prompt commonly leaves the reasoning block
-    /// open, and a slice parsed from a stateless `Content` start would promote a cut
-    /// -off deliberation to visible content — §5.7's `ReasoningOnly` failure
-    /// masquerading as a `TruncatedText` success. The caller owns that fact because
-    /// the caller owns the lead; the parser cannot recover it from ids alone.
+    /// `reasoning_open` is the channel the model is speaking on before the first token
+    /// of the slice. A generation prompt commonly leaves the reasoning block open, and
+    /// parsing from a stateless content start would promote a cut-off deliberation to
+    /// visible content. The caller owns the lead, so the caller owns that fact.
     fn parse(
         &self,
         tokens: &[u32],
@@ -402,9 +340,10 @@ pub trait Parser: Send + Sync {
     ) -> Vec<ParsedSpan>;
 }
 
-/// Concatenate the text of a span sequence. The detokenized form of a render must
-/// equal the shipped template's output exactly; this is the "ours" half of that
-/// comparison and is what the W3 fidelity gate calls.
+/// Concatenate the text of a span sequence.
+///
+/// The detokenized form of a render must equal the shipped template's output exactly,
+/// and this is the "ours" half of that comparison.
 pub fn spans_to_string(spans: &[RenderSpan]) -> String {
     let mut s = String::new();
     for span in spans {
@@ -416,31 +355,22 @@ pub fn spans_to_string(spans: &[RenderSpan]) -> String {
     s
 }
 
-/// **The same spans as the STRING a server tokenizes itself** — for a prompt that carries media.
+/// The same spans as the string a server tokenizes itself, for a prompt carrying media.
 ///
-/// # Why a string, and why it is not a second rendering
+/// llama.cpp takes images only when `prompt` is an object carrying a `prompt_string`:
+/// the server tokenizes that string and substitutes the image's embeddings at the media
+/// marker, a per-process random value published on `/props`. There is no
+/// token-array-plus-images path, so a prompt with an image in it travels as text.
 ///
-/// llama.cpp takes images only when `prompt` is an object carrying a `prompt_string`
-/// (`server-common.cpp:1000-1030`): the server tokenizes that string and substitutes the image's
-/// embeddings at the **media marker**, which is a per-process random value published on `/props`.
-/// There is no token-array-plus-images path. So a prompt with an image in it has to travel as text.
+/// That is safe for the cache because control tokens are atomic and BPE has no boundary
+/// to merge across, so a framed prompt tokenizes the same as one string and item by
+/// item. The property is this file's to keep: bare text where a boundary belongs would
+/// make the string path cost a cold prefill.
 ///
-/// **That is safe for the cache, and it was measured rather than assumed** — `docs/leticode.md`,
-/// 2026-09-27: a framed prompt tokenizes identically as one string and item by item (125 = 125,
-/// shared prefix 125), because control tokens are atomic and BPE has no boundary to merge across.
-/// Bare unframed text is the one shape that diverges (110 vs 107, shared prefix 40), and it is not
-/// a shape this renderer can produce. **The property is therefore this file's to keep**: a renderer
-/// that emitted bare text where a boundary belongs would make the string path cost a cold prefill.
-///
-/// # One image is ONE marker
-///
-/// The three image tokens a dialect emits — `ImageOpen`, `Image`, `ImageClose` — are what the
-/// *model's* template writes and what the server emits itself once it has the picture. In the
-/// string form the server wants the marker ONCE per image, so the opening role places it and the
-/// other two are swallowed. A dialect that emitted only `Image`, with no open/close, would place no
-/// marker; that is a bug in the dialect rather than a case to handle here, and
-/// `crate::CONTROL_TOKENS`' own rule — *a control token that is emitted must be resolvable* —
-/// already points at it.
+/// One image is one marker. A dialect emits `ImageOpen`, `Image` and `ImageClose`; the
+/// server wants the marker once, so the opening role places it and the other two are
+/// swallowed. A dialect that emitted only `Image` places no marker, which is a bug in
+/// that dialect rather than a case to handle here.
 pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String {
     let mut s = String::new();
     for span in spans {
@@ -456,14 +386,11 @@ pub fn spans_to_string_with_media(spans: &[RenderSpan], marker: &str) -> String 
     s
 }
 
-/// **How many images a span sequence places** — one per `ImageOpen`.
+/// How many images a span sequence places, one per `ImageOpen`.
 ///
-/// The engine pairs this with
-/// [`letibot_transcript::media::media_in_order`](https://docs.rs) when it builds a multimodal
-/// request: the server substitutes the pictures in the order the markers appear, so the two lists
-/// must be the same length and the same order. They are two walks of one fact, which this tree has
-/// been bitten by before, so the count is a function here and a test in `letibot-turn` holds the
-/// renderer to it rather than an argument in a comment.
+/// The engine pairs this with `letibot_transcript::media::media_in_order` when it builds a
+/// multimodal request: the server substitutes the pictures in the order the markers
+/// appear, so the two lists must be the same length and in the same order.
 pub fn media_spans(spans: &[RenderSpan]) -> usize {
     spans
         .iter()
@@ -478,8 +405,7 @@ mod tests {
     const TOKENS: &[ControlToken] = &[
         ControlToken::borrowed(ControlRole::TurnStartUser, "<|user|>"),
         ControlToken::borrowed(ControlRole::TurnStartAssistant, "<|assistant|>"),
-        // One role, three literals: the case that used to be resolved by "whichever
-        // comes first in the table".
+        // One role, three literals: the case a lookup by role would answer one of.
         ControlToken::borrowed(ControlRole::TurnEnd, "<|im_end|>"),
         ControlToken::borrowed(ControlRole::TurnEnd, "<|endoftext|>"),
         ControlToken::borrowed(ControlRole::TurnEnd, "<|eot_id|>"),
@@ -543,12 +469,9 @@ mod tests {
         );
     }
 
-    /// The reason `Cow` is not cosmetic: this is a dialect nobody compiled.
-    ///
-    /// Every string here is owned, as it would be coming out of a GGUF's
-    /// `tokenizer.chat_template` and token table at runtime. Under the old contract
-    /// this function could not be written at all — `&'static str` cannot be produced
-    /// from a `String` read at startup without leaking it.
+    /// Why `Cow` is not cosmetic: every string here is owned, as it would be coming out
+    /// of a GGUF's template and token table at runtime, which a `&'static str` could not
+    /// express without leaking.
     #[test]
     fn a_spec_can_be_built_entirely_at_runtime() {
         let template: String = "{% for m in messages %}{{ m.content }}{% endfor %}".to_string();
