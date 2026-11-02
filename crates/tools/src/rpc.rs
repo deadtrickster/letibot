@@ -277,6 +277,13 @@ fn busy(host: &str, within: Duration) -> String {
     )
 }
 
+/// The same queue for the one ssh this process does not start: `git fetch` rides its own master
+/// (`core.sshCommand`), so [`enter`] cannot see it, and a fanout closing at once asks one connection
+/// for a session each. Its own gate, so a fetch waiting for a slot cannot starve a call.
+pub fn enter_git(host: &str, within: Duration) -> Result<Entered, String> {
+    enter(&format!("{host} (git)"), within)
+}
+
 // ---------------------------------------------------------------------------
 // Rule 7 - the call records
 // ---------------------------------------------------------------------------

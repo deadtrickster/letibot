@@ -69,7 +69,7 @@ impl Fake {
                  first_time() {{ [ -f '{d}'/\"$1\" ] && return 1; : > '{d}'/\"$1\"; return 0; }}\n\
                  : > \"{d}/live/$$\"\n\
                  printf 'start %s %s;' \"$$\" \"$(live_now)\" >> '{d}/events'\n\
-                 trap 'rm -f \"{d}/live/$$\"; printf '\\''end %s;'\\'' \"$$\" >> {d}/events' EXIT\n\
+                 trap 'rm -f \"{d}/live/$$\"; rm -f \"{d}/pack/$$\"; printf '\\''end %s;'\\'' \"$$\" >> {d}/events' EXIT\n\
                  {body}\n\
                  bash -lc \"$last\"\n\
                  exit $?\n",
@@ -138,6 +138,16 @@ impl Fake {
     /// How many times a body wrote `mark refused`.
     fn refusals(&self) -> usize {
         self.events().iter().filter(|e| *e == "refused").count()
+    }
+
+    /// The most `git-upload-pack` sessions a body saw live at once, counting the one asking.
+    fn peak_packs(&self) -> usize {
+        self.events()
+            .iter()
+            .filter_map(|e| e.strip_prefix("pack="))
+            .filter_map(|n| n.parse().ok())
+            .max()
+            .unwrap_or(0)
     }
 
     /// How many session files were left behind: a session that never reached its trap.
@@ -612,4 +622,105 @@ fn one_daemon_has_one_master_and_git_has_another() {
         "under the socket path cap: {}",
         mine.display()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The git master's own sessions
+// ---------------------------------------------------------------------------
+
+/// Twelve sessions on one host close at once, and each brings its branch back with a `git fetch` over the
+/// git master. That ssh is git's own, so the call gate cannot count it: twelve at once is the eleventh
+/// session sshd refuses, and a branch that did not come back is a subagent's work left behind.
+#[test]
+fn a_fanout_of_fetches_never_asks_one_git_master_for_the_eleventh() {
+    let fake = Fake::new(
+        "git-master",
+        "if [[ $last == *git-upload-pack* ]]; then\n\
+           mkdir -p '@DIR@/pack'\n\
+           : > \"@DIR@/pack/$$\"\n\
+           n=$(ls '@DIR@/pack' 2>/dev/null | wc -l | tr -d ' ')\n\
+           mark pack=$n\n\
+           if [ $n -gt 10 ]; then\n\
+             mark refused\n\
+             rm -f \"@DIR@/pack/$$\"\n\
+             echo 'channel 11: open failed: administratively prohibited: open failed' >&2\n\
+             exit 255\n\
+           fi\n\
+           sleep 0.3\n\
+         fi",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let mut backends = Vec::new();
+    for i in 0..12 {
+        let mut spec = spec_for(&repo, &paths, &fake.program, Duration::from_secs(120));
+        spec.name = format!("s-{i:02}abcdef");
+        backends.push(SshBackend::place(&spec).unwrap_or_else(|e| panic!("placement {i}: {e}")));
+    }
+    let backends = std::sync::Arc::new(backends);
+    let mut threads = Vec::new();
+    for i in 0..12 {
+        let b = backends.clone();
+        threads.push(std::thread::spawn(move || b[i].close()));
+    }
+    let mut said = Vec::new();
+    for (i, t) in threads.into_iter().enumerate() {
+        said.push(t.join().unwrap_or_else(|_| panic!("thread {i} panicked")));
+    }
+    for (i, s) in said.iter().enumerate() {
+        let Some(s) = s else {
+            panic!("session {i}'s close said nothing");
+        };
+        assert!(
+            s.contains("came back here"),
+            "session {i}'s branch came back: {s}"
+        );
+    }
+    assert_eq!(
+        fake.refusals(),
+        0,
+        "the git master never had to refuse a session: twelve closes asked for twelve fetches, \
+         and the most it was asked for at once was {}",
+        fake.peak_packs()
+    );
+    assert!(
+        fake.peak_packs() <= 8,
+        "at most eight fetches at once, which is MaxSessions minus the two the master keeps: \
+         peak was {}",
+        fake.peak_packs()
+    );
+    assert!(
+        fake.peak_packs() >= 3,
+        "the load was real: twelve closes overlapped, and the peak was {}",
+        fake.peak_packs()
+    );
+}
+
+/// A fetch whose session the multiplexer refused never reached the remote, and a fetch is idempotent:
+/// retried on a fresh connection, a full master costs a round trip and not a session's branch.
+#[test]
+fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
+    let fake = Fake::new(
+        "fetch-refused",
+        "if [[ $last == *git-upload-pack* ]] && first_time refused; then\n\
+           mark refused\n\
+           echo 'mux_client_request_session: session request failed' >&2\n\
+           exit 255\n\
+         fi",
+    );
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(
+        &repo,
+        &paths,
+        &fake.program,
+        Duration::from_secs(30),
+    ))
+    .expect("placed");
+
+    let said = b.close().expect("a close says where the work went");
+    assert_eq!(fake.refusals(), 1, "exactly one fetch was refused");
+    assert!(
+        said.contains("came back here"),
+        "a refused session is transport, so the fetch was retried and the branch came back: {said}"
+    );
+    git(&repo, &["rev-parse", "--verify", b.back_branch()]);
 }

@@ -1978,6 +1978,34 @@ impl Ssh {
         let _ = std::fs::remove_file(&self.control);
     }
 
+    /// Drop the socket git's own ssh multiplexes over. A refused session came from a master with no
+    /// free slot, and a retry through the same socket would ask that same full master.
+    fn drop_git_socket(&self) {
+        let _ = std::fs::remove_file(&self.git_control);
+    }
+
+    /// The one ssh this process does not start: `git fetch` builds it from `core.sshCommand` and
+    /// multiplexes over the git socket, so it takes a slot on that gate by hand. A refused session
+    /// never reached the remote, so a full master costs a round trip and not a session's branch.
+    fn fetch_back(&self, argv: &[String]) -> Result<Option<std::process::Output>, String> {
+        let mut last: Option<std::process::Output> = None;
+        for attempt in 0..2 {
+            let _slot = rpc::enter_git(&self.host.name, GIT_BOUND)?;
+            // Bounded, because this fetch's transport is an ssh connection: a close that waits for
+            // ever on a dead host is the same defect as a `read` that does.
+            let out = run_bounded(Path::new("git"), argv, GIT_BOUND);
+            let refused = out.as_ref().is_some_and(|o| {
+                !o.status.success() && mux_refusal(&String::from_utf8_lossy(&o.stderr)).is_some()
+            });
+            last = out;
+            if !refused || attempt == 1 {
+                break;
+            }
+            self.drop_git_socket();
+        }
+        Ok(last)
+    }
+
     /// A file's bytes, base64 over the wire - binary-safe, which a `cat` is not once the connection
     /// is a pipe with a locale on it.
     fn read_abs(&self, path: &str) -> Result<Vec<u8>, BackendError> {
@@ -3202,7 +3230,7 @@ impl SshBackend {
         let refspec = format!("+{}:refs/heads/{}", self.branch, self.back_branch);
         // `git fetch` over ssh, with this backend's ssh and the GIT ControlMaster rather than the
         // one the calls are multiplexed on: git starts that ssh itself, so it takes no slot in the
-        // gate that keeps a daemon's calls under `MaxSessions`.
+        // gate that keeps a daemon's calls under `MaxSessions` and is held back by [`Ssh::fetch_back`].
         let ssh_command = std::iter::once(self.ssh.program().display().to_string())
             .chain(self.ssh.git_flags())
             .map(|a| quote(&a))
@@ -3226,12 +3254,10 @@ impl SshBackend {
             }
             argv.push(url.clone());
             argv.push(refspec.clone());
-            // Bounded, because this fetch's transport is an ssh connection ([`GIT_BOUND`]): a close
-            // that waits for ever on a dead host is the same defect as a `read` that does.
-            run_bounded(Path::new("git"), &argv, GIT_BOUND)
+            self.ssh.fetch_back(&argv)
         };
         let mut said = match fetched {
-            Some(out) if out.status.success() => {
+            Ok(Some(out)) if out.status.success() => {
                 let commit = git(
                     &self.local_repo,
                     &["rev-parse", "--short", &self.back_branch],
@@ -3256,7 +3282,7 @@ impl SshBackend {
                     self.host, self.back_branch, ahead, self.base, commit
                 )
             }
-            Some(out) => format!(
+            Ok(Some(out)) => format!(
                 "the session on {} ended and its branch did NOT come back: `git fetch` said \
                  \"{}\". The work is still there, in {} on that machine (branch `{}`) — reach \
                  it with `git fetch {} {refspec}` once the cause is fixed",
@@ -3266,7 +3292,7 @@ impl SshBackend {
                 self.branch,
                 url
             ),
-            None => format!(
+            Ok(None) => format!(
                 "the session on {} ended and its branch did NOT come back: `git fetch` got no \
                  answer within {} s and was killed, so the connection is the suspect. The work is \
                  still there, in {} on that machine (branch `{}`) — fetch it yourself once the \
@@ -3276,6 +3302,14 @@ impl SshBackend {
                 self.worktree,
                 self.branch,
                 url
+            ),
+            // No slot on the git master for the whole bound: git never ran, so this is a queue that
+            // never cleared rather than a host that refused.
+            Err(why) => format!(
+                "the session on {} ended and its branch did NOT come back: {why}. The work is still \
+                 there, in {} on that machine (branch `{}`) — fetch it yourself: `git fetch {} \
+                 {refspec}`",
+                self.host, self.worktree, self.branch, url
             ),
         };
         // What was left uncommitted is not in that branch, and a report that named only the branch

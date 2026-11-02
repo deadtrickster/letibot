@@ -281,7 +281,22 @@ lab2x1:
 4. Tests with a fake ssh that refuses the Nth session and one that drops a stream mid-write.
 
 **Done when**: six packages placed on lab2x1 at once all place, and a forced mid-write drop leaves
-the target byte-identical. **Still open?** `grep -n "ssh-{short}.sock" crates/tools/src/remote.rs`.
+the target byte-identical.
+**Landed 2026-10-27 (`ccf7b895`): items 1-3, and four forcing tests in `crates/tools/tests/remote_sessions.rs`.**
+A ControlMaster per daemon (`ssh-<host>-<pid>-call.sock`, plus `-git.sock` for the fetch this process
+does not start) rather than a cross-process pool: a fresh handshake is 50-70 ms and `ControlPersist=120`
+pays it once per two idle minutes, which makes the bound a guarantee instead of an average.
+**Landed (this branch): the git master was the eleventh session that nothing bounded.** `git fetch`
+rides its own master and starts that ssh itself, so the call queue never saw it: twelve sessions of one
+daemon closing at once asked one connection for twelve sessions, sshd refused two, and both branches
+came back as *its branch did NOT come back*, which is a fanout of subagents on one host losing its work.
+`Ssh::fetch_back` now takes a slot on a git queue of its own (`rpc::enter_git`, the same bound of 8) and
+retries a mux refusal once over a dropped socket, because a refused session provably never reached the
+remote and a fetch is idempotent. Tests, both measured RED first:
+`a_fanout_of_fetches_never_asks_one_git_master_for_the_eleventh` and
+`a_refused_fetch_is_retried_and_the_branch_still_comes_back`.
+**Still open?** nothing in the code; the entry's own *Done when* (six packages on a real host at once)
+has not been run, and cannot be inside a sandbox: it needs a real sshd and a real host.
 
 ---
 

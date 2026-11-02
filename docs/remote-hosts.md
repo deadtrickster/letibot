@@ -240,7 +240,9 @@ ssh is the transport, the ControlMaster is the connection pool, the remote shell
    OpenSSH's `MaxSessions` of 10 - the two left over are the master's own channel and one `-O check`. Ten
    exactly would have the *server* refuse the eleventh with `Session open refused`, which reads like a fault
    on the host. A call beyond the bound **waits for a slot under its own deadline**; `-O check`/`-O exit` take
-   no slot.
+   no slot. The git master has **a queue of its own** with the same bound (`rpc::enter_git`): `git fetch`
+   starts that ssh itself, so a fanout of sessions closing at once would otherwise ask one connection for a
+   session each and lose the branches the server refused.
 
 `crates/tools/src/rpc.rs` is the one implementation of 5-8, its state `static` and keyed by host name,
 because three private breakers would mean a host that is down costs each caller its own three timeouts. The
