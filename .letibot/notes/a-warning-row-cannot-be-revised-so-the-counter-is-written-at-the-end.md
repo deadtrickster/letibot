@@ -1,4 +1,4 @@
-<!-- abstract: A head files a warning under (code, ts, detail-hash), so a daemon re-publishing the same code with a bigger count adds a row rather than revising one - a climbing counter needs the head, and the honest daemon-side shape is one row written when the outage ends. -->
+<!-- abstract: A head files a warning under (code, ts, detail-hash), so a daemon re-publishing the same code with a bigger count adds a row rather than revising one - the honest daemon-side shape is one row written when the outage ends. -->
 
 # A warning row cannot be revised, so the counter is written when the outage ends
 
@@ -12,12 +12,7 @@ So a counter that climbs while the outage lasts needs the head. What a daemon ca
 once, where the count is already final: `harnessd::harness::Outage` is opened by the first failed
 attempt, changed by every later one and published never, and `settle_outage` takes it after the retry
 loop and writes exactly one row - `model_endpoint_answered` if a later attempt answered,
-`model_endpoint_retry` if the ladder gave up, and nothing at all for one attempt and no answer (the
-turn's own `turn_failed` is the whole of that news).
-
-Both sentences put the count and the time before the first `": "`, because
-`notice_card::warning_notice` draws `first_clause` of the first sentence: the provider's own words
-stay behind the click.
+`model_endpoint_retry` if the ladder gave up, and nothing at all for one attempt and no answer.
 
 Every exit from the retry loop must settle the record, or a later outage inherits its clock. The
 loop's one early `?` (the 401/403 arm) used to return with the record still in the field, so the next

@@ -20,7 +20,3 @@ wall clock is part of what is being asserted.
 The provider-name trap beside it: `Config::provider.name` must be a preset this build knows
 (`deepseek`, `glm`, `glm-coding`, `glm-coding-cn`, `grok`), so a stub borrows `glm-coding` and
 points it at its own port.
-
-What the test was written to prove: `Harness::set_provider` defers a switch while
-`prompt_in_flight` - recorded, said, applied by `end_turn_clock` - so the new model's first request
-ends at a user message with no assistant tool-call round after it.

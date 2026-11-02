@@ -1,4 +1,4 @@
-<!-- abstract: The choices `crates/plugins` took where its contract left them open: the three discovery roots' shapes, two kinds of failure that must both be read, a `Candidate` keyed by the bytes the gate loaded, and the call budget. -->
+<!-- abstract: The choices `crates/plugins` took where its contract left them open: the three discovery roots' shapes, two kinds of failure that must both be read, and a `Candidate` keyed by the bytes the gate loaded. -->
 
 # crates/plugins (C2): the choices the contract left open — as built
 
@@ -19,7 +19,6 @@ when `plugin.wasm` has moved since. Pass the SAME `Candidate` to `gate` and then
 rebuild it from the directory between the two, or the module answering is a second compile and the
 gate's diff describes a module nobody is running.
 
-A look is once per layer per resolution (a second one is a recorded failure, not a loop), a whole
-resolution is capped at `MAX_CALLS` = 32 module calls, and `gate` does not refuse a replay failure
-the live stack did not also record. The crate has no engine and its tests never run cargo or wasm:
-`Loader` is the seam and `CargoBuilder` is the production `Builder`, deliberately untested.
+A look is once per layer per resolution, and a whole resolution is capped at `MAX_CALLS` = 32 module
+calls. The crate has no engine and its tests never run cargo or wasm: `Loader` is the seam and
+`CargoBuilder` is the production `Builder`, deliberately untested.
