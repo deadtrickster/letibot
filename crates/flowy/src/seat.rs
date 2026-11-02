@@ -159,11 +159,8 @@ impl std::fmt::Debug for Seat {
 }
 
 impl Seat {
-    /// Open a seat: take the waiter claim, open the spool. Does not touch the
-    /// node — [`Seat::start`] does, and a node that is away at start is a stall,
-    /// not a failure to open.
-    ///
-    /// `claim_dir` and `spool_dir` are for tests; `None` is the usual path.
+    /// Open a seat: take the waiter claim, open the spool. Does not touch the node, since a node that
+    /// is away at start is a stall and not a failure to open. `claim_dir` and `spool_dir` are for tests.
     pub fn open(
         creds: Credentials,
         claim_dir: Option<&std::path::Path>,
@@ -372,16 +369,9 @@ impl Seat {
             .push((Arc::downgrade(monitors), name.to_string()));
     }
 
-    /// Say something, as the seat. Refused while stalled: sending into the void
-    /// is the failure closed loop §5 names.
-    ///
-    /// `to` may name a session as well as a seat — `seat/session` — in which
-    /// case the body is prefixed with the `@seat/session` tag the receiving
-    /// daemon routes on, and the node is told `to: seat`. When the seat is THIS
-    /// seat and the session is attached here, the message is also handed over
-    /// **locally**: the node never delivers a seat's own messages back to it
-    /// (`wakesFor`'s own-actor rule), so two sessions on one seat cannot hear
-    /// each other through the inbox, and the room copy is the record.
+    /// Say something, as the seat, refused while stalled: sending into the void is the failure the
+    /// closed loop names. `to` may name a session as `seat/session`, in which case the body carries the
+    /// tag the receiving daemon routes on.
     pub fn say(
         &self,
         room: &str,
@@ -569,14 +559,9 @@ impl Seat {
         self.fan_out_all(vec![d]);
     }
 
-    /// Fan a page out: one ping per session for the whole page, so a page is one
-    /// firing. Into the backlog when nobody is attached.
-    ///
-    /// **A message carrying `@seat/session` goes to that session and nobody
-    /// else**, through no table — being named is the whole of the decision. The
-    /// other sessions count it as gone past. A tag naming a session that is not
-    /// attached here falls through to the tables like any addressed message, and
-    /// whoever receives it sees the tag in the body.
+    /// Fan a page out: one ping per session for the whole page, so a page is one firing, and into the
+    /// backlog when nobody is attached. A message carrying `@seat/session` goes to that session and
+    /// nobody else, through no table: being named is the whole of the decision.
     fn fan_out_all(&self, ds: Vec<Delivery>) {
         if ds.is_empty() {
             return;
@@ -667,19 +652,7 @@ impl Seat {
             .filter(|p| !p.is_empty())
     }
 
-    /// One poll. Public so a test can drive the loop by hand.
-    /// Sample the board and return a line when something CHANGED, else `None`.
-    ///
-    /// A nag is LEVEL-triggered — `mine_todo` stays 4 for as long as four rows
-    /// are yours, and firecode's `board-nag.sh` paid for the rule that it must
-    /// not be given a floor, because working is what turns it off. A poll loop
-    /// that fanned the level out every window would say the same sentence every
-    /// 20 seconds forever; one that suppressed it would be the silence this
-    /// whole change exists to remove.
-    ///
-    /// So the level is kept and the EDGES are delivered: a line when an id
-    /// appears in a bucket, and one line when a bucket empties. `None` while
-    /// nothing moves, which is most of the time.
+    /// One poll, public so a test can drive the loop by hand.
     fn sample_nag(&self) -> Option<String> {
         let nag = self.node().nag().ok()?;
         let mut last = self.shared.nag.lock().unwrap_or_else(|e| e.into_inner());
@@ -766,15 +739,9 @@ impl Seat {
                 }
                 let n = page.events.len();
                 self.fan_out_all(page.events.into_iter().map(Delivery::Message).collect());
-                // **Board state, in the same loop and the same stream.** Not a
-                // second watcher: the operator's rule, 2026-09-15 — *"I don't
-                // want that many watchers, or separate watchers for that matter
-                // … I don't see any distinction between a chat message and a
-                // todo update."* A seat is one poll loop and one queue; a row
-                // assigned to you arrives beside what somebody said, through the
-                // same `Condition`, and a session that is awake for one is awake
-                // for the other. `inbox_wait` has just returned, so this is
-                // sampled at most once per window and costs one cheap GET.
+                // Board state in the same loop and the same stream, not a second watcher: a seat is
+                // one poll loop and one queue, and a row assigned to you arrives beside what somebody
+                // said through the same `Condition`.
                 if let Some(notice) = self.sample_nag() {
                     self.fan_out(Delivery::Notice(notice));
                 }
@@ -877,12 +844,8 @@ fn run(weak: Weak<Shared>) {
     }
 }
 
-/// The session fragment of an `@seat/session` tag in `body`, for THIS seat:
-/// the bytes after `@seat/` up to the first byte the node's own mention parser
-/// would not count as a name byte (letters, digits, `.`, `-`, `_`), with
-/// trailing dots trimmed the way the node trims a name. `None` when the body
-/// names no session of this seat. The seat name is matched ignoring case, as
-/// the node matches a mention.
+/// The session fragment of an `@seat/session` tag in `body`, for this seat, with trailing dots trimmed
+/// as the node trims a name. `None` when the body names no session of this seat.
 pub fn session_tag(body: &str, seat: &str) -> Option<String> {
     let lower = body.to_ascii_lowercase();
     let needle = format!("@{}/", seat.to_ascii_lowercase());
@@ -975,15 +938,8 @@ mod tests {
     }
 }
 
-/// The last board reading, so the poll loop can tell an edge from a level.
-///
-/// Four buckets, each `(count, ids)` from `GET /api/nag`. The ids are what make
-/// this honest: a count going 4 → 4 can still mean one row finished and another
-/// arrived, and a seat told "4 rows" twice would never learn about the second.
-/// So the comparison is on the id SET, and the count only decorates the line.
-///
-/// `stale` is included and has `stale_ids` like the rest — checked against the
-/// node rather than taken from a note that said it was the exception.
+/// The last board reading, so the poll loop can tell an edge from a level. The comparison is on the id
+/// SET rather than the count, since 4 to 4 can mean one row finished and another arrived.
 #[derive(Debug, Default)]
 pub struct NagState {
     seen: std::collections::BTreeMap<&'static str, std::collections::BTreeSet<String>>,

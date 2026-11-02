@@ -182,18 +182,8 @@ pub struct Artifact {
     pub updated: String,
 }
 
-/// What `GET /api/nag` answers: the seat's board state, as counts with the ids
-/// behind them.
-///
-/// **Read off the node, not off the docs** (build `0.8.0+d1f2415`, 2026-09-15).
-/// A note asking for this work said `stale` was the one count with no `_ids`
-/// companion; the node returns `stale_ids` like every other. Field names here
-/// were taken from an actual response body, because the only in-tree mention of
-/// them describes the CLI rather than the API.
-///
-/// Every field is `#[serde(default)]`: a node that grows a count must not break
-/// a seat, and one that drops a count must leave the seat reading zero rather
-/// than failing to parse.
+/// What `GET /api/nag` answers: the seat's board state, as counts with the ids behind them. Every field
+/// is `#[serde(default)]`, so a node that grows or drops a count must not break a seat.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 pub struct Nag {
     /// Open rows assigned to this seat.
@@ -354,14 +344,9 @@ impl Node {
         self.get("/api/node")
     }
 
-    /// `GET /api/nag`: the seat's own board STATE — what is assigned, waiting,
-    /// owed and stale right now.
-    ///
-    /// The one read in this client that is not about something that HAPPENED.
-    /// `inbox_wait` answers *what was said since my cursor*; this answers *what
-    /// is true about my queue*, and a queue that has been full for an hour
-    /// generates no events at all. See [`crate::seat::NagState`] for why that
-    /// distinction is the whole point.
+    /// `GET /api/nag`: the seat's own board state, what is assigned, waiting, owed and stale right now.
+    /// The one read that is not about something that happened, since a queue full for an hour generates
+    /// no events at all.
     pub fn nag(&self) -> Result<Nag, NodeError> {
         parse(self.get("/api/nag")?)
     }
@@ -377,10 +362,8 @@ impl Node {
         parse(self.post("/api/inbox/reader", &json!({"as": name, "kind": "tracked"}))?)
     }
 
-    /// Block up to [`POLL_WINDOW`] for something this reader should hear.
-    ///
-    /// `focus` is the project everything is delivered from; elsewhere, only what
-    /// names the seat. `Some("")` is not sent.
+    /// Block up to [`POLL_WINDOW`] for something this reader should hear. `focus` is the project
+    /// everything is delivered from; elsewhere only what names the seat, and `Some("")` is not sent.
     pub fn inbox_wait(
         &self,
         reader: &str,
@@ -487,10 +470,8 @@ impl Node {
         parse(v.get("events").cloned().unwrap_or(Value::Array(vec![])))
     }
 
-    /// The last `limit` messages in a room, oldest first — the antecedents of a
-    /// mention, which a delivery alone does not carry. `order=recent` is the
-    /// node's word for the tail (the other is `log`, from the start); the first
-    /// spelling here was `desc`, and the node refused it by name.
+    /// The last `limit` messages in a room, oldest first: the antecedents of a mention, which a delivery
+    /// alone does not carry. `order=recent` is the node's word for the tail.
     pub fn room_read(&self, room: &str, limit: usize) -> Result<Vec<Event>, NodeError> {
         let v = self.get(&format!(
             "/api/chat/{}?limit={limit}&order=recent",

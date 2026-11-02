@@ -64,12 +64,8 @@ pub struct FabricContext {
     pub memories: Vec<MemoryLine>,
 }
 
-/// **Which doors to the rest the session reading the block actually has.**
-///
-/// The block is a list of pointers, and a pointer is only worth printing with the
-/// way to follow it — but only when that way is seated. A seat without `skill` told
-/// to `skill load` something, or one without `bash` told to run `flowy get`, is a
-/// prompt naming a tool the model does not have (R93.G4, G7).
+/// Which doors to the rest the reading session actually has: a pointer is only worth printing with the
+/// way to follow it, and only when that way is seated, or the prompt names a tool the model has not got.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reach {
     /// The `skill` tool is seated: a shelf skill loads by id or title.
@@ -254,10 +250,9 @@ impl FabricContext {
     }
 }
 
-/// The first paragraph that is not a heading, a blockquote or an HTML
-/// comment, cut to [`SUMMARY_CHARS`] on a word boundary with an ellipsis.
-/// Markdown emphasis is left alone; it costs nothing and a summary that
-/// reads like the page is easier to match to it.
+/// The first paragraph that is not a heading, a blockquote or an HTML comment, cut to
+/// [`SUMMARY_CHARS`] on a word boundary with an ellipsis. Emphasis is left alone, since it costs
+/// nothing.
 pub fn first_paragraph(body: &str) -> String {
     let mut para = String::new();
     for block in body.split("\n\n") {
