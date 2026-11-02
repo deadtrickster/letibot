@@ -1,31 +1,17 @@
 //! Token ids in, spans out.
 //!
-//! # Why the decoder is an argument
+//! The decoder is an argument rather than a builder's stored field: a crate with no vocab cannot
+//! produce text from ids, and a builder that stashed one panicked for callers who forgot. Passing
+//! it in means the type says what parsing needs and there is no way to call it wrong.
 //!
-//! `parse(&[u32]) -> Vec<ParsedSpan>` asked a crate with no vocab to produce
-//! `Content(String)`. It could not, and the workaround was a builder that stashed a
-//! decoder and a panic for callers who forgot. Under T2 the decoder is in the
-//! contract ([`TokenDecoder`]) and is passed in, so the type says what parsing needs
-//! and there is no way to call it wrong.
+//! Boundaries are decided by token id, never by scanning text. A control token is one vocab entry,
+//! so the decoder answers `control_role` for exactly the ids that are boundaries, and text that
+//! merely spells `</think>` cannot be one. Runs of ordinary tokens are decoded as runs, because on a
+//! BPE vocabulary detokenizing a sequence and concatenating per-token pieces are different
+//! operations and only the first is right.
 //!
-//! # Boundaries are decided by token id, never by scanning text
-//!
-//! A control token is **one** vocab entry, so the decoder answers `control_role` for
-//! exactly the ids that are boundaries. Text that merely spells `</think>` is several
-//! ids and cannot be one — the same guarantee `RenderSpan`'s Text/Control split gives
-//! on the way out, restated on the way back in.
-//!
-//! Runs of ordinary tokens are decoded **as runs**, not one id at a time: on a BPE
-//! vocabulary, detokenizing a sequence and concatenating per-token pieces are
-//! different operations, and only the first is right.
-//!
-//! # What roles buy here
-//!
-//! This parser used to compare decoded control text against `GLM_TOKENS` literals,
-//! because eight of GLM's tokens had no `ControlRole` to match on. They have one now,
-//! so the match below is on roles: it is a `match` the compiler checks rather than a
-//! chain of string comparisons, and a second dialect that spells `<arg_key>`
-//! differently would need no new code path.
+//! The match below is on roles rather than on decoded literals, so it is a `match` the compiler
+//! checks and a dialect that spells `<arg_key>` differently needs no new code path.
 
 use letibot_dialect::{ControlRole, ControlToken, ParsedSpan, Parser, TokenDecoder};
 use serde_json::{Map, Value};

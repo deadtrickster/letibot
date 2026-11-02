@@ -1,17 +1,12 @@
 //! JSON text that is byte-identical to what the shipped template produces.
 //!
-//! GLM's jinja calls `{{ v | tojson(ensure_ascii=False) }}` in two places — the
-//! tool schema block and a tool call's non-string argument values. Both land in the
-//! prompt verbatim, so **the separators are part of the prompt bytes**, not a
-//! formatting preference.
+//! GLM's jinja calls `tojson` on the tool schema block and on a tool call's non-string argument
+//! values, and both land in the prompt verbatim, so the separators are part of the prompt bytes
+//! rather than a formatting preference.
 //!
-//! Hugging Face's `tojson` filter (`transformers/utils/chat_template_utils.py`) is
-//! `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)`, and llama.cpp's
-//! jinja matches it. `serde_json`'s compact writer uses `,`/`:` with no spaces, so a
+//! Hugging Face's `tojson` is `json.dumps(..., separators=(", ", ": "), ensure_ascii=False)` and
+//! llama.cpp's jinja matches it. `serde_json`'s compact writer uses `,` and `:` with no spaces, so a
 //! naive `to_string` diverges on every tool schema. Hence this formatter.
-//!
-//! Verified against `POST /apply-template` on 2026-09-09: `{"a": 1, "b": "two"}`,
-//! `[1, 2, "x"]`, and `"héllo →"` unescaped.
 
 use serde_json::Value;
 use serde_json::ser::Formatter;

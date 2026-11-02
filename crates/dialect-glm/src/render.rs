@@ -1,18 +1,14 @@
 //! The second renderer: hand-written, demoted, kept as a differential.
 //!
-//! Every rule here was measured against `POST /apply-template` and is now gated
-//! against CPython Jinja2 (`tests/fidelity/`). T1 replaced it as the *production*
-//! renderer — the shipped template run through minijinja does the same job for every
-//! model rather than for one — but two independent implementations that agree on 139
-//! cases are stronger evidence than one implementation that passes its own tests, and
-//! that is the job this file now has.
+//! The shipped template run through minijinja is the production renderer, because it does the same
+//! job for every model rather than for one. This stays because two independent implementations that
+//! agree on the fidelity corpus are stronger evidence than one implementation that passes its own
+//! tests, and that is now its job.
 //!
-//! It renders one thing only: the training format, as CPython Jinja2 produces it. The
-//! `server-bug-compatible` profile that used to live here — reproducing minja's
-//! cross-iteration `{% set %}` leak — is gone (T2). It cannot be produced by a
-//! template-driven renderer without deliberately reintroducing someone else's bug, and
-//! the thing it was evidence for is better served by running the real template through
-//! a correct engine.
+//! It renders one thing only: the training format, as CPython Jinja2 produces it. A profile that
+//! reproduced minja's cross-iteration `{% set %}` leak cannot be produced here without deliberately
+//! reintroducing someone else's bug, and the divergence is better evidence when the real template is
+//! run through a correct engine.
 
 use crate::ReasoningEffort;
 use crate::json::arg_value_text;

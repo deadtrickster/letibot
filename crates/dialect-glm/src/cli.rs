@@ -1,56 +1,28 @@
-//! `letibot-render` as a FUNCTION, so more than one binary can be it.
+//! `letibot-render` as a function, so more than one binary can be it.
 //!
-//! # Why this is a module and not a `main`
+//! The fidelity gate execs `letibot-render` by PATH and knows nothing about subcommands, so the
+//! multicall must be reachable from that name and the code that does the work has to be callable
+//! from both the binary this crate builds and the dispatcher.
 //!
-//! `letibot-render` is the GLM renderer the fidelity gate execs — by PATH, with
-//! arguments, and it knows nothing about subcommands. So the one-binary multicall has
-//! to be reachable from the name `letibot-render`, and the code that does the work
-//! has to be callable from two places: the binary this crate still builds, and the
-//! dispatcher.
+//! Being a function forces two mechanical changes: `std::env::args().skip(1)` becomes an `args`
+//! parameter so a test can pass its own, and `std::process::exit(n)` becomes `return n` so the caller
+//! decides whether the process ends. A library that exits takes that decision away from its caller,
+//! and the dispatcher has its own exit convention to honour.
 //!
-//! MEASURED before the move: the body was 368 lines in `src/bin/letibot-render.rs`,
-//! with `main` at 85 and the rest helpers (`expand`, `case`, `span_json`,
-//! `to_openai_messages`, `user_content`). Moving it here and having the bin call it
-//! is a MOVE, not a rewrite — the fixture output was captured before and compared
-//! after, byte for byte, because a renderer that renders one byte differently
-//! re-prefills every conversation.
-//!
-//! # The two mechanical changes, both forced by being a function
-//!
-//!   * `std::env::args().skip(1)` becomes the `args` parameter, so the caller
-//!     decides what the arguments are and a test can pass them;
-//!   * `std::process::exit(n)` and `return;` become `return n` and `return 0`, so the
-//!     caller decides whether the process ends. A library that exits takes the
-//!     decision away from whoever called it, and the dispatcher has its own exit
-//!     convention to honour.
-//!
-//! (moved) `letibot-render` — the seam between the Rust renderers and the Python fidelity
-//! gate.
-//!
-//! The gate must not know what a `TranscriptItem` is. It reads fixtures it cannot
-//! interpret, POSTs a body it did not build, and compares two strings. Everything
-//! that requires understanding the transcript — expanding a fixture into its prefix
-//! truncations, mapping items onto OpenAI messages, deciding whether a generation
-//! prompt belongs on the end — happens here, once, in the language that owns those
-//! types.
+//! The gate must not know what a `TranscriptItem` is: it reads fixtures it cannot interpret, POSTs a
+//! body it did not build, and compares two strings. Everything that requires understanding the
+//! transcript happens here, once, in the language that owns those types.
 //!
 //! ```text
 //! letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json [FIXTURE.json …]
 //! ```
 //!
-//! `--profile` has one value left. It used to select between `faithful` and
-//! `server-bug-compatible`, a render that reproduced minja's cross-iteration
-//! `set`-inside-`for` leak; T2 removed that profile, because a template-driven renderer
-//! cannot produce it without reintroducing someone else's bug on purpose. The flag
-//! stays, and stays strict, so an old command line is told the profile was removed
-//! rather than having it quietly treated as a filename.
+//! `--profile` has one value left, and stays strict so an old command line is told the profile was
+//! removed rather than having it treated as a filename. stdout is a JSON array of cases, one per
+//! (fixture, prefix length, generation prompt on or off).
 //!
-//! stdout is a JSON array of **cases**, one per (fixture, prefix length, generation
-//! prompt on/off). See `tests/fidelity/README.md` for the fixture and case formats.
-//!
-//! This binary lives in `dialect-glm` because that is the only crate the strand owns.
-//! When a second dialect lands it should move to a crate of its own; `--dialect` is
-//! already the switch that will select between them.
+//! It lives in `dialect-glm` because that is the only crate this strand owns; when a second dialect
+//! lands it should move to a crate of its own, and `--dialect` is already the switch.
 
 use crate::{GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};

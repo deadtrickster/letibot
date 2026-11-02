@@ -1,102 +1,44 @@
-//! GLM-5.3-Flash: the spec that drives the template renderer, a parser, and a
-//! second renderer kept as a cross-check.
+//! GLM-5.3-Flash: the spec that drives the template renderer, a parser, and a second renderer kept
+//! as a cross-check.
 //!
-//! # What this crate is, after T1
+//! The primary artefact is [`glm_spec`], a [`DialectSpec`] value: the template, its sha, the
+//! control-token table, the stop tokens, the system-update rule and the guards. No code renders it.
 //!
-//! T1 settled that prompts are rendered by running the model's **own shipped jinja**
-//! through a Rust Jinja engine, not by a renderer we wrote per model
-//! (`experiments/minijinja-fidelity/RESULTS.md`, D11). So the primary artefact here is
-//! now [`glm_spec`] — a [`DialectSpec`] value: the template, its sha, the control-token
-//! table, the stop tokens, the system-update rule and the guards. No code renders it.
+//! Three things survive as code. [`GlmParser`], because parsing is not a template: the shipped jinja
+//! says how a turn is written and nothing about how to read one back. [`GlmRenderer`], kept as a
+//! second independent implementation, because two implementations that agree are stronger evidence
+//! than one that is merely tested and it is what the fidelity corpus is measured through.
+//! [`check_transcript`], because the shapes that cannot be rendered faithfully are a property of
+//! GLM's template rather than of whoever renders it.
 //!
-//! Three things survive as code, and each has a reason:
+//! Four things about GLM that are easy to get wrong:
 //!
-//! * [`GlmParser`] — parsing is not a template. The shipped jinja says how a turn is
-//!   *written* and nothing at all about how to read one back.
-//! * [`GlmRenderer`] — **demoted, deliberately kept.** It is a second, independent
-//!   implementation of the same function. Two implementations that agree are stronger
-//!   evidence than one that is merely tested, and it is what the 139-case fidelity
-//!   corpus is currently measured through. T1's own recommendation was to keep the
-//!   differential, not to delete the loser.
-//! * [`check_transcript`] — the transcript shapes that cannot be rendered faithfully
-//!   are a property of GLM's template, not of whoever renders it, so they outlive the
-//!   renderer that first reported them.
-//!
-//! # Four things about GLM that are not in the plan
-//!
-//! **1. The shipped template leaks reasoning across turns — under llama.cpp only.**
-//! `{%- set reasoning_content = m.reasoning_content %}` sits inside the `{% for m in
-//! messages %}` body. CPython Jinja2 scopes that to the iteration; llama.cpp's minja
-//! keeps it alive into the *next* iteration. So an assistant turn with no reasoning of
-//! its own is rendered by the server carrying the **previous** turn's `<think>` block.
-//! Measured 2026-09-09, identical inputs:
+//! 1. The shipped template leaks reasoning across turns under llama.cpp: a `{%- set %}` inside the
+//!    message loop is scoped to the iteration by CPython Jinja2 and kept alive into the next one by
+//!    minja, so an assistant turn with no reasoning of its own carries the previous turn's `<think>`.
+//!    Identical inputs:
 //!
 //! ```text
 //! server: …<|assistant|><think>R1</think>one<|user|>b<|assistant|><think>R1</think>two…
 //! jinja2: …<|assistant|><think>R1</think>one<|user|>b<|assistant|><think></think>two…
 //! ```
 //!
-//! We render the **Jinja2** reading, because Jinja2 is what Hugging Face runs and
-//! therefore what the model was trained against, and because nothing in our path goes
-//! through llama.cpp's renderer — we submit token ids. T1 confirmed minijinja does not
-//! have the bug either, so the template-driven renderer agrees with us for free.
-//!
-//! There used to be a `server-bug-compatible` profile that reproduced the leak, to
-//! prove we understood the template well enough to reproduce minja exactly. **It is
-//! gone** (T2): a template-driven renderer cannot produce it without deliberately
-//! reintroducing someone else's bug, and running the real template through a correct
-//! engine is stronger evidence than reproducing a wrong one. The gate's INTEROP phase
-//! still reports how the server differs; `reasoning-leak.json` still declares the
-//! divergence and is still rendered against the authority.
-//!
-//! **2. Tool results are re-sorted by the shipped template, and that is incompatible
-//! with append-only rendering.** When every `tool` message in a block carries a unique
-//! id matching one of the preceding assistant's `tool_calls`, the template emits them
-//! **in tool-call order**, not message order. Appending a result that sorts before one
-//! already rendered would rewrite bytes that are already in the KV cache. We therefore
-//! render results in **transcript order** and require the harness to append them in
-//! call order — at which point the template's sort is a no-op and both properties hold
-//! at once. [`check_transcript`] reports a transcript that breaks the requirement
-//! instead of silently diverging, and it does so for the template-driven renderer too:
-//! the sort is the template's, so the hazard is the template's.
-//!
-//! **3. Images cannot be checked against `/apply-template` at all.** llama.cpp replaces
-//! image parts with a media marker containing a **per-process random nonce**
-//! (`<__media_SXS4xEDCuyaeIR7cBV6jKB8RhPA841Ns__>`) before the template runs, so
-//! `emit_image()` never executes on the server path. We render what the template would
-//! have emitted — `<|begin_of_image|><|image|><|end_of_image|>` — and the gate
-//! normalises the marker on both sides. Nothing stronger is available.
-//!
-//! **4. `[gMASK]<sop>` is two tokens, `<arg_key>`/`<arg_value>` are single tokens.**
-//! Everything listed in [`GLM_TOKENS`] is one vocab entry, so all of it must be
-//! `RenderSpan::Control` — emitting `<arg_key>` as `Text` would tokenize it as six
-//! ordinary tokens and diverge from training. Under T2 every one of them now has an
-//! honest [`ControlRole`]; they used to be declared as `TurnEnd`, a role GLM does not
-//! use, as an unnamed "no role" bucket.
-//!
-//! Half of them are `USER_DEFINED`, not `CONTROL`, in the GGUF token table (`<think>`,
-//! `</think>`, `<tool_call>`, `</tool_call>`, `<tool_response>`, `</tool_response>`,
-//! `<arg_key>`, `</arg_key>`, `<arg_value>`, `</arg_value>` are ids 154841–154850,
-//! attribute `USER_DEFINED`; the `<|…|>` family and `[gMASK]`, `<sop>` are `CONTROL`).
-//! So `llama_vocab_is_control` alone is **not** the test for "may this literal be
-//! resolved as a control token" — it would reject exactly half of this dialect. Accept
-//! `CONTROL` or `USER_DEFINED`, reject `NORMAL`.
-//! `tests/fidelity/extract_template.py --tokens <gguf>` prints the table.
-//!
-//! # What happened to CONTRACT-GAPS
-//!
-//! The three gaps this crate used to carry are closed rather than worked around:
-//!
-//! - **GAP-1** (`render_incremental` cannot be pure) — gone twice over. The contract no
-//!   longer has the method (Jinja has no incremental mode), and [`GlmRenderer`]'s own
-//!   inherent version takes the history explicitly instead of being handed it through
-//!   a builder that panicked when it was missing.
-//! - **GAP-2** (`ControlRole` too small) — closed. Every GLM token has a real role.
-//! - **GAP-3** (`parse` has no vocab) — closed. [`letibot_dialect::TokenDecoder`] is in
-//!   the contract, so `parse` takes one as an argument instead of a builder storing one
-//!   and a panic if it was forgotten.
-//!
-//! See `docs/implementation-plan.md` §7 and `tests/fidelity/README.md`.
+//!    We render the Jinja2 reading, because that is what Hugging Face runs and therefore what the
+//!    model was trained against, and nothing in our path goes through llama.cpp's renderer: we submit
+//!    token ids. A template-driven renderer agrees with us for free, and the gate still reports how
+//!    the server differs.
+//! 2. The shipped template re-sorts tool results into tool-call order, which is incompatible with
+//!    append-only rendering: appending a result that sorts before one already rendered would rewrite
+//!    bytes already in the KV cache. We render in transcript order and the harness appends in call
+//!    order, at which point the sort is a no-op and both properties hold. [`check_transcript`]
+//!    reports a transcript that breaks the requirement.
+//! 3. Images cannot be checked against `/apply-template` at all: the server replaces image parts with
+//!    a media marker carrying a per-process nonce before the template runs, so `emit_image()` never
+//!    executes there. We render what the template would have emitted and the gate normalises the
+//!    marker on both sides.
+//! 4. Every literal in [`GLM_TOKENS`] is one vocab entry, so all of it must be `RenderSpan::Control`.
+//!    Half are `USER_DEFINED` rather than `CONTROL` in the GGUF table, so `llama_vocab_is_control`
+//!    alone is not the test: accept `CONTROL` or `USER_DEFINED`, reject `NORMAL`.
 
 pub mod cli;
 use std::sync::OnceLock;
@@ -118,12 +60,10 @@ pub use render::{
     generation_prompt_closing_reasoning, outcome_envelope,
 };
 
-/// The shipped jinja this dialect was validated against, verbatim.
+/// The shipped jinja this dialect was validated against, verbatim, extracted from the model's first
+/// shard rather than retyped.
 ///
-/// Extracted with:
-/// `python3 tests/fidelity/extract_template.py <model-00001-of-00006.gguf>`
-///
-/// Under T1 this is no longer documentation — it is the renderer's input.
+/// It is the renderer's input, not documentation.
 pub const TEMPLATE: &str = include_str!("../template/glm-5.3-flash.jinja");
 
 /// The name this dialect is known by, in the gate and in the store.
@@ -131,9 +71,8 @@ pub const NAME: &str = "glm-5.3-flash";
 
 /// The literal spelling of every GLM token this dialect emits.
 ///
-/// Each of these is a **single vocab entry** (verified against the GGUF token table:
-/// ids 154820–154855, `CONTROL` or `USER_DEFINED`). That is why they are emitted as
-/// `RenderSpan::Control` and never as text.
+/// Each is a single vocab entry, `CONTROL` or `USER_DEFINED` in the GGUF's token table, which is why
+/// they are emitted as `RenderSpan::Control` and never as text.
 pub mod tokens {
     use letibot_dialect::{ControlRole, ControlToken};
 
@@ -166,10 +105,8 @@ pub mod tokens {
 
 /// Every control token GLM uses, for the token core to resolve once.
 ///
-/// The order used to be load-bearing — `ControlTokens::get(role)` returned the first
-/// match, so the canonical entry had to come first. It is not any more: lookup is by
-/// literal, and a role with several literals returns all of them. This order is now
-/// only the order failures are declared in, and the report sorts anyway.
+/// The order is only the order failures are declared in: lookup is by literal, and a role with
+/// several literals returns all of them, so nothing depends on which entry comes first.
 pub const GLM_TOKENS: &[ControlToken] = &[
     tokens::GMASK,
     tokens::SOP,
@@ -193,27 +130,22 @@ pub const GLM_TOKENS: &[ControlToken] = &[
     tokens::ENDOFTEXT,
 ];
 
-/// GLM stops a turn by starting the next one.
+/// What ends a generation.
 ///
-/// `<|user|>` and `<|observation|>` are the two ways a generation legitimately ends (a
-/// reply, or a tool call awaiting a result); `<|endoftext|>` is the vocab eos. Each
-/// carries the role it plays, so a resolution failure can say *which* of the three
-/// ways to end a turn stopped working rather than printing a literal and leaving the
-/// reader to guess what it cost.
-///
-/// From the GGUF: `eos=154820 <|endoftext|>`, `eot=154827 <|user|>`,
-/// `eom=154829 <|observation|>`.
+/// `<|user|>` and `<|observation|>` are the two ways a turn legitimately ends, a reply or a tool
+/// call awaiting a result, and `<|endoftext|>` is the vocab eos. Each carries the role it plays, so
+/// a resolution failure can say which of the three stopped working rather than printing a literal.
 pub const GLM_STOP_TOKENS: &[StopToken] = &[
     StopToken::borrowed(ControlRole::EndOfTurn, "<|endoftext|>"),
     StopToken::borrowed(ControlRole::TurnStartUser, "<|user|>"),
     StopToken::borrowed(ControlRole::TurnStartTool, "<|observation|>"),
 ];
 
-/// §7.3: the repeating-token collapse past ~78k at `-ub 512` poisons the slot rather
-/// than erroring, and does not reproduce on this build (probed to 147,042 tokens). It
-/// costs nothing to watch for, and 1M has never been run. `ReasoningStall` is not a cap
-/// on thinking — long thinking is fine — it is a signal that the turn stopped
-/// progressing.
+/// The declared mitigations for this model.
+///
+/// A repeating-token collapse poisons a slot rather than erroring and has never been reached here,
+/// so it costs nothing to watch for. `ReasoningStall` is not a cap on thinking: long thinking is
+/// fine, and it is a signal that the turn stopped progressing.
 pub const GLM_GUARDS: &[Guard] = &[
     Guard::RepetitionRun { run: 64 },
     Guard::RepetitionNgram {
@@ -225,9 +157,8 @@ pub const GLM_GUARDS: &[Guard] = &[
 
 /// SHA-256 of the shipped jinja.
 ///
-/// Computed from the file rather than pasted next to it, so a model update that
-/// changes the template invalidates the spec automatically. §4.4 makes this the
-/// dialect's identity in the store.
+/// Computed from the file rather than pasted beside it, so a model update that changes the template
+/// invalidates the spec automatically. This is the dialect's identity in the store.
 pub fn template_sha() -> [u8; 32] {
     static SHA: OnceLock<[u8; 32]> = OnceLock::new();
     *SHA.get_or_init(|| sha256::sha256(TEMPLATE.as_bytes()))
@@ -235,13 +166,11 @@ pub fn template_sha() -> [u8; 32] {
 
 /// GLM as data.
 ///
-/// A function rather than a `const` for one honest reason: `template_sha` is a hash of
-/// the embedded file, and hashing is not a `const fn` here. Everything else in it
-/// borrows, so the only cost is the two small `Vec`s.
+/// A function rather than a `const` because `template_sha` hashes the embedded file and hashing is
+/// not a `const fn` here. Everything else borrows, so the only cost is two small `Vec`s.
 ///
-/// GLM's `system_update_mode` is `InHistory`, verified: a `system` message at index 2
-/// renders as `<|system|>…` in place, between the surrounding turns. So a mid-session
-/// prompt change is appended, and costs nothing beyond its own tokens.
+/// `system_update_mode` is `InHistory`: a `system` message at index 2 renders in place between the
+/// surrounding turns, so a mid-session prompt change is appended and costs only its own tokens.
 pub fn glm_spec() -> DialectSpec {
     DialectSpec {
         name: std::borrow::Cow::Borrowed(NAME),
@@ -255,12 +184,10 @@ pub fn glm_spec() -> DialectSpec {
     }
 }
 
-/// The reasoning-effort line the template emits at position 3 of every prompt.
+/// The reasoning-effort line the template emits near the head of every prompt.
 ///
-/// It is `<|system|>Reasoning Effort: {Low|High|Max}` and it sits **before** the
-/// tools block and before message 0, so changing it invalidates the entire prefix.
-/// That is not a quirk of ours: `effective_reasoning_effort` is only honoured for
-/// `low` and `high`, and anything else — including absent — renders `Max`.
+/// It sits before the tools block and before message 0, so changing it invalidates the entire
+/// prefix. Only `low` and `high` are honoured; anything else, absent included, renders `Max`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReasoningEffort {
     Low,
@@ -300,8 +227,8 @@ mod tests {
 
     #[test]
     fn template_sha_is_the_hash_of_the_shipped_jinja() {
-        // sha256sum of tokenizer.chat_template extracted from
-        // GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf, 2026-09-09.
+        // sha256sum of the template extracted from the model's first shard. A change means re-run
+        // the fidelity gate before shipping.
         assert_eq!(
             sha_hex(&glm_spec().template_sha),
             "a4fddbbf0b432101a296c17094f8bc5a2b0d30713b5b5cd92f86be78511aa724",
