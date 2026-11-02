@@ -101,9 +101,9 @@ impl std::error::Error for ShellError {}
 /// carries no `Debug`.
 #[derive(Clone)]
 pub struct ShellConfig {
-    /// The shell and its flags. [`super::console::shell`] is the operator's - `/bin/bash -ic`
-    /// - and the tests pass `--norc` so an assertion is about this module and not about
-    /// whatever the operator's rc prints.
+    /// The shell and its flags. [`super::console::shell`] is the operator's -
+    /// `/bin/bash -ic` - and the tests pass `--norc` so an assertion is about this module
+    /// and not about whatever the operator's rc prints.
     pub shell: Vec<String>,
     /// Pairs put in front of the shell's environment. The daemon's own environment is the
     /// console's (`super::console`'s argument), so this is what a *session* adds - `TERM`
