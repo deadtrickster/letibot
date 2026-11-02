@@ -147,6 +147,8 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
     let mut said: HashSet<(String, &'static str)> = HashSet::new();
     let mut throttled_seen = 0u64;
     let mut tick = 0u64;
+    let mut before: Option<BTreeMap<String, i64>> = None;
+    let mut creeping = 0u32;
     loop {
         std::thread::sleep(every);
         tick += 1;
@@ -158,6 +160,43 @@ fn watch(registry: Arc<Registry>, every: Duration, leaf: Option<PathBuf>) {
             "memwatch: {}",
             summary(rss, live, peak, large_n, threads.values().sum(), &census)
         );
+        // What MOVED since the last line, because a total that is the same every minute says a leak
+        // is not happening and a total that climbs says nothing about which term climbed.
+        let now = terms(rss, live, threads.values().sum(), &census);
+        if let Some(was) = &before {
+            let grew = creep(was, &now);
+            if !grew.is_empty() {
+                eprintln!("memwatch: grew {grew}");
+            }
+            creeping =
+                if now.get("rss").copied().unwrap_or(0) > was.get("rss").copied().unwrap_or(0) {
+                    creeping + 1
+                } else {
+                    0
+                };
+            // Three lines running with nothing in the census to account for the resident growth:
+            // the shape that took a daemon to 113 GB and left no line in its log about it.
+            if creeping >= 3 && unaccounted(was, &now) {
+                eprintln!(
+                    "memwatch: MEMORY CREEP — resident has grown on {creeping} lines running and \
+                     nothing the census holds has grown with it; the heap's own count is {} and \
+                     the daemon is holding {} of it",
+                    human_bytes(live as u64),
+                    human_bytes(rss)
+                );
+                registry.broadcast(warning(
+                    "memory_creep",
+                    format!(
+                        "this daemon's resident memory has grown on {creeping} readings running \
+                         and nothing it can account for has grown with it (rss {} against heap {}). \
+                         The census is in its log. Restarting the daemon frees it",
+                        human_bytes(rss),
+                        human_bytes(live as u64)
+                    ),
+                ));
+            }
+        }
+        before = Some(now);
         // 's number over time : every fifth line - five minutes at the default -
         // and at every census step below.
         if tick % 5 == 1 || rss >= next_step {
@@ -238,6 +277,99 @@ fn throttle_events(leaf: &std::path::Path) -> Option<u64> {
     s.lines()
         .find_map(|l| l.strip_prefix("high "))
         .and_then(|n| n.trim().parse().ok())
+}
+
+/// The terms one reading watches, by name, so two readings can be subtracted. A name is what the log
+/// has to say to be actionable: `s-1 log` and not `logs`.
+pub fn terms(
+    rss: u64,
+    live: usize,
+    threads: usize,
+    census: &[(HubCensus, usize)],
+) -> BTreeMap<String, i64> {
+    let mut out = BTreeMap::new();
+    out.insert("rss".into(), rss as i64);
+    out.insert("heap".into(), live as i64);
+    out.insert("threads".into(), threads as i64);
+    for (c, jobs) in census {
+        let s = &c.session_id;
+        for (what, n) in [
+            ("log", c.log_bytes),
+            ("events", c.log_events),
+            ("view", c.view.items),
+            ("settled", c.view.settled),
+            ("warnings", c.view.warnings),
+            ("subagents", c.view.subagents),
+            ("jobs", *jobs),
+            ("harness", c.footprint.total()),
+        ] {
+            out.insert(format!("{s} {what}"), n as i64);
+        }
+    }
+    out
+}
+
+/// What grew between two readings, biggest first, as the sentence the log prints. Empty when nothing
+/// moved: a line that says `grew 0` every minute is one nobody reads.
+pub fn creep(before: &BTreeMap<String, i64>, now: &BTreeMap<String, i64>) -> String {
+    /// Below this a delta is noise: a page, a refill, one event's worth of a hub.
+    const FLOOR: i64 = 128 << 10;
+    /// Counts are not bytes, and one thread or one event is a fact at any size.
+    const COUNT_FLOOR: i64 = 1;
+    let counts = [
+        "threads",
+        "events",
+        "view",
+        "settled",
+        "warnings",
+        "subagents",
+        "jobs",
+    ];
+    let is_count = |name: &str| {
+        counts
+            .iter()
+            .any(|c| name == *c || name.ends_with(&format!(" {c}")))
+    };
+    let mut grew: Vec<(&String, i64)> = now
+        .iter()
+        .filter_map(|(name, v)| {
+            let was = before.get(name).copied().unwrap_or(0);
+            let delta = v - was;
+            let floor = if is_count(name) { COUNT_FLOOR } else { FLOOR };
+            (delta >= floor).then_some((name, delta))
+        })
+        .collect();
+    grew.sort_by_key(|(_, d)| std::cmp::Reverse(*d));
+    grew.iter()
+        .take(6)
+        .map(|(name, d)| {
+            if is_count(name) {
+                format!("{name} +{d}")
+            } else {
+                format!("{name} +{}", human_bytes(*d as u64))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// Whether the resident growth is bigger than everything the census holds put together: the fact that
+/// says the leak is in a structure no term names yet.
+pub fn unaccounted(before: &BTreeMap<String, i64>, now: &BTreeMap<String, i64>) -> bool {
+    /// Below this between two readings, growth is a page here and a refill there, and a watch that
+    /// cried over it would be one nobody reads.
+    const WORTH_SAYING: i64 = 4 << 20;
+    let delta = |m: &BTreeMap<String, i64>, k: &str| m.get(k).copied().unwrap_or(0);
+    let rss = delta(now, "rss") - delta(before, "rss");
+    let held: i64 = now
+        .keys()
+        .filter(|k| !matches!(k.as_str(), "rss" | "threads" | "events"))
+        .map(|k| delta(now, k) - delta(before, k))
+        .filter(|d| *d > 0)
+        .sum();
+    // A quarter of the growth is enough: the accounted terms are text and text is copied, so a term
+    // that grew by X can be worth several X of resident memory without anything being lost.
+    rss > WORTH_SAYING && held * 4 < rss
 }
 
 /// Every thread, grouped by its name with the per-instance part taken off -
@@ -587,5 +719,68 @@ mod tests {
                 "the sentence must name {named}: {sentence}"
             );
         }
+    }
+
+    fn a_hub(session: &str, log: usize, view: usize) -> (HubCensus, usize) {
+        (
+            HubCensus {
+                session_id: session.into(),
+                log_bytes: log,
+                log_events: log / 1024,
+                view: letibot_sessionlog::view::ViewCensus {
+                    items: view,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            0,
+        )
+    }
+
+    /// A flat daemon prints no grew line at all, and one whose log doubled names the log and the
+    /// session it belongs to - a total cannot say either.
+    #[test]
+    fn the_grew_line_names_the_term_that_moved_and_not_the_total() {
+        let still = terms(200 << 20, 10 << 20, 14, &[a_hub("s-1", 1 << 20, 40)]);
+        assert_eq!(creep(&still, &still.clone()), "");
+
+        let later = terms(206 << 20, 11 << 20, 14, &[a_hub("s-1", 3 << 20, 41)]);
+        let said = creep(&still, &later);
+        for want in ["rss +", "heap +", "s-1 log +2 MiB", "s-1 events +"] {
+            assert!(said.contains(want), "the line must say {want}: {said}");
+        }
+        assert!(!said.contains("threads"), "nothing moved there: {said}");
+
+        // A session that went away is not a negative in a list of what grew.
+        let gone = terms(200 << 20, 10 << 20, 14, &[]);
+        let said = creep(&later, &gone);
+        assert!(
+            !said.contains("s-1"),
+            "a closed session is not news: {said}"
+        );
+    }
+
+    /// The sentence that says the growth is nowhere in the census: resident climbing with every term
+    /// flat is the shape that took a daemon to 113 GB, and a term climbing with it is not.
+    #[test]
+    fn growth_with_nothing_accounted_for_it_is_what_the_watch_calls_creep() {
+        let before = terms(200 << 20, 10 << 20, 14, &[a_hub("s-1", 1 << 20, 40)]);
+        // Nothing the census holds moved, and the resident count rose by 40 MiB.
+        let flat = terms(240 << 20, 10 << 20, 14, &[a_hub("s-1", 1 << 20, 40)]);
+        assert!(
+            unaccounted(&before, &flat),
+            "20 MiB of growth and no term moved is the whole of the defect"
+        );
+        assert!(creep(&before, &flat).contains("rss +"));
+
+        // The same growth with a log that grew by more than half of it is accounted for.
+        let held = terms(240 << 20, 10 << 20, 14, &[a_hub("s-1", 12 << 20, 40)]);
+        assert!(
+            !unaccounted(&before, &held),
+            "a log that grew by more than a quarter of the resident growth explains it"
+        );
+
+        // And a daemon that is not growing at all is never a creep.
+        assert!(!unaccounted(&before, &before.clone()));
     }
 }
