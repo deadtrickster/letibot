@@ -1260,17 +1260,22 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
     let body_node = kids(node)
         .into_iter()
         .find(|c| c.kind.as_str() == "heredoc_body");
-    let body = body_node
-        .map(|b| src(b, source).to_string())
-        .unwrap_or_default();
-    if let Some(b) = body_node
-        && !literal
-        && kids(b).iter().any(|c| c.kind != "heredoc_content")
-    {
+    // The grammar hands a body whose first byte is a backslash back as a `word` ARGUMENT of the
+    // redirect and leaves `heredoc_body` empty, which would read as a file this writes nothing
+    // into: measured, `cat <<EOF\n\$x\nEOF`. The body is taken from the text instead.
+    let misplaced = kids(node)
+        .into_iter()
+        .any(|c| c.field.as_deref() == Some("argument"));
+    let body = match body_node.map(|b| src(b, source)) {
+        Some(b) if !b.is_empty() => b.to_string(),
+        _ if misplaced => heredoc_body_from_text(node, source).unwrap_or_default(),
+        _ => String::new(),
+    };
+    if !literal && (heredoc_expansion_child(body_node) || heredoc_expands(&body)) {
         out.unresolved.push(Unresolved {
             construct: Construct::ExpandedHeredoc,
             decides: Decides::RedirectTarget,
-            span: Span::of(b),
+            span: body_node.map(Span::of).unwrap_or_else(|| Span::of(node)),
             text: clip(&body, 120),
             known_prefix: None,
             stage: Some(out.stages.len()),
@@ -1287,6 +1292,54 @@ fn heredoc_redirect(node: &Node, source: &str, out: &mut Normalised) -> Redirect
         target: RedirectTarget::HereDoc { literal, body },
         span: Span::of(node),
     }
+}
+
+/// A here-document's body read out of its redirect's own text, for the shape the grammar hands
+/// back as an argument word: everything between the first newline and the line that ends the
+/// document, with `<<-`'s leading tabs removed the way the shell removes them.
+fn heredoc_body_from_text(node: &Node, source: &str) -> Option<String> {
+    let text = src(node, source);
+    let from = node.start + text.find('\n')? + 1;
+    let end = kids(node)
+        .into_iter()
+        .find(|c| c.kind.as_str() == "heredoc_end")?;
+    let body = source.get(from..end.start)?;
+    if !text.starts_with("<<-") {
+        return Some(body.to_string());
+    }
+    Some(
+        body.split_inclusive('\n')
+            .map(|l| l.trim_start_matches('\t'))
+            .collect(),
+    )
+}
+
+/// Whether the grammar put something in the body other than literal content: an expansion, a
+/// substitution. It is the half of "the shell expands this" the tree states on its own.
+fn heredoc_expansion_child(body: Option<&Node>) -> bool {
+    body.is_some_and(|b| kids(b).iter().any(|c| c.kind != "heredoc_content"))
+}
+
+/// What an unquoted here-document body holds that the shell will act on: `$`, a backquote, or a
+/// backslash before either of those or itself. The grammar surfaces most as child nodes, but a
+/// backquote arrives inside `heredoc_content`, so the text is read as well as the tree.
+fn heredoc_expands(body: &str) -> bool {
+    let b = body.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'$' | b'`' => return true,
+            b'\\' => {
+                if matches!(b.get(i + 1), Some(b'$') | Some(b'`') | Some(b'\\')) {
+                    return true;
+                }
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Every child, anonymous tokens included. An operator token is exactly the kind of child
@@ -2556,6 +2609,32 @@ mod tests {
         let exp = n("cat <<EOF\n$expanded\nEOF");
         assert!(!exp.is_resolved());
         assert_eq!(exp.unresolved[0].construct, Construct::ExpandedHeredoc);
+
+        // The shell expands a backquote in an unquoted body too, and the grammar hands that
+        // back as body text rather than as a node: the bytes `cat` reads are not these.
+        let back = n("cat <<EOF\n`date` x\nEOF");
+        assert!(
+            !back.is_resolved(),
+            "a backquote in the body was read as text"
+        );
+        assert_eq!(back.unresolved[0].construct, Construct::ExpandedHeredoc);
+        // A backslash only counts before what it would quote, so prose keeps its `\|`.
+        assert!(!n("cat <<EOF\n\\$x\nEOF").is_resolved());
+        assert!(n("cat <<EOF\n\\| x\nEOF").is_resolved());
+        // Quoted, none of it expands.
+        assert!(n("cat <<'EOF'\n`date` $x \\$y\nEOF").is_resolved());
+        // The grammar hands a body whose first byte is a backslash back as an argument word, so
+        // the bytes are read from the text: quoted, an empty body would claim a write of nothing.
+        let q = n("cat > /w/f <<'EOF'\n\\x\nEOF");
+        assert!(q.is_resolved(), "{:?}", q.unresolved);
+        assert!(
+            q.stages[0].redirects.iter().any(|r| matches!(
+                &r.target,
+                RedirectTarget::HereDoc { literal: true, body } if body == "\\x\n"
+            )),
+            "the body was lost: {:?}",
+            q.stages[0].redirects
+        );
     }
 
     #[test]

@@ -276,6 +276,23 @@ fn a_python_heredoc_that_only_writes_is_an_edit_and_the_five_ways_it_is_not() {
     assert!(!b("cat <<'EOF' | bash\necho x > /home/dead/Projects/letibot/y\nEOF").writes_only());
 }
 
+/// A here-document body the grammar hands back as an argument word is read out of the text: an
+/// empty one would let a program nobody read claim to write nothing.
+#[test]
+fn a_heredoc_body_that_starts_with_a_backslash_is_read_out_of_the_text() {
+    let dir = "/home/dead/Projects/letibot";
+    let x = b(&format!("cat > {dir}/f <<'EOF'\n\\x\nEOF"));
+    assert!(x.resolved, "{:?}", x.findings);
+    let n = x.command.clone().expect("a shell command");
+    let body = n.stages[0].redirects.iter().find_map(|r| match &r.target {
+        letibot_code::shell::RedirectTarget::HereDoc { body, .. } => Some(body.clone()),
+        _ => None,
+    });
+    assert_eq!(body.as_deref(), Some("\\x\n"), "the body was lost");
+    // Unquoted, the same bytes are the shell's to expand, so the writing command is unread.
+    assert!(!b(&format!("cat > {dir}/f <<EOF\n\\$x\nEOF")).resolved);
+}
+
 /// A script's write is placed where the command runs, the same nesting the operand loop
 /// follows `Baseline::cwd` for: a body run after a `cd` writes where the `cd` landed.
 #[test]

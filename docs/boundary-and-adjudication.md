@@ -431,8 +431,11 @@ Of 161,097 `bash` decisions (lab2x1 134,428, mac 26,180, lubuntu1 489), **9,916 
   fastest: `x{1,2}{3,4}` is `x13 x14 x23 x24`), with bash's corners - an empty alternative makes no
   word, `{{a,b}}` is `{a}` and `{b}`, `{-01..3}` pads to the sign. Bounded at 32 words, and past the
   bound the word is **unread** rather than a literal, because a literal would claim the program
-  receives braces it does not. Still unread: an alternative holding an expansion or whitespace, a
-  quoted alternative, and `{,}` whose argument vanishes.
+  receives braces it does not. A brace beside a quoted literal is one of those words (`"x"{a,b}` is
+  `xa xb`), because a quote is not an expansion and the brace stands outside it. Still unread: an
+  alternative holding an expansion or whitespace, a brace INSIDE quotes, where which brace is which
+  cannot be said, and `{,}` whose argument vanishes. A `for` list of braces is unrolled like any
+  literal list, so `for i in {1..3}` is the three passes bash makes of it.
 - **`$'…'` is decoded into the bytes the program receives**: `\n`, `\t`, `\xHH`, `\NNN`, `\uHHHH`,
   `\UHHHHHHHH`, `\cX`, each arm taken from `od -tx1` of what bash 5.2 delivered rather than from the
   manual - which is how the odd ones were got right (`\x` with no digit keeps its backslash, `\x4` is
@@ -441,7 +444,7 @@ Of 161,097 `bash` decisions (lab2x1 134,428, mac 26,180, lubuntu1 489), **9,916 
 - **`$(pwd)` is `$PWD`** - the one substitution whose value is in the text, and the idiom agents write.
   Only that spelling: `$(pwd -P)`, `$(cd x && pwd)` and `$(dirname $(pwd))` stay unread, and the inner
   command is still listed as its own stage.
-- **Four shapes the census found were ours, not the grammar's.** A `$` that ends a word comes back as
+- **Five shapes the census found were ours, not the grammar's.** A `$` that ends a word comes back as
   the bare token (`echo x$$`, `cargo nextest -E run=^$`) and a lone `$` is a literal dollar. A bare
   `variable_name` in an argument position (`export SKIP_SLT`). A whole command in an argument position
   (`time ( … )`, `! ( … )`) hung off the `command` node with its commands never walked, so
@@ -449,7 +452,11 @@ Of 161,097 `bash` decisions (lab2x1 134,428, mac 26,180, lubuntu1 489), **9,916 
   and named `compound_argument`, and the command stays unread because how a compound's value relates
   to the stage's argv is not stateable. And a brace inside quotes, where
   `gh api graphql query='{repository(…)}'` looked like an expansion: the check now runs on the text
-  with every quoted character blanked.
+  with every quoted character blanked. And the here-document body whose first byte is a backslash,
+  which came back as an argument word of the redirect with an EMPTY body and so read as a program
+  that writes nothing: the body is taken from the text instead, and an unquoted one holding a
+  backquote, a `$` or a quoting backslash is unread, because the shell expands those and the bytes
+  the program reads are not the bytes written.
 
 ### 4i.4 What is still unread, and why it stays that way
 
