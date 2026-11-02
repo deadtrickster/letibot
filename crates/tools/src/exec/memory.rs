@@ -1,36 +1,14 @@
-//! **How much memory a tool call may hold** — the policy, the box's numbers, and the decision.
-//! `TODO.md` R64 and R65.
+//! How much memory a tool call may hold: the policy, the box's numbers, and the
+//! decision.
 //!
-//! The operator's report that started it: *"why my pg-noop session died and took byobu window
-//! with it?"* A database server a subagent started in the background grew to 77 GB, the box
-//! ran out, the kernel killed it — and because the daemon and every process its tools start
-//! lived in the tmux window's systemd scope, systemd stopped the whole window. Four times in
-//! seven hours, measured in the journal.
-//!
-//! The kernel half is in [`super::scope`]: a job's cgroup can carry `memory.max`, and a job
-//! that reaches it dies alone. This module is the half that decides the number, and the rule
-//! is the operator's, in their words:
-//!
-//! > *"I think model should try to decide, so it should know the free, how much it can ask
-//! > and what are the consequences"*
-//!
-//! > *"default memory either as absolute or a fraction is a config option with 64mb being a
-//! > good default"*
-//!
-//! > *"ceiling is a config too, with both absolute and fraction and the max is uncapped but
-//! > if model wants it - must ask me. unaskable ask is 50%."*
-//!
-//! So there are three outcomes and no fourth: the **default** when the model names nothing,
-//! a **grant** when it names an amount up to the ceiling, and **the operator's card** for
-//! anything above — including no cap at all. Nothing is clipped silently: an ask is either
-//! granted as asked or put to a person.
-//!
-//! Pure: no process, no `/proc` read except [`Meminfo::read`], so the rule is tested as a rule.
+//! [`super::scope`] puts `memory.max` on a job's cgroup, so a job that reaches it
+//! dies alone; this module decides the number, purely, so the rule is testable.
+//! Three outcomes and no fourth: the default, a grant up to the ceiling, a question.
 
 use std::fmt;
 
-/// **An amount of memory as the operator or the model writes it** — absolute (`64M`, `2G`,
-/// `1048576`) or a fraction of what is available when the call is made (`0.5`, `50%`).
+/// An amount of memory as a person or a model writes it: absolute (`64M`, `2G`,
+/// `1048576`) or a fraction of what is free when the call is made (`0.5`, `50%`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Amount {
     Bytes(u64),
@@ -39,8 +17,8 @@ pub enum Amount {
 }
 
 impl Amount {
-    /// Parse what a person or a model wrote. Units are binary (`M` is MiB), because
-    /// `memory.max` is read back in bytes and `64M` must be the number that comes back.
+    /// Parse what a person or a model wrote. Units are binary (`M` is MiB) because
+    /// `memory.max` is read back in bytes: `64M` must be the number that comes back.
     pub fn parse(text: &str) -> Result<Amount, String> {
         let t = text.trim();
         let bad = || {
@@ -102,15 +80,15 @@ impl fmt::Display for Amount {
     }
 }
 
-/// **The operator's two numbers**, from `providers.toml`'s `[memory]` section — and, over it,
-/// the session's project's `leticode.toml` (TODO.md R76 item 7).
+/// The operator's two numbers, from `providers.toml`'s `[memory]` section, overridden
+/// per session by the project's `leticode.toml`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MemoryPolicy {
     /// What a call that names no amount runs under. 64 MiB out of the box.
     pub default: Amount,
     /// The most a call may ask for without the operator. Half of what is free out of the box.
     pub ceiling: Amount,
-    /// **Which file set [`MemoryPolicy::default`]**, so the description can say where the
+    /// Which file set [`MemoryPolicy::default`], so the description can say where the
     /// number in force came from and a model killed at it is pointed at the line to change.
     pub default_from: PolicySource,
 }
@@ -125,13 +103,9 @@ impl Default for MemoryPolicy {
     }
 }
 
-/// **Where a `[memory]` number came from** — the four levels, lowest first. The project's
-/// `leticode.toml` beats the user's, which beats the box-wide `providers.toml`, which beats
-/// the built-in; the same precedence every other `leticode.toml` key has.
-///
-/// It exists because of the operator's *"when ran via tools cargo on that project dies with
-/// 64mb cap"*: a Rust project needs gigabytes for a build, the box-wide default is right for
-/// everything else, and the place to say *this project builds* is the project's own file.
+/// Where a `[memory]` number came from: the four levels, lowest first. The project's
+/// `leticode.toml` beats the user's, which beats the box-wide `providers.toml`, which
+/// beats the built-in; the same precedence every other `leticode.toml` key has.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolicySource {
     #[default]
@@ -156,13 +130,11 @@ impl PolicySource {
     }
 }
 
-/// **The least a killed call is told to ask for next time** — 2 GiB.
+/// The least a killed call is told to ask for next time: 2 GiB.
 const ASK_FLOOR: u64 = 2 << 30;
-/// **How many times the cap it died at.** A call killed at its cap says one thing about what
-/// it needs — MORE than the cap — and nothing about how much more. A cap is a limit and not a
-/// reservation, so a generous ask costs nothing until it is used, while a timid one costs
-/// another killed build; so the suggestion is a big step (64 MiB → 2 GiB, 2 GiB → 32 GiB)
-/// rather than a doubling that would take five kills to reach a `cargo test`.
+/// The step over the cap it died at. A kill says only that the cap was too small, so the
+/// suggestion steps big: a cap is a limit and not a reservation, and a timid ask costs
+/// another killed build.
 const ASK_STEP: u64 = 16;
 
 /// An amount as a model writes it back in `memory`: `2G` for whole GiB, else `M`.
@@ -176,13 +148,9 @@ pub fn ask_text(bytes: u64) -> String {
     }
 }
 
-/// **What a call killed at `cap` should ask for next time**, from the cap it died at and the
-/// most it may take without the operator — said in the result, so the model's next call
-/// is sized by a number and not by a guess (TODO.md R76 item 7).
-///
-/// `peaked at its 64 MiB cap — ask for memory: "2G" next time, or set `[memory] default` in
-/// this project's leticode.toml so every call in it starts there`. When the step would pass
-/// the ceiling, the ceiling is what is offered, and the sentence says what lies beyond it.
+/// What a call killed at `cap` should ask for next time, said in the result so the model's
+/// next call is sized by a number and not by a guess. When the step would pass the ceiling,
+/// the ceiling is what is offered and the sentence says what lies beyond it.
 pub fn ask_after_kill(policy: &MemoryPolicy, cap: u64, mem: Option<&Meminfo>) -> String {
     use super::scope::human_bytes;
     const G: u64 = 1 << 30;
@@ -209,7 +177,7 @@ pub fn ask_after_kill(policy: &MemoryPolicy, cap: u64, mem: Option<&Meminfo>) ->
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Meminfo {
     pub total: u64,
-    /// `MemAvailable` — what the kernel says can be handed out without swapping.
+    /// `MemAvailable`: what the kernel says can be handed out without swapping.
     pub available: u64,
     pub swap_free: u64,
 }
@@ -245,13 +213,13 @@ impl Meminfo {
     }
 }
 
-/// **What the model asked for** in the call's `memory` argument.
+/// What the model asked for in the call's `memory` argument.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ask {
     /// It named nothing: the default applies.
     Default,
     Amount(Amount),
-    /// `uncapped` — legal, and always the operator's to grant.
+    /// `uncapped`: legal, and always the operator's to grant.
     Uncapped,
 }
 
@@ -265,18 +233,18 @@ impl Ask {
     }
 }
 
-/// **What happens to the ask.**
+/// What happens to the ask.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decision {
     /// Run under this cap. No one is asked.
     Grant(u64),
-    /// Above the ceiling: the operator decides. `bytes` is `None` for *uncapped*.
+    /// Above the ceiling: the operator decides. `bytes` is `None` for uncapped.
     Operator { bytes: Option<u64>, ceiling: u64 },
 }
 
-/// **The rule, in one place.** The default is the operator's own number and is granted
-/// whatever the ceiling says — they set both. An amount up to the ceiling is granted as asked.
-/// Anything above it, and `uncapped`, goes to the operator.
+/// The rule, in one place. The default is the operator's own number and is granted whatever
+/// the ceiling says, because they set both. An amount up to the ceiling is granted as asked;
+/// anything above it, and `uncapped`, goes to the operator.
 pub fn decide(policy: &MemoryPolicy, ask: Ask, mem: &Meminfo) -> Decision {
     let ceiling = policy.ceiling.resolve(mem.available);
     match ask {
@@ -299,11 +267,11 @@ pub fn decide(policy: &MemoryPolicy, ask: Ask, mem: &Meminfo) -> Decision {
     }
 }
 
-/// **The question put to the operator** when an ask is above the ceiling.
+/// The question put to the operator when an ask is above the ceiling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryAsk {
     pub command: String,
-    /// `None` is *uncapped*.
+    /// `None` is uncapped.
     pub bytes: Option<u64>,
     pub ceiling: u64,
     pub available: u64,
@@ -334,7 +302,7 @@ impl MemoryAsk {
 pub enum MemoryGrant {
     Granted,
     Refused(String),
-    /// Nobody could be asked — a gate with no person behind it. The call does not run.
+    /// Nobody could be asked: a gate with no person behind it. The call does not run.
     NotAsked,
 }
 
@@ -366,8 +334,8 @@ mod tests {
         }
     }
 
-    /// The operator's three outcomes, and that nothing is clipped: a granted ask is granted
-    /// as asked, and anything else is a question rather than a smaller number.
+    /// The three outcomes, and that nothing is clipped: an ask within the ceiling is granted
+    /// as asked, and anything above it is a question rather than a smaller number.
     #[test]
     fn the_default_is_granted_an_ask_up_to_the_ceiling_is_granted_and_anything_above_is_the_operators()
      {
@@ -418,9 +386,8 @@ mod tests {
         assert_eq!(m.swap_free, 228 * 1024);
     }
 
-    /// **The note a killed call carries names an ask big enough to matter** — the operator's
-    /// cargo killed at 64 MiB is told `2G`, not `128M` — and the ceiling, when the step would
-    /// pass it.
+    /// The note a killed call carries names an ask big enough to matter, and the ceiling
+    /// when the step would pass it.
     #[test]
     fn a_kill_at_the_cap_says_what_to_ask_for_next_and_where_the_default_lives() {
         let p = MemoryPolicy::default();
@@ -429,7 +396,7 @@ mod tests {
         assert!(note.contains("memory: \"2G\""), "{note}");
         assert!(note.contains("this project's leticode.toml"), "{note}");
         assert!(note.contains("64 MiB, from the built-in default"), "{note}");
-        // 2 GiB killed → 32 GiB, granted at once on a box with 100 GiB free.
+        // 2 GiB killed gives 32 GiB, granted at once on a box with 100 GiB free.
         assert!(ask_after_kill(&p, 2 * GIB, Some(&mem(100))).contains("\"32G\""));
         // On a box with 20 GiB free the ceiling is 10 GiB, and that is what is offered.
         let tight = ask_after_kill(&p, 2 * GIB, Some(&mem(20)));

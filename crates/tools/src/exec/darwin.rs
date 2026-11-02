@@ -1,10 +1,8 @@
 //! What `/proc` answers on Linux, asked of the Darwin kernel instead.
 //!
-//! macOS has no `/proc`. The same facts — which processes exist, a process's
-//! parent, group, owner and state, its name and its command line — come from
-//! `libproc` (`proc_listallpids`, `proc_pidinfo(PROC_PIDTBSDINFO)`) and from
-//! `sysctl(KERN_PROCARGS2)`. This module is the one place those calls live, so the
-//! callers that used to read `/proc` ask a function instead of a file.
+//! macOS has no `/proc`; the same facts come from `libproc` and
+//! `sysctl(KERN_PROCARGS2)`. Every such call lives here, so callers ask a function
+//! instead of a file.
 
 /// One process, as `PROC_PIDTBSDINFO` describes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,9 +11,9 @@ pub struct Info {
     pub ppid: u32,
     pub pgid: u32,
     pub uid: u32,
-    /// `SZOMB` and friends.
+    /// The BSD state word: `SZOMB` for a zombie.
     pub status: u32,
-    /// The short name, at most 16 bytes — `/proc/<pid>/comm`'s counterpart.
+    /// The short name, at most 16 bytes: `/proc/<pid>/comm`'s counterpart.
     pub comm: String,
     /// Start time, microseconds since the epoch. With the pid, an identity: a
     /// reused pid has a different start.
@@ -87,7 +85,7 @@ pub fn info(pid: u32) -> Option<Info> {
 
 /// CPU time (user + system, nanoseconds) and resident size (bytes), from
 /// `PROC_PIDTASKINFO`. `None` for a zombie, which has no task left.
-#[allow(deprecated)] // `mach_timebase_info` points at the `mach2` crate; one call is not worth a dependency.
+#[allow(deprecated)] // the replacement lives in `mach2`: a dependency for one call.
 pub fn task(pid: u32) -> Option<(u64, u64)> {
     let mut ti: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
     let size = size_of::<libc::proc_taskinfo>() as libc::c_int;
@@ -138,11 +136,9 @@ pub fn alive(pid: u32) -> bool {
     info(pid).is_some_and(|i| !i.zombie())
 }
 
-/// The command line, space-joined — `/proc/<pid>/cmdline`'s counterpart.
-///
-/// `KERN_PROCARGS2` returns `argc` (an `int`), the executable path, NUL padding,
-/// then `argc` NUL-terminated arguments, then the environment. Only the arguments
-/// are taken. Empty when the process is gone or not ours.
+/// The command line, space-joined: `/proc/<pid>/cmdline`'s counterpart. Empty when
+/// the process is gone or not ours. `KERN_PROCARGS2` returns argc, the executable
+/// path, NUL padding, then argc arguments and the environment; only args are taken.
 pub fn cmdline(pid: u32) -> String {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut size: libc::size_t = 0;
