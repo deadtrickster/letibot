@@ -242,6 +242,9 @@ pub struct ActivityFacts {
     pub pending: bool,
     /// How many results are held for the model's next break — see [`JobWatchers::held_count`].
     pub held: usize,
+    /// **A settlement has been taken for a turn that has not begun** — see
+    /// [`JobWatchers::settlement_in_flight`]. The queue is empty here and the turn is still owed.
+    pub in_flight: bool,
     /// The jobs and children it is watching, with what it asked of each.
     pub at_work: Arc<Vec<Watched>>,
 }
@@ -410,6 +413,11 @@ pub struct JobWatchers {
     /// who the ring for a handed-up settlement has to name: the settlement is waiting
     /// for the parent now, and the parent is where it must be looked for.
     parent: Option<(Arc<Settlements>, String)>,
+    /// **A settlement left this queue to be said, and the turn that says it has not begun.**
+    /// A wake drains the queue before it starts the turn, so between the two the activity read
+    /// quiet and a `wait` answered the turn that STARTED the job: the same fact one step later.
+    /// [`JobWatchers::turn_began`] ends it.
+    in_flight: Arc<AtomicBool>,
     /// **This set's own session id** — what a completion it queues is stamped with.
     ///
     /// Read from the hub at construction and never from the tree: a child's set
@@ -518,6 +526,7 @@ impl JobWatchers {
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Settlements::new(),
+            in_flight: Arc::new(AtomicBool::new(false)),
             // A root has no level above it: nothing it fails to drain can be handed up.
             parent: None,
             me: hub.session_id(),
@@ -616,6 +625,7 @@ impl JobWatchers {
             hub: Arc::downgrade(hub),
             tasks: None,
             completions: Settlements::new(),
+            in_flight: Arc::new(AtomicBool::new(false)),
             parent: None,
             me: hub.session_id(),
             bell,
@@ -649,6 +659,8 @@ impl JobWatchers {
             // by the harness that owns this session, a line after this returns.
             recorder: Arc::new(Mutex::new(None)),
             completions: Arc::clone(&self.completions),
+            // Copied with the queue it describes, never shared with the tree's.
+            in_flight: Arc::clone(&self.in_flight),
             parent: self.parent.clone(),
             me: self.me.clone(),
             bell: self.bell.clone(),
@@ -708,6 +720,8 @@ impl JobWatchers {
             // **Its own**, and the one field this constructor no longer takes from the
             // tree. The child's queue is where its own settlements are drained from.
             completions: Arc::clone(&self.completions),
+            // Copied with the queue it describes, never shared with the tree's.
+            in_flight: Arc::clone(&self.in_flight),
             // And the tree's is where what it can no longer drain is handed up — carrying the
             // parent's own id, which is who the ring for a handed-up settlement names.
             parent: Some((Arc::clone(&tree.completions), tree.me.clone())),
@@ -1082,6 +1096,27 @@ impl JobWatchers {
         self.completions.any.load(Ordering::SeqCst)
     }
 
+    /// **A settlement is being taken out of this queue to be said** — called where the take
+    /// happens, BEFORE it, because the take is what clears the two facts a reader waits on.
+    /// Until [`JobWatchers::turn_began`] the model is still owed that turn.
+    pub fn took_a_settlement(&self) {
+        self.in_flight.store(true, Ordering::SeqCst);
+    }
+
+    /// **The turn that says the taken settlements has begun** — or nothing was owed after all.
+    /// Both ends of that turn call this: its clock (which starts before the queue's words go in)
+    /// and its ending, so a turn that never opened cannot leave a session reading busy.
+    pub fn turn_began(&self) {
+        self.in_flight.store(false, Ordering::SeqCst);
+    }
+
+    /// **Has a settlement been taken for a turn that has not begun?** — the window between the
+    /// queue being drained and the turn that carries it starting, which is where a `wait` read
+    /// *done* and answered the turn that STARTED the job.
+    pub fn settlement_in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
     /// **The jobs and children THIS session is waiting on, by handle and kind** — the things whose
     /// settlement will reach its model.
     ///
@@ -1108,15 +1143,15 @@ impl JobWatchers {
         out
     }
 
-    /// **The three facts the activity line is made of, taken without waiting on a lock a watcher
+    /// **The facts the activity line is made of, taken without waiting on a lock a watcher
     /// holds** — the invariant [`letibot_sessionlog::hub::Hub::publish`] rests on, and the answer
     /// to the 8½-hour deadlock [`WatchedNow`] records.
     ///
-    /// `pending` and `held` are atomics, and the watchers are one **leaf** lock over an `Arc` that
-    /// is cloned and released: nothing here can wait on a thread that is itself waiting for
-    /// something else, so a publish that reaches this cannot be part of a cycle.
+    /// `pending`, `held` and `in_flight` are atomics, and the watchers are one **leaf** lock over
+    /// an `Arc` that is cloned and released: nothing here can wait on a thread that is itself
+    /// waiting for something else, so a publish that reaches this cannot be part of a cycle.
     ///
-    /// **What a reader sees, and what it can miss.** Each of the three is one instant and they are
+    /// **What a reader sees, and what it can miss.** Each of them is one instant and they are
     /// not one instant together — a watcher that ends between the load of `pending` and the clone of
     /// the snapshot is in neither — so the value is a moment, not a guarantee, exactly as
     /// `Hub::work_pending` says of itself. What makes that safe is that every move of these facts
@@ -1128,6 +1163,7 @@ impl JobWatchers {
         ActivityFacts {
             pending: self.pending(),
             held: self.held_count(),
+            in_flight: self.settlement_in_flight(),
             at_work: self.watched.now(),
         }
     }

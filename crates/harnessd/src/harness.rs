@@ -1907,6 +1907,12 @@ impl Deliveries {
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
     ) -> (BetweenTurns, Vec<JobCompletion>) {
+        // **Taken means owed until the turn that says it begins** — marked before the take,
+        // because `pending` and `held` are what a reader waits on and the take is what clears
+        // them. Without it the activity read quiet between the drain and the clock.
+        if self.watch.pending() || self.watch.held_count() > 0 {
+            self.watch.took_a_settlement();
+        }
         let rows = self.rows();
         let immediate = crate::delivery::sort(&self.watch, &rows, skip);
         let held = self.watch.take_held();
@@ -1934,6 +1940,11 @@ impl Deliveries {
             self.log.completions(&busy, held_rule, at);
             meanwhile_notice(busy, &self.me, held_rule, self.cap, &rows)
         });
+        if said.is_empty() {
+            // Nothing was said after all (a gatekeeper's settlement is nobody's news here), so
+            // there is no turn owed and nothing for a reader to wait on.
+            self.watch.turn_began();
+        }
         (BetweenTurns { now, batch }, said)
     }
 
@@ -10494,6 +10505,12 @@ impl Harness {
     /// (`Sessions::put_a_restored_session_to_work`) draining on the worker's first pass, on the
     /// session that had never turned.
     pub fn begin_turn_clock(&mut self, began_ms: u64) {
+        // **A settlement taken for this turn is no longer owed** — the words are in the rows this
+        // turn opens with, whether or not the clock below starts. See
+        // `JobWatchers::settlement_in_flight`.
+        if let Some(w) = &self.job_watch {
+            w.turn_began();
+        }
         // **Only a turn the shared tail is running can start a clock** — see the field. A
         // `run_rounds` reached outside one (`Harness::system_update`'s, from a compaction or the
         // `m1` script) has no `end_turn_clock` behind it, and a clock nobody clears is a session
@@ -10538,6 +10555,11 @@ impl Harness {
         // ended it. Whatever the session is waiting on from here is said by the rest of the facts
         // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
         self.prompt_in_flight.store(false, Ordering::SeqCst);
+        // **And a turn that ends owes nothing** — one that never opened the batch it took hands the
+        // results back with `put_back`, and this keeps a take from outliving its turn.
+        if let Some(w) = &self.job_watch {
+            w.turn_began();
+        }
         // **After the flag, deliberately**: the switch is applied through the same door a
         // between-turns switch takes, and a gate that saw the span still open would pend it again
         // for ever.
@@ -12023,6 +12045,14 @@ impl Harness {
             None => Vec::new(),
         };
         notices.extend(held);
+        // **A wake with nothing to say runs no turn**, so nothing is owed for what the take
+        // removed — and this has to be cleared BEFORE the publish below, or the value a reader
+        // holds says delivery about a turn that is not coming.
+        if notices.is_empty()
+            && let Some(w) = &self.job_watch
+        {
+            w.turn_began();
+        }
         // **What this session is waiting on has moved** (`PROTOCOL_VERSION` 52): the monitor cursor
         // above took the firings, and `between_turns_unread` took the queue and the held set — none
         // of which publishes an event of its own. Said before the early return below, because the

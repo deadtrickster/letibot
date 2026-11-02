@@ -13,7 +13,7 @@
 //! |---|---|
 //! | [`Waiting::Turn`] | **the PROMPT**, from the moment the harness takes it until its loop returns — `Harness::prompt_in_flight`, which [`Harness::begin_turn_clock`] sets and [`Harness::end_turn_clock`] clears (["called once per prompt, never per round"](Harness::begin_turn_clock)), falling back to the hub's round-level [`Hub::turn_shape`] for a hub with no harness (a test, a replay) |
 //! | [`Waiting::Calls`] | the finer detail inside that: the round's generation ended and the calls it proposed are still running — again [`Hub::turn_shape`] |
-//! | [`Waiting::Delivery`] | the queue that owes the model something: the watcher set's un-drained settlements and held results, a monitor that has fired since [`Harness::monitor_cursor`] moved, and the hub's own pending command or wake ([`Hub::work_pending`]) |
+//! | [`Waiting::Delivery`] | the queue that owes the model something: the watcher set's un-drained settlements, held results and settlements taken for a turn that has not begun, a monitor that has fired since [`Harness::monitor_cursor`] moved, and the hub's own pending command or wake ([`Hub::work_pending`]) |
 //! | [`Waiting::Job`], [`Waiting::Child`] | the watcher set's live threads ([`JobWatchers::activity_facts`], whose snapshot is what a publish may read) for every one whose settlement is still to come: the daemon says it, so it is a turn. The exception is the job the model PARKED (`wake: "later"`), whose settlement it said it does not need waking for; seen [`awaited`] |
 //! | [`Waiting::Monitor`] | the monitors the session declared, live ([`Monitors::live_names`]) |
 //! | [`Waiting::Ask`] | the cards the hub's view still has open |
@@ -199,12 +199,11 @@ pub fn facts_of(
         f.monitors = m.live_names();
     }
     if let Some(w) = watch {
-        // **A settlement queued for this session, or a result held for its next break, is a turn it
-        // will take by itself.** This is the window QC's `wait` exited in (`478f415a`), and it is
-        // the one fact no event on the hub can say. Taken from the watcher set's own flags and
-        // snapshot — never from its maps — because this runs inside a publish; see [`source`].
+        // **Queued, held, or taken for a turn that has not begun: each is a turn this session will
+        // take by itself.** The last is the window the queue's drain opens, where a `wait` answered
+        // the turn that STARTED the job. Flags and snapshot, never its maps: this is a publish.
         let watching = w.activity_facts();
-        if watching.pending || watching.held > 0 {
+        if watching.pending || watching.held > 0 || watching.in_flight {
             f.delivery = true;
         }
         for one in watching.at_work.iter() {
@@ -227,6 +226,83 @@ pub fn facts_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::SystemTime;
+
+    /// **The gap between a settlement leaving the queue and the turn it wakes starting.**
+    /// The wake drains the queue (`pending`) and the held set before it has words to put in front
+    /// of the model, so both are false while the woken turn has not begun — and a `wait` that read
+    /// that instant answered the turn which STARTED the job. Taken for a turn is still owed.
+    #[test]
+    fn a_settlement_taken_for_a_turn_holds_the_activity_until_that_turn_begins() {
+        use crate::delivery::{DeliveryLog, HELD_RESULTS_CAP, Rule};
+        use crate::harness::Deliveries;
+        use crate::jobwatch::{BackgroundKind, JobCompletion};
+
+        let hub = Hub::new("s-gap");
+        let watch = JobWatchers::watching_tasks(&hub, None);
+        hub.set_activity_source(source(
+            Some(Arc::clone(&watch)),
+            None,
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicBool::new(false)),
+        ));
+        let done = JobCompletion {
+            memory: None,
+            kind: BackgroundKind::Job,
+            owner: "s-gap".into(),
+            job: "j91".into(),
+            command: "sleep 5".into(),
+            slug: None,
+            state: "exited 0".into(),
+            produced: 0,
+            elapsed_ms: 4_900,
+            detail: String::new(),
+            arrived: SystemTime::now(),
+        };
+        // The settlement a watcher queues, and the queue is the whole of what a reader sees.
+        watch.queue_for_test(done);
+        hub.refresh_activity();
+        assert_eq!(
+            hub.activity(),
+            Activity::of(vec![Waiting::Delivery]),
+            "a settlement in the queue is a turn owed"
+        );
+
+        // **The wake's own step**, and the one that opened the gap: it takes what it is owed, so
+        // the queue and the held set are both empty before any turn has a clock.
+        let deliveries = Deliveries::new(
+            Arc::clone(&watch),
+            None,
+            DeliveryLog::none(),
+            HELD_RESULTS_CAP,
+            "s-gap",
+        );
+        let (out, said) = deliveries.between_turns_unread(|_| false, Rule::TurnEnd);
+        assert!(
+            !out.now.is_empty() || out.batch.is_some(),
+            "there is a sentence to say: the take is not empty"
+        );
+        assert!(!said.is_empty(), "and it says the settlement");
+        assert!(!watch.pending(), "the queue is empty now");
+        assert_eq!(watch.held_count(), 0, "and nothing is held");
+        hub.refresh_activity();
+        assert_eq!(
+            hub.activity(),
+            Activity::of(vec![Waiting::Delivery]),
+            "the turn that says it has not begun, so the session is still about to act: {}",
+            hub.activity().line()
+        );
+
+        // **And the clock is what ends it**, so a `wait` that arrives after the turn started is not
+        // held by a settlement the model has already been handed.
+        watch.turn_began();
+        hub.refresh_activity();
+        assert!(
+            hub.activity().is_quiet(),
+            "nothing is owed once the turn has begun: {}",
+            hub.activity().line()
+        );
+    }
 
     /// **Quiet is the empty facts and nothing else**, and the entries come in the reading order a
     /// head draws them in — the property `Activity::of` and this module have to agree on, because
