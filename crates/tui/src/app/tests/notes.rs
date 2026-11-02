@@ -1246,7 +1246,7 @@ fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
     a.command("status");
     let stats = a.screen(120, 60).join("\n");
     assert!(
-        stats.contains("3 from before this window"),
+        stats.contains("3 not drawn"),
         "`/status` must say why they are not on the screen:\n{stats}"
     );
     a.key(Key::Esc);
@@ -2126,6 +2126,59 @@ fn an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row() {
     assert!(
         !b.alarmed(),
         "and it raises no triangle, because nothing is wrong"
+    );
+}
+
+/// **An edge-bound warning is moved, not deleted** - and the two doors agree. Before this, the live arm
+/// filtered the code before filing anything, so the sentence survived only as a `/status` count while the
+/// snapshot arm filed it: a head that attached later listed the diagnostic under `/notes` and a head that
+/// was there when it happened did not.
+#[test]
+fn an_edge_bound_warning_is_listed_in_notes_rather_than_deleted() {
+    let mut a = App::new(plain_cfg(80));
+    let said = "4210ms to the first byte (the provider, not the turn)";
+    assert_eq!(
+        a.apply(ServerFrame::Event(env(
+            1,
+            SessionEvent::Warning {
+                code: "model_slow_first_byte".into(),
+                detail: said.into(),
+                compaction: None,
+            },
+        ))),
+        Disposition::Filtered,
+        "the premise: it is not a row, so nothing below is about the transcript"
+    );
+
+    // **Held, and held BESIDE the conversation.** `Placed::Before` is what makes both halves true at
+    // once: `/notes` lists every note whatever its placement, and the walk draws only a seam.
+    let (place, _) = a
+        .notes
+        .iter()
+        .find(|(_, n)| matches!(n, Note::Warned(w) if w.detail == said))
+        .unwrap_or_else(|| panic!("the diagnostic was dropped, not moved: {:?}", a.notes));
+    assert_eq!(
+        *place,
+        Placed::Before,
+        "an edge-bound sentence is filed beside the conversation, not at a seam in it"
+    );
+    assert_eq!(
+        a.slow_first_byte, 1,
+        "and it is still counted: the edge points at the number"
+    );
+
+    // **Where the operator reads it**, which is the half the live arm used to lose.
+    let listed = a.notes_lines().join("\n");
+    assert!(
+        listed.contains(said),
+        "`/notes` does not carry the diagnostic, so the count is all that is left of it:\n{listed}"
+    );
+    // And `/status` says why it is not on the screen, in words that are true of an edge-bound note.
+    a.command("status");
+    let stats = a.screen(120, 96).join("\n");
+    assert!(
+        stats.contains("1 not drawn"),
+        "`/status` must say what it is holding and not drawing:\n{stats}"
     );
 }
 

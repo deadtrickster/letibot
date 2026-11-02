@@ -213,17 +213,25 @@ impl App {
                     v.error = Some(detail.clone());
                     self.redraw = true;
                 }
-                // Weather notes go on the edge (`warning::ALARM_ONLY`): a counter and the
-                // triangle, with `/status` holding the number. Counted as `Filtered`, and
-                // an unregistered code is said out loud rather than swallowed.
+                // Weather notes go on the edge (`warning::ALARM_ONLY`): the triangle, a counter with
+                // `/status` holding the number, and the daemon's sentence listed by `/notes` and
+                // drawn nowhere - filed BESIDE the conversation, which is why this is `Filtered`.
                 if letibot_sessionlog::warning::to_the_alarm(&code) {
+                    // **The sentence is filed, not dropped.** Filtering it here and filing it only on
+                    // the snapshot door gave one warning two records decided by when you attached:
+                    // a head that came later listed it and a live head kept only the count.
+                    self.note_beside(Note::Warned(Warned {
+                        code: code.clone(),
+                        detail,
+                        ts,
+                    }));
                     if !self.count_edge_note(&code) {
                         self.note(Note::Warned(Warned {
                             code: "alarm_only_unregistered".into(),
                             detail: format!(
                                 "`{code}` is classified as edge-bound and this head has no \
-                                 counter for it, so the diagnostic above is the only copy. \
-                                 See `warning::ALARM_ONLY`."
+                                 counter for it, so nothing on the edge points at the sentence \
+                                 `/notes` now lists. See `warning::ALARM_ONLY`."
                             ),
                             ts,
                         }));

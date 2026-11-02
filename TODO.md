@@ -1696,7 +1696,7 @@ no longer needed *by this head*, and what is left of the row is the other half: 
 whether an explicit `TurnEnded` marker is still wanted at all now that the prompt's span is on the
 wire for any head to fold (the two routes above are unchanged if it is).
 
-## Which side owns WEATHER — a classification both heads must answer the same way — **OPEN, question to settle between the heads**
+## Which side owns WEATHER — a classification both heads must answer the same way — **SETTLED 2026-11-02 on this side: the daemon classifies, and what was broken was the head's FILING; `model_endpoint_retry` is the ruling still open**
 
 The operator ruled: *"both heads should not emit it inside conversation"* for `model_slow_first_byte` —
 the diagnostic is wanted, its PLACEMENT was wrong, so it leaves the transcript, lights the `⚠` and
@@ -1722,6 +1722,39 @@ separately stated in both trees.
 
 **done when** a code added on one side cannot silently change a head's placement without the other
 side seeing it — one list, or two with a stated reason and a guard that reads the other.
+
+**SETTLED, 2026-11-02: the daemon classifies, and the head holds no list of its own.** The first shape,
+and leticl's preference, is what this tree already had and what it keeps. `warning::ALARM_ONLY` sits
+beside `Class::Routine` in `crates/sessionlog/src/warning.rs`, the head asks it through
+`warning::to_the_alarm`, and `crates/tui` has no placement list to drift — so a code added here cannot
+be placed one way by the head that saw it live and another way by the head that attached later. The
+guard is the register's own: `an_alarm_only_code_is_never_a_failure_or_a_refusal` fails if a code on
+the edge is also a `Failure` or a `Refused`, and it names the routine codes that must stay rows
+(`compacted`, `auto_compact`, `compact_half`, `reseated`, `cleared`) — the same subset argument
+`821d218` makes on leticl's side, read off the table rather than restated.
+
+**And the defect this entry was chasing was not in the list — it was in the FILING.** MEASURED on the
+tree: `crates/tui/src/app/events/warnings.rs`'s alarm arm returned `Disposition::Filtered` *before*
+filing anything, while the snapshot arm (`app/events/mod.rs`, the `Placed::Before` push) files every
+warning it replays. So one `model_slow_first_byte` had two records, decided by WHEN THE HEAD ATTACHED:
+a head that came later listed the sentence under `/notes`, and a live head kept only the `/status`
+count — the diagnostic the ruling is about, gone on the head that watched it happen.
+
+Landed: the alarm arm files the daemon's sentence through a new door, `App::note_beside`
+(`crates/tui/src/app/notes.rs`), and then counts it. `note_beside` files `Placed::Before` — listed by
+`/notes`, counted by `/status`, drawn nowhere — through `App::note`'s own identity test, and the note
+cap is one function now (`cap_notes`, over a new `NOTES_KEPT`) because filing has two doors and a cap
+written into one of them is a list that grows through the other. `/status`'s third number reads
+`N not drawn` rather than `N from before this window`, because a live edge-bound note is not from
+before the window. `ALARM_ONLY`'s docstring says where the sentence goes, so the next code added there
+is told. Test: `an_edge_bound_warning_is_listed_in_notes_rather_than_deleted`, beside the older
+`an_edge_bound_warning_raises_the_alarm_and_never_becomes_a_row`, which still pins the half that
+matters most — it is not a row in the conversation.
+
+**STILL OPEN, and it is the operator's ruling rather than a change to make: `model_endpoint_retry`.**
+leticl's `+weather-warnings+` carries it and this side's `ALARM_ONLY` does not, so a retry ladder is a
+row here and weather there — the one code where the two heads still answer *is this an event in the
+record* differently. Nothing above changes it: it stays a routine row until somebody rules.
 
 ## R57 — a child's completion is not a firing, so the wake never happens — **measured from leticl 2026-10-03; explained below, and the last hop is STILL UNTESTED**
 
@@ -2028,7 +2061,7 @@ thinking count drawn twice, leticl's three file lists, `BINARIES`, the weather l
 **done when** a peeked child is drawn by the same renderer as any session in both heads, and neither
 `sub_out_lines` nor `subagent-out-lines` exists.
 
-## Completion notices are one-liners in leticl and full prose here — **CLOSED on this side 2026-10-04 by `1f0146a`; two pieces named below are not in it**
+## Completion notices are one-liners in leticl and full prose here — **CLOSED on this side by `1f0146a`, and both pieces that entry left are now settled: the task landed in `be5f74a2`, `/t` was ruled out**
 
 **(No R-number: the series is yours to number.)**
 
@@ -2072,11 +2105,12 @@ raw, so a notice whose shape changes fails visibly (*"the notices got long again
 silently (*"a notice lost a line"*). The `[monitor]` notice is the live case: same voice, same
 bullets, deliberately not folded, because leticl does not fold it either.
 
-**still open?** `grep -n "you do not need to wait for it" crates/tui/src/app.rs` — the phrase now
-appears only in `folded_notice`'s refusal check and its tests, so a *drawing* reference is what this
-is looking for.
+**still open?** `grep -rn "you do not need to wait for it" --include=*.rs crates/tui/src` — the module
+split moved this out of `app.rs`: the phrase now appears in `folded_notice`'s refusal check
+(`ui/transcript/blocks.rs`), in `job_card.rs`'s `CLOSINGS` (the pre-R93.C1 wording every stored
+transcript still carries), and in tests — so a *drawing* reference is what this is looking for.
 
-**TWO PIECES ARE NOT IN `1f0146a`**, and they are the remainder of this row:
+**TWO PIECES WERE NOT IN `1f0146a`**, and they were the remainder of this row — both settled below:
 
   · **the child's own task in the `Agent` line.** leticl draws `Agent <id> · <task> · done: <answer>`
     and the task is LOOKED UP — the notice carries only what the child answered, and the title lives
@@ -2088,6 +2122,19 @@ is looking for.
     reaches a `User` row. letibot's `/t` is *all tool rows*, so this needs a verb or nothing. Ruled:
     nothing for now — the transcript and the model's own copy are untouched, which is what makes the
     fold a rendering rather than a loss.
+
+**BOTH ARE SETTLED, 2026-11-02.** The first — the child's own task in the `Agent` line — **landed in
+`be5f74a2`** (*"the folded agent line names the task the child was asked"*), and it took the shape the
+bullet above demanded: the task is LOOKED UP, through `subagent_asked`
+(`crates/tui/src/ui/transcript/blocks.rs`), which is the same function the subagents pane draws its
+rows from, so the folded line and the pane cannot disagree about one child; the two real absences — a
+child this head never watched spawn, and a daemon older than the `task` field — still draw a line
+rather than a blank. The second needs nothing landed: the ruling on it was *nothing for now*, and that
+ruling is what the tree does today. There is no `/t` for a `User` row; `folded_notice` is the one
+folder, it refuses any notice whose shape it does not recognise, and the paragraph stays in the
+transcript and in the model's context — which is what makes the fold a rendering and not a loss. The
+promise is matched by its opening words in `job_card.rs`'s `CLOSINGS` (R93.C1's own closing and the one
+every transcript stored before it carries), so a reworded notice fails visibly instead of silently.
 
 **THE PLAN AS MEASURED, 2026-10-04** (kept because it is what the two pieces above are against). The render site is
 `app.rs:18197`, the `Speaker::Agent` arm of `item_lines` — `(RowClass::Other,

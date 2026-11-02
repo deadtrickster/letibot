@@ -578,12 +578,15 @@ pub fn is_failure(code: &str) -> bool {
 }
 
 /// **The codes that belong on the edge rather than in the record** - the warning triangle and
-/// `/status`, never a row. **An event in the record goes in the record; a note about the
-/// weather goes on the edge**, and a `Failure` or a `Refused` can never be here (asserted below).
+/// `/status`, never a row. **An event in the record goes in the record; a note about the weather goes
+/// on the edge**, and the edge is a pointer rather than a grave: a head files the daemon's sentence
+/// beside the conversation, so `/notes` lists it and neither head draws it. A `Failure` or a `Refused`
+/// can never be here (asserted below).
 pub const ALARM_ONLY: &[&str] = &[
     // A first byte slower than the head's patience. The turn is running and nothing is
     // wrong with it; what the reader would learn from a row is that the provider was
-    // slow once, which is what the triangle is for.
+    // slow once, which is what the triangle is for - and the sentence itself is in
+    // `/notes`, because a count is not the diagnostic.
     "model_slow_first_byte",
 ];
 

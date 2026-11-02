@@ -366,11 +366,12 @@ impl App {
                 self.notes.len(),
                 self.retired_notes(),
                 // A third number, because there is a third reason a note is not on the screen: the
-                // reader retired it, or it arrived with a snapshot from before this window. The zero
-                // case says nothing rather than "0 from before this window" on every attach.
+                // reader retired it, or it is not a row's news at all - a snapshot from before this
+                // window, or a diagnostic the edge carries. The zero case says nothing rather than
+                // "0 not drawn" on every attach.
                 match self.notes_before() {
                     0 => String::new(),
-                    n => format!(" · {n} from before this window"),
+                    n => format!(" · {n} not drawn"),
                 }
             ),
             "What this head is holding: a guard that fired, a decision that settled, a \
@@ -378,9 +379,11 @@ impl App {
              here — `/notes` lists every one with its text and `/notes restore` puts the \
              retired ones back, which is the difference between a disclosure and a \
              deletion. The session log holds them either way; a note is how a head shows \
-             a durable fact once. **A note from before this window** is one that arrived \
-             with a snapshot: it happened before this head attached, so it is listed and \
-             counted rather than planted in a conversation it did not precede (R19).",
+             a durable fact once. **A note that is not drawn** is one that arrived with a \
+             snapshot — it happened before this head attached, so it is listed and counted \
+             rather than planted in a conversation it did not precede (R19) — or one filed \
+             beside the conversation on purpose, which is where the edge-bound diagnostics \
+             go: `/notes` lists the sentence and the conversation never drew it.",
         );
         row(
             "dropped",

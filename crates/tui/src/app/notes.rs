@@ -3,6 +3,11 @@
 use super::*;
 use letibot_sessionlog::view::{SettledDecision, Warned};
 
+/// **How many notes this head holds.** One list serves two doors - the conversation's own and the
+/// edge's - so the cap belongs to the list, and a door that forgot it would grow for the life of the
+/// box.
+pub(crate) const NOTES_KEPT: usize = 64;
+
 impl App {
     /// Post a transient line, which lives for [`NOTICE_MS`] of wall time and then gets out of the way. It does not
     /// take the input line's place, since a head that did left nowhere to see what you were typing for the rest of
@@ -21,6 +26,20 @@ impl App {
             return;
         }
         self.file_note(n);
+    }
+
+    /// **File a note BESIDE the conversation**: `/notes` lists it, `/status` counts it, and no row is
+    /// drawn for it, because it is not news about one. The edge-bound diagnostics are filed here -
+    /// their placement is *off the transcript* and their sentence must still be readable - through
+    /// the same identity test and the same cap as [`App::note`], since two doors into one list drift.
+    pub(crate) fn note_beside(&mut self, n: Note) {
+        if holds(&self.notes, &n) {
+            return;
+        }
+        self.notes.push((Placed::Before, n));
+        // Born older than what the reader has read, or not: the same one writer of the mark's keys.
+        self.hide_read();
+        self.cap_notes();
     }
 
     /// Put a note in the conversation, with the bookkeeping and without the identity test. The split exists for
@@ -50,7 +69,13 @@ impl App {
         if let Some(head) = head {
             self.invalidate_history_from(head.saturating_sub(1));
         }
-        if self.notes.len() > 64 {
+        self.cap_notes();
+    }
+
+    /// The cap on the note list, as one function because filing has two doors now: a cap written into
+    /// one of them is a list that grows through the other for the life of the box.
+    fn cap_notes(&mut self) {
+        while self.notes.len() > NOTES_KEPT {
             self.notes.remove(0);
             self.note_upto = self.note_upto.saturating_sub(1);
             // Every mark holds a `note_upto`, and dropping the oldest note shifts every index down by one: a mark
@@ -140,9 +165,9 @@ impl App {
             .count()
     }
 
-    /// How many notes this head holds and is not drawing, because they are older than the conversation it shows. The
-    /// number `/status` shows beside the count, and the two are different reasons for a line being absent: one the
-    /// reader chose, one the window decided.
+    /// How many notes this head holds and is not drawing: they are older than the conversation it shows, or they were
+    /// filed beside it on purpose. The number `/status` shows beside the count, and the three are different reasons
+    /// for a line being absent: one the reader chose, one the window decided, one the placement decided.
     pub(crate) fn notes_before(&self) -> usize {
         self.notes
             .iter()
