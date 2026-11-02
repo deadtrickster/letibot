@@ -1,25 +1,6 @@
-//! The daemon's model call for the smart `!`: the local endpoint, bounded.
-//!
-//! The prompt and the defensive parse live in `letibot_sessionlog::suggest`, where
-//! they are testable without standing up inference. This is the half that talks to a
-//! model, and it is the daemon's because the daemon is the one with an endpoint and
-//! an HTTP client. The operator's ask, in their words: *"i want smart ! when a model
-//! suggest completions."*
-//!
-//! # Local only, and bounded
-//!
-//! The endpoint is the one the daemon already resolved into `cfg.oracle` — the
-//! `[gatekeeper]` endpoint in the operator's providers.toml, which on this box is the
-//! LOCAL model. It is never a metered provider, because a suggestion must not cost
-//! money per keystroke: a daemon with no local endpoint installs no suggester, and a
-//! `SuggestShell` then answers with an empty list, which the head reads as *no
-//! suggestion*.
-//!
-//! The call is bounded two ways. The output is capped small — the answer is at most
-//! five short lines, and a cap that could hold a paragraph would let a chatty model
-//! spend the operator's time on prose. And the read is cut off at a timeout, because
-//! **a suggestion that does not arrive is nothing**: it is never a reason to wait, and
-//! a model that overruns the deadline is abandoned and the answer is the empty list.
+//! The daemon's model call for the smart `!`: the local endpoint, bounded. The prompt and
+//! the defensive parse live in `letibot_sessionlog::suggest`, where they are testable
+//! without standing up inference
 
 use std::time::Duration;
 
@@ -29,21 +10,13 @@ use letibot_sessionlog::suggest::{self, RECENT_ROWS};
 use letibot_transcript::TranscriptItem;
 use letibot_turn::http::{self, Endpoint};
 
-/// **How long a suggestion may take the local model.**
-///
-/// The gatekeeper's own budget is for a verdict that fails closed on a timeout, and it
-/// is tight (400 ms by default) because it is on the tool path. A suggestion is off the
-/// tool path — it fills a composer, it runs nothing — so it may take a little longer,
-/// but it is still a completion and not a turn: three seconds is the patience of a
-/// person waiting for a word to appear, and past it the answer is *nothing* rather than
-/// a stall.
+/// How long a suggestion may take the local model: three seconds. The gatekeeper's budget is
+/// tight because a verdict is on the tool path; a suggestion fills a composer and runs nothing
+/// and past this the answer a waiting person wants is nothing.
 pub const SUGGEST_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// **How many output tokens a suggestion may spend.**
-///
-/// Five shell lines, one per line, is a handful of tokens. The cap is generous enough
-/// for five real commands and small enough that a model that starts explaining itself
-/// is cut off before the explanation costs the operator anything.
+/// How many output tokens a suggestion may spend. Five shell lines, one per line, is a
+/// handful of tokens.
 pub const SUGGEST_MAX_TOKENS: usize = 128;
 
 /// The local model, asked for `!` completions.
@@ -99,17 +72,15 @@ impl LocalSuggester {
 
 impl ShellSuggester for LocalSuggester {
     fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String> {
-        // The conversation, from the session's own log: the last handful of rows
-        // condensed and the commands already run, the two context halves the prompt
-        // carries. A row whose body has not landed is `None` and is skipped — a
-        // candidate built on a body nobody has is a candidate built on nothing.
+        // The conversation, from the session's own log: the last handful of rows condensed and the
+        // commands already run, the two context halves the prompt carries.
         let snap = hub.snapshot();
         let items: Vec<TranscriptItem> = snap.items.iter().filter_map(|s| s.item.clone()).collect();
         let recent = suggest::recent_rows(&items, RECENT_ROWS);
         let commands = suggest::commands_run(&items);
         let prompt = suggest::suggestion_prompt(&recent, &commands, workspace, prefix);
         // The model's half, and the defensive parse of whatever it said. A model that
-        // did not answer, or answered with prose, is an empty list — the head reads
+        // did not answer, or answered with prose, is an empty list - the head reads
         // that as *no suggestion* and the operator's Tab does what it did before.
         match self.ask(&prompt) {
             Some(reply) => suggest::parse_suggestions(&reply),
@@ -130,10 +101,8 @@ mod tests {
 
     use super::*;
 
-    /// A one-shot local model: it records the request body and answers `reply` as a
-    /// chat completion. The endpoint comes back as an `Endpoint`, not a URL, because
-    /// `Endpoint::parse` takes `HOST:PORT` and a `http://…` string is a hostname it
-    /// would try to resolve.
+    /// A one-shot local model: it records the request body and answers `reply` as a chat
+    /// completion.
     fn canned_model(reply: &str) -> (Endpoint, Receiver<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
         let addr = listener.local_addr().expect("the bound address");
@@ -163,7 +132,7 @@ mod tests {
         (Endpoint::new("127.0.0.1", addr.port()), rx)
     }
 
-    /// A local model that accepts the connection and then says nothing at all — the
+    /// A local model that accepts the connection and then says nothing at all - the
     /// one shape that tests the deadline, because there is no byte for a read to
     /// return and no close for it to notice.
     fn silent_model() -> Endpoint {
@@ -174,7 +143,7 @@ mod tests {
                 return;
             };
             // Held open, unread and unanswered, for longer than the suggester's own
-            // deadline — the thread is detached and the test is done with it by then.
+            // deadline - the thread is detached and the test is done with it by then.
             std::thread::sleep(Duration::from_secs(30));
             drop(conn);
         });
@@ -236,13 +205,8 @@ mod tests {
         hub
     }
 
-    /// **The prompt that goes on the wire is the conversation, and the answer is the
-    /// parsed reply.**
-    ///
-    /// This is the seam nothing else covers: `sessionlog::suggest` tests the prompt
-    /// and the parse as pure functions, and this is what proves the daemon half hands
-    /// them the session's own rows, names the local model, caps the output — and turns
-    /// a decorated reply into candidates rather than prose.
+    /// The prompt that goes on the wire is the conversation, and the answer is the parsed
+    /// reply. This is the seam nothing else covers
     #[test]
     fn the_local_model_is_asked_about_this_session_and_its_reply_is_parsed() {
         let (endpoint, asked) = canned_model(
@@ -286,13 +250,9 @@ mod tests {
         );
     }
 
-    /// **A model that never answers is nothing, and it is nothing in three seconds.**
-    ///
-    /// The endpoint's own default read timeout is 180 s, which is right for a turn and
-    /// absurd for a completion: the operator would sit with a composer that says
-    /// *asking the model* for three minutes. So the suggester's own deadline is the
-    /// bound, and this is the test that would catch it being dropped — the call would
-    /// still answer `None`, three minutes later.
+    /// A model that never answers is nothing, and it is nothing in three seconds. The
+    /// endpoint's own default read timeout is 180 s, which is right for a turn and absurd for a
+    /// completion
     #[test]
     fn a_model_that_never_answers_is_nothing_within_the_deadline() {
         let s = LocalSuggester::new(silent_model(), "local".into());
@@ -309,7 +269,7 @@ mod tests {
         );
     }
 
-    /// **No endpoint at all is nothing**, which is what a daemon with no local model
+    /// No endpoint at all is nothing, which is what a daemon with no local model
     /// answers: the head reads it as *no suggestion* and the operator's Tab does what
     /// it did before the feature.
     #[test]

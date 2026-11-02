@@ -1,16 +1,6 @@
-//! **A `/reseat` reaches the model, in a turn of its own.**
-//!
-//! The operator, on pg-noop after re-seating it: *"since reseated nag reaches the model and it
-//! starts nagging me - the result - that reseat happened shall reach the model too. and it
-//! should start the turn"*. The stale-prompt notice reaches the model through the plan-check's
-//! turn and tells it to keep asking for `/reseat` until the person acts; when the person did,
-//! the act reached only the head (the `reseated` warning) and a system row at the top of a
-//! forked transcript that no turn ran to read. So the model went on asking.
-//!
-//! Driven through the daemon's own arm — `Sessions::dispatch` taking a `Reseat` command — on a
-//! session seated under one prompt and reopened by a daemon that composes another, which is
-//! the restart that started this. The model is the canned server the turn crate's tests
-//! replay. It needs the vocabulary GGUF and not a model.
+//! A `/reseat` reaches the model, in a turn of its own. The operator's report after
+//! re-seating a session: the nag reached the model and it started nagging them, so the
+//! re-seat's own result has to reach the model too, and start the turn.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -90,12 +80,8 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// **The model is told it was re-seated, and answers — and the stale notice is gone.**
-///
-/// Asserted on the conversation itself: after the re-seat there is a row in the harness's own
-/// voice (`Speaker::Agent`, never the operator's words) that says what happened and tells the
-/// model to stop asking for `/reseat`, and the model's answer follows it — a turn that RAN,
-/// not a row left for whenever somebody next speaks.
+/// The model is told it was re-seated, and answers - and the stale notice is gone. Asserted
+/// on the conversation itself
 #[test]
 fn a_reseat_tells_the_model_and_starts_its_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -110,7 +96,7 @@ fn a_reseat_tells_the_model_and_starts_its_turn() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
     // Seated under an older prompt, with a row behind it so the next open resumes. Opened
-    // straight through `Harness`, so the prompt is exactly this text — the daemon below
+    // straight through `Harness`, so the prompt is exactly this text - the daemon below
     // composes its own from `prompts.toml`, which is the build that moved on.
     {
         let mut older = seated.clone();
@@ -198,8 +184,8 @@ fn a_reseat_tells_the_model_and_starts_its_turn() {
             _ => None,
         })
         .expect("the row has text");
-    // R93.E8: it says the prompt was updated and to carry on — and does not name `/reseat`,
-    // which only planted the request it meant to stop.
+    // It says the prompt was updated and to carry on - and does not name `/reseat`, which only
+    // planted the request it meant to stop.
     assert!(
         text.starts_with("[reseat] Your system prompt and tools were updated")
             && text.ends_with("Carry on.")

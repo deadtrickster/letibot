@@ -1,9 +1,7 @@
-//! **One row per outage of one model endpoint, with a counter in it.**
+//! One row per outage of one model endpoint, with a counter in it.
 //!
-//! # The report
-//!
-//! MEASURED 2026-10-30, the operator's screen — three rows in three seconds, one per attempt,
-//! the same sentence with a different number in it:
+//! The report was three rows in three seconds, one per attempt, the same sentence with a different
+//! number in it
 //!
 //! ```text
 //! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:22
@@ -11,35 +9,19 @@
 //! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:25
 //! ```
 //!
-//! and their words: *"i dont need walls of this … a coutner is what is need"*. The daemon now
-//! keeps an [`Outage`] per endpoint (`harnessd::harness`), changes it on every failed attempt and
-//! **publishes nothing** until the round ends: the row then carries the count, when the last
-//! attempt was, and that attempt's own sentence, and a recovery is said once.
+//! The daemon keeps an [`Outage`] per endpoint, changes it on every failed attempt and publishes
+//! nothing until the round ends: the row then carries the count, when the last attempt was and
+//! that attempt's own sentence, and a recovery is said once.
 //!
-//! # What is measured here, and against what
-//!
-//! A real daemon, a real socket, a real head, and a loopback stub standing in for the provider —
+//! A real daemon, a real socket, a real head and a loopback stub standing in for the provider -
 //! nothing is mocked above the wire and nothing is injected into the retry policy, because the
-//! subject is *how many rows one outage is worth* and the only honest way to count them is to let
-//! a turn fail three times and read what the head was sent.
+//! subject is *how many rows one outage is worth*: three failed attempts give one row saying
+//! `attempt 3`; a fourth that answers gives one `model_endpoint_answered` row and no retry row; a
+//! second outage starts its own count.
 //!
-//!   * **A — three failed attempts, and the ladder gives up.** `http_retries = 2`, so the round is
-//!     taken three times. One `model_endpoint_retry` row, and it says `attempt 3`.
-//!   * **B — a fourth attempt that answers.** One `model_endpoint_answered` row saying how many
-//!     attempts it took, and no retry row at all.
-//!   * **C — a second outage in the same session.** A new record and a new row: two outages are
-//!     not one counter, so the second says `after 1 attempt` and not `after 4 attempts`.
-//!
-//! # One test, three sessions, and why not three tests
-//!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs a binary's tests in parallel —
-//! `apparatus::present`'s own tests carry the measurement of what that costs. So the scratch
-//! config dir is pointed at once, by the single test that owns this process, and the three
-//! scenarios run in sequence inside it. `model_switch_at_turn_end.rs` is the same shape for the
-//! same reason.
-//!
-//! The waits are the ladder's own — 1 s, 2 s, 4 s — because the policy under it is the daemon's
-//! and a fixture that shortened them would be measuring a retry loop this tree does not have.
+//! One test and three sessions, because `XDG_CONFIG_HOME` is process-global. The waits are the
+//! ladder's own - 1 s, 2 s, 4 s - since a fixture that shortened them would measure a retry loop
+//! this tree does not have.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -64,7 +46,7 @@ const ANSWER: &str = "the-endpoint-came-back";
 const PROMPT: &str = "say hello";
 const NEXT: &str = "and once more";
 
-/// **The provider's own sentence**, as it arrives in a 503's body — the words the row must keep
+/// The provider's own sentence, as it arrives in a 503's body - the words the row must keep
 /// behind the click, because that is what gets pasted into a bug report.
 const REFUSAL: &str = "the endpoint is having a bad minute";
 
@@ -72,11 +54,9 @@ const REFUSAL: &str = "the endpoint is having a bad minute";
 // The stub endpoint
 // ---------------------------------------------------------------------------
 
-/// One loopback model that refuses while it is told to and answers after that.
-///
-/// `left` is the count of refusals still owed, so one stub serves every scenario in this file:
-/// a scenario sets it before it prompts, and `seen` is the evidence of how many attempts the
-/// ladder really took.
+/// One loopback model that refuses while it is told to and answers after that. `left` is
+/// the count of refusals still owed, so one stub serves every scenario in this file `seen`
+/// is the evidence of how many attempts the ladder really took.
 #[derive(Clone)]
 struct Endpoint {
     port: u16,
@@ -107,7 +87,7 @@ fn endpoint() -> Endpoint {
             let Ok(mut conn) = stream else { continue };
             let _body = read_request(&mut conn);
             s.fetch_add(1, Ordering::SeqCst);
-            // **One connection at a time, so a load-then-subtract is a count.** The accept loop
+            // One connection at a time, so a load-then-subtract is a count. The accept loop
             // is this thread; the provider sends one request and waits for its answer.
             let owed = l.load(Ordering::SeqCst);
             if owed > 0 {
@@ -140,7 +120,7 @@ fn endpoint() -> Endpoint {
     Endpoint { port, left, seen }
 }
 
-/// Drain one request — headers plus the body `Content-Length` names — so the client's write side
+/// Drain one request - headers plus the body `Content-Length` names - so the client's write side
 /// is finished before the reply arrives.
 fn read_request(s: &mut TcpStream) -> String {
     let mut acc: Vec<u8> = Vec::new();
@@ -178,12 +158,12 @@ fn read_request(s: &mut TcpStream) -> String {
 // What one head saw
 // ---------------------------------------------------------------------------
 
-/// **Everything one head was told**, folded to the facts this file asserts on.
+/// Everything one head was told, folded to the facts this file asserts on.
 #[derive(Default)]
 struct Rec {
-    /// Every `model_endpoint_retry` sentence, in order — the row a failing outage is worth.
+    /// Every `model_endpoint_retry` sentence, in order - the row a failing outage is worth.
     retries: Vec<String>,
-    /// Every `model_endpoint_answered` sentence, in order — the row a recovery is worth.
+    /// Every `model_endpoint_answered` sentence, in order - the row a recovery is worth.
     answered: Vec<String>,
     /// Turns that ended FAILED.
     failed: usize,
@@ -221,7 +201,7 @@ fn fold(rec: &mut Rec, inb: Inbound) {
     }
 }
 
-/// Pump until `done`, folding every frame in. The deadline is generous — it exists so a
+/// Pump until `done`, folding every frame in. The deadline is generous - it exists so a
 /// regression reads as its missing fact rather than as a hung test.
 fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -234,7 +214,7 @@ fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     }
 }
 
-/// **How many of the stub's answers are rows yet** — read off the daemon's own snapshot rather
+/// How many of the stub's answers are rows yet - read off the daemon's own snapshot rather
 /// than off an event tally, so this is the turn having ENDED and not a frame having arrived.
 fn answers(hub: &letibot_sessionlog::hub::Hub) -> usize {
     hub.snapshot()
@@ -245,13 +225,13 @@ fn answers(hub: &letibot_sessionlog::hub::Hub) -> usize {
         .count()
 }
 
-/// **A config for one session of this file**, on the byte vocabulary and a loopback provider —
+/// A config for one session of this file, on the byte vocabulary and a loopback provider -
 /// so nothing here needs a GGUF, a llama.cpp or a model file of any kind.
 fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws).expect("the workspace");
     let mut cfg = Config::for_this_box(&ws);
-    // **Not this box's configuration** (`wired.rs`'s rule): no web search, no permission file.
+    // Not this box's configuration (`wired.rs`'s rule): no web search, no permission file.
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
@@ -266,20 +246,20 @@ fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
         api_key: None,
         thinking: false,
     });
-    // **No window, so no wall.** The ledger is byte tokens here (one id per byte of the rendered
-    // text), which is a large number for a prompt this small and would have the compaction door
-    // firing in the middle of an outage — a second subject in a file about one.
+    // No window, so no wall. The byte ledger is a large number for a prompt this small, so
+    // the compaction door would fire in the middle of an outage - a second subject in a file about
+    // one.
     cfg.context_window = None;
     // The ladder this file measures. `letibot_http::retry` waits 1 s, 2 s, 4 s…, so a scenario's
     // cost is the policy's and not a fixture's.
     cfg.http_retries = retries;
     // No `[fallback]` in the providers.toml this file writes, so an exhausted ladder ends the
-    // turn rather than moving the session — which is the case A is about.
+    // turn rather than moving the session - which is the case A is about.
     cfg.fallback = Vec::new();
     cfg
 }
 
-/// **One session, one daemon, one head** — `model_switch_at_turn_end.rs`'s arrangement: the driver
+/// One session, one daemon, one head - `model_switch_at_turn_end.rs`'s arrangement: the driver
 /// on a thread of its own and the worker loop on this one.
 fn drive<F>(parts: &Parts, cfg: Config, body: F) -> Rec
 where
@@ -316,7 +296,7 @@ where
         std::thread::spawn(move || {
             let mut client = client;
             let mut rec = Rec::default();
-            // **The registry is closed even if the driver panics**: a panic here would otherwise
+            // The registry is closed even if the driver panics: a panic here would otherwise
             // leave `daemon.run` blocked on a bell nobody rings, and a regression would read as a
             // hung test rather than as the missing fact it is.
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -381,7 +361,7 @@ fn one_outage_is_one_row_with_a_counter() {
 
     // ── A. Three failed attempts, and the ladder gives up ────────────────────────────────
     //
-    // One row, and it carries the count: the operator's wall of three was the defect.
+    // One row, and it carries the count.
     endpoint.refuse(100);
     let before = endpoint.seen();
     let cfg = config(&scratch, "givesup", 2);
@@ -415,10 +395,9 @@ fn one_outage_is_one_row_with_a_counter() {
         rec.answered
     );
 
-    // ── B. A fourth attempt that answers ────────────────────────────────────────────────
-    //
-    // The recovery is said once, with the count — a silent one is how somebody spends an
-    // afternoon believing the endpoint is still down — and no retry row is written at all.
+    // ── B. A fourth attempt that answers ──────────────────────────────────────────────── The
+    // recovery is said once, with the count - a silent one leaves a person believing the
+    // endpoint is still down - and no retry row is written at all.
     endpoint.refuse(3);
     let before = endpoint.seen();
     let cfg = config(&scratch, "comesback", 3);

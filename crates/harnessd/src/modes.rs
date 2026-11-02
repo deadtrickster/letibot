@@ -1,32 +1,6 @@
-//! **Where a project sits, and where a session does, remembered.**
-//!
-//! One durable mapping: **project root → point name**. `~/Projects/letibot` at *writes
-//! allowed*; a directory nobody has said anything about at *always-ask*; `/etc` at
-//! *read-only* if the operator put it there. And beside it the point each SESSION was put at,
-//! which is the session's own fact: a restart or a reseat brings it back there.
-//!
-//! This is what replaces the grant table an earlier draft of this design asked for —
-//! `(project, tool, intent class)`, durable, listable, revocable. That table is
-//! correct and nobody audits one. A per-project **point** is a single value a person
-//! can hold in their head, which is the property that makes it safe rather than merely
-//! configurable.
-//!
-//! # In the store, not a file
-//!
-//! It was `modes.tsv`, a text file each daemon read once at start and rewrote whole from its
-//! own copy — and there is a daemon per workspace, so one daemon's write undid another's. The
-//! operator: *"and again peerdb allow-all lost after restart/reseat"*, then *"lets switch it to
-//! sqlite db"*. The rows are now `project_mode` and `session_mode` in the session store every
-//! daemon already shares (`letibot_tokencore::store::modes`): a write is one row, and a read is
-//! the table as it is now ([`ModeStore::refresh`]). A `modes.tsv` from before is imported once.
-//!
-//! # What an unknown row does
-//!
-//! **It is reported and skipped, never guessed at.** A row naming a point this build
-//! does not have — a newer name, a typo — does not silently fall back to the default and
-//! does not stop the daemon: it is kept in [`ModeStore::unreadable`] and the caller puts it
-//! in the startup disclosure. A store that quietly downgraded one project would be the silent
-//! degradation `crate::config`'s adjudicator refusals already refuse to do, one layer out.
+//! Where a project sits, and where a session does, remembered. One durable mapping project
+//! root → point name. `~/Projects/letibot` at *writes allowed*; a directory nobody has said
+//! anything about at *always-ask*; `/etc` at *read-only* if the operator put it there.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,21 +24,16 @@ pub struct ModeStore {
     /// The legacy `modes.tsv` still to import, taken at the first read.
     legacy: Option<PathBuf>,
     by_root: BTreeMap<PathBuf, Mode>,
-    /// **The operator's recorded consent, per root** — the moment it was given, for the one
-    /// point that needs one.
-    ///
-    /// `allow-all` on a bare host is reachable only through the operator's answer to a
-    /// question ([`Mode::ALLOW_ALL_HERE`]); recorded, the row says the point AND that a person
-    /// agreed to it, and [`ModeStore::describe`] reads both aloud. Meaningful only on an
-    /// `allow-all` row, and cleared when the row moves anywhere else, because consent is for
-    /// one question and does not travel to a point nobody picked.
+    /// The operator's recorded consent, per root - the moment it was given, for the one
+    /// point that needs one. `allow-all` on a bare host is reachable only through the
+    /// operator's answer to a question ([`Mode::ALLOW_ALL_HERE`])
     consented: BTreeMap<PathBuf, String>,
-    /// Rows that did not parse, kept so the disclosure can say so. **Not** dropped: a
+    /// Rows that did not parse, kept so the disclosure can say so. Not dropped: a
     /// project whose row is malformed is a project the operator thinks they configured.
     pub unreadable: Vec<Unreadable>,
 }
 
-/// `$XDG_CONFIG_HOME/letibot/modes.tsv`, or `$HOME/.config/letibot/modes.tsv` — where the
+/// `$XDG_CONFIG_HOME/letibot/modes.tsv`, or `$HOME/.config/letibot/modes.tsv` - where the
 /// rows were kept before the store held them, read once to import them.
 pub fn legacy_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
@@ -85,10 +54,8 @@ impl ModeStore {
         s
     }
 
-    /// **The store at `db`, not yet read** — or a forgetful store when the daemon has no
-    /// session store. Nothing is opened here: the daemon builds this before any session exists,
-    /// and the first [`ModeStore::refresh`] (a session opening) imports the legacy file once
-    /// and reads the rows.
+    /// The store at `db`, not yet read - or a forgetful store when the daemon has no
+    /// session store. Nothing is opened here
     pub fn open(db: Option<&Path>) -> ModeStore {
         ModeStore {
             db: db.map(Path::to_path_buf),
@@ -97,7 +64,7 @@ impl ModeStore {
         }
     }
 
-    /// **Read the rows again** — what any daemon wrote since this one last looked. Called at
+    /// Read the rows again - what any daemon wrote since this one last looked. Called at
     /// every session open and after every write, so no copy outlives the moment it is read.
     pub fn refresh(&mut self) {
         let Some(db) = &self.db else {
@@ -138,16 +105,9 @@ impl ModeStore {
         }
     }
 
-    /// **Where this project sits.**
-    ///
-    /// The longest matching ancestor wins, so putting `~/Projects` at *writes allowed*
-    /// covers everything under it and a single project inside it can still be pinned
-    /// tighter. Nothing matching is [`UNSEEN_PROJECT`] — always-ask, where nothing that
-    /// is not a read happens without the operator.
-    ///
-    /// A directory *above* a configured root does not inherit from it, which is worth
-    /// stating because the opposite would be the dangerous direction: `~/Projects/x` at
-    /// writes-allowed must not make `~` writes-allowed.
+    /// Where this project sits. The longest matching ancestor wins, so putting `~/Projects`
+    /// at *writes allowed* covers everything under it and a single project inside it can still
+    /// be pinned tighter.
     pub fn for_project(&self, root: &Path) -> Mode {
         let root = canonical(root);
         self.by_root
@@ -158,26 +118,14 @@ impl ModeStore {
             .unwrap_or(UNSEEN_PROJECT)
     }
 
-    /// Whether this project's point was set, as opposed to defaulted.
-    ///
-    /// A separate question from `for_project`, and the disclosure needs both: *"this
-    /// project is at always-ask"* and *"nobody has said where this project sits, so it
-    /// is at always-ask"* are different sentences, and only the second one tells the
-    /// operator there is something they might want to do.
+    /// Whether this project's point was set, as opposed to defaulted. A separate question from
+    /// `for_project`, and the disclosure needs both
     pub fn is_set(&self, root: &Path) -> bool {
         let root = canonical(root);
         self.by_root.keys().any(|k| root.starts_with(k))
     }
 
-    /// Put a project at a point, and write its row.
-    ///
-    /// The prerequisite check is **not** here. It belongs to whoever is opening a
-    /// session, because what is available is a fact about this daemon on this box at
-    /// this moment — a store that refused to record *writes allowed* because no head
-    /// happened to be attached would be refusing to remember an intention.
-    ///
-    /// **A row that moves OFF `allow-all` takes the consent with it**; moving TO `allow-all`
-    /// keeps what was recorded, so the row and the answer can arrive in either order.
+    /// Put a project at a point, and write its row. The prerequisite check is not here.
     pub fn set(&mut self, root: &Path, mode: Mode) -> std::io::Result<()> {
         let root = canonical(root);
         let keep = (mode.name == Mode::ALLOW_ALL.name)
@@ -186,13 +134,8 @@ impl ModeStore {
         self.write(&root, mode, keep)
     }
 
-    /// **The operator's recorded consent for this project**, if they have given one.
-    ///
-    /// Read beside the row at open: an `allow-all` row WITH a stamp resolves to
-    /// [`Mode::ALLOW_ALL_HERE`] — the point that tells the boundary the truth — and one
-    /// without it is refused as it always was, naming how to give the answer. Resolved by the
-    /// same longest-ancestor rule as the row itself, so a stamp on `~/Projects` covers what
-    /// the row covers and no more.
+    /// The operator's recorded consent for this project, if they have given one. Read
+    /// beside the row at open
     pub fn consent(&self, root: &Path) -> Option<&str> {
         let root = canonical(root);
         self.consented
@@ -202,15 +145,14 @@ impl ModeStore {
             .map(|(_, when)| when.as_str())
     }
 
-    /// **Record the operator's answer**, on the project's row.
+    /// Record the operator's answer, on the project's row.
     pub fn set_consent(&mut self, root: &Path, when: &str) -> std::io::Result<()> {
         let root = canonical(root);
         let mode = self.by_root.get(&root).copied().unwrap_or(Mode::ALLOW_ALL);
         self.write(&root, mode, Some(when.to_string()))
     }
 
-    /// **Forget it**, for a point that does not need an answer. Reports whether there was one
-    /// — a "forgotten" that forgot nothing is the kind of report that makes somebody think
+    /// Forget it, for a point that does not need an answer. Reports whether there was one - a "forgotten" that forgot nothing is the kind of report that makes somebody think
     /// they revoked something.
     pub fn clear_consent(&mut self, root: &Path) -> std::io::Result<bool> {
         let root = canonical(root);
@@ -244,7 +186,7 @@ impl ModeStore {
             .collect()
     }
 
-    /// **The point this session was put at**, with the answer that opened it — `None` for a
+    /// The point this session was put at, with the answer that opened it - `None` for a
     /// session nobody moved, which opens at its project's point.
     pub fn session(&self, session_id: &str) -> Option<(Mode, Option<String>)> {
         let db = self.db.as_ref()?;
@@ -323,18 +265,8 @@ impl ModeStore {
     }
 }
 
-/// **The rows `modes.tsv` held, into the store — once per store.** A row the store already has
-/// is not overwritten (the store's is newer), and the file is left exactly where it is: the
-/// store records that it was imported, so a row removed later is not brought back by it.
-/// Returns how many rows were imported.
-/// **A mode the operator set, written down** — the project's row (with the operator's answer
-/// beside a consented `allow-all`) and the session's own: the writes the worker's door
-/// (`Sessions`' `CommandKind::Mode`, a `/mode` between turns) makes, for the running turn's door
-/// (`Harness::apply_queued_mode`, a `/mode` typed while the session works). That door applied the
-/// mode and wrote nothing, its comment trusting the worker's to — which never saw the command,
-/// because the turn had taken it. The operator, twice: *"i restart stroppy and allow-all goes"*.
-/// `session_moved` is whether the session itself took the point; the project row is written
-/// either way, because a later session may carry a point this one cannot.
+/// The rows `modes.tsv` held, into the store - once per store. A row the store already
+/// has is not overwritten (the store's is newer), and the file is left exactly where it is
 pub fn record(
     store: &std::sync::RwLock<ModeStore>,
     workspace: &Path,
@@ -395,12 +327,8 @@ pub fn import_tsv(db: &Path, tsv: &Path) -> std::io::Result<usize> {
 }
 
 /// Resolve a path as far as the filesystem allows, and keep it as given otherwise.
-///
-/// `canonicalize` fails for a directory that does not exist, and a project root that
-/// does not exist yet is a thing an operator may reasonably configure ahead of time.
-/// Falling back to the path as written is right for that; what it costs is that two
-/// spellings of one directory can be two rows, which is why the fallback is named
-/// rather than silent.
+/// `canonicalize` fails for a directory that does not exist, and a project root that does
+/// not exist yet is a thing an operator may reasonably configure ahead of time.
 fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
 }
@@ -434,7 +362,7 @@ mod tests {
         Db(d)
     }
 
-    /// **The operator's answer round-trips, and only on the row it was given for** — and
+    /// The operator's answer round-trips, and only on the row it was given for - and
     /// moving that project anywhere else forgets it, so `/mode` away and back cannot resurrect
     /// an older `yes`.
     #[test]
@@ -474,11 +402,9 @@ mod tests {
         assert_eq!(ModeStore::load(&d.path()).consent(&theirs), Some(when));
     }
 
-    /// **Two daemons share the store, and neither drops the other's row** — the operator,
+    /// Two daemons share the store, and neither drops the other's row - the operator
     /// 2026-10-12: *"and again peerdb allow-all lost after restart/reseat"*. Each workspace has
-    /// its own daemon; each read `modes.tsv` once at its start and rewrote the whole of it from
-    /// that copy, so letim's daemon, started before peerdb's row was written, wrote its own
-    /// row later and took peerdb's out. A write is one row now, and a fresh read sees the rest.
+    /// its own daemon
     #[test]
     fn two_daemons_writing_the_store_keep_each_others_rows() {
         let d = db("two-daemons");
@@ -509,7 +435,7 @@ mod tests {
         assert!(c.is_set(&d.0.join("later")), "a fresh read sees it");
     }
 
-    /// **A session keeps the point it was put at**, whatever its project's row says later.
+    /// A session keeps the point it was put at, whatever its project's row says later.
     #[test]
     fn a_session_keeps_its_own_point() {
         let d = db("session");
@@ -521,7 +447,7 @@ mod tests {
         assert_eq!(when.as_deref(), Some("t"));
     }
 
-    /// **`modes.tsv` is imported once, and left where it is.** A row the store already has is
+    /// `modes.tsv` is imported once, and left where it is. A row the store already has is
     /// the newer and is kept; a row removed after the import does not come back.
     #[test]
     fn the_legacy_file_is_imported_once_and_left_alone() {
@@ -593,7 +519,7 @@ mod tests {
         );
     }
 
-    /// The longest matching ancestor wins, and a parent does **not** inherit from a
+    /// The longest matching ancestor wins, and a parent does not inherit from a
     /// child. The second half is the dangerous direction: a subdirectory at
     /// writes-allowed must not widen the tree above it.
     #[test]
@@ -619,7 +545,7 @@ mod tests {
         );
     }
 
-    /// **A row this build cannot read is reported and skipped, never guessed at**, and a
+    /// A row this build cannot read is reported and skipped, never guessed at, and a
     /// write to another project leaves it in the store.
     #[test]
     fn an_unknown_row_is_reported_skipped_and_kept() {

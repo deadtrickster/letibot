@@ -1,27 +1,4 @@
-//! **One owner per session, and one lifecycle with an explicit close** — `TODO.md` R68.1–R68.3,
-//! end to end.
-//!
-//! The 2026-10-11 review of the daemon found that a subagent's hub had two readers and no end:
-//!
-//! * **two readers** — the child's own thread (`Hub::take_own_work_until`, from
-//!   `harness::serve_child`) and the daemon's worker (`Hub::try_command`, which popped anything).
-//!   A head prompting the subagent it was attached to could make the worker build a SECOND
-//!   `Harness` for a live child: two writers on one transcript (R68.1, CONFIRMED);
-//! * **no end** — nothing ever removed a session from the registry, closed a finished child's
-//!   hub or dropped its harness. R66 measured what that costs: two threads (`subagent-*` and
-//!   `letibot-deadline`) and ~12 MB per finished subagent, never released (7 → 19 threads for six
-//!   children). The deadline thread was ended by R67 item 13; this file measures the other.
-//!
-//! # What is proved here, and through what
-//!
-//! The real chain: a root session opened by the daemon's own `Sessions`, a child spawned through
-//! that session's tool runtime (the door a model's `task` call takes), and the daemon's worker
-//! driven exactly as `Daemon::run` drives it — `Registry::next_work_until` then
-//! `Sessions::dispatch`. The model is a stub answering canned frames.
-//!
-//! # What this needs
-//!
-//! The vocabulary GGUF (`Harness::open` renders its stable prefix) and no model.
+//! One owner per session, and one lifecycle with an explicit close.
 
 use std::net::TcpListener;
 use std::path::Path;
@@ -42,8 +19,8 @@ use letibot_turn::Endpoint;
 mod support;
 
 use support::canned::Frame;
-// **The descriptors a binary's parallel tests need** — see [`room`]'s own note: on this box the
-// soft open-file limit is 256 and fifty concurrent subagents want ~350.
+// The descriptors a binary's parallel tests need - see `room`'s own note: the soft open-file
+// limit on this box is small and fifty concurrent subagents want more than it.
 use support::qwen::a_plain_answer_turn;
 use support::room;
 use support::stub::{read_request, write_frames, write_props};
@@ -51,17 +28,14 @@ use support::stub::{read_request, write_frames, write_props};
 const PATIENCE: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
-// Fixtures — `message_between_turns.rs`'s shapes, kept to what this file needs
+// Fixtures - `message_between_turns.rs`'s shapes, kept to what this file needs
 // ---------------------------------------------------------------------------
 
 fn config(session_id: &str, endpoint: Endpoint, store: &Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`leticode`, the unconfined seat with the delegation trio** (`task`, `task_result`,
-    // `task_message`) — and not `coder`, which has the trio but is a CONFINED seat: on a Mac
-    // it refuses to open (*"needs a confined execution backend and one could not be built"*)
-    // and every test in this file measured the absence of a boundary instead of a lifecycle.
-    // Nothing here asserts a boundary.
+    // `leticode`, the unconfined seat with the delegation trio (`task`, `task_result`
+    // `task_message`) - and not `coder`, which has the trio but is a CONFINED seat
     cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
     cfg.http_retries = 0;
@@ -89,8 +63,8 @@ fn wiring(cfg: &Config) -> SessionWiring {
     }
 }
 
-/// A model that answers every request at once with the next script (cycling), and answers a
-/// spawn's `GET /props` with a window without consuming a script.
+/// A model that answers every request at once with the next script (cycling), and answers a spawn's
+/// `GET /props` with a window without consuming a script.
 struct Stub {
     endpoint: Endpoint,
     turns: Arc<std::sync::atomic::AtomicUsize>,
@@ -220,8 +194,8 @@ fn operator_rows(hub: &Hub) -> Vec<String> {
         .collect()
 }
 
-/// Threads in this process whose name starts with `prefix` — `memwatch`'s own census (the line
-/// the daemon's watchdog prints), so the test counts what an operator would read.
+/// Threads in this process whose name starts with `prefix` - `memwatch`'s own census (the line the
+/// daemon's watchdog prints), so the test counts what an operator would read.
 fn threads_named(prefix: &str) -> usize {
     letibot_harnessd::memwatch::thread_names()
         .into_iter()
@@ -230,7 +204,7 @@ fn threads_named(prefix: &str) -> usize {
         .sum()
 }
 
-/// The process's resident set, in KiB — for the record the test prints, not for an assertion.
+/// The process's resident set, in KiB - for the record the test prints, not for an assertion.
 fn rss_kib() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -242,7 +216,7 @@ fn rss_kib() -> u64 {
         .unwrap_or(0)
 }
 
-/// **One test at a time in this binary**: the thread census is the PROCESS's, and a sibling test
+/// One test at a time in this binary: the thread census is the PROCESS's, and a sibling test
 /// spawning children in parallel would be counted as this one's leak.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -250,9 +224,8 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// **The worker's own loop, for one slice of time** — `Daemon::run`'s three arms that matter
-/// here. Answers the commands it took, by session, so a test can say which sessions the worker
-/// served.
+/// The worker's own loop, for one slice of time - `Daemon::run`'s arms that matter here. Answers
+/// the commands it took, by session, so a test can say which sessions the worker served.
 fn drive_worker(
     sessions: &mut Sessions<'_>,
     registry: &Registry,
@@ -281,9 +254,9 @@ fn drive_worker(
                 let out = sessions.wake(&id);
                 took.push((id, out));
             }
-            // **A session something closed** (`PROTOCOL_VERSION` 53): the worker's half is
-            // letting the harness go. This driver is about turns, and a close is the daemon's
-            // own teardown — served here so the fixture drains the bell the way the daemon does.
+            // A session something closed: the worker's half is letting the harness go. This driver
+            // is about turns, and a close is the daemon's own teardown - served here so the fixture
+            // drains the bell the way the daemon does.
             WorkOrIdle::Work(Work::Close(id)) => {
                 sessions.close(&id);
             }
@@ -293,16 +266,11 @@ fn drive_worker(
 }
 
 // ---------------------------------------------------------------------------
-// R68.1 — one owner per session
+// One owner per session
 // ---------------------------------------------------------------------------
 
-/// **A prompt to an attached, live subagent is served by its own thread only** — the worker
+/// A prompt to an attached, live subagent is served by its own thread only - the worker
 /// races it and never wins.
-///
-/// Five prompts are submitted at once, so while the child's thread is inside the first turn the
-/// rest sit on its queue — exactly the window in which the worker, woken by the same submit's
-/// bell, used to pop one and build a second `Harness` for the child (`Sessions::harness_as`).
-/// MEASURED before the fix: the worker took prompts off the child's queue and `opened()` grew.
 #[test]
 fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -406,7 +374,7 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
 }
 
 // ---------------------------------------------------------------------------
-// R68.2 / R68.3 — one lifecycle, with an explicit close
+// One lifecycle, with an explicit close
 // ---------------------------------------------------------------------------
 
 /// A root session opened by the daemon's own `Sessions`, its children parking after `park`.
@@ -457,22 +425,15 @@ fn answered(sessions: &Sessions<'_>, handle: &str) -> bool {
         == letibot_transcript::ToolOutcome::Ok
 }
 
-/// **Fifty subagents started and finished leave no thread and no registry entry behind** — the
-/// "done when" of R68: memwatch's thread census flat across 50 subagents.
-///
-/// R66 measured the leak on a scratch daemon: 7 → 19 threads for six finished subagents, ~12 MB
-/// each, never released — the `subagent-*` thread parked in `serve_child` until a hub close that
-/// never came, and `letibot-deadline` (R67 item 13 ended that one with its host, but the host
-/// lived as long as the parked harness did). MEASURED here with the policy off
-/// (`child_park_after = None`, the old behaviour): 50 `subagent-*` threads and 50
-/// `letibot-deadline` threads still alive, and 51 registry entries, after every child answered.
+/// Fifty subagents started and finished leave no thread and no registry entry behind -
+/// memwatch's thread census flat across 50 subagents.
 #[test]
 fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
     // Fifty children at once: ~6 descriptors each for the store and its corpus, plus a socket per
-    // turn — `room`'s note has the measurement, and the limit this box starts a run with is 256.
+    // turn - `room`'s note has the measurement, and the limit this box starts a run with is small.
     let Some(_) = room::room_for("fifty concurrent subagents", 512) else {
         return;
     };
@@ -534,13 +495,9 @@ fn fifty_finished_subagents_leave_no_thread_and_no_registry_entry() {
     d.registry.close();
 }
 
-/// **A stopped child is gone, and a wake or a message to it is answered as gone** — not
-/// `HandedOn` into a hub nobody reads.
-///
-/// Before the guard, a child that left `serve_child` on a stop kept its hub registered: the
-/// worker's `wake_route` said `ItsOwnReader`, `Sessions::wake` answered `HandedOn`, and the
-/// wake was handed to a condvar with no thread behind it (R68.2, CONFIRMED). MEASURED before:
-/// the hub stayed in the registry and the wake came back `HandedOn`.
+/// A stopped child is gone, and a wake or a message to it is answered as gone - not
+/// `HandedOn` into a hub nobody reads. Before the guard, a child that left `serve_child` on
+/// a stop kept its hub registered
 #[test]
 fn a_wake_or_a_message_to_a_closed_child_is_answered_gone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -593,7 +550,7 @@ fn a_wake_or_a_message_to_a_closed_child_is_answered_gone() {
     d.registry.close();
 }
 
-/// **A parked child comes back for the next message, and parks again** — the idle-child policy's
+/// A parked child comes back for the next message, and parks again - the idle-child policy's
 /// other half: parking is store-only, not an end (`Config::child_park_after`).
 #[test]
 fn a_message_to_a_parked_child_reopens_it_from_the_store() {
@@ -666,7 +623,7 @@ fn a_message_to_a_parked_child_reopens_it_from_the_store() {
 }
 
 // ---------------------------------------------------------------------------
-// R68.6 — opening a session reads no list of the store
+// Opening a session reads no list of the store
 // ---------------------------------------------------------------------------
 
 /// A store source that counts how often the WHOLE store is listed.
@@ -682,11 +639,7 @@ impl letibot_sessionlog::registry::SessionSource for CountingSource {
     }
 }
 
-/// **Opening a session costs no full scan of the store on the worker** (R68.6). The open asked
-/// *is this somebody's subagent?* twice through `Registry::list` (`is_root`, the parent lookup in
-/// `harness_as`) and the seat's title once more — each a `Store::list_sessions` over every
-/// session and its items, under the mutex every head's picker frame takes. MEASURED before: 2
-/// lists for one open; after: 0.
+/// Opening a session costs no full scan of the store on the worker.
 #[test]
 fn opening_a_session_lists_nothing_from_the_store() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -722,17 +675,12 @@ fn opening_a_session_lists_nothing_from_the_store() {
 }
 
 // ---------------------------------------------------------------------------
-// The idle exit — a daemon nothing needs leaves (`Config::idle_exit_after`)
+// The idle exit - a daemon nothing needs leaves (`Config::idle_exit_after`)
 // ---------------------------------------------------------------------------
 
-/// **A daemon with nothing to do exits after its window, and a head attached holds it up for as
-/// long as it is attached** — through the daemon's own `Sessions`, a real hub and a real attach.
-///
-/// The operator found seven daemons, days old, nobody attached to any of them: closing a tab ends
-/// the head and not the detached daemon, and nothing ever ended the daemon. The head here stays
-/// attached past the window with nothing said, and its leaving starts the window over — a quarter
-/// window on is not a window, and a whole one is. (A holder that ends WITHOUT an event is the
-/// clock's own unit test, `sessions::idle_exit_clock`.)
+/// A daemon with nothing to do exits after its window, and a head attached holds it up for
+/// as long as it is attached - through the daemon's own `Sessions`, a real hub and a real
+/// attach.
 #[test]
 fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -775,7 +723,7 @@ fn a_daemon_nothing_needs_exits_after_its_window_and_a_head_holds_it_up() {
     d.registry.close();
 }
 
-/// **`--idle-exit 0` keeps the daemon up** — never due, however long it sits with nothing to do.
+/// `--idle-exit 0` keeps the daemon up - never due, however long it sits with nothing to do.
 #[test]
 fn a_daemon_with_no_idle_window_never_exits_on_its_own() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -1,38 +1,6 @@
-//! **The etalon on a map: every command's tree, clustered.**
-//!
-//! Plan: `docs/guard-corpus-plan.md` §7. The operator: *"treesitter as
-//! normalization for each command and clustering over trees, something like
-//! SOM or vectors to see the clusters. draw me them even."*
-//!
-//! The normalisation is [`letibot_code::shell::shape`]: the tree-sitter parse
-//! of the command with its literals replaced by holes, so `grep -n P -A 22
-//! a.rs` and `grep -n Q -A 3 b.rs` are one shape. Every bash command in the
-//! etalon becomes its shape; the shapes are aggregated (count, outcomes, what
-//! layer A reads them as today), vectorised, and laid out on a self-organising
-//! map (Kohonen, batch form). The map is what gets drawn.
-//!
-//! **The vector.** A shape's tokens — program names, flags, the holes, the
-//! operators — are feature-hashed into `DIM` signed buckets, plus a few
-//! structural counts from the tree itself (stages, pipes, redirects, heredocs,
-//! unresolved constructs, subshells), then L2-normalised. Hashing rather than a
-//! vocabulary because the vocabulary is open (every program name is a token)
-//! and the point is neighbourhoods, not names.
-//!
-//! **The map.** A `SIDE × SIDE` grid of prototype vectors trained by batch
-//! SOM: each epoch, every shape finds its best-matching unit (nearest
-//! prototype by dot product; the vectors are unit length), and each prototype
-//! becomes the neighbourhood-weighted mean of the shapes that landed near it,
-//! with the neighbourhood radius shrinking from `SIDE/2` to 1. Shapes are
-//! weighted by `sqrt(count)`: a shape seen 8,000 times should pull harder than
-//! one seen once, but not 8,000 times harder, or the map would be `cd <arg> ;
-//! grep …` and nothing else. Deterministic: a fixed-seed initialisation, so two
-//! runs on the same corpus draw the same map.
-//!
-//! **What is emitted.** Per cell: how many shapes and commands landed, how many
-//! were refused, what layer A reads them as, and the top shapes by count. Plus
-//! the U-matrix — each cell's mean distance to its neighbours' prototypes —
-//! which is where cluster BOUNDARIES show: a ridge of high U between two
-//! plains is two clusters. The page draws both.
+//! The etalon on a map: every command's tree, clustered. Plan `docs/guard-corpus-plan.md`
+//! §7. The operator: *"treesitter as normalization for each command and clustering over
+//! trees, something like SOM or vectors to see the clusters.
 
 use std::collections::HashMap;
 use std::path::Path;

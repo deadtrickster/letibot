@@ -3,9 +3,8 @@
 use super::*;
 use crate::mergequeue::serve::tests::{TempDir, branch, commit, repo, sh};
 
-/// **Outside `.git`, and reused.** The operator, 2026-10-11: *"the merges and branches shoudlnt
-/// land into .git"*. The tree is made under the landing root, keyed by the repository; the second
-/// call reuses it — its ignored build cache kept — and resets it clean.
+/// The landing tree is made outside `.git` and reused: made under the landing root, keyed by the
+/// repository; the second call reuses it - its ignored build cache kept - and resets it clean.
 #[test]
 fn the_landing_worktree_is_made_outside_git_and_reused() {
     let dir = TempDir::new("landing-place");
@@ -49,8 +48,8 @@ fn the_landing_worktree_is_made_outside_git_and_reused() {
     assert_ne!(landing_dir_in(&root, &other_repo), wt);
 }
 
-/// **The migration**: an old `.git/letibot-landing` is removed the git way (and pruned) the first
-/// time the new tree is made, and nothing else in `.git` is touched.
+/// The migration: an old `.git/letibot-landing` is removed the git way (and pruned) the first time
+/// the new tree is made, and nothing else in `.git` is touched.
 #[test]
 fn an_old_landing_worktree_in_git_is_migrated_away() {
     let dir = TempDir::new("landing-migrate");
@@ -83,9 +82,9 @@ fn an_old_landing_worktree_in_git_is_migrated_away() {
     assert_eq!(migrate_old_landing(&repo), None, "once");
 }
 
-/// **No test makes anything in the box's real `~/.local/share/letibot`.** A fixture's config has
-/// no landing root, a unit test cannot resolve the real one, and landing or granting under it
-/// fails the test.
+/// No test makes anything in the box's real `~/.local/share/letibot`: a fixture's config has no
+/// landing root, a unit test cannot resolve the real one, and landing or granting under it fails the
+/// test.
 #[test]
 fn a_test_never_reaches_the_real_landing_root() {
     assert_eq!(
@@ -107,9 +106,9 @@ fn a_test_never_reaches_the_real_landing_root() {
     guard_not_real(std::path::Path::new("/tmp/elsewhere"));
 }
 
-/// **The main checkout is never a worktree of itself, and never removed** — a row's `worktree`
-/// column is text somebody wrote, and it is the only thing between a sweep and `rm -rf` of a
-/// checkout. Another repository's tree is not this one's either.
+/// The main checkout is never a worktree of itself, and never removed - a row's `worktree` column is
+/// text somebody wrote, and this is the only thing between a sweep and `rm -rf` of a checkout.
+/// Another repository's tree is not this one's either.
 #[test]
 fn the_main_checkout_is_not_a_worktree_anybody_may_remove() {
     let dir = TempDir::new("rail");
@@ -136,10 +135,9 @@ fn the_main_checkout_is_not_a_worktree_anybody_may_remove() {
     assert!(!mine.exists(), "its own worktree goes");
 }
 
-/// **A tree git can no longer read is kept, not removed** — a `worktree add` whose bookkeeping was
-/// pruned behind it leaves a directory git answers `fatal: not a git repository` for, and whether
-/// it holds work cannot be told. Nothing is removed that cannot be checked, and the sentence says
-/// which tree it was, so a person can look.
+/// A tree git can no longer read is kept, not removed: a `worktree add` whose bookkeeping was
+/// pruned behind it leaves a directory git answers `fatal: not a git repository` for, and whether it
+/// holds work cannot be told. The sentence says which tree, so a person can look.
 #[test]
 fn a_worktree_git_no_longer_reads_is_kept_and_said() {
     let dir = TempDir::new("forgotten");
@@ -155,8 +153,8 @@ fn a_worktree_git_no_longer_reads_is_kept_and_said() {
     assert!(wt.join("target/cache").exists(), "the cache is still there");
 }
 
-/// **A tree with work in it is not removed, and the sentence names the file** — the branch may not
-/// carry what was never committed.
+/// A tree with work in it is not removed, and the sentence names the file - the branch may not carry
+/// what was never committed.
 #[test]
 fn a_dirty_worktree_is_refused_by_name() {
     let dir = TempDir::new("refuse-dirty");
@@ -168,8 +166,8 @@ fn a_dirty_worktree_is_refused_by_name() {
     assert!(wt.exists());
 }
 
-/// **The daemon's own leftover logs do not keep a landed branch's tree** (R92.4): `.letibot/*.jsonl`
-/// that older builds wrote into the workspace are not the child's work; a note it wrote is.
+/// The daemon's own leftover logs do not keep a landed branch's tree: `.letibot/*.jsonl` that older
+/// builds wrote into the workspace are not the child's work; a note it wrote is.
 #[test]
 fn a_tree_holding_only_the_daemons_logs_is_retired_and_one_with_work_is_kept() {
     let dir = TempDir::new("retire-leftovers");
@@ -209,7 +207,7 @@ fn only_jsonl_directly_under_letibot_is_a_daemon_leftover() {
     assert!(!daemon_leftover("src/x.jsonl"));
 }
 
-/// **One host, one owner, whatever the URL's spelling.**
+/// One host, one owner, whatever the URL's spelling.
 #[test]
 fn a_remote_names_its_host_and_owner() {
     let want = Some(("github.com".to_string(), "stroppy-io".to_string()));
@@ -230,7 +228,7 @@ fn a_remote_names_its_host_and_owner() {
     );
 }
 
-/// **A folder of one org's repositories is one project; a folder of unrelated ones is not.**
+/// A folder of one org's repositories is one project; a folder of unrelated ones is not.
 #[test]
 fn a_folder_is_one_project_when_its_repositories_share_an_owner() {
     let root = letibot_sessionlog::testing::scratch_root().join(format!(
@@ -284,9 +282,9 @@ fn a_folder_is_one_project_when_its_repositories_share_an_owner() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A github url becomes the https one `gh`'s helper answers for**, whatever spelling it arrived
-/// in — and another host is not translated. The forms below are the ones a clone, a `--push` url
-/// and a forwarded agent actually write.
+/// A github url becomes the https one `gh`'s helper answers for, whatever spelling it arrived in -
+/// and another host is not translated. The forms below are the ones a clone, a `--push` url and a
+/// forwarded agent actually write.
 #[test]
 fn a_github_url_becomes_the_https_one_gh_answers_for() {
     for (url, want) in [
@@ -310,8 +308,8 @@ fn a_github_url_becomes_the_https_one_gh_answers_for() {
             "  git@github.com:o/r.git  ",
             Some("https://github.com/o/r.git"),
         ),
-        // **An https remote is a github remote too**: it is not translated, but it is not
-        // "nothing" either — which is what let an inherited helper answer it (see [`push`]).
+        // An https remote is a github remote too: it is not translated, but it is not "nothing"
+        // either - which is what let an inherited helper answer it (see [`push`]).
         (
             "https://github.com/deadtrickster/letibot.git",
             Some("https://github.com/deadtrickster/letibot.git"),
@@ -339,17 +337,7 @@ fn a_github_url_becomes_the_https_one_gh_answers_for() {
 
 // ===== A reviewer's clone: one tree per ATTEMPT =====
 
-/// **Two clones of ONE row never share a path, and neither fails** — the class behind the operator's
-/// four dead reviews of 2026-10-29 (see [`clone_branch`]). The helper used to `remove_dir_all`
-/// whatever stood at `review-<row id>`, so a second attempt at a row deleted the tree the first
-/// attempt's reviewer was reading: git died on its own `.git/objects/pack/tmp_pack_*` (*"No such
-/// file or directory"*), and a reviewer already working there lost its workspace (*"the process did
-/// not start"*, *"0 entries"*).
-///
-/// The property is not *who wins*: there is no contest. Both callers succeed, the two trees are
-/// DIFFERENT paths, and each is complete — `rev-parse` answers the head the row names and `status`
-/// is clean. Three rounds, because a race that has to be caught on the first try is a test that will
-/// be green for the wrong reason.
+/// Two clones of one row never share a path, and neither fails.
 #[test]
 fn two_clones_of_one_row_never_share_a_path_and_neither_fails() {
     let dir = TempDir::new("clone-race");
@@ -406,9 +394,8 @@ fn two_clones_of_one_row_never_share_a_path_and_neither_fails() {
     }
 }
 
-/// **A second attempt gets its OWN tree and leaves the first one alone** — a re-seat must not touch
-/// what the previous reviewer is standing in, and the new reviewer must not inherit the files the
-/// previous one left: both, and they are the same decision.
+/// A second attempt gets its own tree and leaves the first one alone: a re-seat must not touch what
+/// the previous reviewer is standing in, and the new reviewer must not inherit its leftovers.
 #[test]
 fn a_second_clone_gets_its_own_tree_and_leaves_the_first_alone() {
     let dir = TempDir::new("clone-second");
@@ -435,8 +422,8 @@ fn a_second_clone_gets_its_own_tree_and_leaves_the_first_alone() {
     assert_eq!(sh(&second, &["status", "--porcelain"]), "");
 }
 
-/// **A clone that cannot be made leaves NOTHING behind** — no tree, no `.tmp` for the sweep to have
-/// to reason about, and nothing for the next attempt to trip over.
+/// A clone that cannot be made leaves nothing behind - no tree, no `.tmp` for the sweep to have to
+/// reason about, and nothing for the next attempt to trip over.
 #[test]
 fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
     let dir = TempDir::new("clone-fails");
@@ -462,12 +449,9 @@ fn a_clone_that_fails_leaves_no_tree_and_no_debris() {
 
 // ===== The proof a deletion needs =====
 
-/// **The proof is three-valued, and `None` from `rev_parse` is two of them.**
-///
-/// `branch_head` answers one `Option` for *the ref is there*, *the ref is not* and *this is not a
-/// repository*, and the resource sweep read that `Option` as permission: a `None` meant *may go*,
-/// and the worktree was removed with it. So the three facts are separated by `show-ref --verify`'s
-/// own exit status, and only the middle one — a ref git says is not there — is permission.
+/// The proof is three-valued, and `None` from `rev_parse` is two of them. The resource
+/// sweep read one `Option` as permission - a `None` meant *may go*, and a worktree was
+/// removed with it.
 #[test]
 fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
     let dir = TempDir::new("proof-three");
@@ -496,8 +480,8 @@ fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
         ref_proof(&repo, "agent/never-existed", "main", what),
         Proof::Gone
     );
-    // **A repository git cannot read is NOT `Gone`** — this is the one that used to take a tree with
-    // it. `show-ref` exits 128 here and `rev-parse` answers `None`, and the two are different facts.
+    // A repository git cannot read is NOT `Gone` - this is the one that used to take a tree with it.
+    // `show-ref` exits 128 here and `rev-parse` answers `None`, and the two are different facts.
     let not_a_repo = dir.0.join("not-a-repository");
     std::fs::create_dir_all(&not_a_repo).unwrap();
     assert_eq!(
@@ -528,11 +512,9 @@ fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
 
 // ===== The replay: the branch's own commits, and nothing else =====
 
-/// **A rewritten target must not be replayed onto itself.** `main` is rebuilt from an older commit,
-/// so `merge-base(branch, main)` is that older commit — a commit on the OLD main — and a plain
-/// `git rebase main` then replays the old main's two commits as well as the branch's one (and
-/// conflicts in `a.txt`, which the branch never touched). The replay is `--onto <main> <the fork>`,
-/// so exactly one commit is replayed and `range-diff` says the patch is unchanged.
+/// A rewritten target must not be replayed onto itself. `main` is rebuilt from an older commit, so
+/// `merge-base(branch, main)` is a commit on the OLD main, and a plain `git rebase main` replays the
+/// old main's commits as well as the branch's one. `--onto <main> <the fork>` replays exactly one.
 #[test]
 fn a_branch_with_one_commit_on_a_rewritten_main_replays_its_one() {
     let dir = TempDir::new("rebase-rewritten");
@@ -587,7 +569,7 @@ fn a_branch_with_one_commit_on_a_rewritten_main_replays_its_one() {
         std::fs::read_to_string(lwt.join("one.txt")).unwrap(),
         "one\n"
     );
-    // **The patches are the branch's, before and after.**
+    // The patches are the branch's, before and after.
     let rd = sh(
         &lwt,
         &[
@@ -607,8 +589,8 @@ fn a_branch_with_one_commit_on_a_rewritten_main_replays_its_one() {
     );
 }
 
-/// **The reflog alone finds the base once nothing else does** — the same branch with no recorded
-/// base: `main`'s reflog still names the tip it used to point at, which is the fork.
+/// The reflog alone finds the base once nothing else does - the same branch with no recorded base
+/// `main`'s reflog still names the tip it used to point at, which is the fork.
 #[test]
 fn a_rewritten_main_is_asked_for_the_tip_it_used_to_point_at() {
     let dir = TempDir::new("rebase-reflog");
@@ -625,10 +607,9 @@ fn a_rewritten_main_is_asked_for_the_tip_it_used_to_point_at() {
     assert_eq!(commits_over(&lwt, &new_tip, &rebased), Ok(1));
 }
 
-/// **A branch that merged the old main into itself replays its own three commits and no others.**
-/// Its first-parent spine is `B3, merge, B2, merge, B1, fork, …`, and the commits those merges
-/// brought in are *not* the branch's: `git rebase --onto <main> <fork>` would replay them too and
-/// conflict in `m.txt`, so the branch's own list is replayed one commit at a time.
+/// A branch that merged the old main into itself replays its own three commits and no others. The
+/// commits those merges brought in are not the branch's: `--onto <main> <fork>` would replay them too
+/// and conflict in `m.txt`, so the branch's own list is replayed one commit at a time.
 #[test]
 fn a_branch_that_merged_the_old_main_in_replays_only_its_three_commits() {
     let dir = TempDir::new("rebase-merged");
@@ -666,8 +647,8 @@ fn a_branch_that_merged_the_old_main_in_replays_only_its_three_commits() {
         ),
         "B3\nB2\nwork on three"
     );
-    // **range-diff says the branch's patches are the same.** The only patches it does not find on
-    // the other side are the old main's, which came in with the merges and are not the branch's to
+    // range-diff says the branch's patches are the same. The only patches it does not find on the
+    // other side are the old main's, which came in with the merges and are not the branch's to
     // replay; every patch it does find is `=`, and none was invented.
     let rd = sh(
         &lwt,
@@ -691,10 +672,9 @@ fn a_branch_that_merged_the_old_main_in_replays_only_its_three_commits() {
     assert!(patches_unchanged(&lwt, (&base, &head), (&new_tip, &rebased)).is_ok());
 }
 
-/// **A base nobody remembers is said, not guessed.** With the row recording nothing and the
-/// target's reflog gone, there is no way to tell the branch's own commit from the ones it sits on —
-/// so the row gets a sentence a person can act on instead of a conflict, and the landing tree is
-/// left where it was rather than half-rebased.
+/// A base nobody remembers is said, not guessed. With the row recording nothing and the target's
+/// reflog gone, the branch's own commit cannot be told from the ones it sits on - so the row gets a
+/// sentence a person can act on, and the landing tree is left where it was rather than half-rebased.
 #[test]
 fn a_branch_whose_base_nobody_remembers_is_refused_in_words() {
     let dir = TempDir::new("rebase-lost-base");
@@ -718,10 +698,9 @@ fn a_branch_whose_base_nobody_remembers_is_refused_in_words() {
     assert_eq!(sh(&lwt, &["status", "--porcelain"]), "", "and no debris");
     let _ = base;
 }
-/// **A github remote is pushed on gh's helper BY NAME, in both forms** — the inherited helper list
-/// cleared first, because an empty `credential.helper` is what makes the named one the one asked
-/// (MEASURED: without it osxkeychain answers and gh's helper is never called). A remote that is not
-/// github, or a `gh` that is not logged in, keeps git's own argv and names no helper.
+/// A github remote is pushed on gh's helper by name, in both forms, with the inherited helper list
+/// cleared first - an empty `credential.helper` is what makes the named one the one asked. A remote
+/// that is not github, or a `gh` that is not logged in, keeps git's own argv and names no helper.
 #[test]
 fn a_github_push_names_ghs_helper_and_clears_the_inherited_ones() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
@@ -774,9 +753,9 @@ fn a_github_push_names_ghs_helper_and_clears_the_inherited_ones() {
     }
 }
 
-/// **The row's sentence says whose credential answered** — a push on gh's credential reads
-/// differently from one on git's own, and a refusal keeps git's words AND the fact that gh
-/// answered, so "no access for this account" is not read as "no credential at all".
+/// The row's sentence says whose credential answered - a push on gh's credential reads differently
+/// from one on git's own, and a refusal keeps git's words AND the fact that gh answered, so "no
+/// access for this account" is not read as "no credential at all".
 #[test]
 fn the_pushes_sentence_says_whose_credential_answered() {
     let sha = "0123456789abcdef0123456789abcdef01234567";
@@ -805,9 +784,9 @@ fn the_pushes_sentence_says_whose_credential_answered() {
     );
 }
 
-/// **The old push still runs**: a remote that is not github goes to `origin` on git's own
-/// credential and the sentence says so — and a repository with no `origin` says that instead.
-/// A local bare repository, so nothing leaves the box.
+/// The old push still runs: a remote that is not github goes to `origin` on git's own credential and
+/// the sentence says so - and a repository with no `origin` says that instead. A local bare
+/// repository, so nothing leaves the box.
 #[test]
 fn a_remote_that_is_not_github_is_pushed_to_origin() {
     let dir = TempDir::new("push-plain");

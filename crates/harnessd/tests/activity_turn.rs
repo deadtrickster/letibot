@@ -1,31 +1,5 @@
-//! **A turn with two rounds, and the whole published history of what the session was waiting on.**
-//!
-//! `PROTOCOL_VERSION` 52's `Turn` is the PROMPT and not a round: the engine publishes
-//! `TurnStarted`/`TurnFinished` once per round, and a round that ended with tool calls is *always*
-//! followed by another round of the same prompt — so a `Turn` derived from that pair reads *quiet*
-//! at every round boundary, which is a session reported **done** in the middle of its own work. It
-//! is the last false wake of the package (the bridge's `wait` exited there, QC's `wait` exited
-//! there, and R55's row stood down there) and the reason `Waiting::Turn` is read from
-//! `Harness::prompt_in_flight` — the span `begin_turn_clock` brackets, *"called once per prompt,
-//! never per round"* — with the hub's round-level state only as the fallback for a hub nobody runs
-//! turns on.
-//!
-//! # What makes this runnable anywhere
-//!
-//! The session opens on the **byte vocabulary** with a provider (`vocab_gguf: None`,
-//! `provider: Some(..)`), so no model file is needed; the provider is a loopback fake scripting
-//! two rounds — a `read` call, which the gate admits without a card, and then the answer. The
-//! provider's URL comes from a `providers.toml` under a scratch `XDG_CONFIG_HOME`, because that is
-//! the only door a session has to a non-preset address, and this test therefore owns its whole
-//! process: `set_var` around a config read is only sound when nothing else in the binary reads the
-//! environment. That is why it is a file of its own.
-//!
-//! # Why the assertion is read off the log and not off a sampler
-//!
-//! `Hub::retained()` holds every event the hub published, so **no value can be missed between two
-//! samples**. A sampler would have to be lucky enough to look inside the round boundary, which is
-//! milliseconds wide, and a test that can only fail when the machine is slow is a test that passes
-//! on Tuesdays.
+//! A turn with two rounds, and the whole published history of what the session was waiting
+//! on. `Turn` is the PROMPT and not a round
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -41,9 +15,8 @@ use letibot_sessionlog::registry::{Registry, SessionWiring};
 fn a_two_round_turn_is_never_quiet_between_its_rounds() {
     let dir = TempDir::new("activity-turn");
     let root = dir.path();
-    // **Nothing of the operator's may reach this session**: a key in their `providers.toml`
-    // would decide where a request goes, and this test's one rule is that no request leaves
-    // loopback.
+    // Nothing of the operator's may reach this session: a key in their `providers.toml` would decide
+    // where a request goes, and no request may leave loopback.
     std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
     // SAFETY: this binary has ONE test, and these are set before the daemon, any thread that reads
     // config, or the harness exists.
@@ -80,8 +53,7 @@ fn a_two_round_turn_is_never_quiet_between_its_rounds() {
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
     cfg.session_id = "s-activity-turn".into();
-    // **The byte vocabulary and a provider** — the door `idle_clock.rs` and `no_vocab.rs` take, so
-    // this runs on a machine with no model file at all.
+    // The byte vocabulary and a provider, so this runs on a machine with no model file at all.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {
         name: "deepseek".into(),
@@ -122,11 +94,9 @@ fn a_two_round_turn_is_never_quiet_between_its_rounds() {
     );
 
     let before = hub.retained().len();
-    // **The door the daemon uses**, not `Harness::submit` on its own: a prompt's span is what
-    // `turn_tail::run_turn` brackets (`begin_turn_clock`/`end_turn_clock`), and every production
-    // door — `Sessions::run_prompt`, `Sessions::wake`, a child's own thread — goes through it. A
-    // test that called `submit` directly would be testing the half inside the span, which is the
-    // half that reads *quiet* at a round boundary.
+    // The door the daemon uses, not `Harness::submit` on its own: every production door goes through
+    // `run_turn`, which is what brackets the prompt's span, and calling `submit` directly would test
+    // the half that reads quiet at a round boundary.
     use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
     run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
         h.submit("read the plan and answer").map(Some)
@@ -168,10 +138,9 @@ fn a_two_round_turn_is_never_quiet_between_its_rounds() {
             .any(|a| { a.waiting_on().contains(&Waiting::Turn) }),
         "a prompt makes the session busy, and the value says which kind: {said:?}"
     );
-    // **Exactly one quiet, and it is the last one.** Anything else is a session reported *done* in
-    // the middle of its own prompt — the window between round one's last call finishing and round
-    // two's `TurnStarted`, which the round-level pair cannot help with and which this test would
-    // fail on before `Turn` became the prompt's span.
+    // Exactly one quiet, and it is the last one. Anything else is a session reported done in the
+    // middle of its own prompt - the window between round one's last call finishing and round two's
+    // `TurnStarted`, which the round-level pair cannot help with.
     let quiets: Vec<usize> = published
         .iter()
         .enumerate()
@@ -225,14 +194,13 @@ impl Drop for TempDir {
 enum Round {
     /// Prose and a normal stop.
     Say(&'static str),
-    /// One `read` call — a tool the gate admits without a card, so the turn goes on to a second
-    /// round with nobody to ask.
+    /// One `read` call - a tool the gate admits without a card, so the turn goes on to a second round
+    /// with nobody to ask.
     Read { path: String },
 }
 
-/// **A fake provider on a loopback port**, answering the scripted rounds in order and counting them
-/// — so the test can say *a tool round and then the answer happened*, rather than inferring it from
-/// prose.
+/// A fake provider on a loopback port, answering the scripted rounds in order and counting them, so
+/// the test can say a tool round and then the answer happened rather than inferring it from prose.
 struct Fake {
     url: String,
     rounds: Arc<Mutex<usize>>,
@@ -292,9 +260,8 @@ fn read_request(stream: &std::net::TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// One round as SSE — the three frames `letibot-provider` parses, in the shapes
-/// `crates/bridge/tests/end_to_end.rs` serves (so the two fakes cannot drift on the wire bytes that
-/// matter).
+/// One round as SSE - the three frames `letibot-provider` parses, in the shapes
+/// `crates/bridge/tests/end_to_end.rs` serves, so the two fakes cannot drift on the wire bytes.
 fn write_sse(mut stream: std::net::TcpStream, round: &Round) -> std::io::Result<()> {
     use std::io::Write;
     let mut body = String::new();
@@ -342,7 +309,7 @@ fn write_sse(mut stream: std::net::TcpStream, round: &Round) -> std::io::Result<
     stream.flush()
 }
 
-/// A duration the test never uses, kept out of the imports above on purpose: `Duration` is what a
-/// wait would be written with, and this test waits for nothing — the log already holds every value.
+/// Unused on purpose: `Duration` is what a wait would be written with, and this test waits for
+/// nothing - the log already holds every value.
 #[allow(dead_code)]
 const PATIENCE: Duration = Duration::from_secs(30);

@@ -1,24 +1,5 @@
-//! **The `plugin` tool's daemon half**: one session's plugin host, behind
+//! The `plugin` tool's daemon half: one session's plugin host, behind
 //! [`letibot_tools::builtins::plugin::PluginDesk`].
-//!
-//! # Why a slot instead of the host itself
-//!
-//! The tool is seated when the harness opens (`Harness::open`, which builds the tool registry) and
-//! the plugin host is built when the DAEMON opens the session (`Sessions::open_plugins`, which is
-//! the one place a hub and a pane driver exist). So this holds a slot the daemon fills, which is
-//! the same shape [`crate::plugins::PluginHost`]'s own notices use: a live `Arc` handed over once,
-//! read through a lock.
-//!
-//! **A session with no host is a real state and it says so**: a subagent is opened by its parent's
-//! runner, not by `Sessions`, so nothing fills its slot — and its answer is a sentence naming that,
-//! never an absence that reads as a capability this build lacks.
-//!
-//! # What needs the live host and what does not
-//!
-//! `scaffold` and `build` are file and cargo operations on the session's OWN plugin directory, so
-//! they work in any session: a source written and compiled is useful even before anything can load
-//! it. `load`, `stack`, `disable`, `enable` and `test` ask the stack the head's panes are drawn
-//! from — one stack, because two would be two answers to *what is in force*.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -30,7 +11,7 @@ use serde_json::Value;
 use crate::plugins::scaffold::{self, Scaffolded};
 use crate::plugins::{PluginHost, Refused, contract};
 
-/// **One session's plugin loop.**
+/// One session's plugin loop.
 pub struct SessionPlugins {
     session: String,
     dir: Option<PathBuf>,
@@ -76,7 +57,7 @@ impl SessionPlugins {
     }
 }
 
-/// The host's own refusal shape, in the tool's — the one place the two crates meet.
+/// The host's own refusal shape, in the tool's - the one place the two crates meet.
 fn refused(r: Refused) -> Refusal {
     Refusal::new(r.why, r.detail)
 }
@@ -100,9 +81,8 @@ impl PluginDesk for SessionPlugins {
             kind,
             pane,
         } = scaffold::write(dir, name, purpose, hook).map_err(Refusal::only)?;
-        // **What the layer is for, in the words of the kind it answers** — a pane is drawn, the
-        // four patch points are not, and a sentence that said "its pane will be drawn as """ was
-        // how this read before there was more than one kind.
+        // What the layer is for, in the words of the kind it answers: a pane is drawn, the four
+        // patch points are not.
         let drawn = if kind == "pane" {
             format!("its pane will be drawn as `{pane}`")
         } else {
@@ -143,10 +123,9 @@ impl PluginDesk for SessionPlugins {
              `plugin build {name}`, `plugin test {name}`, `plugin load {name}`.",
             if kind == "pane" { "view" } else { "answer" }
         ));
-        // **Provenance, recorded at the write** — D17's third arm. `scaffold` is a model's write
-        // like any other, and a layer whose bytes nobody recorded is a layer whose authorship is
-        // a guess from its path. The files are read back rather than the template's strings used:
-        // what is on disk is what is recorded.
+        // Provenance, recorded at the write: `scaffold` is a model's write like any other, and a
+        // layer whose bytes nobody recorded has its authorship guessed from its path. The files are
+        // read back rather than the template's strings used, because what is on disk is what counts.
         let book = letibot_plugins::Trust::open_default();
         for rel in [letibot_plugins::MANIFEST, "src/lib.rs"] {
             let path = dir.join(rel);
@@ -167,9 +146,8 @@ impl PluginDesk for SessionPlugins {
     }
 
     fn stack(&self) -> Result<String, Refusal> {
-        // A session with no host has no stack, but the question is still answerable honestly: the
-        // honest answer names the one thing missing rather than an empty stack that reads as *no
-        // plugins are installed*.
+        // A session with no host has no stack, and the honest answer names the one thing missing
+        // rather than an empty stack that reads as *no plugins are installed*.
         Ok(self.host()?.stack_doc())
     }
 
@@ -183,9 +161,8 @@ impl PluginDesk for SessionPlugins {
     }
 
     fn hooks(&self, hook: Option<&str>) -> Result<String, Refusal> {
-        // The contracts do not depend on this session at all — they are the host's types — so a
-        // session with no plugin host still gets them, which is what a subagent writing a plugin
-        // for its parent needs.
+        // The contracts do not depend on this session - they are the host's types - so a session
+        // with no plugin host still gets them, which is what a subagent writing a plugin needs.
         contract::hooks_doc(hook).map_err(Refusal::only)
     }
 }

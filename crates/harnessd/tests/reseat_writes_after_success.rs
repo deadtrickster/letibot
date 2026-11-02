@@ -1,13 +1,5 @@
-//! **A re-seat writes nothing it has not earned, and a fork is the session's only once its rows
-//! are stored** (TODO R91.2, R91.13).
-//!
-//! * R91.13 — `reseat_target` wrote a `stable_prefix` row (and moved `cfg.system`) before
-//!   `reingest`'s fit check, so a carry refused as over the window left an orphan prompt row on
-//!   every attempt.
-//! * R91.2 — `fork_onto` registered the new transcript (`put_fork`, the newest, so what a resume
-//!   opens) before writing a row of it. A store that failed mid-carry left a resume onto a partial
-//!   conversation; an error after the swap returned through `reingest`'s refusal path before
-//!   `self.prefix = next`, and the operator was told "Nothing was changed".
+//! A re-seat writes nothing it has not earned, and a fork is the session's only once its
+//! rows are stored.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -128,7 +120,7 @@ fn a_stale_session(parts: &Parts, seated: &Config, rows: usize) {
     .expect("the seed fork lands");
 }
 
-/// The count, read through the store's own connection — this is what the file holds, not a
+/// The count, read through the store's own connection - this is what the file holds, not a
 /// second opener.
 fn count(store: &std::path::Path, sql: &str) -> i64 {
     Store::open(store)
@@ -138,7 +130,7 @@ fn count(store: &std::path::Path, sql: &str) -> i64 {
         .expect("the count")
 }
 
-/// **R91.13: a re-seat refused as over the window writes no prompt row.**
+/// A re-seat refused as over the window writes no prompt row.
 #[test]
 fn a_reseat_refused_over_the_window_writes_no_prompt_row() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -174,10 +166,9 @@ fn a_reseat_refused_over_the_window_writes_no_prompt_row() {
     assert_eq!(h.config().system, system_before);
 }
 
-/// **R91.2: a fork whose rows the store refused is not what a restart opens, and the re-seat is
-/// not reported as "Nothing was changed".** The store refuses by having `transcript_item` moved
-/// away through a second connection while the carry is written; once it is back, the next store
-/// write takes the rows up and seals the fork.
+/// A fork whose rows the store refused is not what a restart opens, and the re-seat is not
+/// reported as "Nothing was changed". The store refuses by having `transcript_item` moved
+/// away through a second connection while the carry is written
 #[test]
 fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -200,7 +191,7 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
             .expect("the session reopens");
     let old = h.transcript_id().to_string();
 
-    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `open_private`: the refusal has to come from OUTSIDE the harness's connection, and
     // `Store::open` would hand back the very connection `h` writes through.
     let other = Store::open_private(&store).expect("a connection of its own");
     other
@@ -230,11 +221,9 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
         Some(old.as_str()),
         "a fork with none of its rows stored is what a restart would open"
     );
-    // A restart now resumes the parent, whole — and **the restart is READ FROM THE STORE here
-    // rather than run**: a second harness for one session is refused by name (the writer claim,
-    // `harnessd::writer`), because the first one is still alive and holding the fork this test is
-    // about. `current_transcript_id` IS the restart's answer — the row a resume opens — and the
-    // reopen itself is exercised where a daemon really stops: `restart_restore`.
+    // A restart now resumes the parent, whole - and the restart is READ FROM THE STORE here
+    // rather than run: a second harness for one session is refused by name (the writer claim)
+    // because the first one still holds the fork this test is about.
     let refusal = {
         let hub = Hub::new(&seated.session_id);
         let registry = Registry::of(hub.clone());

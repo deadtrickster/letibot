@@ -1,70 +1,23 @@
-//! **What a chip in the composer becomes in the transcript** — `PROTOCOL_VERSION` 50.
-//!
-//! The operator: *"how i can paste an image to letibot?"* Until this, a session could only be
-//! shown a picture by naming its path and hoping the model called `read`. A chip in the
-//! composer travels as a [`letibot_sessionlog::protocol::Attachment`] and this module turns it
-//! into the [`UserPart`] the same file would have produced through `read`.
-//!
-//! # Why the daemon reads the file, and why it reads the BYTES
-//!
-//! The head sends a path, not a payload: one box, one file, and the copy the transcript keeps is
-//! made here ([`UserPart::Image`]'s `data_ref`), so nothing is gained by sending the bytes down
-//! the socket first. And a picture is recognised by its **magic number**, never by its name or
-//! by the kind the head reported: a `.png` that is really a PDF, a screenshot saved with no
-//! extension, and a head that called an image a file are all the same week's work otherwise.
-//! That rule is `letibot_transcript::media`'s and this module only obeys it.
-//!
-//! # The three outcomes, and no fourth
-//!
-//! * a picture the model server takes → [`UserPart::Image`] (a `data:` URI, the form the server
-//!   accepts — a bare path is a `HTTP 400 Failed to load image`);
-//! * a text file under a cap → its content, in its own part, under a header naming the file;
-//! * anything else → [`UserPart::FileRef`], a path and a digest the model can `read`.
-//!
-//! The operator's own words stay the FIRST part and stay whole, always. A head retires its
-//! `queued` echo by matching the row's leading lines against what it sent
-//! (`App::retire_pending`), and `row_words` reads a `User` row as its text parts newline-joined
-//! — so a part spliced in front of the words, or the words split into two, would leave the
-//! operator's sentence stuck on their own screen.
-//!
-//! # What a failure says, and to whom
-//!
-//! A file that is gone by the time the message lands is the case the head refuses at send time
-//! — it stats every chip before it writes the frame — and this side is the floor under it: a
-//! file can vanish between the two, and a prompt whose picture silently did not arrive is
-//! exactly the failure `Media::delivered` exists to name. So an attachment that cannot be read
-//! becomes a sentence IN the row (so the model is not left believing it was given a file) and a
-//! warning on the session's log for the operator (so the person is not left believing it
-//! either). Neither of them is silent, and neither of them is a refusal of the words: the
-//! operator wrote a sentence and it is sent.
+//! What a chip in the composer becomes in the transcript. A chip travels as a
+//! [`letibot_sessionlog::protocol::Attachment`] and this module turns it into the
+//! [`UserPart`] the same file would have produced through `read`.
 
 use letibot_sessionlog::protocol::Attachment;
 use letibot_transcript::UserPart;
 use sha2::{Digest, Sha256};
 
-/// **A picture bigger than this is refused, as `read` refuses one.**
-///
-/// `read` sizes a file before it opens it and refuses above
-/// `letibot_tools::builtins::grep::FILE_CEILING * 16` — 256 MiB of bytes, which base64 carries
-/// as 341 MiB of `data:` URI through the store and to the server. One number for both is the
-/// point: a picture `read` would refuse and a chip would attach would be two answers to *how
-/// big is too big*, and the second one would be discovered by the store.
+/// A picture bigger than this is refused, as `read` refuses one: one number for both, or a
+/// picture `read` would refuse and a chip would attach are two answers to how big is too big
+/// and the second is discovered by the store.
 pub const MAX_IMAGE_BYTES: u64 = letibot_tools::builtins::grep::FILE_CEILING * 16;
 
-/// **How much of a text file is inlined** — 256 KiB, which is a long log, a whole source file,
-/// a large CSV.
-///
-/// Above it the part is a [`UserPart::FileRef`] instead, and the model reads what it needs:
-/// inlining a megabyte would spend the session's context on a file the model may only have been
-/// asked about, and the prompt has a budget the operator never chose to spend this way.
+/// How much of a text file is inlined - 256 KiB, which is a long log, a whole source
+/// file, a large CSV. Above it the part is a [`UserPart::FileRef`] instead, and the model
+/// reads what it needs
 pub const MAX_INLINE_TEXT: u64 = 256 * 1024;
 
-/// **The parts the attachments add**, in the order they were chipped, plus one sentence per
-/// attachment that could not be read.
-///
-/// Pure with respect to the session: it reads the files and nothing else, so the caller decides
-/// where the sentences go (a warning on the log for the operator, and the same words as a part
-/// for the model — see the module's own note on failures).
+/// The parts the attachments add, in the order they were chipped, plus one sentence per
+/// attachment that could not be read. Pure with respect to the session
 pub fn parts(attachments: &[Attachment]) -> (Vec<UserPart>, Vec<String>) {
     let mut parts = Vec::with_capacity(attachments.len());
     let mut refused = Vec::new();
@@ -91,7 +44,7 @@ fn one(a: &Attachment) -> Result<Option<Vec<UserPart>>, String> {
         return Err("that is a directory; attach a file".to_string());
     }
     let size = meta.len();
-    // **The picture is recognised from its BYTES and before the size cap is argued**, because
+    // The picture is recognised from its BYTES and before the size cap is argued, because
     // the two outcomes have different ceilings: an image is refused above `read`'s (a `data:`
     // URI of it is carried whole), a text file rides its own.
     let bytes = std::fs::read(path).map_err(|e| format!("could not be read: {e}"))?;
@@ -113,7 +66,7 @@ fn one(a: &Attachment) -> Result<Option<Vec<UserPart>>, String> {
     // else is a path the model may read itself.
     let text = match (size <= MAX_INLINE_TEXT).then(|| std::str::from_utf8(&bytes)) {
         Some(Ok(t)) => Some(t),
-        // A file that is not UTF-8 is bytes, not text: a `FileRef`, never a lossy decode — the
+        // A file that is not UTF-8 is bytes, not text: a `FileRef`, never a lossy decode - the
         // same rule `read` keeps, and the reason a model can tell a screenshot from a shard.
         Some(Err(_)) | None => None,
     };
@@ -146,7 +99,7 @@ fn name_of(a: &Attachment) -> String {
         .unwrap_or_else(|| a.path.clone())
 }
 
-/// A byte count a person reads — `92 KiB`, `1.4 MiB`. The same shape `read`'s own sentences use,
+/// A byte count a person reads - `92 KiB`, `1.4 MiB`. The same shape `read`'s own sentences use
 /// so a chip and a read of the same file report the same size.
 fn size_said(bytes: u64) -> String {
     const K: u64 = 1024;
@@ -186,7 +139,7 @@ mod tests {
         d
     }
 
-    /// A **real** PNG, 640×480 — `letibot_transcript::testing`'s, because a header-only fixture is
+    /// A real PNG, 640×480 - `letibot_transcript::testing`'s, because a header-only fixture is
     /// what let a 33-byte file be stored as a picture and wedge a session. `Media::of` now asks
     /// whether there is a picture in the bytes, not only what they claim to be.
     fn png() -> Vec<u8> {
@@ -203,7 +156,7 @@ mod tests {
         }
     }
 
-    /// **A picture is handed over as a picture** — a `data:` URI, the one form the server takes,
+    /// A picture is handed over as a picture - a `data:` URI, the one form the server takes
     /// with the mime sniffed from the bytes.
     #[test]
     fn an_image_chip_becomes_an_image_part() {
@@ -227,8 +180,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A type the head called a file, and the bytes say otherwise, is a picture.** The name is
-    /// a claim and the magic number is not — the rule `read` already keeps.
+    /// A type the head called a file, and the bytes say otherwise, is a picture. The name is
+    /// a claim and the magic number is not - the rule `read` already keeps.
     #[test]
     fn the_bytes_decide_the_kind_and_not_the_chip() {
         let d = dir("misnamed");
@@ -242,8 +195,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **BESIDE the words, and never in front of them.** The operator's sentence is the part a
-    /// head retires its own echo by, so what an attachment adds goes after it — the property
+    /// BESIDE the words, and never in front of them. The operator's sentence is the part a
+    /// head retires its own echo by, so what an attachment adds goes after it - the property
     /// `App::retire_pending` and `row_words` both read.
     #[test]
     fn a_text_file_is_named_and_inlined_after_the_words() {
@@ -275,7 +228,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **Bytes that are not text are a path, never a lossy decode** — a shard shown as U+FFFD is
+    /// Bytes that are not text are a path, never a lossy decode - a shard shown as U+FFFD is
     /// a file the model will conclude it cannot read.
     #[test]
     fn a_binary_that_is_not_an_image_is_only_a_file_ref() {
@@ -289,8 +242,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A file that is gone is said, not skipped.** The prompt still sends — the operator wrote
-    /// a sentence — and both the model and the operator are told which chip did not arrive.
+    /// A file that is gone is said, not skipped. The prompt still sends - the operator wrote
+    /// a sentence - and both the model and the operator are told which chip did not arrive.
     #[test]
     fn a_missing_file_is_a_sentence_and_not_an_empty_attachment() {
         let d = dir("gone");
@@ -306,7 +259,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A huge text file is a path and not an inline** — the cap is what keeps one attachment
+    /// A huge text file is a path and not an inline - the cap is what keeps one attachment
     /// from spending the prompt's budget.
     #[test]
     fn a_text_file_over_the_cap_is_not_inlined() {
@@ -325,12 +278,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **The door the daemon actually reads a mid-turn prompt through** — `HubSteering` — turns
-    /// the frame's attachment into a part, keeps the operator's words first and whole, and binds
-    /// them to `Speaker::Operator`.
-    ///
-    /// This is the half a unit test of [`parts`] cannot show: that the queue carries the chips
-    /// from the frame to the engine's step boundary, which is where a mid-turn prompt lands.
+    /// The door the daemon actually reads a mid-turn prompt through - `HubSteering` - turns
+    /// the frame's attachment into a part, keeps the operator's words first and whole, and
+    /// binds them to `Speaker::Operator`.
     #[test]
     fn a_prompt_queued_mid_turn_reaches_the_engine_with_its_picture() {
         use letibot_sessionlog::hub::Hub;
@@ -372,8 +322,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **A file that vanished between the frame and the turn is said on the session's log**, and
-    /// the operator's words still go through — the same rule the head keeps one layer up.
+    /// A file that vanished between the frame and the turn is said on the session's log, and
+    /// the operator's words still go through - the same rule the head keeps one layer up.
     #[test]
     fn a_chip_whose_file_vanished_while_it_waited_is_warned_about() {
         use letibot_sessionlog::hub::Hub;

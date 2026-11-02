@@ -1,17 +1,6 @@
-//! **The `queue` tool's daemon half** (R76 item 2) — what a session's model can do about its
-//! project's queues: read them, re-gate the target, restart or withdraw a row, and PROPOSE the
-//! branch the project lands on.
-//!
-//! The operator, on pg-noop's red `main`: *"it should be able to get out of it itself
-//! obviously"*. Every verb here is one the operator already had (`mergequeue::verbs`), moved under
-//! the session's own name (`agent:<session>`) so the history says a model did it. One is not:
-//! **setting `[queue] target` is the operator's decision**, so `propose_target` raises it on every
-//! hub, naming the exact `leticode.toml` line, records the proposal in the target's history, and
-//! writes no file.
-//!
-//! **`status` is scoped and bounded** (see the three shapes below): the session's own repository
-//! and a screenful of it by default, one line per repository for `all`, and one repository in full
-//! for `repository`. Every answer's first line says which of the three it printed.
+//! The `queue` tool's daemon half - what a session's model can do about its project's
+//! queues: read them, re-gate the target, restart or withdraw a row, and PROPOSE the branch
+//! the project lands on.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -27,9 +16,9 @@ use letibot_transcript::text::clip_chars;
 use super::gate::{self, now_ms};
 use super::{git, notices, settings, verbs};
 
-/// **The repository a session's queue verbs are about, and its target** — the one `workspace`
-/// means (`repo_of_workspace`), keyed the way the queues key it, unless `named` is a path; and
-/// the project's `[queue] target` (else `main`/`master`) when no target is named.
+/// The repository a session's queue verbs are about, and its target - the one `workspace` means
+/// (`repo_of_workspace`), keyed the way the queues key it, unless `named` is a path; and the project's
+/// `[queue] target` (else `main`/`master`) when no target is named.
 pub fn resolve(
     workspace: &Path,
     named: Option<&str>,
@@ -41,8 +30,8 @@ pub fn resolve(
         None => git::repo_of_workspace(workspace)
             .and_then(|r| git::repo_of_worktree(&r))
             .ok_or_else(|| {
-                // **A project of several repositories names them**, so the one to name is a
-                // choice among the right ones rather than a path to go and find.
+                // A project of several repositories names them, so the one to name is a choice among
+                // the right ones rather than a path to go and find.
                 let many = git::repos_of_workspace(workspace);
                 if many.len() > 1 {
                     let names: Vec<String> =
@@ -75,7 +64,7 @@ pub fn resolve(
     Ok((repo.display().to_string(), target))
 }
 
-/// **One session's desk** — its store, its workspace, and the hubs a move is announced on.
+/// One session's desk - its store, its workspace, and the hubs a move is announced on.
 pub struct SessionQueue {
     pub store_path: PathBuf,
     pub session: String,
@@ -104,8 +93,8 @@ impl QueueDesk for SessionQueue {
         let store = self.store()?;
         match scope(&store, &self.workspace, all, repository)? {
             Scope::Every => every(&store),
-            // **Naming a repository is asking for it in full** — that is the door the bounded
-            // default leaves open, and the shape `/clear` has always printed.
+            // Naming a repository is asking for it in full - that is the door the bounded default
+            // leaves open, and the shape `/clear` has always printed.
             Scope::One { repo, named: true } => detail(&store, &repo),
             Scope::One { repo, named: false } => bounded(&store, &repo),
             Scope::Nowhere => Ok(nowhere(&self.workspace)),
@@ -138,8 +127,8 @@ impl QueueDesk for SessionQueue {
     }
 }
 
-/// **Put `[queue] target` to the operator** — raised on every hub as `queue_target_proposed`
-/// with the exact lines and the file, recorded in the target's history; nothing is written.
+/// Put `[queue] target` to the operator - raised on every hub as `queue_target_proposed` with the
+/// exact lines and the file, recorded in the target's history; nothing is written.
 pub fn propose_target(
     store: &Store,
     workspace: &Path,
@@ -191,37 +180,31 @@ pub fn propose_target(
     ))
 }
 
-// ===== `status`: three shapes, one scope line =====
-//
-// The operator, 2026-10-30: *"the problem im solving is not mine but yours - it is more than 60
-// rows for queue status tool call now - and you guys defocus and get confused"*. The cost is the
-// model's attention, so the default answer is ONE repository and a screenful of it, `all` is one
-// line per repository, and `repository: "<name>"` is the full shape. Every answer opens with the
-// scope it printed: a bounded answer that does not say it is bounded is the same lie in a smaller
-// font.
+// ===== `status`: three shapes, one scope line ===== The cost is the model's attention, so
+// the default answer is ONE repository and a screenful of it `all` is one line per
+// repository, and `repository: "<name>"` is the full shape.
 
-/// **How many rows a bounded answer prints in full** before it counts the rest.
+/// How many rows a bounded answer prints in full before it counts the rest.
 const SHOWN_ROWS: usize = 10;
 
-/// The lines of a failing step's tail a bounded answer keeps — the full shape keeps all 30.
+/// The lines of a failing step's tail a bounded answer keeps - the full shape keeps all 30.
 const SHOWN_TAIL: usize = 3;
 
 /// The characters a row's own words may run to in a bounded answer.
 const SHOWN_EVIDENCE: usize = 200;
 
-/// **How recently a step's log must have grown for the line to say `tail moving`** — a build
-/// prints between crates and a test run prints between binaries, so a minute of silence is not a
-/// stall; a minute is long enough that a moving tail is news and short enough that a reader sees
-/// it in the same breath as the step.
+/// How recently a step's log must have grown for the line to say `tail moving` - a build
+/// prints between crates and a test run prints between binaries, so a minute of silence is
+/// not a stall
 const TAIL_MOVING_MS: u64 = 60_000;
 
-/// **How long a step's log may stand still before the line says it may be stuck** — the same ten
-/// minutes the head's queue pane waits (`GATE_QUIET_MS`), because it is the same question about
-/// the same file, and two answers to it would be one too many.
+/// How long a step's log may stand still before the line says it may be stuck - the same ten minutes
+/// the head's queue pane waits (`GATE_QUIET_MS`), because it is the same question about the same file
+/// and two answers to it would be one too many.
 const TAIL_STILL_MS: u64 = 10 * 60 * 1000;
 
-/// **The states rows are counted in, in the queue's own order** — the flow, not the alphabet: what
-/// waits, what is running, what is parked on a person.
+/// The states rows are counted in, in the queue's own order - the flow, not the alphabet: what waits
+/// what is running, what is parked on a person.
 const FLOW: [&str; 10] = [
     "waiting",
     "reviewing",
@@ -235,14 +218,14 @@ const FLOW: [&str; 10] = [
     "timed_out",
 ];
 
-/// **A review row somebody still has to deal with** — the queue's business (open) or a person's (a
-/// verdict that needs a decision). `pub(super)` for `mergequeue::stuck`, which counts the half of
-/// it that is nobody's: one rule, so the census's numbers are a sub-line of `status`'s.
+/// A review row somebody still has to deal with - the queue's business (open) or a person's (a verdict
+/// that needs a decision). `pub(super)` for `mergequeue::stuck`, which counts the half of it that is
+/// nobody's: one rule, so the census's numbers are a sub-line of `status`'s.
 pub(super) fn parked(r: ReviewState) -> bool {
     r.is_open() || matches!(r, ReviewState::Rejected | ReviewState::CannotDecide)
 }
 
-/// **A landing row somebody still has to deal with**, the same rule one queue over.
+/// A landing row somebody still has to deal with, the same rule one queue over.
 pub(super) fn parked_merge(m: MergeState) -> bool {
     m.is_open()
         || matches!(
@@ -251,10 +234,10 @@ pub(super) fn parked_merge(m: MergeState) -> bool {
         )
 }
 
-/// **What one `status` call is about** — decided once, so the line the answer opens with and the
-/// rows under it cannot disagree.
+/// What one `status` call is about - decided once, so the line the answer opens with and the rows under
+/// it cannot disagree.
 enum Scope {
-    /// `all: true` — every repository, one line each.
+    /// `all: true` - every repository, one line each.
     Every,
     /// One repository. `named` is whether the CALLER named it, which is what buys the full shape.
     One { repo: String, named: bool },
@@ -262,7 +245,7 @@ enum Scope {
     Nowhere,
 }
 
-/// **Which repository a `status` call is about.**
+/// Which repository a `status` call is about.
 fn scope(
     store: &Store,
     workspace: &Path,
@@ -286,25 +269,17 @@ fn scope(
     })
 }
 
-/// **The repository this session is in** — the workspace itself when git says it is in one, the
-/// same-named child (`~/Projects/letibot` → `letibot`), or its only repository child; then mapped
-/// through the WORKTREE to its main checkout, which is how the queues key a repository, so a
-/// session in a worktree reads the queue its branch lands in.
-///
-/// A folder that is one project of several answers `None`, and that is not a hole to fill with the
-/// whole box: which of `stroppy`, `website` and `stroppy-contrib` a session seated above them is
-/// "in" is a fact nothing in this tree knows, so the answer says so and names both ways to widen.
+/// The repository this session is in - the workspace itself when git says it is in one, the
+/// same-named child (`~/Projects/letibot` → `letibot`), or its only repository child
 fn current(workspace: &Path) -> Option<String> {
     git::repo_of_workspace(workspace)
         .and_then(|r| git::repo_of_worktree(&r))
         .map(|p| p.display().to_string())
 }
 
-/// **The one repository `asked` names** — a path git resolves, else a name matched against the
-/// repositories the queue holds: a full path, a path's tail or a directory name.
-///
-/// Two matches is a refusal that names both. Picking one is how a model comes to read another
-/// project's queue and believe it is its own.
+/// The one repository `asked` names - a path git resolves, else a name matched against the
+/// repositories the queue holds: a full path, a path's tail or a directory name. Two
+/// matches is a refusal that names both.
 fn one(asked: &str, served: &[String], workspace: &Path) -> Result<String, String> {
     let asked = asked.trim().trim_end_matches('/');
     let as_path = if Path::new(asked).is_absolute() {
@@ -338,8 +313,8 @@ fn one(asked: &str, served: &[String], workspace: &Path) -> Result<String, Strin
     }
 }
 
-/// **`key` is `asked`, or ends with it at a path boundary** — so `/a/letim`, `Projects/letim` and
-/// `letim` all name `/a/letim`, and `im` names nothing.
+/// `key` is `asked`, or ends with it at a path boundary - so `/a/letim`, `Projects/letim` and `letim`
+/// all name `/a/letim`, and `im` names nothing.
 fn names(key: &str, asked: &str) -> bool {
     key == asked
         || key
@@ -347,8 +322,8 @@ fn names(key: &str, asked: &str) -> bool {
             .is_some_and(|head| head.ends_with('/'))
 }
 
-/// **Every repository the queue holds** — the healths, the rows and the leases, deduped and
-/// sorted: what `all` counts and what a name is matched against.
+/// Every repository the queue holds - the healths, the rows and the leases, deduped and sorted: what
+/// `all` counts and what a name is matched against.
 fn served(store: &Store) -> Result<Vec<String>, String> {
     let mut all: Vec<String> = store
         .target_healths()
@@ -383,14 +358,9 @@ fn served(store: &Store) -> Result<Vec<String>, String> {
     Ok(all)
 }
 
-/// **`all` — one line per repository**, so the whole box fits in a screenful: which target is in
-/// what state, what is open, and whether anybody serves it. Detail is what the other two forms are
-/// for.
-///
-/// **A repository whose gate is running says so here too** — `letibot  GATING · step 3 of 4 ·
-/// 6m12s · 3 queued` — because the session that needs this most is the one in ANOTHER repository:
-/// it has no row for this gate and no reason to open one, and the fans it hears are this. The
-/// step and the clock only: the tail is the detail's, and this line is a screenful for the box.
+/// `all` - one line per repository, so the whole box fits in a screenful: which target is
+/// in what state, what is open, and whether anybody serves it. Detail is what the other two
+/// forms are for.
 fn every(store: &Store) -> Result<String, String> {
     let now = now_ms();
     let repos = served(store)?;
@@ -447,8 +417,8 @@ fn every(store: &Store) -> Result<String, String> {
     Ok(out)
 }
 
-/// **The default answer: this repository, and no more than a screenful of it** — the target, what
-/// each queue holds by state, the ten rows somebody has to act on first, and who serves it.
+/// The default answer: this repository, and no more than a screenful of it - the target, what each
+/// queue holds by state, the ten rows somebody has to act on first, and who serves it.
 fn bounded(store: &Store, repo: &str) -> Result<String, String> {
     let healths: Vec<TargetHealth> = store
         .target_healths()
@@ -525,8 +495,8 @@ fn bounded(store: &Store, repo: &str) -> Result<String, String> {
     Ok(out)
 }
 
-/// **`repository: "<name>"` — one repository in full**: the target with the whole tail of its
-/// failing step, every open or parked row, and who serves it.
+/// `repository: "<name>"` - one repository in full: the target with the whole tail of its failing
+/// step, every open or parked row, and who serves it.
 fn detail(store: &Store, repo: &str) -> Result<String, String> {
     Ok(format!(
         "the queue for {repo}\n{}",
@@ -534,8 +504,8 @@ fn detail(store: &Store, repo: &str) -> Result<String, String> {
     ))
 }
 
-/// **A session that is in no one repository** — one sentence and the two ways to widen. Printing
-/// the whole box is the thing this exists to stop.
+/// A session that is in no one repository - one sentence and the two ways to widen. Printing the whole
+/// box is the thing this exists to stop.
 fn nowhere(workspace: &Path) -> String {
     let many = git::repos_of_workspace(workspace);
     let mut out = if many.is_empty() {
@@ -560,8 +530,8 @@ fn nowhere(workspace: &Path) -> String {
     out
 }
 
-/// **Both queues and the targets of one repository, as a model reads them, in full** — what
-/// `/clear` has always printed and what `repository: "<name>"` still prints.
+/// Both queues and the targets of one repository, as a model reads them, in full - what `/clear` has
+/// always printed and what `repository: "<name>"` still prints.
 pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String> {
     let here = |r: &str| repository.is_none_or(|k| k == r);
     let healths: Vec<TargetHealth> = store
@@ -607,16 +577,9 @@ pub fn status(store: &Store, repository: Option<&str>) -> Result<String, String>
     Ok(out)
 }
 
-/// **A repository's target, and the gate that failed on it** — the whole tail in the full shape
-/// (`None`), the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what was cut.
-///
-/// **A target whose gate is running says what it is doing, on its own line** (2026-11-01). The
-/// operator, hearing the fans and looking at a screen: *"nothing about gate — and the same for
-/// other sessions — gate is invisible"*. Everything about the running step was already in the
-/// snapshot and in a merge row's detail, and a detail is a click away — so a session in this
-/// repository, and a person reading its `status`, had no way to learn that the machine was
-/// working rather than stuck. This is the headline: which step, how long, and whether its output
-/// is moving. The tail itself stays the detail's business.
+/// A repository's target, and the gate that failed on it - the whole tail in the full shape
+/// (`None`) the last [`SHOWN_TAIL`] lines of it in a bounded one, with the count of what
+/// was cut. A target whose gate is running says what it is doing, on its own line
 fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
     let now = now_ms();
     let mut out = String::new();
@@ -658,19 +621,17 @@ fn targets(healths: &[TargetHealth], tail: Option<usize>) -> String {
     out
 }
 
-/// **The gate `h`'s target is running, if it is running one** — the health row says whether a gate
-/// is on the tip, and the gate says which step. Two facts from two places, asked together so no
-/// caller can pair them wrongly.
+/// The gate `h`'s target is running, if it is running one - the health row says whether a gate is on the
+/// tip, and the gate says which step. Two facts from two places, asked together so no caller can pair
+/// them wrongly.
 fn running_now(h: &TargetHealth) -> Option<gate::RunningGate> {
     (h.state == HealthState::Gating)
         .then(|| gate::running(&h.repository))
         .flatten()
 }
 
-/// **The gate a target is running, in one clause** — which step of how many, how long it has been
-/// on it, and whether its output is still moving. The same three facts a merge row's detail gives
-/// at length, on the target's own line, because that line is where a person looks first and the
-/// detail is a click away. The tail itself is not here: a headline is not the whole story.
+/// The gate a target is running, in one clause - which step of how many, how long it has
+/// been on it, and whether its output is still moving.
 fn gate_words(g: &gate::RunningGate, now: u64) -> String {
     format!(
         "step {} of {} · {} · {}",
@@ -681,9 +642,9 @@ fn gate_words(g: &gate::RunningGate, now: u64) -> String {
     )
 }
 
-/// **Is the step's output moving?** — answered from ONE read, because the log's own mtime is when
-/// its last byte landed. The head's pane needs two snapshots to answer this; a `status` answer is
-/// one shot, and the file already carries the second half of the comparison.
+/// Is the step's output moving? - answered from ONE read, because the log's own mtime is when its last
+/// byte landed. The head's pane needs two snapshots to answer this; a `status` answer is one shot, and
+/// the file already carries the second half of the comparison.
 fn tail_words(g: &gate::RunningGate, now: u64) -> String {
     let wrote = bytes_human(g.log_bytes);
     let Some(at) = g.wrote_ms else {
@@ -702,8 +663,8 @@ fn tail_words(g: &gate::RunningGate, now: u64) -> String {
     }
 }
 
-/// **A duration as a person reads it** — the shape the head's queue pane uses (`6m12s`), so a model
-/// reading `status` and a person reading the pane are told the same thing in the same words.
+/// A duration as a person reads it - the shape the head's queue pane uses (`6m12s`), so a model reading
+/// `status` and a person reading the pane are told the same thing in the same words.
 fn dur_human(ms: u64) -> String {
     if ms < 1_000 {
         format!("{ms} ms")
@@ -714,8 +675,8 @@ fn dur_human(ms: u64) -> String {
     }
 }
 
-/// **Bytes as a person reads them** — a step's output is thousands of them, and the exact count is
-/// a fact nobody acts on.
+/// Bytes as a person reads them - a step's output is thousands of them, and the exact count is a fact
+/// nobody acts on.
 fn bytes_human(n: u64) -> String {
     if n < 1024 {
         format!("{n} B")
@@ -726,9 +687,9 @@ fn bytes_human(n: u64) -> String {
     }
 }
 
-/// **The rows a bounded answer prints, worst first** — what is parked on a person, then what is
-/// running, then what waits; an operator's urgent entry before a subagent's, oldest first inside
-/// each. So what the count drops is the tail of the queue and nothing anybody must act on.
+/// The rows a bounded answer prints, worst first - what is parked on a person, then what is running, then
+/// what waits; an operator's urgent entry before a subagent's, oldest first inside each. So what the
+/// count drops is the tail of the queue and nothing anybody must act on.
 fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize) {
     let mut lines: Vec<((u8, usize, u64), String)> = Vec::new();
     for r in reviews.iter().filter(|r| parked(r.state)) {
@@ -762,7 +723,7 @@ fn first_rows(reviews: &[ReviewRow], merges: &[MergeRow]) -> (Vec<String>, usize
     (lines.into_iter().map(|(_, line)| line).collect(), more)
 }
 
-/// One review row as one line — the id, the state, the branch and the target, and what the queue
+/// One review row as one line - the id, the state, the branch and the target, and what the queue
 /// said. `cap` is the bounded answer's limit on the row's own words.
 fn review_line(r: &ReviewRow, cap: Option<usize>) -> String {
     format!(
@@ -795,7 +756,7 @@ fn merge_line(m: &MergeRow, cap: Option<usize>) -> String {
     )
 }
 
-/// **Who serves it, and how long ago it said so** — the one line that says a queue is nobody's.
+/// Who serves it, and how long ago it said so - the one line that says a queue is nobody's.
 fn served_by(leases: &[QueueLease]) -> String {
     let mut out = String::new();
     for l in leases {
@@ -822,8 +783,8 @@ fn live_lease(leases: &[QueueLease], repo: &str) -> bool {
     })
 }
 
-/// **Rows counted by state, in the queue's own order** — only the states that are there, so a line
-/// says `3 waiting · 1 gating` and never `0 of nine things`.
+/// Rows counted by state, in the queue's own order - only the states that are there, so a line says
+/// `3 waiting · 1 gating` and never `0 of nine things`.
 pub(super) fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<String> {
     counts_of(states)
         .into_iter()
@@ -831,9 +792,9 @@ pub(super) fn states_of(states: impl Iterator<Item = &'static str>) -> Vec<Strin
         .collect()
 }
 
-/// **[`states_of`]'s counts, unformatted** — the same `FLOW` order and the same rule, for a reader
-/// that wants the numbers rather than the line (`mergequeue::stuck`, whose counts have to be
-/// `status`'s counts and not a second opinion about them).
+/// [`states_of`]'s counts, unformatted - the same `FLOW` order and the same rule, for a reader that
+/// wants the numbers rather than the line (`mergequeue::stuck`, whose counts have to be `status`'s counts
+/// and not a second opinion about them).
 pub(super) fn counts_of(states: impl Iterator<Item = &'static str>) -> Vec<(&'static str, usize)> {
     let mut counts: Vec<(&'static str, usize)> = FLOW.iter().map(|s| (*s, 0)).collect();
     for s in states {
@@ -844,8 +805,8 @@ pub(super) fn counts_of(states: impl Iterator<Item = &'static str>) -> Vec<(&'st
     counts.into_iter().filter(|(_, n)| *n > 0).collect()
 }
 
-/// **One queue's line: the states somebody can act on, then the day's successes** — the second
-/// number is the one that says the queue is still moving.
+/// One queue's line: the states somebody can act on, then the day's successes - the second number is the
+/// one that says the queue is still moving.
 fn counted(states: impl Iterator<Item = &'static str>, today: usize, word: &str) -> String {
     let mut said = states_of(states);
     if today > 0 {
@@ -857,8 +818,8 @@ fn counted(states: impl Iterator<Item = &'static str>, today: usize, word: &str)
     said.join(" · ")
 }
 
-/// **The target health a repository is judged by** — the newest, for a project that moved its
-/// target and still carries both rows.
+/// The target health a repository is judged by - the newest, for a project that moved its target and
+/// still carries both rows.
 fn newest<'a>(healths: &'a [TargetHealth], repo: &str) -> Option<&'a TargetHealth> {
     healths
         .iter()
@@ -866,8 +827,8 @@ fn newest<'a>(healths: &'a [TargetHealth], repo: &str) -> Option<&'a TargetHealt
         .max_by_key(|h| h.checked_ms)
 }
 
-/// **What to call each repository in one line** — its directory name, or the whole path for the
-/// ones that share a name (two checkouts called `website`).
+/// What to call each repository in one line - its directory name, or the whole path for the ones that
+/// share a name (two checkouts called `website`).
 fn short_names(repos: &[String]) -> Vec<String> {
     let tails: Vec<String> = repos
         .iter()
@@ -903,9 +864,9 @@ fn shorten(s: &str, cap: Option<usize>) -> String {
     }
 }
 
-/// **Local midnight, in Unix ms** — what "today" means to the person reading it. The
-/// `localtime_r` shape is the tree's own (`harness::seated_at`): a harness is opened from more
-/// than one thread and `localtime` hands back a shared static.
+/// Local midnight, in Unix ms - what "today" means to the person reading it. The `localtime_r` shape is
+/// the tree's own (`harness::seated_at`): a harness is opened from more than one thread and `localtime`
+/// hands back a shared static.
 fn midnight_ms(now: u64) -> u64 {
     let secs = (now / 1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -927,10 +888,9 @@ mod tests {
     };
     use std::sync::Mutex;
 
-    /// **The model's way out, end to end against a real repository and a temp store** (R76 item
-    /// 2): it reads the red target with the failing step's tail, re-gates it, withdraws a stale
-    /// row under its own name, and PROPOSES the target — which writes no file and puts the exact
-    /// line to the operator. FAILS before R76: there was no such door at all.
+    /// The model's way out, end to end against a real repository and a temp store: it reads the red target
+    /// with the failing step's tail, re-gates it, withdraws a stale row under its own name, and PROPOSES
+    /// the target - which writes no file and puts the exact line to the operator.
     #[test]
     fn the_model_reads_regates_withdraws_and_only_proposes_the_target() {
         let dir = TempDir::new("desk");
@@ -1014,7 +974,7 @@ mod tests {
         assert_eq!(last.by, "agent:s-project");
         assert!(last.why.contains("amended away"), "{}", last.why);
 
-        // **Proposed, not set**: the operator is shown the exact line, and no file is written.
+        // Proposed, not set: the operator is shown the exact line, and no file is written.
         let raised = Mutex::new(Vec::new());
         let said = propose_target(
             &store,
@@ -1048,11 +1008,11 @@ mod tests {
         );
     }
 
-    // ===== `status` is scoped, and says so (2026-10-30) =====
+    // ===== `status` is scoped, and says so =====
 
-    /// **A repository named `name` under `under`**, one commit, keyed the way the queues key it —
-    /// and with an `origin` on `github.com/<owner>/…`, so a folder holding two of them is ONE
-    /// project ([`git::repos_of_workspace`] keeps children that share an owner).
+    /// A repository named `name` under `under`, one commit, keyed the way the queues key it - and with
+    /// an `origin` on `github.com/<owner>/…`, so a folder holding two of them is ONE project
+    /// ([`git::repos_of_workspace`] keeps children that share an owner).
     fn a_repo(under: &Path, name: &str, owner: Option<&str>) -> String {
         let p = under.join(name);
         std::fs::create_dir_all(&p).unwrap();
@@ -1134,8 +1094,8 @@ mod tests {
         }
     }
 
-    /// **The default scope is the session's own repository** — the operator's report was nineteen
-    /// sections of other people's projects for one question about one of them.
+    /// The default scope is the session's own repository - not nineteen sections of other people's
+    /// projects for one question about one of them.
     #[test]
     fn status_with_no_scope_is_one_repository_and_says_which() {
         let dir = TempDir::new("desk-scope");
@@ -1167,8 +1127,8 @@ mod tests {
         assert!(said.contains("merge queue: 0 open"), "{said}");
     }
 
-    /// **`all` is every repository, one line each** — the whole box in a screenful, and it says
-    /// how many and how many are red.
+    /// `all` is every repository, one line each - the whole box in a screenful, and it says how many and
+    /// how many are red.
     #[test]
     fn all_is_one_line_per_repository_in_the_snapshot() {
         let dir = TempDir::new("desk-all");
@@ -1203,8 +1163,8 @@ mod tests {
         );
     }
 
-    /// **`repository: "<name>"` prints that one in full** — by its tail, by its path, and with the
-    /// whole tail of a failing step rather than three lines of it.
+    /// `repository: "<name>"` prints that one in full - by its tail, by its path, and with the whole
+    /// tail of a failing step rather than three lines of it.
     #[test]
     fn a_named_repository_is_printed_in_full_by_its_tail_or_its_path() {
         let dir = TempDir::new("desk-named");
@@ -1222,7 +1182,7 @@ mod tests {
         a_review(&store, &other, "r-other", "waiting its turn", 11);
         let desk = a_desk(&db, &dir.0.join("mine"));
 
-        // By its directory name — which is not a path under this session's workspace.
+        // By its directory name - which is not a path under this session's workspace.
         let said = desk.status(false, Some("other")).unwrap();
         assert_eq!(
             said.lines().next().unwrap(),
@@ -1245,8 +1205,8 @@ mod tests {
         assert_eq!(by_path, said);
     }
 
-    /// **A name that matches two repositories is refused in words that name both** — picking one
-    /// is how a model comes to read another project's queue and believe it is its own.
+    /// A name that matches two repositories is refused in words that name both - picking one is how a
+    /// model comes to read another project's queue and believe it is its own.
     #[test]
     fn an_ambiguous_name_is_refused_and_names_every_match() {
         let dir = TempDir::new("desk-ambiguous");
@@ -1270,8 +1230,8 @@ mod tests {
         assert!(both.contains("two different scopes"), "{both}");
     }
 
-    /// **A session seated above several repositories says so in one sentence** and names both ways
-    /// to widen — it does not print the box, which is the defect this change exists to fix.
+    /// A session seated above several repositories says so in one sentence and names both ways to widen -
+    /// it does not print the box, which is the defect this change exists to fix.
     #[test]
     fn a_session_in_no_one_repository_says_so_and_names_both_escapes() {
         let dir = TempDir::new("desk-nowhere");
@@ -1303,8 +1263,8 @@ mod tests {
         assert_eq!(said.lines().count(), 2, "a sentence, not a listing: {said}");
     }
 
-    /// **More rows than a screenful is ten and a count** — and what the count drops is the tail of
-    /// the queue: a row parked on a person is never the one that goes.
+    /// More rows than a screenful is ten and a count - and what the count drops is the tail of the queue
+    /// a row parked on a person is never the one that goes.
     #[test]
     fn more_rows_than_a_screenful_is_ten_and_a_count() {
         let dir = TempDir::new("desk-bounded");
@@ -1356,8 +1316,8 @@ mod tests {
         );
         assert!(said.lines().count() <= 25, "a screenful: {said}");
 
-        // **The escape the bounded answer names is the one that works** — `.` is this session's
-        // own repository, and it prints every row rather than ten.
+        // The escape the bounded answer names is the one that works - `.` is this session's own
+        // repository, and it prints every row rather than ten.
         let full = desk.status(false, Some(".")).unwrap();
         assert!(full.contains("r-waiting-10"), "every row: {full}");
         assert!(
@@ -1367,13 +1327,9 @@ mod tests {
         assert!(!full.contains("+2 more"), "nothing is counted away: {full}");
     }
 
-    // ===== The gate is visible where a person looks first (2026-11-01) =====
-    //
-    // The operator, twice in one minute: *"nothing about gate — and the same for other sessions —
-    // gate is invisible"*, then *"very nasty actually - fans just start spinning"*. The fans were
-    // the gate compiling on another box, the queue said `gating`, and nothing a session could read
-    // said WHICH STEP or for how long — the merge row's detail said it, and a detail is a click
-    // away, in a pane, on a row nobody had a reason to open.
+    // ===== The gate is visible where a person looks first ===== The queue said `gating`, and
+    // nothing a session could read said WHICH STEP or for how long - the merge row's detail
+    // said it, and a detail is a click away, in a pane, on a row nobody had a reason to open.
 
     /// A `RunningGate` as the gate's own read hands one back, with its clock and its log placed
     /// where the test wants them.
@@ -1395,9 +1351,9 @@ mod tests {
         }
     }
 
-    /// **The gate's clause is the three facts a merge row's detail carries, in one line** — which
-    /// step of how many, how long, and whether the output is moving. The exact words, so the two
-    /// readers of this line (a model's `status` and a person's eye) cannot drift apart.
+    /// The gate's clause is the three facts a merge row's detail carries, in one line - which step of how
+    /// many, how long, and whether the output is moving. The exact words, so the two readers of this line
+    /// (a model's `status` and a person's eye) cannot drift apart.
     #[test]
     fn a_running_gates_clause_names_the_step_the_clock_and_the_moving_tail() {
         let now = 1_000_000 + 372_000; // 6m12s in
@@ -1406,8 +1362,8 @@ mod tests {
             gate_words(&g, now),
             "step 3 of 4 · 6m12s · tail moving (36 KiB)"
         );
-        // **A tail that has stood still is not called moving**, and the two bands are the pane's
-        // own: minutes of silence is a build between crates, ten of them is a step going nowhere.
+        // A tail that has stood still is not called moving, and the two bands are the pane's own
+        // minutes of silence is a build between crates, ten of them is a step going nowhere.
         let quiet = a_gate(3, 4, 372_000, 36 * 1024, Some(300_000));
         assert_eq!(
             tail_words(&quiet, now),
@@ -1420,14 +1376,14 @@ mod tests {
             "tail still for 11m40s — it may be stuck (36 KiB)",
             "past ten minutes the line stops short of a verdict it cannot support"
         );
-        // **A log nothing can read is not a stall** — the bytes are said and the verdict withheld.
+        // A log nothing can read is not a stall - the bytes are said and the verdict withheld.
         let unreadable = a_gate(1, 2, 4_000, 12, None);
         assert_eq!(tail_words(&unreadable, 1_004_000), "12 B written");
     }
 
-    /// **The target's line says the gate while it runs, and nothing about it when the target is
-    /// green** — the operator's *"gate is invisible"*, in the one place every session reads: the
-    /// default `status`, which is this session's own repository and a screenful of it.
+    /// The target's line says the gate while it runs, and nothing about it when the target is green - in
+    /// the one place every session reads: the default `status`, which is this session's own repository
+    /// and a screenful of it.
     #[test]
     fn the_default_status_names_the_gates_step_and_not_when_the_target_is_green() {
         let dir = TempDir::new("desk-gate");
@@ -1473,14 +1429,14 @@ mod tests {
             line.ends_with(" · tail moving (36 KiB)"),
             "and whether the output is moving: {line}"
         );
-        // **A headline, not the story** — the clause is bounded by its own words, so a long path
-        // is the only thing that can make this line long.
+        // A headline, not the story - the clause is bounded by its own words, so a long path is the
+        // only thing that can make this line long.
         let clause = line.split(": ").nth(1).unwrap_or_default();
         assert!(
             clause.chars().count() < 100,
             "the gate's clause is a headline: {clause:?}"
         );
-        // **And `repository:` prints it too** — the third scope is the same target line, in full.
+        // And `repository:` prints it too - the third scope is the same target line, in full.
         let full = desk.status(false, Some(".")).unwrap();
         assert!(
             full.contains("GATING at ec3cb01e8a6f · step 3 of 4 · ")
@@ -1488,8 +1444,8 @@ mod tests {
             "the named scope carries the gate as well: {full}"
         );
 
-        // **The same gate, judged green, says nothing about it** — the clause belongs to the
-        // state, not to a step entry left lying in the gate's own registry.
+        // The same gate, judged green, says nothing about it - the clause belongs to the state, not to
+        // a step entry left lying in the gate's own registry.
         health.state = HealthState::Green;
         health.evidence = "gating `main`'s tip".into();
         store.set_target_health(&health, "test").unwrap();
@@ -1507,9 +1463,8 @@ mod tests {
         drop(gate::step_guard(&wt));
     }
 
-    /// **`all` carries it too, per repository** — the session that needs this most is the one in
-    /// ANOTHER repository: it has no row for this gate, no reason to open one, and the fans it
-    /// hears are this.
+    /// `all` carries it too, per repository - the session that needs this most is the one in ANOTHER
+    /// repository: it has no row for this gate, no reason to open one, and the fans it hears are this.
     #[test]
     fn all_says_which_step_another_repositorys_gate_is_on() {
         let dir = TempDir::new("desk-gate-all");

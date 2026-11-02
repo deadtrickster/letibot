@@ -1,8 +1,8 @@
-//! **The smallest layer that asks below** — the guest behind `../plugin.wasm`.
+//! The smallest layer that asks below - the guest behind `../plugin.wasm`.
 //!
 //! Called the first time, it answers `{"below": {}}`: *resolve the layer below me with no input
-//! and hand me its answer*. Called again — the stack asks the same layer a second time, with the
-//! original input plus `"below": <the lower answer>` — it looks for the built-in's own title in
+//! and hand me its answer*. Called again - the stack asks the same layer a second time, with the
+//! original input plus `"below": <the lower answer>` - it looks for the built-in's own title in
 //! what it was handed and says whether it found it.
 //!
 //! Two facts and no JSON parser: this is a fixture for the STACK's protocol, and the fixture's
@@ -19,7 +19,7 @@
 //!
 //! It is committed for the reason `data/plugin-engine/plugin.wasm` is: a test that shells out to
 //! a compiler fails on a box without a wasm target, and a module this small never changes. It has
-//! **no imports**.
+//! no imports.
 
 #![no_std]
 
@@ -28,24 +28,22 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
 }
 
-/// Where the host writes the input — and where this module's own answers live, because they are
+/// Where the host writes the input - and where this module's own answers live, because they are
 /// `&'static [u8]` already in linear memory.
 const ARENA: i32 = 8192;
 
 /// The result block a hook returns: `out_ptr`, `out_len`.
 static mut BLOCK: [u32; 2] = [0, 0];
 
-/// The first call's answer is built in this buffer: `{"below":` + the input it was given + `}`.
-/// **The input is passed through**, because what a layer asks below with is the request it was
-/// asked — a fixture that sent an empty object would be asking the layer below a different
-/// question, and the built-in would have no feed to draw from.
+/// The first call's answer is built in this buffer: `{"below":` + the input it was given +
+/// `}`.
 static mut ASK: [u8; 4096] = [0; 4096];
 
-/// The second call's answers — the built-in's title was in what came back, or it was not.
+/// The second call's answers - the built-in's title was in what came back, or it was not.
 static FOUND: &[u8] = br#"{"title":"below found the sessions built-in"}"#;
 static MISSED: &[u8] = br#"{"title":"below found nothing below it"}"#;
 
-/// What the built-in answers, as bytes — the mark this fixture looks for.
+/// What the built-in answers, as bytes - the mark this fixture looks for.
 static MARK: &[u8] = b"sessions in this daemon";
 
 #[no_mangle]
@@ -68,7 +66,7 @@ fn answer(bytes: &'static [u8]) -> i32 {
     }
 }
 
-/// `{"below": <input>}` — the request this layer was asked, handed to the layer below it.
+/// `{"below": <input>}` - the request this layer was asked, handed to the layer below it.
 fn ask_below(input: &[u8]) -> i32 {
     let head = b"{\"below\":";
     let room = 4096;
@@ -84,7 +82,7 @@ fn ask_below(input: &[u8]) -> i32 {
     }
 }
 
-/// [`answer`] for bytes that are not `'static` — they are in this module's own buffer, which
+/// [`answer`] for bytes that are not `'static` - they are in this module's own buffer, which
 /// outlives the call.
 fn answer_bytes(bytes: &[u8]) -> i32 {
     unsafe {
@@ -95,7 +93,7 @@ fn answer_bytes(bytes: &[u8]) -> i32 {
     }
 }
 
-/// Whether `hay` holds `needle` — the whole of this module's parsing.
+/// Whether `hay` holds `needle` - the whole of this module's parsing.
 fn holds(hay: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || hay.len() < needle.len() {
         return false;
@@ -105,7 +103,7 @@ fn holds(hay: &[u8], needle: &[u8]) -> bool {
 
 #[no_mangle]
 pub extern "C" fn pane_sessions(ptr: i32, len: i32) -> i32 {
-    // The host wrote the input at the offset `rano_alloc` answered and told us how long it is —
+    // The host wrote the input at the offset `rano_alloc` answered and told us how long it is -
     // and the SECOND call's input is this one plus `"below": …`, so the length is the whole of
     // what this fixture needs to read.
     let at = ptr as usize as *const u8;

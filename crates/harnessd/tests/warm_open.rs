@@ -1,40 +1,5 @@
-//! **A stored session a head asks a running daemon for, end to end** — the warm half of
-//! resume, which is the half no test covered.
-//!
-//! MEASURED 2026-10-26 ~14:10 on macOS: the operator's daemon for `~/Projects/stroppy-io`
-//! was up and seated on one session; they ran `leticode --session s-1793…`, a session the
-//! store held with 166 rows. The daemon's own log says the restore happened
-//! (`s-1793017817134441000 · resumed 166 row(s), 537946 tokens`) and the prompt the
-//! operator then typed was appended as seq 166 of that conversation, with the model
-//! answering about the pptx they had been talking about an hour earlier. **What the head
-//! drew was an empty transcript with the right title**, and the echo of the prompt said
-//! `queued` — so between the daemon's restore and the head's screen something was missing.
-//!
-//! # The path, and where each half is measured
-//!
-//! `leticode --session ID` with a daemon up runs `letibot-tui --resume ID`
-//! (`scripts/letibot`), and the head then takes five frames: `ResumeSession`, the
-//! `Sessions { created }` answer, `Switch`, the `Hello` with a snapshot, and — published
-//! by the worker when it reaches the `Work::Open` the creation rung — the restored rows as
-//! `TranscriptAppended` + `TranscriptContent`.
-//!
-//! This file drives the first four from a real `HeadClient` against a real daemon socket
-//! and the fifth from the real `Sessions::open`, with a real store underneath. What it
-//! asserts is the thing the operator's screen needed: **every stored row reaches the head**,
-//! whether it arrives in the switch's snapshot or as a live event afterwards, and the
-//! daemon knows it resumed (`resume_report`, which is the `RESUMED … row(s)` line).
-//!
-//! The head's own half — that an `App` holding those frames draws them — is
-//! `letibot-tui`'s `tests/warm_session.rs`, because this crate is above the head's and
-//! cannot build one.
-//!
-//! # One test, and why
-//!
-//! The turns here go to a fake provider on loopback, which is reached through
-//! `providers.toml` under a scratch `XDG_CONFIG_HOME` — and `set_var` beside a live thread
-//! is undefined behaviour this edition makes `unsafe`. So the environment is pinned once,
-//! before the daemon or any thread exists, and the phases are phases of one test. Same
-//! discipline as `activity_two_sessions.rs`, for the same reason.
+//! A stored session a head asks a running daemon for, end to end - the warm half of resume.
+//! The report
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -57,7 +22,7 @@ use letibot_transcript::{TranscriptItem, UserPart};
 
 /// The daemon's own first session: what a bare attach lands on.
 const SEATED: &str = "s-seated";
-/// The session in the store that the head asks for — the operator's case.
+/// The session in the store that the head asks for - the operator's case.
 const EARLIER: &str = "s-earlier";
 /// A second stored session: the one a prompt is queued against before it is opened.
 const PROMPTED: &str = "s-prompted";
@@ -81,7 +46,7 @@ fn assistant(text: &str) -> TranscriptItem {
     }
 }
 
-/// The conversation both stored sessions hold — the text the restored prompt must carry.
+/// The conversation both stored sessions hold - the text the restored prompt must carry.
 fn conversation() -> Vec<TranscriptItem> {
     vec![
         user("look at ~/Documents/stroppy_final_final.pptx"),
@@ -104,7 +69,7 @@ fn renders_template(parts: &Parts) -> String {
         .collect()
 }
 
-/// **Write `items` onto `transcript` as the ledger's own rows** — `tests/resume.rs`'s
+/// Write `items` onto `transcript` as the ledger's own rows - `tests/resume.rs`'s
 /// helper, which is the one fixture in this tree that writes a conversation the way the
 /// ledger's own restore reads it back.
 fn write_rows(
@@ -135,7 +100,7 @@ fn write_rows(
     ids
 }
 
-/// **A session in the store with a conversation in it**, written here so the store is the
+/// A session in the store with a conversation in it, written here so the store is the
 /// test's and never the operator's.
 fn stored_session(store: &Store, parts: &Parts, session_id: &str, workspace: &Path) -> Vec<String> {
     let template = renders_template(parts);
@@ -199,7 +164,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
     std::fs::create_dir_all(&workspace).expect("workspace");
     let mut cfg = Config::for_this_box(&workspace);
     cfg.dialect = Dialect::Qwen;
-    // **`leticode`, and not `coder`** — a confined seat cannot be built on a Mac.
+    // `leticode`, and not `coder` - a confined seat cannot be built on a Mac.
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
     cfg.context_window = Some(32_768);
@@ -237,10 +202,8 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
     let server = serve_registry(registry.clone(), &socket).expect("the socket binds");
     let mut sessions = Sessions::open_first(parts, cfg.clone(), registry.clone())
         .expect("the first session opens");
-    // **The rings this test does not measure are drained here**: creating the daemon's first
-    // session rang its own `Open`, and `open_first` rings a wake. What is measured below is
-    // the open the HEAD's ask causes, and a queue with yesterday's work in it would make
-    // `next_work` a queue position rather than a fact.
+    // The rings this test does not measure are drained here: creating the daemon's first
+    // session rang its own `Open`, and `open_first` rings a wake.
     drain_work(&registry);
     assert!(
         registry.get(EARLIER).is_none(),
@@ -276,7 +239,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         None,
         "a resumed root is a root"
     );
-    // 1. **The worker is rung to open it, and that is the restore's only door.**
+    // 1. The worker is rung to open it, and that is the restore's only door.
     assert!(
         matches!(registry.next_work(), Some(Work::Open(id)) if id == EARLIER),
         "registering the session must wake the worker to open it — the resume's chain \
@@ -297,11 +260,9 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         session_id, EARLIER,
         "the head is in the session it asked for"
     );
-    // The frame the operator saw: a hub nothing has written to yet, so an empty snapshot —
-    // and the ONE thing that must come with it, the restore announced from the store's own
-    // count. Without it a head is left to draw a conversation of `ROWS` rows as a session
-    // that has said nothing (MEASURED 2026-10-26), and the prompt it types meanwhile says a
-    // bare `queued` with nothing behind it.
+    // The frame the operator saw: a hub nothing has written to yet, so an empty snapshot - and the
+    // ONE thing that must come with it, the restore announced from the store's own count. Without
+    // it a head draws a conversation of `ROWS` rows as a session that has said nothing.
     let in_snapshot: Vec<letibot_sessionlog::view::SnapshotItem> = snapshot
         .as_ref()
         .map(|s| s.items.clone())
@@ -340,7 +301,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         "every stored row came back — this is the `RESUMED … row(s)` line the daemon prints"
     );
 
-    // 2. **Every row reaches the head**, whether it was in the switch's snapshot or
+    // 2. Every row reaches the head, whether it was in the switch's snapshot or
     // published live after it. This is the assertion the operator's empty screen failed.
     let seen = drain_rows(&rx, &earlier_ids, &in_snapshot, PATIENCE);
     assert_eq!(
@@ -361,10 +322,9 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         "the session's log is the conversation"
     );
 
-    // --- a prompt queued BEFORE the restore finishes -------------------------
-    //
-    // This is the operator's `hmm`: typed into a session the daemon had registered and
-    // not opened. The bell has two lanes, and the open is served first.
+    // --- a prompt queued BEFORE the restore finishes ------------------------- Typed into a
+    // session the daemon had registered and not opened. The bell has two lanes, and the open
+    // is served first.
     registry
         .create_under(
             PROMPTED,
@@ -413,7 +373,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
     );
     sessions.dispatch(PROMPTED, &cmd);
 
-    // 3. **The turn ran on the restored conversation, not on an empty one.**
+    // 3. The turn ran on the restored conversation, not on an empty one.
     let asked = fake.last_request();
     assert!(
         asked.contains("stroppy_final_final.pptx"),
@@ -423,7 +383,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         asked.contains("hmm, and what did you call the draft?"),
         "and the prompt itself: {asked}"
     );
-    // The row the prompt appended continues the stored chain — seq ROWS, not seq 0 of a
+    // The row the prompt appended continues the stored chain - seq ROWS, not seq 0 of a
     // new transcript, which is the same fact stated where the store keeps it.
     let store = Store::open(cfg.store.as_ref().expect("a store path")).expect("reopening");
     let transcript = format!("{PROMPTED}#t0");
@@ -464,7 +424,7 @@ struct Seen {
     live: usize,
 }
 
-/// Read frames until every id in `want` has been announced **and** carried a body, counting
+/// Read frames until every id in `want` has been announced and carried a body, counting
 /// which came from the switch's `Hello` and which arrived as events after it.
 fn drain_rows(
     rx: &std::sync::mpsc::Receiver<Inbound>,
@@ -591,8 +551,8 @@ impl Drop for TempDir {
     }
 }
 
-/// **A fake provider on a loopback port**, answering every round with the same sentence and
-/// remembering the last request it was sent — so *"the turn ran on the restored
+/// A fake provider on a loopback port, answering every round with the same sentence and
+/// remembering the last request it was sent - so *"the turn ran on the restored
 /// conversation"* is a fact about the bytes rather than an inference from prose.
 struct Fake {
     url: String,
@@ -646,7 +606,7 @@ fn read_request(stream: &TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// One round as SSE — the frames `letibot-provider` parses, in the shapes
+/// One round as SSE - the frames `letibot-provider` parses, in the shapes
 /// `activity_two_sessions.rs` serves, so the two fakes cannot drift on the wire bytes.
 fn write_sse(mut stream: TcpStream, text: &str) -> std::io::Result<()> {
     let mut body = String::new();

@@ -1,27 +1,5 @@
-//! **The wall as the provider speaks it**: a context-length refusal is the
-//! wall, and every door that starts a turn recovers from it.
-//!
-//! The wedge this file is the regression guard for was measured 2026-10-09 on
-//! `s-1789919514688401228` (pg-noop) on `deepseek/deepseek-flash`:
-//!
-//! * the daemon said `context 1000000 tokens; compacts automatically with
-//!   62500 left`, so the operator believed the wall was managed;
-//! * ONE `compacting:` line in the whole log (`grep -c` → 1), after which the
-//!   no-progress guard switched automatic compaction off in memory;
-//! * the next thirty requests went out at 1,048,624 / 1,049,070 / 1,049,191
-//!   tokens against the provider's 1,048,576 and came back
-//!   `http 400: This model's maximum context length is …` — the FIRST
-//!   attributed to `monitor` (an automatic wake), the LAST to `todo check`
-//!   (the plan nag), and none of the thirty recovered, because the refusal
-//!   landed as a backend error and every recovery was gated on
-//!   `HarnessError::ContextWall`.
-//!
-//! Every fixture here replays the two measured refusal bodies VERBATIM (the
-//! plain-text OpenAI shape deepseek answered with, and llama.cpp's
-//! `exceed_context_size_error` JSON), because a matcher is only as narrow as
-//! its fixtures are real. It needs the vocabulary GGUF and not a model: the
-//! refusal is bytes on the wire, and the compaction's summary turns are
-//! answered by the canned server the turn crate's tests replay.
+//! The wall as the provider speaks it: a context-length refusal is the wall, and every door
+//! that starts a turn recovers from it. The wedge this file is the regression guard for
 
 use letibot_harnessd::Sessions;
 use letibot_harnessd::config::Config;
@@ -42,26 +20,24 @@ use support::qwen::{a_plain_answer_turn, ids, spoken};
 
 const WANTED: Dialect = Dialect::Qwen;
 
-/// **The measured deepseek body, verbatim** — an OpenAI-shaped provider, plain
-/// text, the numbers in the sentence and a request id trailing. The request id
-/// is kept because a matcher that stopped at `Please reduce the length` would
-/// be matching a sentence, and this body is the sentence the operator read.
+/// The measured deepseek body, verbatim - an OpenAI-shaped provider, plain text, the numbers in
+/// the sentence and a request id trailing. A matcher that stopped at `Please reduce the length` would
+/// be matching a sentence.
 const OPENAI_REFUSAL: &str = "This model's maximum context length is 1048576 tokens. However, you requested 1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the length of the messages or completion. (request_id: 8a448ce7-fabf-4ffa-b350-16e6ddeed6ac)";
 
-/// **The measured llama.cpp body, verbatim** — JSON with a type field, the
+/// The measured llama.cpp body, verbatim - JSON with a type field, the
 /// numbers as fields. This is the structured half of the matcher's diet.
 const LLAMACPP_REFUSAL: &str = r#"{"error":{"code":400,"message":"request (1504198 tokens) exceeds the available context size (262144 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":1504198,"n_ctx":262144}}"#;
 
-/// A 400 that is NOT about context length — also measured, in the same log —
+/// A 400 that is NOT about context length - also measured, in the same log -
 /// and the shape the matcher must refuse to read as the wall.
 const INVALID_TOKENS: &str = r#"{"error":{"code":400,"message":"Prompt contains invalid tokens","type":"invalid_request_error"}}"#;
 
 fn config(store: &std::path::Path, session_id: &str) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = WANTED;
-    // No retry ladder: a refusal is deterministic in the bytes, and waiting
-    // 1+2+4+8+16+32 seconds to be told so again is the suite's time, not the
-    // test's question.
+    // No retry ladder: a refusal is deterministic in the bytes, and waiting 1+2+4+8+16+32 seconds to
+    // be told so again is the suite's time, not the test's question.
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
@@ -110,12 +86,8 @@ const THINK_CLOSE: u32 = 248069;
 const TOOL_CALL_OPEN: u32 = 248058;
 const TOOL_CALL_CLOSE: u32 = 248059;
 
-/// **The wedge's own first half**: one round that answers the prompt with a
-/// BATCH of ten `read` calls, exactly the shape that pushes a session past its
-/// wall by ACCUMULATION (the operator's child crossed it on its 207th call;
-/// this fixture crosses it on the first round so the test does not spend ten
-/// turns getting there). The calls end the turn pending, which is what makes
-/// the harness run them and append ~40k tokens of results between rounds.
+/// The wedge's own first half: one round that answers the prompt with a BATCH of ten `read`
+/// calls, which is the shape that pushes a session past its wall by ACCUMULATION.
 fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canned::Frame> {
     let mut round0 = vec![canned::Frame::Progress {
         total: 30,
@@ -159,16 +131,8 @@ fn a_turn_of_ten_reads(vocab: &letibot_tokencore::Vocab, rel: &str) -> Vec<canne
     round0
 }
 
-/// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read`
-/// renders them — ten of those is what overruns a window in the tests below, and
-/// [`ten_reads_of`] measures that rather than trusting this number.
-///
-/// **It also seats the session at `dir`**, and returns the path `read` is given relative to
-/// it. `config` seats every session at `/tmp`, and this used to strip `/tmp` off the file's
-/// path on the assumption that the temp dir was under it — true only while `TMPDIR` was
-/// unset. Under `TMPDIR=$HOME/.cache/…` the path stayed absolute, the tool refused all ten
-/// reads as outside the session root (correctly), nothing overran, and four tests here
-/// failed at their wall assertions for a reason that had nothing to do with the wall.
+/// The file the ten reads read: 260 numbered lines, ~3950 tokens as `read` renders them
+/// and [`ten_reads_of`] measures that rather than trusting this number.
 fn write_the_big_file(dir: &TempDir, cfg: &mut Config) -> String {
     let big = dir.path().join("big.txt");
     let mut body = String::new();
@@ -183,33 +147,15 @@ fn write_the_big_file(dir: &TempDir, cfg: &mut Config) -> String {
 }
 
 /// The margin `plan_cut` adds beside `WRITE_ROOM`. It is private in `letibot_turn`, so it is
-/// a number here — and the assertion in `a_refusal_on_a_stuck_session_still_folds` is what
+/// a number here - and the assertion in `a_refusal_on_a_stuck_session_still_folds` is what
 /// fails, with the numbers, if it ever grows.
 const CUT_MARGIN: u64 = 8_192;
 
-/// **The room a two-half fold needs beyond the prompt itself** — `letibot_turn::compaction`'s
-/// `WRITE_ROOM` and `CUT_MARGIN`. `plan_cut` answers `Hopeless` when the prompt leaves less
-/// than this, and a `Hopeless` fold leaves the refusal it was asked to fold standing — which
-/// is why a window is not a number a fixture may choose: 32 768 leaves 8 192 for the prompt,
-/// and message zero is bigger than that on a box whose instruction file and notes are in it.
+/// The room a two-half fold needs beyond the prompt itself - `WRITE_ROOM` and `CUT_MARGIN`.
 const CUT_ROOM: u64 = letibot_turn::compaction::WRITE_ROOM + CUT_MARGIN;
 
-/// **The prompt this box composes for this seat, in tokens — measured, through the door the
-/// daemon uses.**
-///
-/// Message zero is the system prompt and the tool schemas, and the system prompt carries the
-/// STANDING NOTES: `AGENTS.md`, the seat's instruction files and the box's notes are in it.
-/// So the prompt's size is a fact about the HOME a test runs under, not about the tree.
-/// MEASURED 2026-10-31, one binary and one vocabulary (`qwen3.8-flash-next` shard 1 of 6,
-/// the same file on both boxes): **6 709 on the Mac and 6 717 on lab2x1 with an empty
-/// `$HOME`, and 7 669 / ≈8 209 with each box's real one** — the seat's canonical instruction
-/// file under `~/.claude/` (8 531 B on the Mac) and `~/.config/letibot/notes/*.md` are the
-/// whole of the difference. A fixture that wants a window for something — a two-half fold, a
-/// history — has to start from this number, because the same constant is a different fraction
-/// of the prompt on every home.
-///
-/// `Sessions::open_first` and not `Harness::open`: the daemon's door composes the seat's own
-/// prompt (`Config::seat_prompt`), which is 217 tokens of the difference on the Mac.
+/// The prompt this box composes for this seat, in tokens - measured, through the door the
+/// daemon uses.
 fn the_prompt_this_box_composes(tag: &str, parts: &Parts, cfg: &Config) -> u64 {
     let dir = TempDir::new(tag);
     let id = "the-prompt-this-box-composes";
@@ -228,7 +174,7 @@ fn the_prompt_this_box_composes(tag: &str, parts: &Parts, cfg: &Config) -> u64 {
         .len() as u64
 }
 
-/// **A window the two-half fold fits in, from the prompt that was measured** — the prompt,
+/// A window the two-half fold fits in, from the prompt that was measured - the prompt
 /// the room `plan_cut` needs beyond it, and the reserve a turn needs
 /// ([`Config::headroom`], which is why the sum is not the answer on its own).
 fn a_window_the_fold_fits_in(cfg: &Config, prompt: u64) -> u64 {
@@ -237,19 +183,17 @@ fn a_window_the_fold_fits_in(cfg: &Config, prompt: u64) -> u64 {
     prompt + CUT_ROOM + sizing.headroom()
 }
 
-/// **What the ten `read`s of [`write_the_big_file`]'s file append, in this vocabulary's
-/// tokens** — the file's own text, counted with the session's own counter. `read` numbers
-/// its lines as well, so this under-counts by the line numbers; a window built on it is one
-/// the session ends just past, which is the side a wall wants to be on.
+/// What the ten `read`s of [`write_the_big_file`]'s file append, in this vocabulary's tokens -
+/// the file's own text, counted with the session's own counter. `read` numbers its lines as well, so
+/// this under-counts, which is the side a wall wants to be on.
 fn ten_reads_of(vocab: &letibot_tokencore::Vocab, dir: &TempDir, rel: &str) -> u64 {
     let body = std::fs::read_to_string(dir.path().join(rel)).expect("the file the reads read");
     ids(vocab, &body).len() as u64 * 10
 }
 
-/// The session row a resumed daemon needs, carrying the guard's stood-down
-/// pair — the state the restart used to lose. The pair is the WINDOW's: a fold of
-/// `before` measured `measured`, still at the wall, and a `measured` over the window is
-/// not the provider's count and is refused (`restore_auto_compact`).
+/// The session row a resumed daemon needs, carrying the guard's stood-down pair - the state the
+/// restart used to lose. A `measured` over the window is not the provider's count and is refused
+/// (`restore_auto_compact`).
 fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str, before: u64, measured: u64) {
     let s = Store::open(path).expect("seeding");
     s.put_session(&SessionRecord {
@@ -270,15 +214,13 @@ fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str, before: u
         parent_session_id: None,
     })
     .expect("the session row");
-    // The pair the controller wrote when its ladder ran out: what was folded, and the
-    // MEASURED count after it — inside this fixture's window, because a provider's count
-    // cannot exceed its window (a pair that does is the old guard's ledger numbers, and is
-    // not restored: see the test below).
+    // The pair the controller wrote when its ladder ran out: what was folded, and the MEASURED count
+    // after it - inside this fixture's window, because a provider's count cannot exceed its window.
     s.set_auto_compact_stood_down(session_id, Some((before, measured)))
         .expect("the stood-down pair");
 }
 
-/// The warnings a session's log holds, code and detail, in order — the order
+/// The warnings a session's log holds, code and detail, in order - the order
 /// is half of every assertion below (announced before attempted before done).
 fn warnings_of(hub: &Hub) -> Vec<(String, String)> {
     hub.retained()
@@ -297,24 +239,9 @@ fn at(warnings: &[(String, String)], code: &str, text: &str) -> usize {
         .unwrap_or_else(|| panic!("no {code} warning saying {text:?} — the log:\n{warnings:#?}"))
 }
 
-/// **THE CHAIN, through the daemon's own door, with the guard already fired** — and,
-/// since 2026-10-11, released by the first measured count.
-///
-/// The 2026-10-09 half: the no-progress finding is restored from the store the way a
-/// restarted daemon restores it (now the wall controller's `Stuck`). The 2026-10-11
-/// half: `Stuck` is not for good — the first round measures the prompt, comfortably below
-/// the wall, and the session is re-armed (`re-armed: measured …`), so the round loop's own
-/// wall stop is back and stops round one at the overrun the ten reads made. That stop is
-/// the wall, and the turn tail folds it through the refused door onto the `Cut` fold (the
-/// size calls for it) and the prompt finishes on the summary. The refusal-while-stuck
-/// chain is `a_refusal_on_a_stuck_session_still_folds`, below.
-///
-/// **The window is in a BAND, and both of its ends are measured.** Above
-/// `prompt + CUT_ROOM`, or the two-half fold is `Hopeless` and the wall it was asked to
-/// fold stands; below `prompt + ten reads`, or the reads never overrun it and there is no
-/// wall at all. A hard-coded 32 768 is inside that band on a home whose prompt is small and
-/// outside it on one whose instruction file and notes are in message zero — see
-/// [`the_prompt_this_box_composes`].
+/// THE CHAIN, through the daemon's own door, with the guard already fired - and released by
+/// the first measured count. The no-progress finding is restored from the store the way a
+/// restarted daemon restores it, and `Stuck` is not for good
 #[test]
 fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -340,16 +267,13 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     };
 
     // The guard's finding is on the row BEFORE the daemon opens, exactly as a
-    // restart would find it — which also proves the restore (asserted below).
+    // restart would find it - which also proves the restore (asserted below).
     seed_a_stood_down_session(&path, session_id, window + window / 4, window - reserve);
     cfg.context_window = Some(window);
 
-    // Request one: the prompt turn, answered with the batch of reads. Request
-    // two: round one, REFUSED in deepseek's own words, verbatim. Then the two
-    // half-summaries a local `Cut` fold runs, the continuation's answer, and
-    // spares — an undersupplied server turns a scripted answer into a socket
-    // error and the test would fail for a reason that is not the one under
-    // test.
+    // Request one: the prompt turn, answered with the batch of reads. Request two: round one, REFUSED
+    // in deepseek's own words, verbatim. Then the two half-summaries a local `Cut` fold runs, the
+    // continuation's answer, and spares.
     let half = a_plain_answer_turn(
         vocab,
         "summarising",
@@ -384,10 +308,9 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // The guard's finding came back with the session: the pre-emptive door is
-    // stood down, or none of what follows means what it must. Since 2026-10-11 the
-    // finding is the wall controller's `Stuck`, not `auto_compact = false` — and a
-    // refusal is folded from `Stuck` too (`crate::wall`), which is this test's chain.
+    // The guard's finding came back with the session: the pre-emptive door is stood down, or none of
+    // what follows means what it must. A refusal is folded from `Stuck` too, which is this test's
+    // chain.
     assert!(
         sessions
             .harness_of(session_id)
@@ -404,7 +327,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     let warnings = warnings_of(&hub);
 
     // (1) The first round's measured count released the restored Stuck, and the
-    // round loop's wall stop — stood down while stuck — stopped round one.
+    // round loop's wall stop - stood down while stuck - stopped round one.
     let released = at(&warnings, "auto_compact", "re-armed: measured");
     let refused = at(&warnings, "context_wall", "stopping this turn");
     assert!(
@@ -412,7 +335,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
         "re-armed by a measurement, then the wall: {released} < {refused}"
     );
 
-    // (2) The compaction that answered it was FORCED — announced as under
+    // (2) The compaction that answered it was FORCED - announced as under
     // duress, because the automatic one is off and an operator watching a
     // session that "compacts automatically" deserves to know why this ran.
     let duress = at(&warnings, "auto_compact", "under duress");
@@ -421,12 +344,9 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
         "the wall is announced before the compaction reacts to it"
     );
 
-    // (3) **It reached the overrun branch.** The local `Cut` fold announces
-    // itself in its own words — two halves that overlap — and that arm is the
-    // strategy for exactly the refused state: a history with no room for a
-    // summary in place. The ordinary fold never runs on a session at its wall
-    // (it needs resident + headroom ≤ window), so the sentence is evidence of
-    // WHICH fold ran, not decoration.
+    // (3) It reached the overrun branch. The local `Cut` fold announces itself in its own words -
+    // two halves that overlap - and the ordinary fold never runs on a session at its wall, so the
+    // sentence is evidence of WHICH fold ran.
     let cut = at(&warnings, "auto_compact", "two halves that overlap");
     assert!(
         duress < cut,
@@ -458,7 +378,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
             .any(|(c, _)| c == "auto_compact_no_progress"),
         "a fold that made room does not trip the no-progress guard: {warnings:#?}"
     );
-    // (6) And a fold that made room, measured (a local base is measured as it lands),
+    // (6) And a fold that made room, measured (a local base is measured as it lands)
     // re-arms the stuck session: the finding is no longer for good.
     assert!(
         sessions
@@ -468,11 +388,8 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
     );
 }
 
-/// **A stored "measured" past the window is not a provider's count, and is not restored.**
-/// MEASURED 2026-10-11 on pg-noop: a restart restored "a fold of 3213409 measured 1687673"
-/// against a 1000000 window — the old guard's LEDGER pair — and showed compaction OFF
-/// until the first round measured 584730. Such a row is cleared, and the session opens
-/// armed: the next measured round decides.
+/// A stored "measured" past the window is not a provider's count, and is not restored. Such a row
+/// is cleared, and the session opens armed: the next measured round decides.
 #[test]
 fn a_stored_pair_past_the_window_is_not_restored_and_is_cleared() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -481,7 +398,7 @@ fn a_stored_pair_past_the_window_is_not_restored_and_is_cleared() {
     let dir = TempDir::new("harnessd-implausible-stuck");
     let path = dir.path().join("sessions.db");
     let session_id = "implausible-stuck";
-    // A pair that IS the window's — the next lines overwrite it with the implausible one,
+    // A pair that IS the window's - the next lines overwrite it with the implausible one
     // which is this test's subject.
     seed_a_stood_down_session(&path, session_id, 1_000_000, 900_000);
     Store::open(&path)
@@ -509,26 +426,8 @@ fn a_stored_pair_past_the_window_is_not_restored_and_is_cleared() {
     );
 }
 
-/// **A refusal on a STUCK session is still folded** — the 2026-10-09 wedge, against the
-/// controller that replaced the latches.
-///
-/// pg-noop's `s-1789919514688401228` met thirty refusals with a recovery stood down by the
-/// switch that stood the pre-emptive door down; on 2026-10-11 the same session's
-/// `forced_gave_up` stood the refused door down on an estimate. Here the controller is
-/// restored `Stuck` from the row (the way a restart restores it), the very first request is
-/// refused (deepseek's measured body), and the refused door folds anyway — the sliced fold,
-/// two halves, the hardest press — and the prompt finishes on the summary. The `sliced`
-/// line is the evidence that the refusal met a STUCK controller: an armed one is offered
-/// the ordinary fold, so this assertion is the state, not decoration.
-///
-/// **The window is measured, and that is the whole of the 2026-10-31 fix.** `plan_cut`
-/// answers `Hopeless` when the prompt leaves less than `CUT_ROOM` of the window, and a
-/// `Hopeless` fold leaves the refusal standing — so a window of 32 768 asks the prompt to be
-/// under 8 192, and the prompt is the BOX's. MEASURED with the same binary and vocabulary:
-/// 6 709 (Mac) / 6 717 (lab2x1) with an empty `$HOME`, 7 669 / ≈8 209 with each box's real
-/// one. 8 209 + 24 576 = 32 785 ≥ 32 768 is why this was green on the Mac and red on the
-/// gate; the fixture now builds its window from the prompt it measured
-/// ([`the_prompt_this_box_composes`]) and asserts the room it needs.
+/// A refusal on a STUCK session is still folded - the wedge itself, against the controller
+/// that replaced the latches.
 #[test]
 fn a_refusal_on_a_stuck_session_still_folds() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -585,10 +484,9 @@ fn a_refusal_on_a_stuck_session_still_folds() {
         let h = sessions
             .harness_of(session_id)
             .expect("the session is open");
-        // **The room the fold needs, asserted rather than assumed** — the window was built
-        // from a probe open's prompt and this is the seated one; a prompt that outgrew the
-        // window would make the fold `Hopeless`, and this line is where that is said with
-        // the numbers instead of on one platform.
+        // The room the fold needs, asserted rather than assumed - the window was built from a
+        // probe open's prompt and this is the seated one; a prompt that outgrew the window would make
+        // the fold `Hopeless`, and this line is where that is said with the numbers.
         let seated = h.prefix_tokens().len() as u64;
         assert!(
             seated + CUT_ROOM < window,
@@ -623,21 +521,9 @@ fn a_refusal_on_a_stuck_session_still_folds() {
     );
 }
 
-/// **The same chain through a child's own seam**, on the other measured body.
-///
-/// `submit_as_a_normal_session` is the tail a subagent's thread gives its
-/// prompts — no `Sessions`, no `after_turn`, nothing but the harness — and it
-/// is where the 2026-10-06 child wedge lived. The refusal here is llama.cpp's
-/// JSON shape, so both measured bodies are proven through a real door and not
-/// only through the matcher's unit tests.
-///
-/// **Its window is in the same band as its sibling's** — above `prompt + CUT_ROOM` or the
-/// two-half fold the refusal is handed to is `Hopeless`, below `prompt + ten reads` or the
-/// reads never overrun it and there is no wall — and both ends are measured
-/// ([`the_prompt_this_box_composes`], [`ten_reads_of`]). MEASURED with a home that spends
-/// the notes budget: a prompt of 9 067 against a hard-coded 32 768 fails here with
-/// *"this session's PROMPT is 9067 token(s) of a 32765 token window … Nothing was
-/// compacted"*, which is the same defect this branch fixed one test up.
+/// The same chain through a child's own seam, on the other measured body.
+/// `submit_as_a_normal_session` is the tail a subagent's thread gives its prompts - no
+/// `Sessions`, no `after_turn`, nothing but the harness.
 #[test]
 fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -655,7 +541,7 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     let history = ten_reads_of(vocab, &dir, &rel);
     cfg.context_window = Some(prompt + CUT_ROOM + history.saturating_sub(CUT_ROOM) / 2);
     // The wedge's own state: the guard has fired, the flag is off. The child
-    // has no store row here because a spawned child is a NEW session — the
+    // has no store row here because a spawned child is a NEW session - the
     // flag is the fact, and this test sets it the way the guard does.
     cfg.auto_compact = false;
 
@@ -710,7 +596,7 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
         "the JSON body's fields are the numbers named: {}",
         warnings[refused].1
     );
-    // Under duress, onto the two-half fold, forked, finished — the same chain,
+    // Under duress, onto the two-half fold, forked, finished - the same chain
     // the other seam.
     let duress = at(&warnings, "auto_compact", "under duress");
     let cut = at(&warnings, "auto_compact", "two halves that overlap");
@@ -723,13 +609,8 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     );
 }
 
-/// **A 400 that is not about context length stays a backend error.**
-///
-/// The matcher's narrowness is the whole of its safety: a quota refusal, a
-/// bad token, a wrong model name — each is a 400 with a body, and any of them
-/// misread as the wall would put a session through a compaction it did not
-/// need on top of a failure it did not deserve. This is the measured
-/// invalid-tokens body from the same log.
+/// A 400 that is not about context length stays a backend error. The matcher's narrowness
+/// is the whole of its safety
 #[test]
 fn a_non_context_400_stays_a_backend_error() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -741,11 +622,8 @@ fn a_non_context_400_stays_a_backend_error() {
     let mut cfg = config(&path, session_id);
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let vocab = &parts.vocab;
-    // A window this session fits in with room to spare, so the round-0 wall check cannot be
-    // what answers: the 400 must come from the provider and stay a backend error. It was
-    // 32 768 here too, which is the same constant that made the fold `Hopeless` elsewhere
-    // in this file — a prompt big enough would have had this test reporting the wall as
-    // "the matcher is too wide".
+    // A window this session fits in with room to spare, so the round-0 wall check cannot be what
+    // answers: the 400 must come from the provider and stay a backend error.
     let prompt = the_prompt_this_box_composes("harnessd-refused-other-prompt", &parts, &cfg);
     cfg.context_window = Some(a_window_the_fold_fits_in(&cfg, prompt));
 
@@ -784,33 +662,8 @@ fn a_non_context_400_stays_a_backend_error() {
     );
 }
 
-/// **The two automatic doors take the pre-turn check** — Repair 3.
-///
-/// `nag_turn` (the plan check — the LAST of the thirty refusals was attributed
-/// to `todo check`) and `wake` (a monitor firing — the FIRST was attributed to
-/// `monitor`) both start a turn, and both used to go straight to
-/// `submit_item`. The pre-flight is insurance rather than the load-bearing fix
-/// — a refused nag or wake is classified as the wall and recovered by
-/// `after_turn` like any other turn — but it spares the round-trip the
-/// daemon's own numbers can predict, and this is the assertion that it runs:
-/// at the wall with `auto_compact` on, the door compacts BEFORE the turn it
-/// was going to send.
-///
-/// The fixture both door tests stand on: a session whose store carries the
-/// todo rows the door under test will speak about (seeded BEFORE the harness
-/// opens, because the board is restored at open — the resume's own rule), a
-/// window the ten reads overrun, and the parts. The test then points `cfg.endpoint` at its
-/// own canned server, opens the harness, and wedges it with one submit whose
-/// ten reads cross the wall — a bare harness returns the wall with nothing
-/// tidied, which is the state every door then meets.
-///
-/// **The window is measured, and both of its ends matter here too**: above
-/// `prompt + CUT_ROOM` or the fold the door then runs is `Hopeless` and the `compacted` line
-/// the tests assert never comes; below `prompt + ten reads` or the reads do not overrun it
-/// and there is no wall. 32 768 was inside that band only while the prompt was under
-/// 8 192 — see [`the_prompt_this_box_composes`]. The workspace is set HERE rather than by
-/// the caller's [`write_the_big_file`], so the prompt the window is built from is the one
-/// this session is seated with.
+/// The two automatic doors take the pre-turn check. `nag_turn` (the plan check) and `wake`
+/// (a monitor firing) both start a turn, and both used to go straight to `submit_item`.
 fn a_session_at_the_wall(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Parts) {
     let dir = TempDir::new(tag);
     let path = dir.path().join("sessions.db");
@@ -887,11 +740,11 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
 
     // The wedge: round-loop wall after the ten reads, nothing tidied (a bare
-    // harness has no tail) — the state the door then meets.
+    // harness has no tail) - the state the door then meets.
     let out = h.submit("read big.txt and fill the context");
     assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
 
-    // The door: the plan is unfinished, so the nag has something to say — and
+    // The door: the plan is unfinished, so the nag has something to say - and
     // THIS is the assertion, that it says it on a compacted base.
     let out = h.nag_turn().expect("the nag turn runs");
     assert!(
@@ -926,10 +779,9 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    // A todo row conditioned on a job handle nothing knows: **absence is the
-    // condition** (`TodoCondition::Job`'s own rule), so the row is due the
-    // moment the wake looks — the cheapest honest way to give a wake something
-    // to say.
+    // A todo row conditioned on a job handle nothing knows: absence is the condition
+    // (`TodoCondition::Job`'s own rule), so the row is due the moment the wake looks - the
+    // cheapest honest way to give a wake something to say.
     let (dir, mut cfg, parts) = a_session_at_the_wall(
         "harnessd-wake-wall",
         &[TodoItem {
@@ -971,7 +823,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     let hub = Hub::new(&cfg.session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
 
-    // The wedge, then the door — same shape as the nag's.
+    // The wedge, then the door - same shape as the nag's.
 
     let out = h.submit("read big.txt and fill the context");
     assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
@@ -999,20 +851,9 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
     );
 }
 
-/// **A first round already past the window is stopped BEFORE it is sent** (R72
-/// follow-up, defect D).
-///
-/// The doors before a turn judge the conversation before the prompt is appended,
-/// with a sixteenth of the window in reserve for it; the round loop judged only
-/// BETWEEN rounds (`round > 0`). So a prompt bigger than the reserve went out over
-/// the window and came back as the provider's refusal — the wall reached by a
-/// request the daemon's own count already said would not fit. Here the prompt alone is
-/// past the window — the window is put at twice this box's prompt, so the paste is over it
-/// and the prompt still leaves the reserve free ([`wall_stops_round`]'s round-0 test needs
-/// both) — and the turn must stop at round 0 with the wall, and the canned server's one
-/// spare answer must not be what comes back. A 32 768 here was the same platform-shaped
-/// constant as everywhere else in this file: the paste's ~40k is a fact about the
-/// vocabulary, the window's is a fact about the box's home.
+/// A first round already past the window is stopped BEFORE it is sent. The doors before a
+/// turn judge the conversation before the prompt is appended, with a sixteenth of the
+/// window in reserve for it; the round loop judged only BETWEEN rounds.
 #[test]
 fn a_first_round_already_past_the_window_is_not_sent() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -1055,21 +896,7 @@ fn a_first_round_already_past_the_window_is_not_sent() {
     }
 }
 
-/// **A manual `/compact` reports the count it compacted FROM, as the automatic one
-/// does** (R72 follow-up, defect B).
-///
-/// The `Compact` arm of `Sessions::dispatch` read the session's numbers AFTER the
-/// fork: the report's `resident` — documented as *"the number that was compared
-/// against `window`"* — was the new base's size, and both sides of the sentence went
-/// through one stale pair with no unit. MEASURED on a scratch deepseek session: the
-/// head said *"compacted: 20999 → 20755 tokens"*. Now the count is rolled before the
-/// fork, so `resident` is the conversation the operator compacted; the window and its
-/// reserve are the window as given.
-///
-/// **"The window as given" is measured here too**, and the pair asserted is whatever this
-/// box's prompt left: a 32 768 with 2 048 pinned meant the same window as every other test
-/// in this file, and a home whose notes are in message zero makes the manual fold
-/// `Hopeless` at about a 25 000-token prompt.
+/// A manual `/compact` reports the count it compacted FROM, as the automatic one does.
 #[test]
 fn a_manual_compact_reports_the_count_it_compacted_from() {
     use letibot_sessionlog::hub::{CommandKind, QueuedCommand};
@@ -1141,7 +968,7 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
         report.tokens_after
     );
     // `tokens_before` is the fork's `was_tokens`, which also holds the summary turn
-    // itself (its instruction and its reply are appended before the fork) — so the
+    // itself (its instruction and its reply are appended before the fork) - so the
     // count the operator compacted from is at most that, and well above the base.
     assert!(
         report.resident > report.tokens_after && report.resident <= report.tokens_before,

@@ -1,10 +1,6 @@
-//! **The snapshot's half of *is it stuck?*** — a `gating` row's row carries the step its gate is
-//! running and the end of that step's output, so a person reading the pane does not have to open a
-//! file on the daemon's box to find out whether anything is happening.
-//!
-//! The gate's own half (the log's path, and the tail growing as the step writes) is measured in
-//! `gate::tests::a_running_steps_tail_grows_between_two_reads`; this file is what a head is
-//! SENT.
+//! The snapshot's half of *is it stuck?* - a `gating` row carries the step its gate is
+//! running and the end of that step's output, so a person reading the pane does not have to
+//! open a file on the daemon's box to find out whether anything is happening.
 
 use letibot_tokencore::store::{
     Approval, MergePriority, MergeState, Move, NewReview, ReviewKind, ReviewState, Store,
@@ -13,7 +9,7 @@ use letibot_tokencore::store::{
 use super::gate;
 
 /// A store with one approved branch whose landing row is `gating`, and a gate that is running a
-/// step in `wt` — the state a person asks about.
+/// step in `wt` - the state a person asks about.
 fn gating_row(tag: &str) -> (Store, std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!(
         "letibot-snapshot-{tag}-{}-{}",
@@ -91,9 +87,9 @@ fn gating_row(tag: &str) -> (Store, std::path::PathBuf, String) {
     (store, dir, repo)
 }
 
-/// **A `gating` landing's row carries the step its gate is on, and the end of that step's
-/// output** — the snapshot is what the pane reads, so this is the field that makes *is it stuck?*
-/// a question the pane can answer.
+/// A `gating` landing's row carries the step its gate is on, and the end of that step's output -
+/// the snapshot is what the pane reads, so this is the field that makes *is it stuck?* a question
+/// the pane can answer.
 #[test]
 fn a_gating_rows_snapshot_carries_the_step_its_gate_is_running() {
     let (store, dir, repo) = gating_row("gating");
@@ -127,8 +123,8 @@ fn a_gating_rows_snapshot_carries_the_step_its_gate_is_running() {
         "and how much it has written in all"
     );
 
-    // **The step ends, and the row says nothing it cannot prove** — the entry is cleared however
-    // the step returned (a `Drop` guard), so a finished gate is not drawn as *running for ever*.
+    // The step ends, and the row says nothing it cannot prove - the entry is cleared however the
+    // step returned (a `Drop` guard), so a finished gate is not drawn as running for ever.
     drop(gate::step_guard(&wt));
     let after = super::snapshot(&store);
     assert!(
@@ -144,9 +140,9 @@ fn a_gating_rows_snapshot_carries_the_step_its_gate_is_running() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A landing that is not `gating` carries no running step** — the field is about the step the gate
-/// is on now, and a `queued` row is not running one. A `queued` row waiting on the TARGET's gate
-/// reads the target's, which is the same read on the same function (`snapshot`'s targets).
+/// A landing that is not `gating` carries no running step: the field is about the step the gate is
+/// on now, and a `queued` row is not running one. A `queued` row waiting on the TARGET's gate reads
+/// the target's, which is the same read on the same function (`snapshot`'s targets).
 #[test]
 fn a_row_that_is_not_gating_carries_no_running_step() {
     let (store, dir, repo) = gating_row("queued");

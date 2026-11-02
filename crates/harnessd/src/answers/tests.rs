@@ -46,9 +46,8 @@ fn open_of(hub: &Arc<Hub>) -> Vec<OpenDecision> {
     hub.snapshot().open_decisions
 }
 
-/// **The whole of D25 in one test**: the decision reaches a head, the head sends
-/// an answer through the frame that already existed, and the tool thread — which
-/// is not the thread the answer arrived on — wakes with it.
+/// The decision reaches a head, the head answers through the frame that already existed, and
+/// the tool thread - which is not the thread the answer arrived on - wakes with it.
 #[test]
 fn a_head_answers_a_decision_the_daemons_stdin_could_not() {
     let hub = Hub::new("s");
@@ -65,27 +64,17 @@ fn a_head_answers_a_decision_the_daemons_stdin_could_not() {
     // answer it the way `letibot-tui` does.
     let hub2 = hub.clone();
     let head_id = head.head_id.clone();
-    // **No second deadline.** The answerer used to poll 500 × 2ms — one
-    // second — while the adjudicator it races waits ten, so on a box running
-    // the whole workspace's test binaries at once it gave up first and
-    // panicked "the decision never reached the head" about a decision that
-    // was on its way. Widening it to the budget only moved the race: with
-    // both at ten seconds a loaded box lost it again the same afternoon.
-    //
-    // A poller racing a deadline it does not own cannot be made reliable by
-    // choosing a bigger number. This one stops when the thing it is helping
-    // has finished, and the FAILURE is then the assertion below — "the
-    // adjudicator did not come back with the answer" — which is a statement
-    // about the code rather than about the load on the box.
+    // No second deadline: the answerer stops when the adjudicator it is racing has returned
+    // and the failure is then the assertion below, which is a statement about the code rather
+    // than about the load on the box.
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop2 = stop.clone();
     let answerer = std::thread::spawn(move || {
         while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
             let open = hub2.snapshot().open_decisions;
             if let Some(d) = open.first() {
-                // **And it is this session's own card**, not a subagent's: the new
-                // attribution field is `None` for every ask that is not a child's, which
-                // is what keeps the clause off every card that never needed it.
+                // And it is this session's own card, not a subagent's: the attribution field
+                // is `None` for every ask that is not a child's.
                 assert!(
                     d.subagent.is_none(),
                     "this session's own call was labelled a subagent's: {:?}",
@@ -108,9 +97,8 @@ fn a_head_answers_a_decision_the_daemons_stdin_could_not() {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        // The adjudicator returned before a decision was ever open. Not a
-        // panic: whatever it returned is what the assertions below read,
-        // and they say more about why than this thread can.
+        // The adjudicator returned before a decision was ever open. Not a panic: whatever it
+        // returned is what the assertions below read.
         false
     });
 
@@ -144,15 +132,9 @@ fn a_question() -> Question {
     }
 }
 
-/// **The whole of `ask_user_question` reaching a person**, end to end inside the
-/// daemon: the question is posed to the head as a card with its choices, the head
-/// answers it through the frame that already existed, and the tool thread — which
-/// is not the thread the answer arrived on — wakes with the answer **and who gave
-/// it**.
-///
-/// The attribution is the half that is not a formality: a question's result is a
-/// claim about what a person said, and the identity is read from the connection the
-/// answer arrived on rather than from anything the answer carries.
+/// `ask_user_question` reaching a person, end to end inside the daemon: the question is
+/// posed as a card with its choices, the head answers it, and the tool thread wakes with
+/// the answer and who gave it. The attribution is not a formality
 #[test]
 fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
     let hub = Hub::new("s");
@@ -208,10 +190,9 @@ fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
     assert!(!a.abstain);
     assert_eq!(by, "deadtrickster", "the answer is attributed to nobody");
 
-    // **The card is the surface, and it is the card the composer answers.** The
-    // posed `DecisionRequested` is a `question` whose ladder is its plain-text
-    // choices — `options` is the adjudication ladder and is empty for one, which is
-    // why the hub validates an answer against `choices`.
+    // The card is the surface, and it is the card the composer answers: a `question` whose
+    // ladder is its plain-text `choices`, which is why the hub validates an answer against
+    // `choices` and not `options`.
     let card = seen.lock().unwrap().clone().expect("the card was seen");
     assert_eq!(card.kind, "question");
     assert_eq!(card.summary, q.text);
@@ -241,14 +222,9 @@ fn a_head_answers_a_question_and_the_answer_carries_who_gave_it() {
     );
 }
 
-/// **The exchange is recorded where the session can write it down, and only an
-/// answer is.**
-///
-/// The two halves of this are one test because they are one rule: what a session
-/// turns into the operator's own row is what a person SAID, and a question nobody
-/// answered is not something they said. `Answers::ask_question`'s `Err` arms are
-/// every way a question ends without an answer, and none of them may leave a record
-/// behind that the transcript would then attribute to somebody.
+/// The exchange is recorded where the session can write it down, and only an answer is: what a
+/// session turns into the operator's own row is what a person said, and a question nobody
+/// answered is not something they said.
 #[test]
 fn a_questioner_records_the_exchange_it_carried_and_nothing_for_a_refusal() {
     let hub = Hub::new("s");
@@ -303,8 +279,8 @@ fn a_questioner_records_the_exchange_it_carried_and_nothing_for_a_refusal() {
         "the answer is attributed to nobody"
     );
 
-    // **A refusal records nothing.** No head is attached to this hub, so the ask
-    // refuses before anybody is posted to — and the slot it left is the empty one.
+    // A refusal records nothing: no head is attached to this hub, so the ask refuses before
+    // anybody is posted to.
     let bare = Hub::new("bare");
     let log: AskLog = Default::default();
     let asker = HeadQuestioner::new(bare, Arc::new(Answers::new()))
@@ -318,10 +294,8 @@ fn a_questioner_records_the_exchange_it_carried_and_nothing_for_a_refusal() {
     );
 }
 
-/// **An abstention travels the whole way and is not silence.** The head sends the
-/// fourth shape; the hub accepts it (it is not an empty answer and it conforms);
-/// and what comes back is the abstention itself rather than an error, which is what
-/// lets the tool report `Abstained` rather than `not_run`.
+/// An abstention travels the whole way and is not silence: what comes back is the abstention
+/// itself rather than an error, which lets the tool report `Abstained` rather than `not_run`.
 #[test]
 fn an_abstention_is_an_answer_that_reaches_the_tool_as_one() {
     let hub = Hub::new("s");
@@ -379,10 +353,9 @@ fn an_abstention_is_an_answer_that_reaches_the_tool_as_one() {
     );
 }
 
-/// **No head, and it refuses by name rather than waiting out a deadline.** This is
-/// the behaviour `Headless` had and it is kept: the ask must not hang, and it must
-/// not invent an answer. Measured rather than asserted in prose — a refusal that
-/// took the budget would pass a test that only looked at the error.
+/// No head, and it refuses by name rather than waiting out a deadline: the ask must not hang
+/// and must not invent an answer. Measured, because a refusal that took the budget would pass
+/// a test that only looked at the error.
 #[test]
 fn a_question_with_no_head_refuses_by_name_and_does_not_wait() {
     let hub = Hub::new("s");
@@ -402,11 +375,9 @@ fn a_question_with_no_head_refuses_by_name_and_does_not_wait() {
         !said.to_lowercase().contains("best judg"),
         "the survey's failure, reproduced: {said}"
     );
-    // **A wall-clock bound, kept on purpose, and generous on purpose** (R67 item 19): the
-    // fact is "did not sit out the deadline", and the only reading of that is a clock. Half
-    // the budget is 15 s of slack over a refusal measured in microseconds — a loaded box
-    // does not stall a lock-and-return for 15 s — while a regression that waits trips it
-    // every time, because it waits all 30.
+    // A wall-clock bound, kept on purpose: the fact is "did not sit out the deadline", and the
+    // only reading of that is a clock. Half the budget is slack over a refusal measured in
+    // microseconds, while a regression that waits trips it every time.
     assert!(
         took < budget / 2,
         "a session with nobody to ask sat out the deadline: {took:?}"
@@ -415,8 +386,8 @@ fn a_question_with_no_head_refuses_by_name_and_does_not_wait() {
     assert!(open_of(&hub).is_empty());
 }
 
-/// A head that is attached and cannot decide is the same fact as no head, and it is
-/// found out the same way — before the wait, not after it.
+/// A head that is attached and cannot decide is the same fact as no head, and it is found out
+/// the same way - before the wait, not after it.
 #[test]
 fn a_question_to_a_head_that_cannot_decide_refuses_at_once() {
     let hub = Hub::new("s");
@@ -444,8 +415,8 @@ fn a_question_to_a_head_that_cannot_decide_refuses_at_once() {
     );
 }
 
-/// **A question nobody answers is `not_run`, and it is not a declining.** The same
-/// rule the gate keeps, for the same reason: a deadline is not a decision.
+/// A question nobody answers is `not_run`, and it is not a declining: a deadline is not a
+/// decision.
 #[test]
 fn a_question_nobody_answers_is_unanswered_and_the_card_comes_down() {
     let hub = Hub::new("s");
@@ -463,10 +434,8 @@ fn a_question_nobody_answers_is_unanswered_and_the_card_comes_down() {
     );
 }
 
-/// A read-only head is not somebody who can answer, and finding that out must
-/// cost microseconds rather than a deadline. Before the `deciding_heads` check
-/// this was a five-minute wait reported as a timeout — *"a real answer given for
-/// a fake reason"*.
+/// A read-only head is not somebody who can answer, and finding that out must cost
+/// microseconds rather than a deadline.
 #[test]
 fn a_session_with_nobody_who_can_answer_refuses_at_once() {
     let hub = Hub::new("s");
@@ -485,8 +454,7 @@ fn a_session_with_nobody_who_can_answer_refuses_at_once() {
     let adj = HeadAdjudicator::new(hub.clone(), answers).with_budget(budget);
     let started = Instant::now();
     let d = adj.decide(&request());
-    // Half the budget, not 5 s (R67 item 19): 15 s of slack over a refusal measured in
-    // microseconds, and a regression that waits still trips it, because it waits all 30.
+    // Half the budget, for the reason the sibling test above writes down.
     assert!(started.elapsed() < budget / 2, "it waited");
     assert_eq!(d.outcome, DecisionOutcome::Unavailable);
     assert!(d.basis.contains("nothing was asked"), "{}", d.basis);
@@ -496,10 +464,8 @@ fn a_session_with_nobody_who_can_answer_refuses_at_once() {
     );
 }
 
-/// Nobody answers: `Timeout`, which the gate routes to `on_timeout` — `Deny` for
-/// a permission — and which becomes `not_run`, never `denied`. And the decision
-/// is taken off the screen, or the head keeps offering a prompt for a call that
-/// was refused minutes ago.
+/// Nobody answers: `Timeout`, which the gate routes to `on_timeout` and which becomes
+/// `not_run`, never `denied` - and the decision comes off the screen.
 #[test]
 fn a_deadline_that_passes_is_nobody_deciding_and_closes_the_row() {
     let hub = Hub::new("s");
@@ -513,14 +479,9 @@ fn a_deadline_that_passes_is_nobody_deciding_and_closes_the_row() {
     assert!(open_of(&hub).is_empty(), "the row is closed either way");
 }
 
-/// **The yellow card says why it is yellow.** The ask renders in the chrome,
-/// but the call is where the eye already is — and the operator's report was
-/// *"some tool calls stay yellow, no idea what that means"*. So posing an ask
-/// also publishes a progress note on the call itself, naming the wait and
-/// the budget. The call is still `Proposed` at this point — `ToolStarted`
-/// fires only after the gate admits — which is exactly why the note has to
-/// travel on `ToolProgress`: it is the one event the head applies to an open
-/// call of either state.
+/// The yellow card says why it is yellow: posing an ask also publishes a progress note on the
+/// call, naming the wait and the budget. The call is still `Proposed` at this point, so
+/// `ToolProgress` is the one event a head applies to an open call of either state.
 #[test]
 fn an_open_ask_tells_the_card_why_it_waits() {
     let hub = Hub::new("s");
@@ -541,7 +502,7 @@ fn an_open_ask_tells_the_card_why_it_waits() {
     assert!(note.contains("nothing runs"), "{note}");
 }
 
-// ------------------------------------------------- a subagent's card (R58's ask route)
+// ------------------------------------------------- a subagent's card
 
 /// The child every one of these tests is about: a real handle, a real task, and the root
 /// whose head its card belongs on.
@@ -553,20 +514,14 @@ fn child_ask() -> SubagentAsk {
     }
 }
 
-/// **A child's ask is the ROOT's card, named, and the answer comes back to the child.**
-///
-/// The operator's ruling, verbatim: *"who asks subagents permissions? i think they should
-/// surface to the parent head all the way to the root obviously"*. A child has no head
-/// attached and cannot be driven, so its gate's ask is posted to the session that does
-/// have one — and the operator has to be able to tell it from that session's own call,
-/// or the card is answered for the wrong thing.
+/// A child's ask is the root's card, named, and the answer comes back to the child.
 #[test]
 fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     let root = Hub::new("root");
     let answers = Arc::new(Answers::new());
     root.set_answer_sink(answers.clone());
     let head = root.attach("tui", "deadtrickster", Caps::default(), 0);
-    // The child's own session, with NOTHING installed on it: a head could attach there,
+    // The child's own session, with NOTHING installed on it: a head could attach there
     // and no card belongs there.
     let child = Hub::new("s-sub-3");
 
@@ -579,8 +534,8 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     req.id = "adj-s-sub-3-0001".into();
     req.session_id = "s-sub-3".into();
 
-    // **The head's side, on its own thread** — the same thread the root's own ask is
-    // answered on, reading the card off the ROOT and answering through the ROOT's head.
+    // The head's side, on its own thread - reading the card off the root and answering through
+    // the root's head.
     let root2 = root.clone();
     let child2 = child.clone();
     let head_id = head.head_id.clone();
@@ -590,9 +545,8 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
         while !stop2.load(std::sync::atomic::Ordering::SeqCst) {
             let open = root2.snapshot().open_decisions;
             if let Some(d) = open.first() {
-                // **Nothing was posted to the child.** The card belongs to the session
-                // whose head exists; a card on a session nothing drives would sit open
-                // for the life of the tree.
+                // Nothing was posted to the child: a card on a session nothing drives would
+                // sit open for the life of the tree.
                 assert!(
                     child2.snapshot().open_decisions.is_empty(),
                     "a subagent's ask was posted to the subagent's own session"
@@ -625,11 +579,9 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
         .unwrap()
         .expect("the head never got a card to answer: {d:?}");
 
-    // **The card named the CHILD, its task and the session it belongs to** — the three
-    // facts that stop it reading as the root's own call.
+    // The card named the child, its task and the session it belongs to - the three facts that
+    // stop it reading as the root's own call - and the child's gate got the answer.
     assert_eq!(seen, child_ask());
-    // **And the child's gate got the operator's own answer**, acting on it exactly as the
-    // root would have.
     assert_eq!(
         d.outcome,
         DecisionOutcome::Selected {
@@ -643,19 +595,16 @@ fn a_subagents_ask_lands_on_the_roots_card_and_the_answer_comes_back() {
     assert!(open_of(&child).is_empty());
 }
 
-/// **Nobody at the root to answer: the refusal is a fact, by name.**
-///
-/// The old sentence was a policy about subagents — *"a subagent has no operator to ask; an
-/// ask is denied"* — which said nothing about where the ask went or what the child should
-/// do. This one names the child, the session its card belongs to, that no head is attached
-/// there, and that the child should stop and report rather than retry.
+/// Nobody at the root to answer: the refusal is a fact, by name. It names the child, the
+/// session its card belongs to, that no head is attached there, and that the child should
+/// stop and report rather than retry.
 #[test]
 fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
     let root = Hub::new("root");
     let answers = Arc::new(Answers::new());
     root.set_answer_sink(answers.clone());
-    // A read-only head is not somebody who can answer — the sibling test above's premise,
-    // and here it is the ROOT's state, which is what the child has to be told about.
+    // A read-only head is not somebody who can answer - the sibling test above's premise, and
+    // here it is the root's state, which is what the child has to be told about.
     root.attach(
         "flowy",
         "room:general",
@@ -673,7 +622,7 @@ fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
     );
     let started = Instant::now();
     let d = adj.decide(&request());
-    // Half the budget, not 5 s — see `a_session_with_nobody_who_can_answer_refuses_at_once`.
+    // Half the budget, not 5 s - see `a_session_with_nobody_who_can_answer_refuses_at_once`.
     assert!(started.elapsed() < budget / 2, "it waited");
     assert_eq!(d.outcome, DecisionOutcome::Unavailable);
     assert!(d.by.starts_with("gate:no-head"), "{}", d.by);
@@ -688,20 +637,18 @@ fn a_subagents_ask_with_nobody_at_the_root_refuses_by_name() {
     ] {
         assert!(d.basis.contains(want), "{want:?} is not in {:?}", d.basis);
     }
-    // **Refused before the post**, so no card is left open on a session nothing will
-    // answer — on either queue.
+    // Refused before the post, so no card is left open on a session nothing will answer.
     assert!(open_of(&root).is_empty());
     assert!(open_of(&child).is_empty());
 }
 
-/// **A tree with no head-wired adjudicator at all**, which is a different fact from a root
-/// whose head is not attached right now — and it is the one the child can do nothing about.
+/// A tree with no head-wired adjudicator at all, which is a different fact from a root whose
+/// head is not attached right now - and the one the child can do nothing about.
 #[test]
 fn a_subagent_in_a_tree_with_no_head_adjudicator_refuses_by_name() {
     let adj = SubagentAdjudicator::new(child_ask(), None);
-    // **Never `none`.** That prefix is the harness's own signal for *nobody reachable,
-    // refuse to open a gated session*, and this adjudicator does have a decider: the
-    // ruleset the child inherited. It simply has nobody to ask.
+    // Never `none`: that prefix is the harness's own signal for *nobody reachable, refuse to
+    // open a gated session*, and this adjudicator does have a decider - the inherited ruleset.
     assert!(!adj.describe().starts_with("none"), "{}", adj.describe());
     assert!(adj.describe().contains("s-sub-3"), "{}", adj.describe());
     assert!(adj.describe().contains("root"), "{}", adj.describe());
@@ -722,10 +669,7 @@ fn a_subagent_in_a_tree_with_no_head_adjudicator_refuses_by_name() {
 
 // ------------------------------------------------------------- escalation
 
-/// A stand-in adjudicator that answers one of four ways, and counts how many
-/// times it was asked — the counter is what distinguishes *decided* from
-/// *consulted on the way past*. The name is what the decision's `by`
-/// carries, so a test can tell which side answered.
+/// A stand-in adjudicator that answers one of four ways, and counts how many times it was asked - the counter is what distinguishes *decided* from *consulted on the way past*.
 struct Stub {
     kind: StubKind,
     name: &'static str,
@@ -783,11 +727,8 @@ impl Adjudicator for Stub {
     }
 }
 
-/// The operator's rule: **an oracle timeout is a hand-off, not a refusal.**
-/// The model cannot answer, so the person is asked — and the record keeps
-/// both facts: the person's decision, and the reason they were asked. A row
-/// that showed only the first would read as a person overruling a model
-/// that never spoke.
+/// An oracle timeout is a hand-off, not a refusal: the person is asked, and the record keeps
+/// both facts - the person's decision and the reason they were asked.
 #[test]
 fn an_oracle_timeout_asks_the_person_instead_of_refusing() {
     let model = Stub::new(StubKind::TimesOut, "stub:model");
@@ -812,8 +753,8 @@ fn an_oracle_timeout_asks_the_person_instead_of_refusing() {
     );
 }
 
-/// An oracle that is *down* is the same nobody-decided as one that is slow,
-/// and escalates the same way.
+/// An oracle that is down is the same nobody-decided as one that is slow, and escalates the
+/// same way.
 #[test]
 fn an_oracle_that_cannot_answer_asks_too() {
     let model = Stub::new(StubKind::Unavailable, "stub:model");
@@ -839,8 +780,8 @@ fn a_model_that_answers_decides_and_nobody_else_is_asked() {
     assert!(d.by.contains("model"), "{}", d.by);
 }
 
-/// A cancellation is somebody stopping the turn, and asking over them would
-/// be input arriving from nowhere — the same rule the sink itself keeps.
+/// A cancellation is somebody stopping the turn, and asking over them would be input arriving
+/// from nowhere - the same rule the sink itself keeps.
 #[test]
 fn a_cancelled_decision_is_not_overridden_by_an_ask() {
     let model = Stub::new(StubKind::Cancels, "stub:model");
@@ -851,9 +792,9 @@ fn a_cancelled_decision_is_not_overridden_by_an_ask() {
     assert_eq!(d.outcome, DecisionOutcome::Cancelled, "{d:?}");
 }
 
-/// Esc-Esc while a decision is open. The interrupt does not reach the worker —
-/// the worker is the thread waiting — so it reaches the sink, and the wait ends
-/// as a cancellation rather than sitting out five minutes.
+/// Esc-Esc while a decision is open. The interrupt does not reach the worker - the worker is
+/// the thread waiting - so it reaches the sink, and the wait ends as a cancellation rather than
+/// sitting out five minutes.
 #[test]
 fn an_interrupt_ends_a_wait_the_worker_could_not_have_drained() {
     let hub = Hub::new("s");
@@ -865,9 +806,8 @@ fn an_interrupt_ends_a_wait_the_worker_could_not_have_drained() {
 
     let hub2 = hub.clone();
     let head_id = head.head_id.clone();
-    // The same rule as the answerer above: no deadline of its own. It stops
-    // when the adjudicator it is racing has returned, and the assertions
-    // below are what fail if it never got its chance.
+    // The same rule as the answerer above: no deadline of its own. It stops when the
+    // adjudicator it is racing has returned.
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stop2 = stop.clone();
     let interrupter = std::thread::spawn(move || {
@@ -901,9 +841,8 @@ fn an_interrupt_ends_a_wait_the_worker_could_not_have_drained() {
     assert!(d.basis.contains("esc twice"), "{}", d.basis);
 }
 
-/// An answer for a request nobody is waiting on is dropped, not held. A late
-/// allow applied to a call the gate has already reported as `not_run` would be
-/// the worst outcome available.
+/// An answer for a request nobody is waiting on is dropped, not held: a late allow applied to a
+/// call the gate has already reported as `not_run` would be the worst outcome available.
 #[test]
 fn an_answer_with_nothing_waiting_settles_nothing() {
     let answers = Answers::new();
@@ -918,9 +857,9 @@ fn an_answer_with_nothing_waiting_settles_nothing() {
     ));
 }
 
-/// The corpus wants the bytes a decider was **shown**, verbatim, not a later
-/// reconstruction — §4c. That rule is about the model and it is not only about
-/// the model: an operator's override is a labelled example of the same shape.
+/// The corpus wants the bytes a decider was shown, verbatim, not a later reconstruction - and
+/// that is not only about the model: an operator's override is a labelled example of the same
+/// shape.
 #[test]
 fn what_the_person_was_shown_is_recorded_verbatim() {
     let hub = Hub::new("s");
@@ -934,10 +873,9 @@ fn what_the_person_was_shown_is_recorded_verbatim() {
     assert_eq!(adj.last_brief().as_deref(), Some(req.brief().as_str()));
 }
 
-/// **The decider is read, not guessed.** `close` used to derive the kind from
-/// the OUTCOME — every `Selected` was `human` whoever chose it — and put the
-/// whole `human:dead` into `identity` besides, so a head drew `by human
-/// human:dead` and an oracle's own admission drew `by human` over a model id.
+/// The decider is read, not guessed: `close` used to derive the kind from the outcome, so a
+/// head drew `by human human:dead` and an oracle's own admission drew `by human` over a model
+/// id.
 #[test]
 fn a_decider_is_split_into_its_kind_and_its_identity() {
     for (by, kind, identity) in [
@@ -950,16 +888,15 @@ fn a_decider_is_split_into_its_kind_and_its_identity() {
         assert_eq!(d.kind, kind, "{by}");
         assert_eq!(d.identity, identity, "{by}");
     }
-    // No colon: all kind, no identity — and the head renders the kind alone
-    // rather than a name that is not there.
+    // No colon: all kind, no identity - and the head renders the kind alone rather than a name
+    // that is not there.
     let d = split_decider("subagent");
     assert_eq!(d.kind, "subagent");
     assert!(d.identity.is_empty());
 }
 
-/// An oracle that decided alone is reported as a model, not as a person. The
-/// outcome is `Selected` either way, which is exactly why the outcome cannot
-/// be what names the decider.
+/// An oracle that decided alone is reported as a model, not as a person. The outcome is
+/// `Selected` either way, which is exactly why the outcome cannot be what names the decider.
 #[test]
 fn an_oracle_that_selected_is_not_reported_as_a_human() {
     let req = request();
@@ -981,13 +918,8 @@ fn an_oracle_that_selected_is_not_reported_as_a_human() {
     }
 }
 
-/// **An answer that arrives before the wait starts is not lost.**
-///
-/// `ask` creates the slot, publishes the question, and only then calls
-/// `wait`. A head answering inside that window sets `Slot::Answered`, and
-/// `wait` used to `insert` `Waiting` straight back over it — so the answer
-/// vanished and the call sat out its whole budget before reporting that
-/// nobody had decided. This is that window, made deterministic.
+/// An answer that arrives before the wait starts is not lost. `ask` creates the slot
+/// publishes the question, and only then calls `wait`.
 #[test]
 fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
     let answers = Answers::new();
@@ -1003,12 +935,9 @@ fn an_answer_that_lands_before_the_wait_begins_is_still_the_answer() {
             note: None
         },
     ));
-    // And now the wait begins. It must find the answer, not overwrite it.
-    //
-    // **No clock** (R67 item 19; this was `elapsed() < 1s`, which a loaded box trips with
-    // the code right). Nobody else can answer `adj-race`, so `Answered` here can only be
-    // the answer placed above, read without waiting; a wait that overwrote it would find
-    // nothing to wake it and return `TimedOut`. The match is the whole claim.
+    // And now the wait begins. It must find the answer, not overwrite it. No clock: nobody
+    // else can answer `adj-race`, so `Answered` here can only be the answer placed above, read
+    // without waiting
     match answers.wait("adj-race", Duration::from_secs(10)) {
         Waited::Answered { reply, by } => {
             assert_eq!(by, "deadtrickster");
@@ -1051,18 +980,9 @@ fn git_in(d: &std::path::Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
-/// **Make `d` a directory no enclosing repository can claim.**
-///
-/// `auto_decision` finds its repository with `git rev-parse --show-toplevel`, which walks UP.
-/// A scratch dir is not a repository only while the temp dir is outside one: with `TMPDIR`
-/// inside a checkout — a worktree's `target/`, say — the two tests below that mean "no
-/// repository here" found the CHECKOUT, wrote `AUTO-DECISIONS.md` (session `s-1` and `s`) at
-/// its root and appended `/AUTO-DECISIONS.md` to its `.gitignore`. Reproduced 2026-10-14 with
-/// `TMPDIR=<a git repo>/tt`.
-///
-/// A `.git` FILE naming a gitdir that does not exist stops discovery here: git reports "not a
-/// git repository" rather than looking further up. The assertion is the fact this rests on,
-/// checked rather than assumed.
+/// Make `d` a directory no enclosing repository can claim. `auto_decision` finds its
+/// repository with `git rev-parse --show-toplevel`, which walks up, so a scratch dir under
+/// a checkout would have the log written at that checkout's root.
 fn not_in_any_repository(d: &std::path::Path) {
     std::fs::write(
         d.join(".git"),
@@ -1091,8 +1011,8 @@ fn with_default() -> Question {
     }
 }
 
-/// **In a repository the default is logged in `AUTO-DECISIONS.md`** — the operator: *"stating
-/// repo commit, select options and default answer"* — and the sentence names the file too.
+/// In a repository the default is logged in `AUTO-DECISIONS.md`, naming the commit, the options
+/// and the answer - and the sentence returned names the file too.
 #[test]
 fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
     let d = dir("repo");
@@ -1144,8 +1064,8 @@ fn a_default_taken_in_a_repository_is_logged_with_its_commit() {
     assert_eq!(ignore, "/AUTO-DECISIONS.md\n", "added once");
 }
 
-/// **Outside a repository there is no file** — the session above several repositories — and
-/// the sentence is the record.
+/// Outside a repository there is no file - the session above several repositories - and the
+/// sentence is the record.
 #[test]
 fn a_default_taken_outside_a_repository_is_a_note_and_no_file() {
     let d = dir("norepo");
@@ -1156,12 +1076,12 @@ fn a_default_taken_outside_a_repository_is_a_note_and_no_file() {
     assert!(said.contains("not a repository"), "{said}");
 }
 
-/// **End to end at the daemon**: the card shows the default, the deadline passes, the
-/// questioner says it expired (not cancelled), and taking the default publishes the note.
+/// End to end at the daemon: the card shows the default, the deadline passes, the questioner
+/// says it expired (not cancelled), and taking the default publishes the note.
 #[test]
 fn a_question_with_a_default_expires_and_its_default_is_noted() {
     // Its own repository, so the note it logs lands HERE and never in whatever repository
-    // the temp dir happens to sit in — see `not_in_any_repository`.
+    // the temp dir happens to sit in - see `not_in_any_repository`.
     let d = dir("e2e");
     git_in(&d.0, &["init", "-q"]);
     let hub = Hub::new("s");

@@ -1,19 +1,6 @@
-//! **A model that stops because "my context is full" when it is not gets told so** —
-//! R71, through the harness's own round loop.
-//!
-//! The canned server the turn crate's tests replay plays the model: one round ends the
-//! turn with leticl's sentence of 2026-10-11 11:48, verbatim — *"My context is at the
-//! wall, so I'll stop here rather than start a piece I can't finish"* — and no tool
-//! call. What is asserted is the whole of the check's contract with the loop:
-//!
-//! 1. at a LOW measured fill the harness appends its line — the harness's voice, never
-//!    the operator's, with the numbers — and the loop continues, so the next round runs;
-//! 2. at the WALL the claim is true, nothing is said, and the turn ends where the model
-//!    ended it;
-//! 3. a model that says it again after being told is the operator's business: a hub
-//!    warning, not a second line to the model.
-//!
-//! It needs the vocabulary GGUF and not a model.
+//! A model that stops because "my context is full" when it is not gets told so, through the
+//! harness's own round loop. The canned server plays the model: one round ends the turn
+//! with the model's sentence, verbatim, and no tool call.
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
@@ -29,7 +16,7 @@ use support::canned;
 use support::canned::Reply;
 use support::qwen::{IM_END, THINK_CLOSE, spoken};
 
-/// leticl, 2026-10-11 11:48, verbatim.
+/// The model's sentence, verbatim.
 const EXCUSE: &str = "My context is at the wall, so I'll stop here rather than start a piece I can't finish: what's left of the port is scroll regions.";
 
 struct TempDir {
@@ -71,9 +58,8 @@ fn config(dir: &TempDir, session_id: &str) -> Config {
     cfg
 }
 
-/// A round that answers in plain text and makes no tool call — the shape that ends a
-/// turn. `n_prompt` is what the provider reports the prompt cost, which is the other
-/// half of the ratio the wall is judged in.
+/// A round that answers in plain text and makes no tool call - the shape that ends a turn. `n_prompt`
+/// is what the provider reports the prompt cost, the other half of the ratio the wall is judged in.
 fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str, n_prompt: u64) -> Reply {
     let thought = vocab.tokenize_text("thinking").expect("tokenizes");
     let answer_ids = vocab.tokenize_text(answer).expect("tokenizes");
@@ -122,8 +108,7 @@ fn warnings_of(hub: &Hub, code: &str) -> Vec<String> {
         .collect()
 }
 
-/// **The leticl turn at a fill far from the wall: told, with the numbers, and the work
-/// continues.**
+/// The leticl turn at a fill far from the wall: told, with the numbers, and the work continues.
 #[test]
 fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continues() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -163,8 +148,8 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         Speaker::Agent,
         "the harness speaking, never the operator"
     );
-    // The operator, 2026-10-12: "we should stop giving the real numbers really, no point - just
-    // tell it stop sizing and do the work" — and R93.A1: no quote of the model's sentence either.
+    // The operator's ruling: stop giving the real numbers, and tell it to stop sizing and do the
+    // work. No quote of the model's own sentence either.
     assert_eq!(
         line,
         "[context check] Don't size the work by context; the harness handles it. If context was \
@@ -178,15 +163,15 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         serde_json::from_str(log.lines().next().expect("one line")).expect("json");
     assert_eq!(row["slapped"], true, "{row}");
     assert_eq!(row["at_wall"], false, "{row}");
-    // **The window as configured** (TODO R81): it used to be converted through the ratio the
-    // round measured and land a token off — every row of the operator's file said `999999`.
+    // The window as configured: it used to be converted through the ratio the round measured, and
+    // landed a token off.
     let window = row["window"].as_u64().expect("a measured window");
     assert_eq!(window, 1_000_000, "{row}");
 }
 
-/// **The same sentence AT the wall is true** — no line, and the turn ends where the
-/// model ended it. The window is set to what the session already holds, and automatic
-/// compaction is off so the round loop does not stop the turn for the wall itself.
+/// The same sentence AT the wall is true - no line, and the turn ends where the model ended it. The
+/// window is set to what the session already holds, and automatic compaction is off so the round
+/// loop does not stop the turn for the wall itself.
 #[test]
 fn the_same_excuse_at_the_wall_is_left_alone() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -198,9 +183,9 @@ fn the_same_excuse_at_the_wall_is_left_alone() {
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let vocab = &parts.vocab;
 
-    // The prefix this session opens with is what the window is set to, so the session
-    // is at the wall before the turn starts. The provider's count is reported as the
-    // same, so the measured ratio is ~1 and the window is not scaled away from it.
+    // The prefix this session opens with is what the window is set to, so the session is at the wall
+    // before the turn starts. The provider reports the same count, so the ratio is ~1 and the window
+    // is not scaled away from it.
     let resident = {
         let probe = Harness::open(&parts, cfg.clone(), Hub::new("probe")).expect("opens");
         probe.ledger_len() as u64
@@ -237,9 +222,9 @@ fn the_same_excuse_at_the_wall_is_left_alone() {
     assert_eq!(row["slapped"], false, "{row}");
 }
 
-/// **With automatic compaction off there is no check** (R93.A4): *"the harness handles it"* would
-/// be false — nothing compacts at the wall — so the same excuse at low fill is logged and the model
-/// is told nothing.
+/// With automatic compaction off there is no check: "the harness handles it" would be false -
+/// nothing compacts at the wall - so the same excuse at low fill is logged and the model is told
+/// nothing.
 #[test]
 fn no_check_when_auto_compaction_is_off() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -273,7 +258,7 @@ fn no_check_when_auto_compaction_is_off() {
     assert_eq!(row["slapped"], false, "{row}");
 }
 
-/// **Said again after being told: the operator hears, the model is not told twice.**
+/// Said again after being told: the operator hears, the model is not told twice.
 #[test]
 fn an_excuse_repeated_after_the_line_is_a_warning_for_the_operator() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

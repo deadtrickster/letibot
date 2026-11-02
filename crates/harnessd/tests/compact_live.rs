@@ -1,29 +1,5 @@
-//! Compaction against the live server: the numbers C1's done-when asked for.
-//!
-//! The offline files prove the machinery. This one measures the claim, on the box,
-//! with the model the box actually serves:
-//!
-//! 1. **The summary turn is carried, not re-prefilled.** `cached_tokens` against
-//!    `reusable` on the summary turn is the measured cache hit — the whole point
-//!    of the cached strategy, and the number opencode's flatten compaction
-//!    famously zeroed (`1ee74df`/`4efae6c`: cache 0, ~13 minutes at 182 t/s).
-//! 2. **The summary carries the facts.** Numbers given before the compaction are
-//!    asked for after it; a summary that lost them would be a base that looks
-//!    small and answers wrong, which is the failure mode no token count catches.
-//! 3. **The first turn on the fork pays the cold prefill** `docs/compaction.md`
-//!    §3 says is unavoidable — disclosed as a number, not denied.
-//!
-//! # The one rule on this box
-//!
-//! The server on `127.0.0.1:8080` is a singleton and the GLM one is already
-//! serving — this session runs on it. **Never start a second model server to
-//! make a test pass**: the services evict each other, and the eviction takes down
-//! whatever else is running on the same endpoint. This test uses the GLM dialect
-//! and the GLM vocabulary, which is what the server is already holding, so it
-//! starts nothing and evicts nothing.
-//!
-//! The serving preflight (`letibot-turn`'s `serving.rs`) is the gate: against any
-//! other model it refuses by name before a token is sent.
+//! Compaction against the live server: the numbers the claim rests on, measured on the box
+//! with the model it actually serves. 1. The summary turn is carried, not re-prefilled.
 
 use std::sync::OnceLock;
 
@@ -45,20 +21,8 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
-/// **Is the box actually serving the model this test renders for?**
-///
-/// The docstring above states this as a property — *"the serving preflight is the gate: against any
-/// other model it refuses by name before a token is sent"* — and it was **not true of this file**.
-/// The guard existed in three sibling live tests and not here, so this one asserted that the GLM
-/// *vocabulary file* exists and then went looking for a GLM *server*: it rendered GLM token ids,
-/// sent them to whatever was on 8080, and spent **51 minutes** (measured: 3057.70s) discovering
-/// that the ids mean something else under another vocabulary. The failure it produced —
-/// `262194 tokens exceeds the available context size 262144` — names the qwen server's window, not
-/// anything about compaction, which is why it read as a parked mystery.
-///
-/// So the docstring's claim is now enforced rather than asserted. `live_qwen.rs` has the same
-/// function for its own model, and this is that shape with GLM's name in it: refuse by name, in
-/// seconds, and say `THIS IS NOT A PASS` so a skip is never read as a green.
+/// Is the box actually serving the model this test renders for? A vocabulary on disk is not
+/// a model on the endpoint
 fn glm_is_served() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
@@ -89,19 +53,9 @@ fn glm_is_served() -> bool {
 
 #[test]
 fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
-    // **THE APPARATUS FIRST, and this ordering is a fix rather than a style.** The
-    // vocabulary assert used to come first, so MEASURED on a runner — no server and
-    // no GGUF — the missing FILE fired before the missing SERVER could be noticed,
-    // and absent apparatus was reported as a failed assertion. Nothing here is a
-    // defect on that box; the assert just ran before the guard that explains it.
-    //
-    // A test's guards go in the order the reasons do: what the machine must HAVE,
-    // then what must be RUNNING. `todos_live.rs` already had it this way.
-    //
-    // And it checks the file the CONFIG will actually use — `LETIBOT_VOCAB_GGUF`, else
-    // `GLM_GGUF` — rather than the constant alone, because a guard that resolves a
-    // different path from the thing it guards is a guard that can be true while the
-    // test still cannot run.
+    // THE APPARATUS FIRST, and this ordering is a fix rather than a style. A test's guards go
+    // in the order the reasons do: what the machine must HAVE, then what must be RUNNING - a
+    // vocabulary assert that fires first reports absent apparatus as a failed assertion.
     let gguf = std::env::var("LETIBOT_VOCAB_GGUF")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| letibot_tokencore::apparatus::glm_gguf_path());
@@ -111,7 +65,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     ) else {
         return;
     };
-    // **The precondition the file's docstring already stated**, checked instead of assumed: a
+    // The precondition the file's docstring already stated, checked instead of assumed: a
     // vocabulary on disk is not a model on the endpoint, and only the second one can answer this.
     if !glm_is_served() {
         return;
@@ -142,13 +96,8 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
 
     let before = h.ledger_len();
     let report = h.compact().expect("the compaction");
-    // **EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY.** The instruction and
-    // the answer are appended to this session through a capturing sink, which
-    // announces them; `reconcile` is what hands the hub their bodies, and nothing
-    // called it — so the two rows sat in the daemon's own view as `item: None` and
-    // every snapshot served them that way. The operator ran `/resync` three times
-    // and the `2 row(s) announced … and never filled` line did not move, because
-    // `/resync` serves that same view. This is that measurement as a pin.
+    // EVERY ROW THE SUMMARY TURN ANNOUNCED CARRIES ITS BODY. The instruction and the answer
+    // are appended to this session through a capturing sink, which announces them
     let snap = hub.snapshot();
     let unfilled: Vec<&str> = snap
         .items
@@ -174,10 +123,9 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
         sum.generated_tokens,
         sum.summary.len()
     );
-    // The structural claim: there WAS a previous request to carry, and the server
-    // said it carried it. `reusable` is ours (the prefix invariant proves the
-    // prompts identical over the span); `cached_tokens` is the server's word, and
-    // a zero here is the flatten failure this design exists to prevent.
+    // The structural claim: there WAS a previous request to carry, and the server said it
+    // carried it. `reusable` is ours (the prefix invariant proves the prompts identical over
+    // the span)
     assert!(sum.reusable > 0, "nothing to carry after two turns");
     assert!(
         sum.cached_tokens > 0,
@@ -186,7 +134,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
         sum.reusable
     );
 
-    // The facts survive the reduction. This is the check no token count catches:
+    // The facts survive the reduction. This is the check no token count catches
     // a base that answers from the summary, not from a lost history.
     let r3 = h
         .submit("What three numbers did I ask you to remember? Just the three, in order.")

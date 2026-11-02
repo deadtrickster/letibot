@@ -1,21 +1,6 @@
-//! **The daemon's metrics instruments** — TODO R81 phase 1, `docs/metrics.md` §4 and §6.
-//!
-//! Every site in the daemon that records a measurement calls ONE function here, on one line, so
-//! a merge that moves the site moves one line and the arithmetic stays put. Each function builds
-//! a [`letibot_metrics::Event`] and emits it — a `try_send` on a bounded channel, never SQL and
-//! never a wait (the c12d044 rule; the module header of `letibot_metrics` says why). When metrics
-//! are off every function here returns at its first branch.
-//!
-//! **What a turn is, here**: a prompt — every round the harness runs for one door, through
-//! `turn_tail::run_turn` — keyed by the engine id of its FIRST round. The hub tap keys the
-//! operator's marks the same way (`letibot_sessionlog::metrics_tap`), so a mark joins its turn.
-//! [`TurnMeter`] is the harness's half: begun by the turn tail, fed each round and each tool
-//! call, and closed by the turn tail with one `turn.start` and one `turn.end` row.
-//!
-//! `turn.start` is written WITH the end, stamped with the moment the turn began: the id it is
-//! keyed by is only minted by the first round, and a start row with no id joins nothing. The
-//! cost is that a turn a crash interrupted has no rows; phase 2 can add a provisional start if
-//! that turns out to matter.
+//! The daemon's metrics instruments - TODO phase 1, `docs/metrics.md` §4 and §6. Every site
+//! in the daemon that records a measurement calls ONE function here, on one line, so a
+//! merge that moves the site moves one line and the arithmetic stays put.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,8 +14,8 @@ use letibot_turn::metrics::TurnMetrics;
 use crate::harness::{HarnessError, Reply};
 
 thread_local! {
-    /// **Which turn each session on THIS thread is in, and how many rounds it has run** — for
-    /// a site that has no harness in hand (R79's delivery record). A session's turns run on one
+    /// Which turn each session on THIS thread is in, and how many rounds it has run - for
+    /// a site that has no harness in hand. A session's turns run on one
     /// thread (the worker for a root, its own thread for a child), so this needs no lock.
     static NOW: RefCell<HashMap<String, (Option<String>, u32)>> = RefCell::new(HashMap::new());
 }
@@ -58,7 +43,7 @@ struct PendingNag {
     status: Option<String>,
 }
 
-/// **One turn's running numbers** — on the harness, begun and closed by the turn tail.
+/// One turn's running numbers - on the harness, begun and closed by the turn tail.
 #[derive(Debug, Default)]
 pub struct TurnMeter {
     began_ms: Option<u64>,
@@ -79,7 +64,7 @@ pub struct TurnMeter {
 }
 
 impl TurnMeter {
-    /// **A turn begins** — `turn_tail::run_turn`, beside `begin_turn_clock`. `fill` is the
+    /// A turn begins - `turn_tail::run_turn`, beside `begin_turn_clock`. `fill` is the
     /// resident count and the window, both in the unit the operator reads.
     pub fn begin(&mut self, session: &str, door: &str, began_ms: u64, fill: Option<(u64, u64)>) {
         let cause = std::mem::take(&mut self.cause);
@@ -104,9 +89,9 @@ impl TurnMeter {
         self.turn_id.as_deref().unwrap_or("")
     }
 
-    /// **One model round** — `run_rounds`, where the round's `TurnMetrics` is kept.
+    /// One model round - `run_rounds`, where the round's `TurnMetrics` is kept.
     /// `ledger` is the box's own count of the prompt the provider counted as
-    /// `m.prompt_tokens` (R72's two units, side by side).
+    /// `m.prompt_tokens`.
     pub fn round(
         &mut self,
         session: &str,
@@ -158,7 +143,7 @@ impl TurnMeter {
             .emit();
     }
 
-    /// **One tool call** — the round loop, around `runtime.invoke`. The memory is what the
+    /// One tool call - the round loop, around `runtime.invoke`. The memory is what the
     /// call left on this thread (`bash`'s foreground job), taken here so it cannot be read by
     /// the next call.
     pub fn tool(&mut self, session: &str, r: &ToolResult, started: Instant) {
@@ -194,7 +179,7 @@ impl TurnMeter {
             .emit();
     }
 
-    /// **A plan check was delivered as this turn** — `Harness::nag_turn`. `row` is the row it
+    /// A plan check was delivered as this turn - `Harness::nag_turn`. `row` is the row it
     /// named and `status` that row's status as the check saw it; [`TurnMeter::end`] says whether
     /// the turn the check opened moved it.
     pub fn nag(
@@ -223,7 +208,7 @@ impl TurnMeter {
             .emit();
     }
 
-    /// **The turn is over** — `turn_tail::run_turn`, beside `end_turn_clock`. `board` reads the
+    /// The turn is over - `turn_tail::run_turn`, beside `end_turn_clock`. `board` reads the
     /// named row's status now, for a nag's follow-up. One `turn.start` (stamped when it began)
     /// and one `turn.end`.
     pub fn end(
@@ -308,11 +293,9 @@ impl TurnMeter {
     }
 }
 
-/// **Start this daemon's metrics writer** — `metrics.db` beside the store (so on the operator's
-/// box `~/.local/share/letibot/metrics.db`, and a test's temp store gets a temp file), under the
-/// `[metrics]` section of `providers.toml` (on by default). A daemon with no store records
-/// nothing; a file that will not open is said on stderr and the daemon starts without it —
-/// metrics are never a reason a daemon does not start.
+/// Start this daemon's metrics writer - `metrics.db` beside the store (so on the
+/// operator's box `~/.local/share/letibot/metrics.db`, and a test's temp store gets a temp
+/// file), under the `[metrics]` section of `providers.toml` (on by default).
 pub fn start_writer(cfg: &crate::config::Config) {
     let Some(store) = &cfg.store else {
         return;
@@ -345,7 +328,7 @@ pub fn start_writer(cfg: &crate::config::Config) {
     }
 }
 
-/// **The turn tail's two lines** — `turn_tail::run_turn`, beside the turn clock.
+/// The turn tail's two lines - `turn_tail::run_turn`, beside the turn clock.
 pub fn turn_begins(h: &mut crate::harness::Harness, door: &str) {
     let fill = letibot_metrics::enabled().then(|| {
         let resident = h.measure_resident().tokens;
@@ -357,7 +340,7 @@ pub fn turn_begins(h: &mut crate::harness::Harness, door: &str) {
 }
 
 /// See [`turn_begins`]. `out` is `None` for a door that ran no turn; `walls` how many times
-/// the tail continued past the wall — a turn that ENDS at the wall gets a `wall` row.
+/// the tail continued past the wall - a turn that ENDS at the wall gets a `wall` row.
 pub fn turn_ends(
     h: &mut crate::harness::Harness,
     out: Option<&Result<Reply, HarnessError>>,
@@ -390,11 +373,9 @@ fn outcome_word(o: &letibot_transcript::ToolOutcome) -> String {
         .unwrap_or_else(|| "other".into())
 }
 
-/// **One command's wait on the worker, and its run** (c12d044) — `Daemon::run`, around
-/// `sessions.dispatch`. n1 is from the head's submit to the dequeue; `dur` the dispatch. The queue
-/// depth the design names (n2) is not read in phase 1: no count of a hub's queue is to hand here.
-/// **A moment on both clocks** — the wall clock a row is stamped with, and the monotonic one a
-/// duration is measured on.
+/// One command's wait on the worker, and its run (c12d044) - `Daemon::run`, around
+/// `sessions.dispatch`. n1 is from the head's submit to the dequeue; `dur` the dispatch.
+/// The queue depth the design names (n2) is not read in phase 1
 #[derive(Debug, Clone, Copy)]
 pub struct Clock {
     pub ms: u64,
@@ -444,7 +425,7 @@ pub fn worker_cmd(
         .emit();
 }
 
-/// **An idle pass on the worker that took long enough to matter** (> 250 ms) — the sweep, the
+/// An idle pass on the worker that took long enough to matter (> 250 ms) - the sweep, the
 /// plan checks, the parking, the reviews. Under the floor it is not a row: a pass a second is
 /// the idle arm's normal rate.
 pub fn worker_pass(name: &str, started: Instant, touched: usize) {
@@ -459,7 +440,7 @@ pub fn worker_pass(name: &str, started: Instant, touched: usize) {
         .emit();
 }
 
-/// **A between-turns wake, and what woke it** — `Harness::wake`. `causes` is each cause's
+/// A between-turns wake, and what woke it - `Harness::wake`. `causes` is each cause's
 /// count of notices, in the order they were gathered; `ran` whether it became a turn, whose
 /// `turn.start` then carries the first cause.
 pub fn wake(meter: &mut TurnMeter, session: &str, causes: &[(&str, usize)], ran: bool) {
@@ -489,7 +470,7 @@ pub fn wake(meter: &mut TurnMeter, session: &str, causes: &[(&str, usize)], ran:
         .emit();
 }
 
-/// **A result reaching the model** (R79) — the one call in `DeliveryLog::record`, R79's single
+/// A result reaching the model - the one call in `DeliveryLog::record`, 's single
 /// record site, so every rule and door it has reaches this file. Mid-turn when the session's
 /// current turn has already run a round: a delivery at a turn's start is not an interruption.
 pub fn delivered_all(session: &str, rows: &[crate::delivery::Delivered<'_>]) {
@@ -511,7 +492,7 @@ pub fn delivered(session: &str, d: &crate::delivery::Delivered<'_>) {
     let how = match rule.split(':').next().unwrap_or("") {
         "immediate" => "immediate",
         "starvation" => "starved",
-        // Never held: it arrived while nothing was running (R79's turn-end rule).
+        // Never held: it arrived while nothing was running.
         "idle" => "idle",
         _ => "batched",
     };
@@ -533,8 +514,8 @@ pub fn delivered(session: &str, d: &crate::delivery::Delivered<'_>) {
         .emit();
 }
 
-/// **A compaction** — automatic (`pre-wall` / `refused-door`) or the operator's. `before` and
-/// `after` in the unit the operator reads; the ledger pair beside them (R72/R73).
+/// A compaction - automatic (`pre-wall` / `refused-door`) or the operator's. `before` and
+/// `after` in the unit the operator reads; the ledger pair beside them.
 #[allow(clippy::too_many_arguments)]
 pub fn compaction(
     session: &str,
@@ -578,7 +559,7 @@ pub fn operator_compaction(h: &crate::harness::Harness, before: u64, started: In
     );
 }
 
-/// **A turn stopped at the context wall** — the turn tail, which every wall reaches through.
+/// A turn stopped at the context wall - the turn tail, which every wall reaches through.
 pub fn wall(session: &str, turn: &str, e: &HarnessError, continues: usize) {
     let HarnessError::ContextWall {
         rounds,
@@ -607,12 +588,9 @@ pub fn wall(session: &str, turn: &str, e: &HarnessError, continues: usize) {
         .emit();
 }
 
-/// **A wall controller transition** (`crate::wall`) — the judgement a fold is given once a
-/// count is MEASURED. Same kind as [`wall`] (the turn stop), told apart by `outcome`:
-/// `helped`, `escalated`, `stuck`, `released`. `n1` is what was folded (0 for a release),
-/// `n2` the measured count, `n3` the window; the fold and, for `escalated`, the next rung
-/// are attributes. The `compaction` row's `after` is the base's estimate; this row is the
-/// measurement it is judged by (pg-noop 2026-10-11: ≈ 1,039,055, measured 507,355).
+/// A wall controller transition (`crate::wall`) - the judgement a fold is given once a
+/// count is Same kind as [`wall`] (the turn stop), told apart by `outcome`
+/// `helped`, `escalated`, `stuck`, `released`.
 pub fn wall_change(session: &str, c: &crate::wall::Change, window: u64, unit: &str) {
     if !letibot_metrics::enabled() {
         return;
@@ -648,7 +626,7 @@ pub fn wall_change(session: &str, c: &crate::wall::Change, window: u64, unit: &s
         .emit();
 }
 
-/// **R71's context claim, judged** — beside the jsonl line (dual-written in phase 1). The
+/// 's context claim, judged - beside the jsonl line (dual-written in phase 1). The
 /// sentence travels as the `snippet`, which the writer keeps for this kind by default
 /// (the operator's decision 5) and strips if `[metrics] snippets` says otherwise.
 pub fn context_claim(session: &str, f: &crate::context_claim::Finding) {
@@ -678,7 +656,7 @@ pub fn context_claim(session: &str, f: &crate::context_claim::Finding) {
         .emit();
 }
 
-/// **The daemon's memory** (R66) — memwatch, every fifth tick and at every census step.
+/// The daemon's memory - memwatch, every fifth tick and at every census step.
 pub fn mem_sample(
     rss: u64,
     live: usize,
@@ -691,7 +669,7 @@ pub fn mem_sample(
     }
     let sessions = census.len();
     let heads: usize = census.iter().map(|(c, _)| c.heads).sum();
-    // **The term R66 was about**, on the series: what the HARNESSES hold, which the hub's own
+    // The term was about, on the series: what the HARNESSES hold, which the hub's own
     // numbers (a log, a view, a queue) do not include. A `mem.sample` without it charts a
     // daemon's resident memory beside counts that never explain it.
     let harness: usize = census.iter().map(|(c, _)| c.footprint.total()).sum();
@@ -722,7 +700,7 @@ mod tests {
         }
     }
 
-    /// **c12d044 as a number**: the wait is dequeue minus the head's submit, the run is the
+    /// c12d044 as a number: the wait is dequeue minus the head's submit, the run is the
     /// dispatch, and the verb is the command's own.
     #[test]
     fn a_worker_command_row_is_its_wait_and_its_run() {
@@ -751,7 +729,7 @@ mod tests {
         assert_eq!(got[0].ts_ms, 30_000, "stamped at the dequeue");
     }
 
-    /// **R79's record is the delivery row** — mid-turn when the session's turn has run a
+    /// 's record is the delivery row - mid-turn when the session's turn has run a
     /// round, at the turn's start otherwise; the wait, the rule and the batch carried over.
     #[test]
     fn a_delivery_row_knows_whether_it_interrupted_a_turn() {
@@ -784,7 +762,7 @@ mod tests {
         assert_eq!(got[1].n[0], Some(2), "the batch");
     }
 
-    /// **A wake says what woke it**, and the turn it starts carries the cause.
+    /// A wake says what woke it, and the turn it starts carries the cause.
     #[test]
     fn a_wake_row_names_its_first_cause_and_the_turn_carries_it() {
         let mut meter = TurnMeter::default();
@@ -809,7 +787,7 @@ mod tests {
         assert_eq!((s.n[0], s.n[1]), (Some(10), Some(100)), "fill and window");
     }
 
-    /// **R77: did the turn a check opened touch the row it named?**
+    /// : did the turn a check opened touch the row it named?
     #[test]
     fn a_nag_follow_up_says_whether_the_named_row_moved() {
         for (after, want) in [

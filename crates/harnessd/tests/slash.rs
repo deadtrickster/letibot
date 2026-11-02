@@ -1,8 +1,6 @@
-//! `/flowy` and `/models` over the socket: a head sends the line, the daemon
-//! answers on the session log, and the answer says what to type next.
-//!
-//! Needs the GLM vocabulary on this box to open a session (no model server —
-//! nothing here runs a turn); skips loudly without it.
+//! `/flowy` and `/models` over the socket: a head sends the line, the daemon answers on the
+//! session log, and the answer says what to type next. Needs the GLM vocabulary on this box
+//! to open a session (no model server - nothing here runs a turn); skips loudly without it.
 
 use std::time::{Duration, Instant};
 
@@ -19,17 +17,17 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     if letibot_harnessd::vocab_file(&vocab).is_none() {
         return;
     }
-    // The operator's providers.toml must not be touched: point the config home
-    // at a scratch directory for this process.
+    // The operator's providers.toml must not be touched: point the config home at a scratch directory
+    // for this process.
     let scratch = letibot_sessionlog::testing::scratch_root()
         .join(format!("letibot-slash-it-{}", std::process::id()));
     std::fs::create_dir_all(scratch.join("letibot")).unwrap();
-    // SAFETY: this test binary is single-threaded at this point; nothing else
-    // reads the environment concurrently.
+    // SAFETY: this test binary is single-threaded at this point; nothing else reads the environment
+    // concurrently.
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", &scratch);
-        // opencode's store is a key source too; the developer's own login must not
-        // reach this assertion.
+        // opencode's store is a key source too; the developer's own login must not reach this
+        // assertion.
         std::env::set_var("XDG_DATA_HOME", &scratch);
         std::env::remove_var("DEEPSEEK_API_KEY");
     }
@@ -67,9 +65,8 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
                     let _ = sessions.open(&id);
                 }
                 letibot_sessionlog::registry::Work::Woken(_) => {}
-                // A session a head or a migration closed (`PROTOCOL_VERSION` 53): the worker's
-                // half is letting the harness go, and this fixture drives verbs rather than
-                // teardown.
+                // A session a head or a migration closed: the worker's half is letting the harness
+                // go, and this fixture drives verbs rather than teardown.
                 letibot_sessionlog::registry::Work::Close(_) => {}
                 letibot_sessionlog::registry::Work::Command(id, cmd) => {
                     let _ = sessions.dispatch(&id, &cmd);

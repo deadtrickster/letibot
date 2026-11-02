@@ -1,16 +1,6 @@
-//! **R79 between turns: nothing stays held once a turn has ended.**
-//!
-//! The operator, 2026-10-11, on the pg-noop session (*"[meanwhile] 1 result arrived while you were
-//! busy …"* arriving the moment they sent a prompt, long after the model had gone idle): *"jobs
-//! were ran for a reason and held for a reason. once turn ends no reason to hold"*. So a result
-//! held while a turn ran is delivered as a turn of its own the moment that turn ends, a result
-//! that arrives while the session is idle is delivered at once as an ordinary completion, and a
-//! prompt that gets there before the turn-end wake still carries the batch.
-//!
-//! The settlement is put on the session's queue the way its watcher thread would
-//! ([`letibot_harnessd::jobwatch::JobWatchers::queue_for_test`]); everything after that is the
-//! daemon's own door — `Harness::wake`, `Harness::submit` — against the canned server the turn
-//! crate's tests replay. It needs the vocabulary GGUF and not a model.
+//! between turns: nothing stays held once a turn has ended. The operator's ruling, on a
+//! result that reached an idle model only when they next spoke: jobs were run for a reason
+//! and held for a reason, so once a turn ends there is no reason to hold.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -58,7 +48,7 @@ impl Drop for TempDir {
     }
 }
 
-/// A root session in its own scratch workspace — so the delivery record lands there — with
+/// A root session in its own scratch workspace - so the delivery record lands there - with
 /// `todos` on its board.
 fn session(tag: &str, todos: &[TodoItem]) -> (TempDir, Config, Parts) {
     let dir = TempDir::new(tag);
@@ -154,9 +144,8 @@ fn records(dir: &TempDir) -> Vec<serde_json::Value> {
     .collect()
 }
 
-/// **The session's hub adopted into a registry, the way the daemon's are** — so the bell the
-/// watcher set rings is one this test can ask (`Registry::next_work_until`) whether the session
-/// was woken.
+/// The session's hub adopted into a registry, the way the daemon's are, so the bell the watcher set
+/// rings is one this test can ask (`Registry::next_work_until`) whether the session was woken.
 fn adopted(parts: &Parts, cfg: &Config) -> (Harness, Arc<Registry>) {
     let registry = Registry::new();
     let hub = registry.new_hub(cfg.session_id.clone());
@@ -186,15 +175,8 @@ fn woken(registry: &Registry, id: &str) -> bool {
     }
 }
 
-/// **A turn that ends with results held wakes its session, and the wake delivers them as ONE
-/// batch, as a turn of its own.**
-///
-/// pg-noop, 2026-10-11: a result held while the model worked reached it only when the operator
-/// next spoke, under a heading that said *"while you were busy"* about a model that had been idle
-/// for an hour. The operator's ruling: *"jobs were ran for a reason and held for a reason. once
-/// turn ends no reason to hold"*. Two results held during a turn (the round boundary's hold, as
-/// `HubSteering` does it), the turn ends (`JobWatchers::turn_ended`, what both doors into
-/// `run_rounds` call): the bell names the session, `Harness::wake` runs a turn, the batch opens
+/// A turn that ends with results held wakes its session, and the wake delivers them as ONE batch
+/// as a turn of its own: the bell names the session, `Harness::wake` runs a turn, the batch opens
 /// with the turn-end heading, and the record says `turn_end`, two together.
 #[test]
 fn a_turn_that_ends_with_results_held_delivers_them_as_its_own_turn() {
@@ -247,13 +229,9 @@ fn a_turn_that_ends_with_results_held_delivers_them_as_its_own_turn() {
     );
 }
 
-/// **A result that arrives while the session is idle is not held at all**: the wake its arrival
-/// rang delivers it at once, as an ordinary `[job]` notice with no `[meanwhile]` heading, recorded
-/// as `idle`.
-///
-/// pg-noop, 2026-10-11, and the operator's ruling: *"jobs were ran for a reason and held for a
-/// reason. once turn ends no reason to hold"* — an idle model is interrupted by nothing, so there
-/// is no break to wait for and nothing to explain.
+/// A result that arrives while the session is idle is not held at all: the wake its arrival rang
+/// delivers it at once, as an ordinary `[job]` notice with no `[meanwhile]` heading, recorded
+/// `idle`. An idle model is interrupted by nothing, so there is no break to wait for.
 #[test]
 fn a_completion_that_arrives_while_idle_is_delivered_at_once_without_a_heading() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -285,13 +263,8 @@ fn a_completion_that_arrives_while_idle_is_delivered_at_once_without_a_heading()
     assert_eq!(rec[0]["handle"], "j31");
 }
 
-/// **A prompt that gets there before the turn-end wake carries the batch, and the wake then runs
-/// nothing** — one delivery, never two. Commands drain before wakes (`Bell::next_any`), so this is
-/// the order the worker takes them in when the operator types the moment a turn ends.
-///
-/// pg-noop, 2026-10-11, and the operator's ruling: *"jobs were ran for a reason and held for a
-/// reason. once turn ends no reason to hold"* — the batch is still what arrived while the model
-/// was busy, so it keeps the batch heading and sits BEFORE the operator's words.
+/// A prompt that gets there before the turn-end wake carries the batch, and the wake then
+/// runs nothing - one delivery, never two.
 #[test]
 fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -336,10 +309,8 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
     assert_eq!(rec[0]["handle"], "j21");
 }
 
-/// **A completion the plan `needs` is said first, and the batch held during the last turn rides
-/// in after it** — under the turn-end heading, since the wake that runs is the one the turn's end
-/// is owed anyway (the operator, 2026-10-11: *"jobs were ran for a reason and held for a reason.
-/// once turn ends no reason to hold"*).
+/// A completion the plan `needs` is said first, and the batch held during the last turn rides in
+/// after it - under the turn-end heading, since the wake that runs is the one the turn's end owes.
 #[test]
 fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -397,14 +368,9 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     );
 }
 
-/// **A wake whose turn never opened leaves its results held, not told** (R91.11).
-///
-/// `Harness::wake` used to mark what it was about to say delivered — the read record, a
-/// subagent's `delivered` in the store — and empty the held set BEFORE `submit_item`, which can
-/// fail before any round runs (here: the store refuses the notice's row). The results were then in
-/// no transcript and in no held set, and nothing would ever say them. The store is made to refuse
-/// by moving `transcript_item` away through a second connection; once it is back, the next wake
-/// says the result.
+/// A wake whose turn never opened leaves its results held, not told: `Harness::wake` used to empty
+/// the held set before `submit_item`, which can fail before any round runs, and the results were
+/// then in no transcript and in no held set, with nothing to ever say them.
 #[test]
 fn a_wake_whose_turn_never_opened_keeps_its_results_held() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -419,7 +385,7 @@ fn a_wake_whose_turn_never_opened_keeps_its_results_held() {
     w.hold(vec![settled(&cfg.session_id, "j41", "exited 0")]);
     w.turn_ended();
 
-    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `open_private`: the refusal has to come from OUTSIDE the harness's connection, and
     // `Store::open` would hand back the very connection `h` writes through.
     let other = Store::open_private(&store).expect("a connection of its own");
     other

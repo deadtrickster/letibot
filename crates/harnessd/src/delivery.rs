@@ -1,77 +1,6 @@
-//! **When a finished job or subagent is told to the model** — R79.
-//!
-//! The operator: *"can job and agent results come mid turn? i think you guys are getting
-//! distracted when this happens"*. They did: a child heard every settlement at its next round
-//! boundary, and a root heard each one as a WAKE — a turn of its own — so a model working on X
-//! ended its turn and was handed *"job j975 ended"* as the next thing to do. Nothing asked
-//! whether the model was waiting for the result.
-//!
-//! # The operator's decision, 2026-10-11
-//!
-//! **Queue and batch by default; immediate only for what the work actually waits on.** In this
-//! file that is one pure function, [`decide`], over the [`Facts`] of one completion:
-//!
-//! | the fact | delivery |
-//! |---|---|
-//! | an emergency (R76's red target) | immediate — [`Why::Emergency`] |
-//! | a monitor firing | immediate — [`Why::Monitor`] |
-//! | it FAILED, and the plan depends on it (any of the four below but `wake: now`) | immediate — [`Why::DependencyFailed`] |
-//! | an open todo row's `when: job` names it | immediate — [`Why::WhenJob`] |
-//! | an open todo row `needs` it (job or child) | immediate — [`Why::Needed`] |
-//! | a wait asked for it: `job_wait` / `task_result` on it, or the call it ran in was promoted to the background | immediate — [`Why::Awaited`] |
-//! | it was started with `wake: "now"` | immediate — [`Why::WakeNow`] |
-//! | anything else | **held** |
-//!
-//! The operator's own messages are not a completion and do not come through here at all: they
-//! are the hub's commands, drained first by `HubSteering::try_next` mid-turn and first by the
-//! bell between turns, exactly as before.
-//!
-//! # Where held results go
-//!
-//! **Holding exists only so a RUNNING turn is not interrupted.** The operator, 2026-10-11, after
-//! pg-noop showed a held result reaching an idle model only when they next spoke, under a heading
-//! that said *"while you were busy"*: *"jobs were ran for a reason and held for a reason. once turn
-//! ends no reason to hold"*. So:
-//!
-//! * **mid-turn**, held results accumulate per session ([`JobWatchers::hold`]) and nothing is said
-//!   at the round boundary (the starvation cap below aside);
-//! * **when the turn ends** with anything held, the session's own wake is rung
-//!   ([`JobWatchers::turn_ended`]) and `Harness::wake` delivers the held set as **one**
-//!   `[meanwhile]` note, a turn of its own, recorded as [`Rule::TurnEnd`] — the same door an
-//!   immediate completion between turns takes;
-//! * **if another turn starts first** — the operator's prompt (commands drain before wakes), a
-//!   parent's message, a plan-check, a continuation after the wall — the batch rides that turn's
-//!   start as before ([`Rule::Batch`]; as a harness row just BEFORE the prompt, so the operator's
-//!   words stay the last thing read), and the wake that follows finds nothing;
-//! * **a result that arrives while the session is idle is not held at all**: the wake its arrival
-//!   rang delivers it at once as an ordinary completion, with no `[meanwhile]` heading, recorded
-//!   as [`Rule::Idle`].
-//!
-//! The line between the last two is one fact, *did it arrive before the session's last turn
-//! ended* ([`JobWatchers::last_turn_ended`]); see `Deliveries::between_turns`. Every settlement is
-//! still published to the hub as it happens (`JobSettled`, the subagent row), so the head's jobs
-//! pane is never behind.
-//!
-//! **Children** follow the same rules at their round boundaries and between their turns. A child
-//! that stops with results still held hands them up a level ([`JobWatchers::stop`]), where the
-//! parent's rules decide them — as the queue always was.
-//!
-//! # The starvation cap
-//!
-//! Turns here run for hours. A turn running with a result held for longer than
-//! [`HELD_RESULTS_CAP`] (`Config::held_results_cap`) gets the batch at its next round boundary
-//! anyway, as one note. Measured from the longest-held result's ARRIVAL rather than from the
-//! turn's start: a turn's age would release every result the moment it arrived once the turn
-//! was ten minutes old, which is per-completion delivery again with a delay in front.
-//!
-//! # The record
-//!
-//! Every delivery — immediate, batched, delivered at a turn's end, idle, or released by the cap,
-//! and every monitor firing — is one
-//! JSON line in [`LOG`] (`<data dir>/logs/<session>/delivery-log.jsonl`, the `notes-offers.jsonl`
-//! shape): session, handle, kind, when it arrived, when it was delivered, the rule, and how many
-//! were delivered together. Deliberately small and self-contained, so a general metrics store can
-//! fold it in by reading the lines; see [`DeliveryLog`].
+//! When a finished job or subagent is told to the model: [`decide`], over the [`Facts`] of
+//! one completion. A running turn is not interrupted, so a result is held by default. It is
+//! delivered at once only for what the work actually waits on
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -81,15 +10,13 @@ use letibot_tools::runtime::WantedNow;
 
 use crate::jobwatch::{BackgroundKind, JobCompletion, JobWatchers};
 
-/// **How long a running turn may keep a result held** before the batch is released at its next
-/// round boundary — ten minutes, the operator's number (*"a turn running longer than N minutes
-/// (10, named, configurable)"*). The default of `Config::held_results_cap`, which is what the
-/// harness reads.
+/// How long a running turn may keep a result held before the batch is released at its next round
+/// boundary. The default of `Config::held_results_cap`, which is what the harness reads.
 pub const HELD_RESULTS_CAP: Duration = Duration::from_secs(10 * 60);
 
-/// The delivery record's file, in the session's logs directory (`Config::daemon_logs`:
-/// `<data dir>/logs/<session>/` for a daemon — never the workspace, whose `.letibot/` made every
-/// child's worktree look dirty, TODO R92.4).
+/// The delivery record's file, inside the session's logs directory (`Config::daemon_logs`).
+///
+/// Never the workspace: a `.letibot/` there would make every child's worktree look dirty.
 pub const LOG: &str = "delivery-log.jsonl";
 
 /// What finished.
@@ -120,7 +47,7 @@ impl ResultKind {
     }
 }
 
-/// **Why a result is delivered at once** — the rule that applied, recorded with the delivery.
+/// Why a result is delivered at once: the rule that applied, recorded with the delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Why {
     /// An open todo row's `when: job` names it.
@@ -135,7 +62,7 @@ pub enum Why {
     DependencyFailed,
     /// A monitor fired.
     Monitor,
-    /// A target emergency (R76).
+    /// A target emergency.
     Emergency,
 }
 
@@ -162,9 +89,9 @@ pub enum Delivery {
     Held,
 }
 
-/// **Everything [`decide`] reads about one result and the session it belongs to** — gathered by
-/// [`facts_of`] from the completion, the todo board and the session's wants, so the decision
-/// itself reads no state and is asserted without a session.
+/// Everything [`decide`] reads about one result and the session it belongs to. Gathered by
+/// [`facts_of`] from the completion, the todo board and the session's wants, so the
+/// decision reads no state and can be asserted without a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Facts {
     pub kind: ResultKind,
@@ -176,7 +103,7 @@ pub struct Facts {
     pub when_row: bool,
     /// An open row `needs` this job or child.
     pub needed: bool,
-    /// What the session said it wants — see [`WantedNow`].
+    /// What the session said it wants - see [`WantedNow`].
     pub wanted: Option<WantedNow>,
 }
 
@@ -194,9 +121,9 @@ impl Facts {
     }
 }
 
-/// **The delivery decision** — the operator's five points, as a function. See the module header
-/// for the table it implements; the order of the arms is the order the reasons are recorded in
-/// when more than one applies, most specific first.
+/// The delivery decision, as a function. See the module header for the rules it implements.
+/// The order of the arms is the order the reasons are recorded in when more than one
+/// applies most specific first.
 pub fn decide(f: &Facts) -> Delivery {
     if f.emergency {
         return Delivery::Immediate(Why::Emergency);
@@ -204,9 +131,8 @@ pub fn decide(f: &Facts) -> Delivery {
     if f.kind == ResultKind::Monitor {
         return Delivery::Immediate(Why::Monitor);
     }
-    // **What the plan depends on**: a row's condition, a row's need, or a wait on it. `wake:
-    // "now"` is not a dependency — it is the caller asking for timing — so a failure under it is
-    // recorded as `wake_now`, not as a broken dependency.
+    // What the plan depends on: a row's condition, a row's need, or a wait on it. `wake: "now"`
+    // is not a dependency but the caller asking for timing, so a failure under it is `wake_now`.
     let depends = f.when_row || f.needed || f.wanted == Some(WantedNow::Awaited);
     if f.failed && depends {
         return Delivery::Immediate(Why::DependencyFailed);
@@ -220,14 +146,13 @@ pub fn decide(f: &Facts) -> Delivery {
     match f.wanted {
         Some(WantedNow::Awaited) => Delivery::Immediate(Why::Awaited),
         Some(WantedNow::WakeNow) => Delivery::Immediate(Why::WakeNow),
-        // **`wake: "later"` is a declaration about the WAIT, not about the delivery**: the model
-        // said it does not need waking for it, so the result is held and batched like any other.
-        // A caller's `wait` does not hold on the job either, which is the other half of the word.
+        // `wake: "later"` is a declaration about the WAIT, not about the delivery: the model said
+        // it does not need waking for it, so the result is held and batched like any other.
         Some(WantedNow::WakeLater) | None => Delivery::Held,
     }
 }
 
-/// **Did this end badly?** A job that did not exit 0, or a child that answered `failed`.
+/// Did this end badly? A job that did not exit 0, or a child that answered `failed`.
 pub fn failed(c: &JobCompletion) -> bool {
     match c.kind {
         BackgroundKind::Job => c.state != "exited 0",
@@ -235,15 +160,9 @@ pub fn failed(c: &JobCompletion) -> bool {
     }
 }
 
-/// The one spelling of *a row names this job*, for the two callers that ask it: the delivery
-/// decision here and the activity (`crate::activity::awaited`).
-///
-/// **It takes the slug, and that is the correction.** The activity's own copy compared the handle
-/// and nothing else, so a model that named its job — `bash(slug: "release-build")`, and a row that
-/// says `needs: job release-build` — was waiting on something the daemon handed over at once
-/// (`Why::Needed`, by slug) while the session's activity said `quiet`. `wait` reads the activity, so
-/// that is a false *done*: the bridge is told nothing more will happen while the model is about to
-/// be woken by exactly this. One predicate, two readers, no third spelling.
+/// The one spelling of "a row names this job", for its two callers: the delivery decision
+/// here and the activity ([`crate::activity::awaited`]). The slug is part of it because a
+/// model may name its job (`bash(slug
 pub fn named(handle: &str, job: &str, slug: Option<&str>) -> bool {
     handle == job || slug == Some(handle)
 }
@@ -253,15 +172,9 @@ fn open(row: &TodoItem) -> bool {
     matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress)
 }
 
-/// **What the session's open plan says about one running thing** — the two facts the activity and
-/// the delivery decision both need, from one reading of the board.
-///
-/// `when_row` is a row whose `when: job` names it; `needed` is a row that `needs` it. Both match by
-/// handle or by the job's slug ([`named`]), and a `needs: child` names a SESSION — so it never counts
-/// a job, however its id was spelled. That last clause is the second half of the same correction:
-/// the activity's copy accepted `TodoNeed::Child` for any handle, which made a row blocked on a
-/// child id that happened to be a job's read as *busy* about a result no delivery would ever hand
-/// over.
+/// What the session's open plan says about one running thing: the two facts the activity
+/// and the delivery decision both need, from one reading of the board. `when_row` is a row
+/// whose `when
 pub fn plan_says(
     rows: &[TodoItem],
     handle: &str,
@@ -286,9 +199,9 @@ pub fn plan_says(
     (when_row, needed)
 }
 
-/// **The facts of one completion against this session's board.** `wanted` is the session's own
-/// record ([`JobWatchers::wanted`]); a completion handed up from a stopped child is decided by the
-/// same reading, and is normally held — nothing above it waits on a grandchild's job.
+/// The facts of one completion against this session's board. `wanted` is the session's own
+/// record ([`JobWatchers::wanted`]). A completion handed up from a stopped child is decided
+/// by the same reading, and is normally held: nothing above it waits on a grandchild's job.
 pub fn facts_of(c: &JobCompletion, rows: &[TodoItem], wanted: Option<WantedNow>) -> Facts {
     let mut f = Facts::routine(ResultKind::of(c));
     f.failed = failed(c);
@@ -299,12 +212,8 @@ pub fn facts_of(c: &JobCompletion, rows: &[TodoItem], wanted: Option<WantedNow>)
     f
 }
 
-/// **The sort, at a boundary**: everything held plus everything newly queued, each decided again
-/// against the board as it is NOW — a row added since a result was held, or a `job_wait` on it,
-/// promotes it — with the immediates returned and the rest held again.
-///
-/// `skip` drops a completion that is nobody's news (a gatekeeper's, whose verdict is already on
-/// the queue's row — see `Harness::wake`).
+/// The sort at a boundary: everything held plus everything newly queued, each decided again
+/// against the board as it is now, so a row added since a result was held promotes it.
 pub fn sort(
     w: &JobWatchers,
     rows: &[TodoItem],
@@ -330,13 +239,13 @@ pub fn sort(
     now
 }
 
-/// **Has the longest-held result waited past the cap?**
+/// Has the longest-held result waited past the cap?
 pub fn starved(w: &JobWatchers, cap: Duration, now: SystemTime) -> bool {
     w.oldest_held()
         .is_some_and(|t| now.duration_since(t).unwrap_or(Duration::ZERO) >= cap)
 }
 
-/// **How a delivery happened**, as the record names it.
+/// How a delivery happened, as the record names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
     Immediate(Why),
@@ -344,13 +253,12 @@ pub enum Rule {
     Batch,
     /// Held, and released mid-turn by the starvation cap.
     Starvation,
-    /// **Held while a turn ran, and delivered the moment that turn ENDED, as a turn of its own**
-    /// (the operator, 2026-10-11: *"jobs were ran for a reason and held for a reason. once turn
-    /// ends no reason to hold"*). Distinct from [`Rule::Batch`], which is the same batch riding a
-    /// turn that started for another reason before the turn-end wake was served.
+    /// Held while a turn ran, and delivered as a turn of its own the moment that turn ended.
+    /// Distinct from [`Rule::Batch`], which is the same batch riding a turn that started for
+    /// another reason before the turn-end wake was served.
     TurnEnd,
-    /// **Arrived while the session was idle, so it was never held** — delivered at once, as an
-    /// ordinary completion with no `[meanwhile]` heading (same decision).
+    /// Arrived while the session was idle, so it was never held and arrives as an ordinary
+    /// completion with no `[meanwhile]` heading.
     Idle,
 }
 
@@ -366,28 +274,23 @@ impl Rule {
     }
 }
 
-/// **The `[meanwhile]` note's first line.** The `[job]` / `[task]` groups under it are
+/// The `[meanwhile]` note's first line. The `[job]` / `[task]` groups under it are
 /// `completion_notices`' own, so the head's compact job rows read them as they always did.
-///
-/// **R93.C7: one heading for every rule.** It said why the results were held — the daemon's
-/// holding policy, with its ten-minute cap in it — and *"them/they"* for one. It says what they
-/// are; which rule delivered them is the record's ([`DeliveryLog`]), not the model's.
+/// It says what the results are and not which rule delivered them
 pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
     "[meanwhile] Finished while you were working:".to_string()
 }
 
-/// **The append-only delivery record** — one JSON line per delivered result, under the
-/// workspace ([`LOG`]).
+/// The append-only delivery record: one JSON line per delivered result, under the session's logs.
 ///
 /// ```text
 /// {"session":"s-1","handle":"j12","kind":"job","arrived_at_ms":…,"delivered_at_ms":…,
 ///  "waited_ms":…,"rule":"batch","batch":3}
 /// ```
 ///
-/// `batch` is how many results reached the model in the same note. A write that fails is
-/// dropped, as `notes-offers.jsonl`'s is: the record is measurement, and a delivery must never
-/// fail because its measurement could not be written. `None` path: a harness with no workspace
-/// to write under records nothing.
+/// `batch` is how many results reached the model in the same note. A write that fails is dropped
+/// the record is measurement, and a delivery must never fail because its measurement could not be
+/// written. A log with no path records nothing.
 #[derive(Debug, Clone)]
 pub struct DeliveryLog {
     path: Option<PathBuf>,
@@ -431,8 +334,8 @@ impl DeliveryLog {
 
     /// Append one line per delivery.
     pub fn record(&self, rows: &[Delivered<'_>]) {
-        // The metrics row for each (TODO R81) — here, R79's one record site, so every rule and
-        // door reaches `metrics.db` whether or not this record has a file to write.
+        // The metrics row for each, from this one record site, so every rule and door reaches
+        // `metrics.db` whether or not this record has a file to write.
         crate::instruments::delivered_all(&self.session, rows);
         let Some(path) = &self.path else {
             return;

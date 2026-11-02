@@ -1,51 +1,6 @@
-//! **A child's VM does not outlive the child** — the daemon's half: whose each live firecode VM
-//! is, by this store's records, and the reaper that brings down the ones whose owner is gone.
-//!
-//! The operator's report, 2026-10-15: pg-noop's review of `feat/memory-engine` said *"review ·
-//! waiting for a VM slot · every slot busy"* and *"VM slots exhausted · waited 33 min"* for
-//! hours. All four taps were held by orphaned firecracker VMs (parent pid 1), and what the store
-//! says about them is the whole story:
-//!
-//! * three were booted on 2026-10-14 at 17:18–17:20 UTC for grandchildren of
-//!   `s-1791151788256943467`. Each child's last transcript item is a tool call with no result
-//!   (17:21:48, 17:22:06, 17:36:54), and their rows in `subagent_run` still say `running`, owned
-//!   by daemon `d-404553`. That daemon's `daemon_life` row has no stop: its last heartbeat is
-//!   18:21:01 UTC, so it ended without an orderly stop and `firecode::down_all` — the daemon's
-//!   last act — never ran. Each VM's launcher (`firecode exec`, its own session leader) kept it
-//!   up. Two of the three were spawned by children whose own parent had FAILED a minute earlier
-//!   (`…-sub-1791998134948544726`, a store error at 17:18:21) — a child that ends on a failure
-//!   left its children running (fixed in `HarnessTaskRunner::run_to_completion`);
-//! * the fourth was a pg-noop great-grandchild booted on 2026-10-12 by a daemon older than
-//!   `daemon_life` and `subagent_run` — no record names its owner's state at all;
-//! * nothing on any later start looked at VMs, and the restart pass reads a dead daemon's child
-//!   rows only when the child's PARENT is opened again. These parents had finished, so nothing
-//!   was ever going to open them, and the rows say `running` to this day.
-//!
-//! # The record
-//!
-//! A child's VM is booted on its copy, `~/.cache/letibot/firecode/<child id>`
-//! (`FirecodeBackend::project_of`), and firecode writes that path into the run's record
-//! (`runs/<run>/project`) — so firecode's own record names the owning child, for every build
-//! that ever booted one, with nothing added to the store's schema (the store is shared by daemons
-//! of different builds). The child's `subagent_run` row says its state and which daemon runs it;
-//! that daemon's `daemon_life` row says whether it is alive. See
-//! `letibot_tools::firecode::held` for the VM half.
-//!
-//! # What may be reaped ([`judge`])
-//!
-//! Only a VM whose recorded owner is FINISHED (its row settled, longer ago than its own `down`
-//! can take to deliver the work), or whose owner's row says `running` under a daemon that is
-//! gone. Never a VM another live daemon's running child holds, never this daemon's own running
-//! child's, and never one with no record of its owner — those are named in the capacity notice
-//! and left to a person.
-//!
-//! # And a child whose parent is gone ends too
-//!
-//! A dead daemon's `running` row whose parent has finished is nobody's: no open will ever read
-//! it. Its VM is reaped and the row is settled `abandoned`, with why. In THIS daemon, a running
-//! child whose parent's row has been settled for [`STALL_MS`] and whose own transcript has not
-//! moved for as long is interrupted and its row written `killed` — after which its VM, if it
-//! still has one, is a finished owner's and is reaped like any other.
+//! A child's VM does not outlive the child - the daemon's half: whose each live firecode VM
+//! is, by this store's records, and the reaper that brings down the ones whose owner is
+//! gone. The operator's report, 2026-10-15
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -56,23 +11,23 @@ use letibot_sessionlog::registry::Registry;
 use letibot_tokencore::store::{DaemonLife, Store, SubagentRun};
 use letibot_tools::firecode::held::{self, HeldVm, Patience};
 
-/// **A finished owner's VM is left this long before it is reaped** — the most its own `down` waits
+/// A finished owner's VM is left this long before it is reaped - the most its own `down` waits
 /// on a copy-out (`firecode::COPY_OUT_CAP`, 600 s), so a reap never races the delivery of a
 /// child that has just finished.
 pub const FINISHED_GRACE_MS: u64 = 10 * 60 * 1000;
 
-/// **A child whose parent finished this long ago, and which has written nothing for as long, is
-/// stalled** — the same half hour after which a capacity wait is raised.
+/// A child whose parent finished this long ago, and which has written nothing for as long, is
+/// stalled - the same half hour after which a capacity wait is raised.
 pub const STALL_MS: u64 = 30 * 60 * 1000;
 
-/// **How often the reaper looks**, when nothing asks it to look sooner ([`look_now`]).
+/// How often the reaper looks, when nothing asks it to look sooner ([`look_now`]).
 pub const SWEEP_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// A daemon whose heartbeat is older than this is not known to be alive by its beat
 /// (`restart::BEAT` is 30 s).
 const BEAT_STALE_MS: u64 = 3 * 30 * 1000;
 
-/// **The daemon a running child's row names, as far as this store and this host can tell.**
+/// The daemon a running child's row names, as far as this store and this host can tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Daemon {
     /// This daemon.
@@ -84,10 +39,10 @@ pub enum Daemon {
     Gone { since_ms: Option<u64> },
 }
 
-/// **Whose a VM is, and what that owner is doing.**
+/// Whose a VM is, and what that owner is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
-    /// No child id in the VM's record, or no `subagent_run` row for it — a VM some other tool
+    /// No child id in the VM's record, or no `subagent_run` row for it - a VM some other tool
     /// booted, a reviewer, or a child older than the record.
     Unrecorded { child: Option<String> },
     /// Its row is settled (`done`, `failed`, `killed`, `abandoned`, `paused`) since `since_ms`.
@@ -104,7 +59,7 @@ pub enum Owner {
     },
 }
 
-/// **May this VM be reaped, and why** — the sentence is the capacity notice's.
+/// May this VM be reaped, and why - the sentence is the capacity notice's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Reap(String),
@@ -121,7 +76,7 @@ fn minutes(ms: u64) -> u64 {
     ms / 60_000
 }
 
-/// **The rule** — pure, so each owner's case is asserted without a VM. See the module docs.
+/// The rule - pure, so each owner's case is asserted without a VM. See the module docs.
 pub fn judge(owner: &Owner, now_ms: u64) -> Verdict {
     match owner {
         Owner::Unrecorded { child } => Verdict::Keep(match child {
@@ -178,7 +133,7 @@ fn pid_of(instance: &str) -> Option<u32> {
     instance.strip_prefix("d-")?.split('-').next()?.parse().ok()
 }
 
-/// **Whether `pid` is a daemon of this build's family** — a live process whose program is
+/// Whether `pid` is a daemon of this build's family - a live process whose program is
 /// `harnessd` (or `letibot`). A pid reused by anything else is not the daemon.
 pub fn is_a_daemon(proc_root: &Path, pid: u32) -> bool {
     if !held::alive(proc_root, pid) {
@@ -199,7 +154,7 @@ pub fn is_a_daemon(proc_root: &Path, pid: u32) -> bool {
         })
 }
 
-/// **Is the daemon `instance` alive?** `life` is its `daemon_life` row; `daemon_alive` asks the
+/// Is the daemon `instance` alive? `life` is its `daemon_life` row; `daemon_alive` asks the
 /// host about a pid. Conservative where the records are thin: a stale beat with a `harnessd`
 /// still at that pid is alive (wedged, maybe, but somebody else's to judge).
 pub fn daemon_of(
@@ -228,7 +183,7 @@ pub fn daemon_of(
     }
 }
 
-/// **The child a VM was booted for** — the last component of its project, when the project is a
+/// The child a VM was booted for - the last component of its project, when the project is a
 /// copy under letibot's firecode cache (`cache`).
 pub fn owner_of(vm: &HeldVm, cache: &Path) -> Option<String> {
     (vm.project.parent()? == cache)
@@ -236,7 +191,7 @@ pub fn owner_of(vm: &HeldVm, cache: &Path) -> Option<String> {
         .flatten()
 }
 
-/// letibot's firecode cache — where every child's copy is booted.
+/// letibot's firecode cache - where every child's copy is booted.
 pub fn cache_dir() -> PathBuf {
     letibot_tools::firecode::FirecodeBackend::project_of("x")
         .parent()
@@ -244,7 +199,7 @@ pub fn cache_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
-/// **One VM and its owner, judged.**
+/// One VM and its owner, judged.
 #[derive(Debug, Clone)]
 pub struct Holder {
     pub vm: HeldVm,
@@ -256,7 +211,7 @@ pub struct Holder {
 
 impl Holder {
     /// *"fccode1: firecracker pid 861706, run … started …; owner `s-…` (running under daemon
-    /// d-404553, which is gone) — reaped"* — one line of the capacity notice.
+    /// d-404553, which is gone) - reaped"* - one line of the capacity notice.
     pub fn line(&self) -> String {
         let (Verdict::Reap(why) | Verdict::Keep(why)) = &self.verdict;
         format!(
@@ -271,7 +226,7 @@ impl Holder {
     }
 }
 
-/// **The owner of a VM, read off the store.**
+/// The owner of a VM, read off the store.
 pub fn owner(
     store: &Store,
     child: Option<String>,
@@ -303,7 +258,7 @@ pub fn owner(
     (owner, Some(run))
 }
 
-/// **Every live VM on this host, with its owner judged** — empty where there is no firecode
+/// Every live VM on this host, with its owner judged - empty where there is no firecode
 /// (`bin` is the CLI whose `runs/` are read; `None` reads nothing).
 pub fn holders(store: &Store, me: &str, now_ms: u64, bin: Option<&Path>) -> Vec<Holder> {
     let Some(runs) = bin.and_then(held::runs_dir) else {
@@ -325,7 +280,7 @@ pub fn holders(store: &Store, me: &str, now_ms: u64, bin: Option<&Path>) -> Vec<
         .collect()
 }
 
-/// **The capacity notice's lines** — what holds each busy slot (a VM with a tap), and asks the
+/// The capacity notice's lines - what holds each busy slot (a VM with a tap), and asks the
 /// reaper to look now when one of them may be reaped. Called by the review queue on a long wait.
 pub fn slot_holders(store: &Store, me: &str) -> Vec<String> {
     let now = letibot_sessionlog::registry::now_ms();
@@ -340,14 +295,14 @@ pub fn slot_holders(store: &Store, me: &str) -> Vec<String> {
     held.iter().map(Holder::line).collect()
 }
 
-/// **A parent that has finished for good** — answered, failed, stopped or given up on. `paused`
+/// A parent that has finished for good - answered, failed, stopped or given up on. `paused`
 /// is not: a reminded parent comes back with `task_resume`, and its children with it.
 fn finished(state: &str) -> bool {
     matches!(state, "done" | "failed" | "killed" | "abandoned")
 }
 
-/// **A running child of a gone daemon, whose parent has finished, is settled `abandoned`** — it is
-/// nobody's: the restart pass reads a dead daemon's children only when their parent is opened,
+/// A running child of a gone daemon, whose parent has finished, is settled `abandoned` - it is
+/// nobody's: the restart pass reads a dead daemon's children only when their parent is opened
 /// and a finished parent is not. `None` when the row is not such a child.
 pub fn orphan_why(
     run: &SubagentRun,
@@ -372,7 +327,7 @@ pub fn orphan_why(
     ))
 }
 
-/// **A child of THIS daemon stalled under a finished parent** — `Some(why)` when the row is
+/// A child of THIS daemon stalled under a finished parent - `Some(why)` when the row is
 /// `running` here, its parent's row has been settled for [`STALL_MS`], and its own transcript's
 /// newest item is as old (`last_activity_ms`).
 pub fn stalled_why(
@@ -405,12 +360,12 @@ pub fn stalled_why(
 
 static LOOK_NOW: AtomicBool = AtomicBool::new(false);
 
-/// **Ask the reaper to look now** rather than at its next sweep.
+/// Ask the reaper to look now rather than at its next sweep.
 pub fn look_now() {
     LOOK_NOW.store(true, Ordering::Relaxed);
 }
 
-/// **One pass**: settle the orphans, stop this daemon's stalled children, and reap every VM the
+/// One pass: settle the orphans, stop this daemon's stalled children, and reap every VM the
 /// records say may go (`bin` is the firecode CLI; `None` reaps nothing). Answers one line per
 /// thing it did, for the daemon's log.
 pub fn pass(
@@ -473,8 +428,8 @@ pub fn pass(
     said
 }
 
-/// **The reaper's thread**: a pass at start — before anything waits on a slot a dead daemon's
-/// child still holds — then every [`SWEEP_EVERY`], or sooner when [`look_now`] asks, until the
+/// The reaper's thread: a pass at start - before anything waits on a slot a dead daemon's
+/// child still holds - then every [`SWEEP_EVERY`], or sooner when [`look_now`] asks, until the
 /// daemon stops. Its own store connection; nothing when there is no store.
 pub fn spawn(store_path: Option<PathBuf>, registry: Arc<Registry>) {
     let Some(path) = store_path else {

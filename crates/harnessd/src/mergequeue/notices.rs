@@ -1,12 +1,6 @@
-//! **What a project's model is told when its target is in trouble** (R76 item 1) — the words
-//! `Harness::queue_emergency_notices` puts in front of a root session's model, once per red tip
-//! or parked row.
-//!
-//! The failing step and the end of its output come FIRST: the operator's live case was a gate
-//! that failed after five green steps on one line at the very end, and a message that opened with
-//! the queue's policy buried the only line that said what was wrong. Then what the session can
-//! do about it with the `queue` tool — and what is the operator's to decide (`[queue] target` in
-//! the project's `leticode.toml`), which the tool may only propose.
+//! What a project's model is told when its target is in trouble - the words
+//! `Harness::queue_emergency_notices` puts in front of a root session's model, once per red
+//! tip or parked row. The failing step and the end of its output come FIRST
 
 use letibot_tokencore::store::{
     MergeGateOutcome, MergeGateStep, MergeRow, ReviewKind, ReviewRow, ReviewState, TargetHealth,
@@ -17,7 +11,7 @@ use super::setup::GATE_SETUP_FAILED;
 /// The lines of a failing step's output a message carries.
 pub const TAIL_LINES: usize = 30;
 
-/// **The step that did not pass**, numbered from 1, and the end of its output.
+/// The step that did not pass, numbered from 1, and the end of its output.
 pub fn failing_step(steps: &[MergeGateStep]) -> Option<(usize, usize, &MergeGateStep, String)> {
     let i = steps.iter().position(|s| {
         matches!(
@@ -58,10 +52,9 @@ const TOOL_WAYS: &str = "With the `queue` tool you can read both queues and the 
      so: `\"propose_target\"` puts the `[queue] target` line of the project's `leticode.toml` to \
      the operator, whose decision it is.";
 
-/// **The hub warning for a tip the gate's own setup kept it from judging** (`gate_setup_failed`),
-/// raised by `RepoQueue` beside the session notice [`health`] writes. `key` is the repository's
-/// queue key. The TUI's red card reads it as one line; its shape is pinned by the fixture test
-/// below.
+/// The hub warning for a tip the gate's own setup kept it from judging (`gate_setup_failed`), raised by
+/// `RepoQueue` beside the session notice [`health`] writes. `key` is the repository's queue key. The
+/// TUI's red card reads it as one line; its shape is pinned by the fixture test below.
 pub fn gate_setup_failed(h: &TargetHealth, key: &str) -> String {
     format!(
         "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until its gate can judge \
@@ -78,9 +71,9 @@ pub fn gate_setup_failed(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// **The hub warning for a tip whose gate step was killed before it judged the code**
-/// (`gate_killed`) — at the gate's memory cap, or by a signal. The same shape as
-/// [`gate_setup_failed`], the evidence's first line saying which.
+/// The hub warning for a tip whose gate step was killed before it judged the code (`gate_killed`) - at
+/// the gate's memory cap, or by a signal. The same shape as [`gate_setup_failed`], the evidence's first
+/// line saying which.
 pub fn gate_killed(h: &TargetHealth, key: &str) -> String {
     format!(
         "`{}` at {} in {} is UNJUDGED, not red: {}. Nothing lands on it until its gate can judge \
@@ -97,9 +90,8 @@ pub fn gate_killed(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// **`target_red`** (`RepoQueue::target_went_red`): the emergency, on the repository's hubs.
-/// `again` when the same tip was green in between (R92.31). A red target halts both queues
-/// (R92.18), and the sentence says so.
+/// `target_red` (`RepoQueue::target_went_red`): the emergency, on the repository's hubs. `again` when
+/// the same tip was green in between. A red target halts both queues, and the sentence says so.
 pub fn target_red_warning(h: &TargetHealth, key: &str, again: bool) -> String {
     format!(
         "EMERGENCY: `{}` is RED{} at {} in {}. The merge queue lands nothing until it is green \
@@ -113,8 +105,8 @@ pub fn target_red_warning(h: &TargetHealth, key: &str, again: bool) -> String {
     )
 }
 
-/// **`target_green`** (`RepoQueue::target_is_green`): an alarm about the target stood, and it is
-/// over — said once per red→green, where the alarm was (R92.6).
+/// `target_green` (`RepoQueue::target_is_green`): an alarm about the target stood, and it is over -
+/// said once per red→green, where the alarm was.
 pub fn green_again(h: &TargetHealth, key: &str) -> String {
     format!(
         "`{}` is green again at {} in {}: the merge queue lands again, and the reviews it held \
@@ -123,7 +115,7 @@ pub fn green_again(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// **`target_timed_out`** (R92.27): the target's gate ran past its deadline.
+/// `target_timed_out`: the target's gate ran past its deadline.
 pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
     format!(
         "`{}` at {} in {} is UNJUDGED: its gate TIMED OUT ({}). Nothing lands on it until it is \
@@ -136,13 +128,9 @@ pub fn target_timed_out(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// **`target_unjudged`** (R92.27): the gate could not be read, the landing tree could not be
-/// made ready, or a step could not run — nothing about the code was judged.
-///
-/// Two causes, and the sentence has to say which. A gate whose *setup* is broken waits for
-/// somebody to fix it, so the verb is `/queue regate`. A gate that could not run **on a declared
-/// host** (`UNJUDGED_RETRY`) is the queue's own retry: it is gated again by itself once the window
-/// is out, and telling a model to regate a slow machine would be asking it to do the queue's work.
+/// `target_unjudged`: the gate could not be read, the landing tree could not be made ready
+/// or a step could not run - nothing about the code was judged. Two causes, and the
+/// sentence has to say which.
 pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
     if h.evidence.starts_with(super::serve::UNJUDGED_RETRY) {
         return format!(
@@ -167,7 +155,7 @@ pub fn target_unjudged(h: &TargetHealth, key: &str) -> String {
     )
 }
 
-/// **`merge_conflict`** (R92.28): an approved branch does not rebase onto the target.
+/// `merge_conflict`: an approved branch does not rebase onto the target.
 pub fn merge_conflict(m: &MergeRow, why: &str) -> String {
     format!(
         "{why}. Nothing lands it: rebase `{}` onto `{}` (or resolve it on the branch) and commit; \
@@ -176,8 +164,7 @@ pub fn merge_conflict(m: &MergeRow, why: &str) -> String {
     )
 }
 
-/// **`merge_failed`** (R92.28): an approved branch's landing gate failed — the branch is bad on
-/// the target's tip.
+/// `merge_failed`: an approved branch's landing gate failed - the branch is bad on the target's tip.
 pub fn merge_failed(m: &MergeRow, words: &str) -> String {
     format!(
         "the landing gate of `{}` (`{}`) FAILED on `{}`, so it did not land: {}. Fix the branch \
@@ -189,8 +176,8 @@ pub fn merge_failed(m: &MergeRow, words: &str) -> String {
     )
 }
 
-/// **A branch row's landing gate killed at its memory cap** (R92.25) — it ran and was killed; the
-/// verb that gates a branch row again is `restart`.
+/// A branch row's landing gate killed at its memory cap - it ran and was killed; the verb that gates a
+/// branch row again is `restart`.
 pub fn merge_gate_killed(m: &MergeRow, words: &str) -> String {
     format!(
         "the landing gate of `{}` was KILLED at its memory cap, so it is unjudged and parked: {}. \
@@ -205,7 +192,7 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or_default().trim_end_matches('.')
 }
 
-/// **The target's own trouble** — red, timed out, or unjudged because the gate's setup failed.
+/// The target's own trouble - red, timed out, or unjudged because the gate's setup failed.
 pub fn health(h: &TargetHealth) -> String {
     use letibot_tokencore::store::HealthState as H;
     let at = format!(
@@ -272,7 +259,7 @@ pub fn health(h: &TargetHealth) -> String {
     }
 }
 
-/// **A row parked for a person** — a review that cannot run, or a reviewer that cannot decide.
+/// A row parked for a person - a review that cannot run, or a reviewer that cannot decide.
 pub fn parked(r: &ReviewRow) -> String {
     let reasons = if r.reasons.is_empty() {
         "it gave no reasons".to_string()
@@ -322,18 +309,9 @@ pub fn parked(r: &ReviewRow) -> String {
     }
 }
 
-/// **`stuck_census`** — the count and the age, on the daemon's idle pass
-/// (`mergequeue::stuck`, `Harness::stuck_census`, `Sessions::deliver_due_censuses`).
-///
-/// Every other sentence in this file is about ONE row and says so when that row MOVES. This one is
-/// the only place a project is told how many rows are bad at once, and the only place any of them
-/// is given an age — which is what the operator's report was missing: eight rows sat for hours
-/// with every transition already said. The verbs are the same two the transitions name, because a
-/// count with no verb is a statistic.
-///
-/// It is a TURN and not a notice (`Door::Census`, `Harness::census_turn`), so the rate that paces
-/// it is its own (`stuck::STUCK_REPEAT_MS`) and not the plan-check's — and it reaches a session that
-/// is doing nothing, which a transcript row does not.
+/// `stuck_census` - the count and the age, on the daemon's idle pass (`mergequeue::stuck`
+/// `Harness::stuck_census`, `Sessions::deliver_due_censuses`). Every other sentence here is
+/// about ONE row and says so when that row MOVES.
 pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     format!(
         "[queue stuck] {} row(s) of this project's merge queue are stuck and no pass will move \
@@ -345,10 +323,9 @@ pub fn stuck_census(c: &super::stuck::Stuck, now_ms: u64) -> String {
     )
 }
 
-// **The rest of what the review queue says about a verdict**, moved here from where each was
-// built inline (`review`, `serve`, `verbs`, `Harness::handover_notices`) — byte for byte — so
-// that one test can write the TUI's review-card fixtures from the daemon's own words. The TUI
-// draws each as one line (`ui::transcript::review_card`); the model reads every word.
+// The rest of what the review queue says about a verdict, moved here from where each was
+// built inline (`review`, `serve`, `verbs`, `Harness::handover_notices`) so that one test
+// can write the TUI's review-card fixtures from the daemon's own words.
 
 /// The reviewer's reasons, one bullet each, as a refusal lists them.
 fn reason_list(reasons: &[String]) -> String {
@@ -359,7 +336,7 @@ fn reason_list(reasons: &[String]) -> String {
         .join("\n")
 }
 
-/// **A refusal, to the child that wrote the branch** (`review::deliver_refusal`).
+/// A refusal, to the child that wrote the branch (`review::deliver_refusal`).
 pub fn refused(r: &ReviewRow, reasons: &[String]) -> String {
     let list = reason_list(reasons);
     let wt = r.worktree.as_deref().unwrap_or("its worktree");
@@ -373,8 +350,8 @@ pub fn refused(r: &ReviewRow, reasons: &[String]) -> String {
     )
 }
 
-/// **A refusal, to the root of a child that could not be told** (`review::deliver_refusal`);
-/// `missed` is why the child was not.
+/// A refusal, to the root of a child that could not be told (`review::deliver_refusal`); `missed` is why
+/// the child was not.
 pub fn refused_to_root(r: &ReviewRow, reasons: &[String], child: &str, missed: &str) -> String {
     let list = reason_list(reasons);
     let wt = r.worktree.as_deref().unwrap_or("its worktree");
@@ -391,12 +368,8 @@ pub fn refused_to_root(r: &ReviewRow, reasons: &[String], child: &str, missed: &
     )
 }
 
-/// **A refusal, to a live session of the branch's workspace when the branch's own tree is dead**
-/// (`review::deliver_refusal`); `missed` is why the author and its root were not told.
-///
-/// The sentence says WHY this session is the recipient — the author could not be told, and this is
-/// the live session of the same workspace — because a session handed another tree's refusal with
-/// no reason for it is a session asked to answer for somebody else's work on a stranger's word.
+/// A refusal, to a live session of the branch's workspace when the branch's own tree is
+/// dead (`review::deliver_refusal`); `missed` is why the author and its root were not told.
 pub fn refused_to_workspace(
     r: &ReviewRow,
     reasons: &[String],
@@ -421,16 +394,9 @@ pub fn refused_to_workspace(
     )
 }
 
-/// **`refusal_undelivered`**: a refusal nobody could be told of (`review::deliver_refusal`).
-///
-/// `tried` is every recipient the door attempted, in the order it attempted them — the branch's
-/// author, its root, and a live session of the branch's workspace (or the fact that there was
-/// none) — each in the failed party's own words, because *told nobody* is a claim that has to
-/// carry its evidence.
-///
-/// **The parenthesised list stays where it was**: the head's review card reads this detail by its
-/// opening (`review_card::warning_review`), and moving the evidence out of the brackets would make
-/// every undelivered refusal fall back to a generic warning line.
+/// `refusal_undelivered`: a refusal nobody could be told of (`review::deliver_refusal`).
+/// `tried` is every recipient the door attempted, in order, each in the failed party's own
+/// words because *told nobody* is a claim that has to carry its evidence.
 pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
     format!(
         "the review of `{}` (`{}`) refused it, and the complaints reached nobody (every session \
@@ -440,14 +406,8 @@ pub fn refusal_undelivered(r: &ReviewRow, tried: &str) -> String {
     )
 }
 
-/// **`queue_needs_human`**: the reviewer could not decide (`review::verdict`). A review that
-/// stops because its reviewer could not decide says THAT — the head, the sentence the verdict
-/// turned on (`decisive`: the reviewer's own words, chosen by `capacity::decisive_reason`, not
-/// paraphrased), how many times reviewers could not decide on this branch and at which heads
-/// (`heads`, oldest first, this one included), and the operator's verbs. A failure to place or
-/// run a reviewer is not mentioned: it is not why this row stopped. The hub row of 2026-10-12
-/// named a placement error for a branch whose history was three `could not decide` verdicts
-/// (TODO R86).
+/// `queue_needs_human`: the reviewer could not decide (`review::verdict`). The sentence
+/// names the head the sentence the verdict turned on (`decisive`
 pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) -> String {
     let short = |s: &str| s.chars().take(7).collect::<String>();
     let decisive = if decisive.is_empty() {
@@ -493,11 +453,9 @@ pub fn needs_human(r: &ReviewRow, by: &str, decisive: &str, heads: &[String]) ->
     }
 }
 
-/// **Why a review's attempts ran out, in one sentence a person can act on** — the row's
-/// `failure` and the heart of [`blocked_after`]: every counted attempt at this head by its gist
-/// (`capacity::gist`: firecode's `error:` sentence, not its banner), oldest first; and, when
-/// every one was a reviewer whose VM did not start (`placement`), that it was placement and not
-/// a judgement of the branch.
+/// Why a review's attempts ran out, in one sentence a person can act on - the row's
+/// `failure` and the heart of [`blocked_after`]: every counted attempt at this head by its
+/// gist (`capacity::gist` firecode's `error:` sentence, not its banner), oldest first
 pub fn attempts_spent(attempts: u32, head: &str, gists: &[String], placement: bool) -> String {
     let listed = gists
         .iter()
@@ -518,8 +476,8 @@ pub fn attempts_spent(attempts: u32, head: &str, gists: &[String], placement: bo
     )
 }
 
-/// **`queue_blocked`**: the attempts ran out without a verdict (`review::Pool::attempt_failed`);
-/// `spent` is [`attempts_spent`].
+/// `queue_blocked`: the attempts ran out without a verdict (`review::Pool::attempt_failed`); `spent` is
+/// [`attempts_spent`].
 pub fn blocked_after(r: &ReviewRow, spent: &str) -> String {
     format!(
         "the review of `{}` (`{}`) is BLOCKED: {spent} `/queue restart {}` asks again; `/queue \
@@ -529,9 +487,9 @@ pub fn blocked_after(r: &ReviewRow, spent: &str) -> String {
     )
 }
 
-/// **A capacity wait's move and `failure`** (`review::Pool::wait_for_slot`) — it LEADS with
-/// `capacity::WAITING_FOR_SLOT`, which the claim and `capacity::streak` read; `long` is the
-/// minutes waited when this refusal is the one that raised [`vm_slots_exhausted`].
+/// A capacity wait's move and `failure` (`review::Pool::wait_for_slot`) - it LEADS with
+/// `capacity::WAITING_FOR_SLOT`, which the claim and `capacity::streak` read; `long` is the minutes
+/// waited when this refusal is the one that raised [`vm_slots_exhausted`].
 pub fn capacity_wait(
     r: &ReviewRow,
     busy: &str,
@@ -554,9 +512,9 @@ pub fn capacity_wait(
     why
 }
 
-/// **`queue_waiting_for_vm`** (Routine, once per wait): firecode had no free slot for the
-/// reviewer, and the review waits — not blocked, no attempt counted. `busy` is
-/// `VmCapacity::busy_line` (*"4 of 4 VM slots are busy"*).
+/// `queue_waiting_for_vm` (Routine, once per wait): firecode had no free slot for the reviewer, and the
+/// review waits - not blocked, no attempt counted. `busy` is `VmCapacity::busy_line` (*"4 of 4 VM slots
+/// are busy"*).
 pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
     format!(
         "the review of `{}` (`{}`) is waiting for a free VM slot: {busy}. It is not blocked and \
@@ -566,13 +524,9 @@ pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
     )
 }
 
-/// **`queue_vm_slots_exhausted`** (once, past `capacity::LONG_WAIT_MS`): slots are not freeing
-/// on their own; `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had them.
-///
-/// `holders` is what holds each busy slot (`crate::vm_reap::slot_holders`), one line per tap; the
-/// notice names them after its own sentence, so a person reads what to free rather than only that
-/// every slot is busy (2026-10-15: four taps, four orphans, and a notice that said "every slot is
-/// busy" for hours).
+/// `queue_vm_slots_exhausted` (once, past `capacity::LONG_WAIT_MS`): slots are not freeing
+/// on their own `ceiling` is firecode's own `sudo` lines, verbatim, when its refusal had
+/// them.
 pub fn vm_slots_exhausted(
     r: &ReviewRow,
     waited_min: u64,
@@ -616,8 +570,8 @@ pub fn vm_slots_exhausted(
     said
 }
 
-/// **`queue_blocked`**: a reviewer that could not start (`review::serve`); `why` already says
-/// so, `a reviewer for `BRANCH` could not start: …`.
+/// `queue_blocked`: a reviewer that could not start (`review::serve`); `why` already says so, *a reviewer
+/// for `BRANCH` could not start: …*.
 pub fn reviewer_could_not_start(r: &ReviewRow, why: &str) -> String {
     format!(
         "{why}. The review is BLOCKED (`{}`): `/queue restart {}` asks again, \
@@ -627,7 +581,7 @@ pub fn reviewer_could_not_start(r: &ReviewRow, why: &str) -> String {
     )
 }
 
-/// **`queue_blocked`**: a review that cannot run (`RepoQueue::block`).
+/// `queue_blocked`: a review that cannot run (`RepoQueue::block`).
 pub fn review_cannot_run(r: &ReviewRow, why: &str, merge_via_session: bool) -> String {
     format!(
         "the review of `{}` (`{}`) cannot run and is BLOCKED: {why} {}",
@@ -643,7 +597,7 @@ pub fn review_cannot_run(r: &ReviewRow, why: &str, merge_via_session: bool) -> S
     )
 }
 
-/// **A review handed to the project's main session** (`Harness::handover_notices`).
+/// A review handed to the project's main session (`Harness::handover_notices`).
 pub fn handed_over(r: &ReviewRow) -> String {
     format!(
         "The review queue could not review `{branch}` (row `{id}`): {failure} This project \
@@ -661,7 +615,7 @@ pub fn handed_over(r: &ReviewRow) -> String {
     )
 }
 
-/// **The operator's veto, to the child that wrote the branch** (`verbs::veto`).
+/// The operator's veto, to the child that wrote the branch (`verbs::veto`).
 pub fn vetoed(r: &ReviewRow, words: &str) -> String {
     format!(
         "The operator VETOED `{}`: {words}. It does not land. Answer it in the branch \
@@ -675,9 +629,9 @@ mod tests {
     use super::*;
     use letibot_tokencore::store::HealthState;
 
-    /// **The red `main` the operator pasted**, as the store holds it: `bin/firecode test` failed
-    /// at 60bf819c in firecode, its output cut at the front the way `gate::tail` cuts it and
-    /// ending with the gate's memory line.
+    /// The red `main` the operator pasted, as the store holds it: `bin/firecode test` failed at 60bf819c
+    /// in firecode, its output cut at the front the way `gate::tail` cuts it and ending with the gate's
+    /// memory line.
     fn firecode_red() -> TargetHealth {
         let mut out = String::from("… [12500 byte(s) dropped from the front]\n");
         for i in 0..96 {
@@ -711,8 +665,8 @@ mod tests {
         }
     }
 
-    /// **A `main` whose gate step was killed at the gate's memory cap** — the tip UNJUDGED, not
-    /// red (`gate::killed_at_cap_words`), as letibot's own gate was killed building its tests.
+    /// A `main` whose gate step was killed at the gate's memory cap - the tip UNJUDGED, not red
+    /// (`gate::killed_at_cap_words`), as letibot's own gate was killed building its tests.
     fn letibot_main_killed() -> TargetHealth {
         let output = "warning: `letibot-tui` (lib test) generated 17 warnings\n[gate memory: peak \
                       24.1 GiB of a 24.9 GiB cap — near its cap]";
@@ -738,12 +692,9 @@ mod tests {
         }
     }
 
-    /// **The TUI's red-card fixtures are what the daemon writes** — the session notice
-    /// [`health`] says, and the `target_red` warning `RepoQueue::target_went_red` raises (its
-    /// sentence spelled here as `serve.rs` spells it). `red_card` in the TUI parses these to draw
-    /// each as one line; a reworded notice fails here before it falls back on a screen. Re-bless
-    /// with `LETIBOT_BLESS_RED_CARD=1`, and teach `red_card` the new shape if it moved a part it
-    /// keys on (the opening, the target, the sha, the repository, the failing step).
+    /// The TUI's red-card fixtures are what the daemon writes - the session notice [`health`]
+    /// says, and the `target_red` warning `RepoQueue::target_went_red` raises (its sentence
+    /// spelled here as `serve.rs` spells it).
     #[test]
     fn the_tuis_red_card_fixtures_are_what_the_queue_writes() {
         let h = firecode_red();
@@ -775,11 +726,9 @@ mod tests {
         }
     }
 
-    /// **The review the operator pasted** — `agent/panic-groupingsets-join`, whose reviewer could
+    /// The review the operator pasted - `agent/panic-groupingsets-join`, whose reviewer could
     /// not decide, parked for a person. The reasons are the reviewer's as the paste shows them
-    /// (it opened with these words and was cut where the operator stopped copying), completed.
-    /// **R93.F50: landing a handed-over branch yourself is a named exception to the queue
-    /// rule**, and the choice the operator makes is asked through `ask_user_question`.
+    /// completed.
     #[test]
     fn a_handover_names_its_exception_to_the_queue_rule() {
         let said = handed_over(&groupingsets());
@@ -837,22 +786,14 @@ mod tests {
         }
     }
 
-    /// **The TUI's review-card fixtures are what the queue writes** — one per shape a review's
-    /// outcome reaches a session or a hub in: the row parked for a person ([`parked`], four
-    /// shapes), the refusal and the veto said to the branch's session as a parent's message
-    /// ([`crate::harness::message_from_a_session`], the words the session's row holds), the review
-    /// handed to the project, and the hub warnings the review queue raises. `review_card` in the TUI
-    /// parses these to draw each as one line — the operator, of the pasted wall of text: *"same
-    /// story about reviews - … one line + popup"*. A reworded notice fails here before it falls
-    /// back on a screen. Re-bless with `LETIBOT_BLESS_REVIEW_CARD=1`, and teach `review_card` the
-    /// new shape if it moved a part it keys on (the opening, the branch, the verdict's words).
+    /// The TUI's review-card fixtures are what the queue writes - one per shape a review's
+    /// outcome reaches a session or a hub in
     #[test]
     fn the_tuis_review_card_fixtures_are_what_the_queue_writes() {
         use crate::sessions::gatekeeper;
-        // **The review queue's session, as one daemon spells it.** A fixture rather than a derived
-        // id: the id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp
-        // path would embed a number no reader can check. What the card parses is the SHAPE —
-        // `message from your parent session `s-gatekeeper-…`` — and one key is enough to pin it.
+        // The review queue's session, as one daemon spells it. A fixture rather than a derived id
+        // the id is per workspace now (`s-gatekeeper-<key>`), and a fixture that hashed a temp
+        // path would embed a number no reader can check.
         let host = gatekeeper::session_for_fixture();
         let r = groupingsets();
         let as_message = |text: String| crate::harness::message_from_a_session(&host, &text, None);

@@ -1,33 +1,6 @@
-//! **R100: `--host NAME` and `--vm` are two asks, and the pair is one placement — a VM there.**
-//!
-//! `--vm` is the LAUNCHER's word for `--where firecode` (`scripts/letibot` rewrites it), so the two
-//! orders that reach this door are `--host lab2x1 --where firecode` and its reverse. Both are
-//! tried here, through `cli::run`, because argument order was the whole of the original defect.
-//!
-//! MEASURED before the fix, through this same door: both flags wrote ONE field (`cfg.placement`),
-//! so the flag that came LAST won and the other was dropped without a word —
-//!
-//! * `--host lab2x1 --where firecode` booted a VM **on this box**, on a copy of this box's
-//!   workspace, while the operator had said the work is on `lab2x1`;
-//! * `--where firecode --host lab2x1` ran the session's tools on `lab2x1` with no VM at all.
-//!
-//! Neither is a refusal and neither says anything: the session starts and looks healthy in both
-//! cases. The fix recorded the two asks separately and resolved them once the whole line was read;
-//! the pair was then refused while the combined placement did not exist. It exists now, so what
-//! this binary pins is that **neither order is refused, and neither drops the other ask** — the
-//! placement each order resolves to is `cli::placement_from_flags`'s own unit test.
-//!
-//! # One test, and its own process
-//!
-//! `$HOME`, `$LETIBOT_HOSTS` and the working directory are process-wide, and `cli::run` is the
-//! whole daemon's entry point. This file is a test binary of its own with one test in it, which is
-//! what makes the environment safe to set: `$HOME` is a fixture's, so nothing here reads the
-//! operator's own `hosts.toml`, providers or store.
-//!
-//! **Every line ends with `--list-sessions`, and that is the clock rather than the subject.** A
-//! query answers and exits, so a line that is NOT refused comes back in milliseconds instead of
-//! starting a daemon (and, before the fix, booting a VM). What the answer proves is therefore the
-//! *absence* of a placement refusal: the error it does carry is the store the query needs.
+//! `--host NAME` and `--vm` are two asks, and the pair is one placement - a VM there.
+//! `--vm` is the LAUNCHER's word for `--where firecode`, so the two orders that reach this
+//! door are `--host lab2x1 --where firecode` and its reverse
 
 use std::path::PathBuf;
 
@@ -83,8 +56,8 @@ fn a_vm_and_a_host_are_one_placement_whichever_flag_came_first() {
     ];
     for order in lines {
         let answer = said(order);
-        // **The store is what stops this line**, which is the query's own prerequisite: it means
-        // the command line was read whole, the pair resolved, and nothing was refused for it.
+        // The store is what stops this line, which is the query's own prerequisite: it means the
+        // command line was read whole, the pair resolved, and nothing was refused for it.
         assert!(
             answer.contains("no --store"),
             "`{}` must reach the query rather than be refused for the pair: {answer}",
@@ -96,8 +69,8 @@ fn a_vm_and_a_host_are_one_placement_whichever_flag_came_first() {
         );
     }
 
-    // **A host nobody declared is still refused**, whatever the pair says: the name is checked
-    // the same way whichever flag spelled it.
+    // A host nobody declared is still refused, whatever the pair says: the name is checked the same
+    // way whichever flag spelled it.
     let refused = said(&["--host", "lab2", "--where", "firecode"]);
     assert!(refused.contains("there is no host `lab2`"), "{refused}");
 

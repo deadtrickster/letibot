@@ -1,17 +1,6 @@
-/// **The tree a VM placement copies is the session's own copy source where it has one, and the
-/// repository it is about otherwise** — the one spelling `Harness::open` reads when it boots
-/// the VM.
-///
-/// Two callers have to agree about this and neither can see the other: `Harness::open` fills
-/// `FirecodeSpec::source` from it, and a test that asks *which tree a VM-placed child was
-/// copied from* has nothing else to read on a box it must not boot a VM on. A second spelling
-/// at the call site — `vm_source.clone().unwrap_or_else(|| workspace.clone())` — is exactly the
-/// kind of fact this tree keeps finding written twice and agreeing only by luck.
-///
-/// The default is asserted on a path that does not exist, which is the one case that has
-/// nothing to resolve: no repository names `/tmp/the-workspace` and none is named inside it, so
-/// `None` must mean the workspace and nothing else — the behaviour every build before
-/// `vm_source` had. The repository that IS there to name is the next test's.
+/// The tree a VM placement copies is the session's own copy source where it has one, and the
+/// repository it is about otherwise - the one spelling `Harness::open` reads when it boots the VM
+/// and the only thing a test can read on a box it must not boot one on. `None` means the workspace.
 #[test]
 fn a_vm_placement_copies_the_sessions_own_source_when_it_has_one() {
     let mut cfg = Config::for_this_box("/tmp/the-workspace");
@@ -30,27 +19,14 @@ fn a_vm_placement_copies_the_sessions_own_source_when_it_has_one() {
     );
 }
 
-/// **A box whose daemon serves a FOLDER of repositories boots a VM on the one repository** —
-/// tonight's refusal, and the reason the copy source is not the workspace.
-///
-/// MEASURED 2026-10-10, the operator's own box: the daemon's `--workspace` is
-/// `/home/dead/Projects/letibot`, a folder holding the repository `letibot/letibot` and the
-/// sibling worktrees `wt-drill`, `wt-jobs`, `wt-visibility`, `wt-yellow`; `repo_root` of the
-/// folder FAILS (the queue's log says `serving /home/dead/Projects/letibot toward main`), and
-/// a VM placed on the folder was refused at the ceiling — *"it weighs 72.8 GiB after excluding
-/// [target, .claude/worktrees, node_modules, .git/worktrees], and the ceiling is 8.0 GiB"* —
-/// three times, for two branches, so the review queue landed nothing.
-///
-/// The fixture is that box in miniature, and it is built so that the arm which answers is the
-/// one that has to: the daemon's workspace is a folder NAMED after the repository inside it
-/// (`letibot` holding `letibot`), the folder is in no repository of its own, and it holds
-/// SEVERAL repositories — so neither git nor *the one repository child* can name the repository
-/// and the same-named child is the answer.
+/// A box whose daemon serves a FOLDER of repositories boots a VM on the one repository -
+/// 8 GiB, the ceiling is 8, and the queue landed nothing.
+/// The fixture is that box in miniature: a folder NAMED after the repository inside it.
 #[test]
 fn a_vm_placement_on_a_folder_of_repositories_copies_the_one_repository() {
     let parent = std::env::temp_dir().join(format!("letibot-vm-copy-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&parent);
-    // The daemon's workspace — a folder named after the repository inside it — and two sibling
+    // The daemon's workspace - a folder named after the repository inside it - and two sibling
     // worktrees beside that repository, which is what makes the folder a FOLDER of them.
     let ws = parent.join("letibot");
     let repo = ws.join("letibot");
@@ -67,7 +43,7 @@ fn a_vm_placement_on_a_folder_of_repositories_copies_the_one_repository() {
              child is what names it — a folder holding the repository AND its worktrees has no \
              single repository child to pick"
     );
-    // **And the caller's own word still beats the resolution**, which is what the review queue
+    // And the caller's own word still beats the resolution, which is what the review queue
     // relies on: a reviewer is booted on the ENTRY's repository, which need not be this one.
     cfg.vm_source = Some(PathBuf::from("/tmp/the-entries-repo"));
     assert_eq!(
@@ -76,7 +52,7 @@ fn a_vm_placement_on_a_folder_of_repositories_copies_the_one_repository() {
         "a session told which repository the work is in copies THAT"
     );
 
-    // **And a workspace with nothing to name answers the workspace** — the honest fallback,
+    // And a workspace with nothing to name answers the workspace - the honest fallback
     // whose refusal at the ceiling is loud and names the tree rather than booting a VM on some
     // sibling that happens to be a repository.
     let nowhere = parent.join("scratch");
@@ -102,20 +78,9 @@ fn a_repository(at: &Path) {
     assert!(ok.success(), "git init in {}", at.display());
 }
 
-/// **Every declared local model reaches the picker's row.**
-///
-/// The regression this closes was live and the operator found it: `/models dense78`
-/// worked, `models_listing` printed it, and bare `/models` — which opens the picker,
-/// and the picker draws THIS row's `choices` — showed only the compiled-in presets.
-/// A model reachable solely by typing its exact name is a model nobody discovers.
-///
-/// **Honest about its own reach**: `Config::settings` reads the real
-/// `providers.toml`, with no seam to point it elsewhere, so on a box that declares
-/// nothing this test passes vacuously. It is still worth keeping — it fails loudly
-/// on any box that HAS a declaration, which is every box the feature is for, and it
-/// records what the row is supposed to contain. Threading a config path through
-/// `settings` would make it unconditional and is the better fix if this ever breaks
-/// again.
+/// Every declared local model reaches the picker's row. `/models dense78` worked and bare
+/// `/models` - which draws THIS row's `choices` - showed only the compiled-in presets. It passes
+/// vacuously on a box that declares nothing, and fails loudly on every box the feature is for.
 #[test]
 fn the_model_row_offers_every_declared_local_model() {
     let cfg = Config::for_this_box("/tmp");
@@ -136,18 +101,9 @@ fn the_model_row_offers_every_declared_local_model() {
     );
 }
 
-/// **The picker's greening comes from a row, and the row names the presets this box can
-/// actually authenticate.**
-///
-/// The operator, 2026-10-04: *"model peeker should green models we have keys for."* Whether a
-/// preset resolves a key is a fact about this box — a file, a variable, or what opencode filed
-/// under its own provider id — so only the daemon can answer it, and the answer travels as a
-/// row rather than as a head's guess.
-///
-/// **The assertion is the agreement**, because that is the property that matters and not a
-/// list: every name in the row resolves a key, every preset NOT named does not, and no name is
-/// anything but a preset `ALL` carries. A row that disagreed with the check the daemon makes
-/// when it refuses a switch would green exactly the rows that fail at the first turn.
+/// The picker's greening comes from a row, and the row names the presets this box can actually
+/// authenticate. The assertion is the agreement, not a list: a row that disagreed with the
+/// daemon's own check would green exactly the rows that fail at the first turn.
 #[test]
 fn the_box_publishes_which_providers_it_holds_a_key_for() {
     let cfg = Config::for_this_box("/tmp");
@@ -172,7 +128,7 @@ fn the_box_publishes_which_providers_it_holds_a_key_for() {
             "`{n}` is not a preset this build knows"
         );
     }
-    // **`local` is absent on purpose**: it needs no credential, and its presence here would
+    // `local` is absent on purpose: it needs no credential, and its presence here would
     // be a claim about a key rather than about reachability.
     assert!(!named.contains(&"local"), "{named:?}");
     for p in letibot_provider::presets::ALL {
@@ -188,14 +144,9 @@ fn the_box_publishes_which_providers_it_holds_a_key_for() {
     assert!(row.choices.is_empty(), "{row:?}");
 }
 
-/// **The consented point describes itself, not the one that was asked for.**
-///
-/// `Mode::ALLOW_ALL`'s summary says "the VM is the boundary and nothing
-/// inside it reaches this box", which is true of a firecode placement and
-/// false of the operator's laptop. Printing it for a session that landed on
-/// `ALLOW_ALL_HERE` put that sentence two lines above "the confinement
-/// prerequisite is what refuses this point on a bare host" — on 2026-09-20,
-/// in one card, on their screen.
+/// The consented point describes itself, not the one that was asked for. `Mode::ALLOW_ALL`'s
+/// summary says the VM is the boundary, which is false of the operator's laptop - printing it for a
+/// session on `ALLOW_ALL_HERE` put that sentence two lines above one saying there is no confinement.
 #[test]
 fn the_two_allow_all_points_do_not_borrow_each_others_sentences() {
     use letibot_tools::mode::Mode;
@@ -218,23 +169,15 @@ fn the_two_allow_all_points_do_not_borrow_each_others_sentences() {
     assert_ne!(Mode::ALLOW_ALL.name, Mode::ALLOW_ALL_HERE.name);
 }
 
-/// **A carry is quoted in the units the operator can check.**
-///
-/// `/reseat` refused on `991596 token(s) in front of a 1000000-token window`
-/// while the header said 671k, and both numbers were right: 991,596 is
-/// `s-1789462738453908838#t20`'s ledger sum and 671,280 is what DeepSeek
-/// counted for the same 2,702 rows. The refusal compared the first against a
-/// window expressed in the second.
-///
-/// Three claims, and the first is the premise the other two need: the two
-/// counts really do differ here; the conversion lands on the number the
-/// header shows; and the converted carry FITS, so the refusal was wrong.
+/// A carry is quoted in the units the operator can check. `/reseat` refused on `991596 token(s)
+/// in front of a 1000000-token window` while the header said 671k: both numbers were right, and the
+/// refusal compared the ledger's sum against a window expressed in the provider's units.
 #[test]
 fn a_carry_is_converted_into_the_providers_units_before_it_is_judged() {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.context_window = Some(1_000_000);
     // Unmeasured: there is nothing to convert with, and saying so is the
-    // point — a caller must not substitute the ledger's own figure.
+    // point - a caller must not substitute the ledger's own figure.
     assert_eq!(cfg.provider_tokens(991_596), None);
 
     cfg.ledger_scale = Some((1_000_699, 671_280));
@@ -259,11 +202,9 @@ fn a_carry_is_converted_into_the_providers_units_before_it_is_judged() {
     );
 }
 
-/// The wall continuation asked the same question with the same mistake.
-///
-/// `room_for_next_turn` is handed `ledger_len`, so its window has to be the
-/// ledger's too. Reading `context_window` closed the gate on a conversation
-/// the provider had 330k tokens of room for.
+/// The wall continuation asked the same question with the same mistake. `room_for_next_turn` is
+/// handed `ledger_len`, so its window has to be the ledger's too - reading `context_window` closed
+/// the gate on a conversation the provider had 330k tokens of room for.
 #[test]
 fn room_for_the_next_turn_is_measured_in_ledger_tokens() {
     let mut cfg = Config::for_this_box("/tmp");
@@ -279,15 +220,9 @@ fn room_for_the_next_turn_is_measured_in_ledger_tokens() {
     assert!(!cfg.room_for_next_turn(cfg.planning_window().unwrap()));
 }
 
-/// **The window is planned in the units the ledger counts in.**
-///
-/// The ledger counts a LOCAL rendered prompt with reasoning in it; a
-/// messages provider is sent neither, because `letibot_provider::messages`
-/// drops `Reasoning` (DeepSeek documents that `reasoning_content` must not
-/// be sent back). Comparing one against the other made a conversation that
-/// thinks a lot compact while most of its window was free.
-///
-/// The numbers below are the operator's own, 2026-09-20.
+/// The window is planned in the units the ledger counts in. The ledger counts a LOCAL rendered
+/// prompt with reasoning in it; a messages provider is sent neither, so comparing one against the
+/// other made a conversation that thinks a lot compact while most of its window was free.
 #[test]
 fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
     let mut cfg = Config::for_this_box("/tmp");
@@ -315,7 +250,7 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
     assert!(cfg.should_compact(w));
 
     // leticl #t11 thought less, so its ledger runs closer to the provider's
-    // count — the ratio is a measurement, not a constant.
+    // count - the ratio is a measurement, not a constant.
     cfg.ledger_scale = Some((1_495_702, 1_048_607));
     let w2 = cfg.planning_window().expect("a window");
     assert!((1_400_000..1_500_000).contains(&w2), "got {w2}");
@@ -329,10 +264,9 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
         Some(16_000_000),
         "clamped at sixteen times"
     );
-    // **And a real reasoning-heavy session is inside the bound, not cut by it**
-    // (R72): leticl on deepseek-flash, 3,454,266 ledger tokens counted ~740k by
-    // the provider. At the old bound of four this was a 4M window, at the wall
-    // with ~860k of the provider's 1M used.
+    // And a real reasoning-heavy session is inside the bound, not cut by it : 3,454,266
+    // ledger tokens counted ~740k by the provider. At the old bound of four this was a 4M window
+    // at the wall with ~860k of the provider's 1M used.
     cfg.ledger_scale = Some((3_454_266, 740_000));
     assert!(!cfg.should_compact(3_454_266), "740k of 1M is not the wall");
     let w3 = cfg.planning_window().expect("a window");
@@ -344,15 +278,9 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
     assert!(!cfg.should_compact(u64::MAX / 2));
 }
 
-/// **A session that starts on a metered provider gets a wall.**
-///
-/// `harnessd` read the window off `/props` only when there was no provider,
-/// so `[default] provider = deepseek` in the operator's providers.toml left
-/// `context_window` at `None` — and `None` is not a big window, it is no
-/// window: every compaction check reads `let Some(window) = …` and is
-/// skipped. Measured 2026-09-20: their session reached 1,023,545 resident
-/// tokens against a model the catalogue puts at 1,000,000, having never
-/// compacted once. *"leticl session shows 1m context and doesnt compact"*.
+/// A session that starts on a metered provider gets a wall. `harnessd` read the window off
+/// `/props` only when there was no provider, and `None` is no window at all. MEASURED: 1,023,545
+/// resident tokens against a model the catalogue puts at 1,000,000, never compacted once.
 #[test]
 fn a_metered_provider_takes_its_window_from_the_catalogue() {
     let dir = std::env::temp_dir().join(format!("letibot-cat-{}", std::process::id()));
@@ -379,7 +307,7 @@ fn a_metered_provider_takes_its_window_from_the_catalogue() {
         Some(1_000_000),
         "the wall the operator's session never had"
     );
-    // A model the catalogue does not carry stays `None` — the old behaviour,
+    // A model the catalogue does not carry stays `None` - the old behaviour
     // for the case the old comment was actually about.
     assert_eq!(pc(Some("no-such-model")).catalogue_window(&cat), None);
     // And a preset this build does not know.
@@ -397,8 +325,8 @@ use super::*;
 
 // --- prompts.toml: per-model system-prompt composition -------------------
 
-/// **The full seat**: leticode's tools with `bash`, the room and the web, and a scratch
-/// directory — every section of the base prompt has something to say for it.
+/// The full seat: leticode's tools with `bash`, the room and the web, and a scratch
+/// directory - every section of the base prompt has something to say for it.
 fn seat() -> SeatFacts {
     let mut f = SeatFacts::with_tools(letibot_tools::runtime::roles::leticode().tools);
     for t in ["flowy", "web_search", "web_fetch"] {
@@ -451,13 +379,9 @@ fn names_it_lacks(text: &str, seat: &SeatFacts) -> Vec<String> {
         .collect()
 }
 
-/// **The prompt names no tool the seat lacks** (R93.G2–G5) — for every seat the daemon
-/// opens, with and without `--bash`, as a root and as a child.
-///
-/// The tool lists are the roles' own (`letibot_tools::runtime::roles`), filtered the way
-/// `harness::base_role_for_seat` filters them, with the room on a root. The integration
-/// half — the facts read off a real seated registry — is `seat_facts_are_the_seated_tools`
-/// in `tests/wired.rs`.
+/// The prompt names no tool the seat lacks - for every seat the daemon opens, with
+/// and without `--bash`, as a root and as a child. The tool lists are the roles' own, filtered the
+/// way `harness::base_role_for_seat` filters them; the integration half is `tests/wired.rs`.
 #[test]
 fn the_prompt_names_no_tool_the_seat_lacks() {
     use letibot_tools::runtime::roles;
@@ -508,7 +432,7 @@ fn the_prompt_names_no_tool_the_seat_lacks() {
     }
 }
 
-/// **What a seat has decides what it is told** — the specific sentences R93 found false.
+/// What a seat has decides what it is told - the specific sentences found false.
 #[test]
 fn a_seat_is_told_only_what_is_true_for_it() {
     // A seat with `edit` and `write` is told to change files with them; one without is not.
@@ -541,7 +465,7 @@ fn a_seat_is_told_only_what_is_true_for_it() {
     assert!(default_system(&child).contains("You are a subagent"));
     assert!(!default_system(&seat()).contains("You are a subagent"));
     assert!(default_system(&seat()).contains("end your turn and say in one line what it waits on"));
-    // The R79 sentence, as the tools say it.
+    // The sentence, as the tools say it.
     assert!(default_system(&seat()).contains(
         "completion reaches you automatically — when your current turn ends, or at once if a \
          todo row needs it or wake is \"now\"."
@@ -565,7 +489,7 @@ fn a_seat_is_told_only_what_is_true_for_it() {
     }
 }
 
-/// **The base prompt for the main seats, printed** — `cargo test -p letibot-harnessd
+/// The base prompt for the main seats, printed - `cargo test -p letibot-harnessd
 /// print_the_main_prompts -- --ignored --nocapture` to read what a seat is told.
 #[test]
 #[ignore]
@@ -600,10 +524,9 @@ fn prompts_dir(test: &str) -> PathBuf {
     dir
 }
 
-/// (a) **No file: the composed prompt is the built-in one byte for byte.**
-///
-/// The safety property that makes the feature safe to land: a daemon with no
-/// `prompts.toml` composes the built-in prompt, unchanged, for every model.
+/// (a) No file: the composed prompt is the built-in one byte for byte. The safety property that
+/// makes the feature safe to land: a daemon with no `prompts.toml` composes the built-in prompt
+/// unchanged, for every model.
 #[test]
 fn no_prompts_file_composes_the_default_byte_for_byte() {
     let dir = prompts_dir("no_file");
@@ -620,10 +543,8 @@ fn no_prompts_file_composes_the_default_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (b) **An empty file: the composed prompt is the built-in one byte for byte.**
-///
-/// A file that overrides nothing is the same as no file: the default is
-/// unchanged.
+/// (b) An empty file: the composed prompt is the built-in one byte for byte - a file that
+/// overrides nothing is the same as no file.
 #[test]
 fn an_empty_prompts_file_composes_the_default_byte_for_byte() {
     let dir = prompts_dir("empty");
@@ -637,11 +558,8 @@ fn an_empty_prompts_file_composes_the_default_byte_for_byte() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (c) **A `[model."NAME"]` override applies to that model's session and not to
-/// another's.**
-///
-/// The named model gets the extra, appended to the base; every other model does
-/// not. The override is scoped to the name, not global.
+/// (c) A `[model."NAME"]` override applies to that model's session and not to another's - the
+/// override is scoped to the name, not global.
 #[test]
 fn a_model_override_applies_to_its_model_and_not_another() {
     let dir = prompts_dir("model_override");
@@ -676,12 +594,9 @@ system_extra = "You are a deepseek specialist."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A provider glob matches every model under that provider, and the exact
-/// name wins when both are present.**
-///
-/// `deepseek/*` is the operator's way of saying "any deepseek model" without
-/// naming each one. An exact name is a more specific instruction, so it wins
-/// when both are present for the same model.
+/// A provider glob matches every model under that provider, and the exact name wins when both are
+/// present - `deepseek/*` is "any deepseek model" without naming each one, and an exact name is a
+/// more specific instruction.
 #[test]
 fn a_provider_glob_matches_its_models_and_the_exact_name_wins() {
     let dir = prompts_dir("glob");
@@ -716,12 +631,9 @@ system_extra = "Flash is special."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (d) **The `[base]` section replaces that section for every model.**
-///
-/// Present, the base section is the operator's text, not the built-in, for every
-/// model. The other sections are left alone, and a model extra still appends.
-/// (There is no `[base] system` any more: the wholesale replacement it was is
-/// the shape that could not override one section for one model.)
+/// (d) The `[base]` section replaces that section for every model. Present, the base section is
+/// the operator's text, not the built-in; the other sections are left alone, and a model extra still
+/// appends.
 #[test]
 fn the_base_section_replaces_that_section_for_every_model() {
     let dir = prompts_dir("base");
@@ -751,13 +663,9 @@ system_extra = "And a model extra on top."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// (e) **A malformed file is reported with the path and the parser's message,
-/// and the session still runs on the built-in prompt.**
-///
-/// The report is the parser's own message, prefixed with the path, so the
-/// operator can see which file said what. The "session still runs" half is the
-/// `Err` case in `run`: a refused file leaves `Config.prompts` at `Default`,
-/// which composes the built-in prompt — asserted here directly.
+/// (e) A malformed file is reported with the path and the parser's message, and the session still
+/// runs on the built-in prompt - a refused file leaves `Config.prompts` at `Default`, which
+/// composes the built-in prompt.
 #[test]
 fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
     let dir = prompts_dir("malformed");
@@ -772,7 +680,7 @@ fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
         err.len() > path_str.len() + 4,
         "the parser's message is in the report: {err}"
     );
-    // The session still runs: a refused file leaves the prompts at `Default`,
+    // The session still runs: a refused file leaves the prompts at `Default`
     // which composes the built-in prompt byte for byte.
     let cfg = Config::for_this_box("/tmp");
     assert_eq!(
@@ -782,13 +690,9 @@ fn a_malformed_prompts_file_is_reported_and_the_session_runs_on_the_default() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A top-level section the daemon does not know is a parse error, not a
-/// silent ignore.**
-///
-/// `deny_unknown_fields` on the top level is the report: a `[foo]` section is
-/// refused with the parser's own message rather than dropped. (A section NAME
-/// this daemon does not know, inside `[base]` or `[model."NAME"]`, is refused
-/// by [`Prompts::load`] — see the tests below.)
+/// A top-level section the daemon does not know is a parse error, not a silent ignore.
+/// `deny_unknown_fields` refuses a `[foo]` with the parser's own message; a section NAME it does not
+/// know inside `[base]` or `[model."NAME"]` is refused by [`Prompts::load`].
 #[test]
 fn an_unknown_section_is_refused_not_ignored() {
     let dir = prompts_dir("unknown_section");
@@ -801,7 +705,7 @@ fn an_unknown_section_is_refused_not_ignored() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **With no overrides, the composition is the seat's sections joined, in order** —
+/// With no overrides, the composition is the seat's sections joined, in order -
 /// every section of [`SECTION_NAMES`] that has something to say for the seat, and
 /// nothing else.
 #[test]
@@ -819,16 +723,9 @@ fn the_default_is_the_seats_sections_joined_in_order() {
     }
 }
 
-/// **The notes convention is instruction in the base, not data in a block.**
-///
-/// The injected standing-notes block is DATA — what the files on disk say
-/// right now — and its envelope frames what the block is. The convention —
-/// that notes exist, what belongs in one, where it lands, and that a note
-/// is not ground truth — is INSTRUCTION, and instruction belongs in
-/// the base prompt so it holds even for a session whose notes are empty.
-/// The two must not restate each other: a duplicated sentence is one that
-/// drifts, so this also asserts the paragraph does not carry the
-/// envelope's own framing sentence.
+/// The notes convention is instruction in the base, not data in a block. The injected block is
+/// DATA; that notes exist, what belongs in one, and that a note is not ground truth is INSTRUCTION
+/// which must hold even with no notes - and must not restate the envelope's own sentence.
 #[test]
 fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
     let paragraph = default_section("notes", &seat()).expect("a `notes` section");
@@ -838,7 +735,7 @@ fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
     assert!(paragraph.contains("reads into this prompt"));
     assert!(paragraph.contains("compaction"));
     // The purpose the operator named, in their words: keep what is worth
-    // keeping — not a running summary.
+    // keeping - not a running summary.
     assert!(paragraph.contains("interesting, remarkable or surprising"));
     assert!(paragraph.contains("not want to rediscover"));
     assert!(paragraph.contains("not as a summary of what you did"));
@@ -847,17 +744,15 @@ fn the_default_prompt_carries_the_notes_convention_and_not_the_envelope() {
     assert!(paragraph.contains(".letibot/notes/"));
     // The caveat, so a note is not read as ground truth.
     assert!(paragraph.contains("what was true or intended when it was written"));
-    // And not the injected block's framing — that sentence is the
+    // And not the injected block's framing - that sentence is the
     // envelope's job and is asserted there.
     assert!(!paragraph.contains("one in force"));
     assert!(!paragraph.contains("[standing-notes"));
 }
 
-/// **A section replaced by `[model."NAME"]` changes only that section and keeps
-/// the order.**
-///
-/// The named model's `tree` is the operator's text, not the built-in; every other
-/// section is the default, in the order of [`SECTION_NAMES`].
+/// A section replaced by `[model."NAME"]` changes only that section and keeps the order - the
+/// named model's `tree` is the operator's text, every other section the default, in the order of
+/// [`SECTION_NAMES`].
 #[test]
 fn a_model_section_replaces_only_that_section_and_keeps_the_order() {
     let dir = prompts_dir("model_section");
@@ -894,7 +789,7 @@ tree = "Use your tools, and you use them."
         prompts.compose("deepseek/deepseek-flash", &f),
         default_system(&f)
     );
-    // **A section the seat has nothing true to say in stays out, overridden or not**: an
+    // A section the seat has nothing true to say in stays out, overridden or not: an
     // `edit_files` override does not give a read-only seat a sentence about `edit`.
     std::fs::write(&path, "[base]\nedit_files = \"Edit with edit.\"\n").expect("fixture");
     let prompts = Prompts::load(&path).expect("parse");
@@ -904,10 +799,7 @@ tree = "Use your tools, and you use them."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A `[base]` section is overridden by a model one, in place.**
-///
-/// The base section is the operator's text for every model, but a model's own
-/// section replaces it for that model — the base is the fallback, not the
+/// A `[base]` section is overridden by a model one, in place - the base is the fallback, not the
 /// ceiling.
 #[test]
 fn a_base_section_is_overridden_by_a_model_one() {
@@ -936,10 +828,8 @@ tone = "Flash has its own tone."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`system_extra` is appended last, and not appended when unset.**
-///
-/// When a layer sets `system_extra`, it is appended after every section. When no
-/// layer sets it, nothing is appended and the composition is the sections alone.
+/// `system_extra` is appended last, and not appended when unset - when no layer sets it, the
+/// composition is the sections alone.
 #[test]
 fn system_extra_is_appended_last_and_not_when_unset() {
     let dir = prompts_dir("system_extra");
@@ -971,12 +861,9 @@ system_extra = "One short tool call beats a long plan."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **An unknown section key is refused by name, in each layer.**
-///
-/// A section name the daemon does not know is a load error naming the key and
-/// the file's path, in `[base]` and in `[model."NAME"]` alike. The session runs
-/// on the un-overridden composition: a refused file leaves the prompts at
-/// `Default`, which composes the built-in prompt.
+/// An unknown section key is refused by name, in each layer - a load error naming the key and the
+/// file's path, in `[base]` and `[model."NAME"]` alike; the session runs on the un-overridden
+/// composition.
 #[test]
 fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
     // In `[base]`.
@@ -1008,7 +895,7 @@ fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 
-    // The session still runs: a refused file leaves the prompts at `Default`,
+    // The session still runs: a refused file leaves the prompts at `Default`
     // which composes the built-in prompt byte for byte.
     let cfg = Config::for_this_box("/tmp");
     assert_eq!(
@@ -1017,14 +904,9 @@ fn an_unknown_section_key_is_refused_by_name_in_each_layer() {
     );
 }
 
-/// **The operator's excerpt, end to end.**
-///
-/// A small utility model seated with `web_search` was told, by the default
-/// section, not to call a tool for a question about the world — so a model whose
-/// whole job is to look things up was discouraged from looking them up. The
-/// operator's fix: replace `tree` for that one model, in place, and append a
-/// `system_extra`. The composed prompt for that model has the new `tree` and not
-/// the default one; a session on another model has the default one.
+/// The operator's excerpt, end to end. A utility model seated with `web_search` was told not to
+/// call a tool for a question about the world - so a model whose job is looking things up was
+/// discouraged from it. The fix: replace `tree` for that model, and append a `system_extra`.
 #[test]
 fn the_operators_excerpt_composes_the_new_tree_section_for_that_model() {
     let dir = prompts_dir("operator_excerpt");
@@ -1054,7 +936,7 @@ system_extra = "One short tool call beats a long plan."
     assert!(composed.contains("You are a careful software engineering assistant"));
     assert!(composed.contains("Find with `grep` and read with `read`"));
 
-    // A session on another model: the default `tree`, the base tone,
+    // A session on another model: the default `tree`, the base tone
     // and no model extra.
     let composed = prompts.compose("deepseek/deepseek-flash", &seat());
     assert!(composed.contains("Answer questions about the world"));
@@ -1064,11 +946,9 @@ system_extra = "One short tool call beats a long plan."
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`Config::compose_for_seat` composes from the file and the session's model,
-/// and `prompt_model_name` names the model the way the operator sees it.**
-///
-/// This is the wiring: the composition runs on the session's config, using the
-/// model name the operator would write in `prompts.toml`.
+/// `Config::compose_for_seat` composes from the file and the session's model, and
+/// `prompt_model_name` names the model the way the operator sees it - the composition runs on the
+/// session's config, using the name the operator would write in `prompts.toml`.
 #[test]
 fn compose_for_seat_uses_the_session_model_name() {
     // A local session: the model name is the bare alias.
@@ -1105,13 +985,9 @@ fn compose_for_seat_uses_the_session_model_name() {
     );
 }
 
-/// **The model row names the provider when there is one.**
-///
-/// This is the daemon's half of R20.1: the operator's turns went to deepseek while
-/// the head's header said `qwen-3.8-27b`. The header prefers this row and falls back
-/// to `Hello`'s `wiring.model`, which is the daemon's `--model` — so if this row says
-/// `local (qwen-3.8-27b)` when a provider is configured, the daemon is what is wrong
-/// and the head is faithfully drawing it.
+/// The model row names the provider when there is one. The daemon's half of : the operator's
+/// turns went to deepseek while the head's header said `qwen-3.8-27b`, because the header prefers
+/// this row and falls back to `Hello`'s `wiring.model`.
 #[test]
 fn the_model_row_names_the_provider_when_one_is_configured() {
     let mut cfg = Config::for_this_box("/tmp/x");
@@ -1153,18 +1029,14 @@ fn the_model_row_names_the_provider_when_one_is_configured() {
         "the local alias must not survive a provider: {}",
         row.value
     );
-    // And the source is empty rather than `--model`: the model is the provider's,
+    // And the source is empty rather than `--model`: the model is the provider's
     // not the flag's.
     assert_eq!(row.source, "", "{}", row.source);
 }
 
-/// **`compose_for_seat` puts the standing notes after `system_extra`, and the
-/// session's own paragraph and fabric block after the notes.**
-///
-/// The brief's placement rule: the notes are read before the conversation, after
-/// everything `prompts.toml` says. Asserted by position, and the section is read back
-/// with `carried` — the same extraction a base rebuild uses — so the test also pins
-/// that what is appended is what is swapped later.
+/// `compose_for_seat` puts the standing notes after `system_extra`, and the session's own paragraph
+/// and fabric block after the notes. Asserted by position, and the section is read back with
+/// `carried` - the same extraction a base rebuild uses - so what is appended is what is swapped later.
 #[test]
 fn compose_for_seat_puts_the_notes_after_system_extra_and_before_the_own_paragraph() {
     let mut cfg = Config::for_this_box("/tmp");
@@ -1198,10 +1070,9 @@ fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
     assert_eq!(rows[0].key, "mode");
     assert_eq!(rows[0].editable, "/mode NAME");
     assert_eq!(rows[0].source, "project store (modes.tsv)");
-    // **The changeable rows lead**, and the assertion is that rather than a
-    // position: `model` joined them and shifted `supervise` down, which is the
-    // list doing its job and not a regression. Indexing by number made adding
-    // a row look like breaking one.
+    // The changeable rows lead, and the assertion is that rather than a position: `model` joined
+    // them and shifted `supervise` down, which is the list doing its job and not a regression.
+    // Indexing by number made adding a row look like breaking one.
     let leading: Vec<&str> = rows.iter().take(3).map(|r| r.key.as_str()).collect();
     assert!(leading.contains(&"supervise"), "{leading:?}");
     assert!(leading.contains(&"model"), "{leading:?}");
@@ -1246,19 +1117,9 @@ fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
     assert!(sup.value.starts_with("on"));
 }
 
-/// **The round count is a backstop now, not the stop.**
-///
-/// The defect this replaced: `max_tool_rounds: 12` was the only thing that could
-/// end a runaway turn, so it also ended two working ones. What is asserted is the
-/// *relationship* — a progress check is armed, and the round count is not a
-/// thing a real investigation can run into — rather than either number, because
-/// a test pinning the number would have to be edited to change it and would then
-/// be pinning nothing.
-///
-/// The count is now `0`, unbounded, at the operator's word: *"make 200 tool
-/// calls limit configurable and set it to infinity"*. The relationship is
-/// unchanged and so is this test's point — a count of rounds measures effort,
-/// and the guard that reads progress is the one that has to be armed.
+/// The round count is a backstop now, not the stop. `max_tool_rounds: 12` was the only thing that
+/// could end a runaway turn, so it also ended two working ones. What is asserted is the
+/// *relationship*: a progress check armed, and the count outside a real investigation's range.
 #[test]
 fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
     let c = Config::for_this_box("/tmp");
@@ -1281,15 +1142,9 @@ fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
     assert!(d.to_string().contains(&c.stall_rounds.to_string()));
 }
 
-/// **The mode line's second sentence must agree with the mode's own summary** — 2026-10-26, at
-/// `allow-all (this box, consented)`, whose summary says *"write, exec and network all go through
-/// without asking, the always-ask list included"* and which was then told, in the same paragraph,
-/// *"the always-ask list reaches you at every one of them"*. The other defect in that sentence was
-/// the word for a refused tier: *"an blocked"*.
-///
-/// All three boundaries are asserted, because the fix is a match over them and the two names for
-/// *the list does not ask* are exactly what must not collapse: a confined VM and a box the operator
-/// consented about produce the same absent list for two different reasons.
+/// The mode line's second sentence must agree with the mode's own summary - 2026-10-26 at
+/// `allow-all (this box, consented)`, whose summary admits the always-ask list and which was then
+/// told *"the list reaches you at every one of them"*. The two reasons it can be absent differ.
 #[test]
 fn the_mode_line_says_what_the_mode_itself_says() {
     use letibot_tools::mode::Mode;
@@ -1352,15 +1207,9 @@ fn the_mode_line_says_what_the_mode_itself_says() {
     }
 }
 
-/// **Both guards off is its own state, and says so.**
-///
-/// The round backstop is unbounded by default now, so the progress check is
-/// the only thing measuring anything. Turning that off as well leaves nothing
-/// between a looping turn and forever — not a refusal, because the operator
-/// asked for the backstop off and the check is theirs to arm, but it must not
-/// read as either one alone. A disclosure that said "the only stop is the
-/// 0-round backstop" would be worse than silence: it names a guard that is
-/// not there.
+/// Both guards off is its own state, and says so. Turning the progress check off with the backstop
+/// already unbounded leaves nothing between a looping turn and forever - not a refusal, but it must not
+/// read as either one alone: a "0-round backstop" would name a guard that is not there.
 #[test]
 fn both_guards_off_is_disclosed_as_its_own_state() {
     let mut c = Config::for_this_box("/tmp");
@@ -1385,18 +1234,16 @@ fn both_guards_off_is_disclosed_as_its_own_state() {
     assert!(line.contains("--max-tool-rounds"), "{line}");
 }
 
-/// **The disclosure says which level won.** The operator's own evening — *"why is
-/// my session on deepseek"* — was answered by a file they had to go and read, and
-/// the fix is that the answer is on the screen: the model, the level by name, and
-/// the file when a file is where it came from. A disclosure that named only the
-/// model would be the same defect one line shorter.
+/// The disclosure says which level won. *"Why is my session on deepseek"* was answered by a file
+/// they had to go and read; the fix is that the model, the level and the file are on the screen. A
+/// disclosure naming only the model would be the same defect one line shorter.
 #[test]
 fn the_session_model_disclosure_names_the_level_that_won() {
     use crate::config::ModelSource;
     use crate::leticode_config::Level;
     let mut c = Config::for_this_box("/tmp");
 
-    // No flag, no file: the built-in default, and it says so — the fourth of the
+    // No flag, no file: the built-in default, and it says so - the fourth of the
     // four levels rather than a sentence about nothing.
     c.model_source = ModelSource::default();
     let line = c
@@ -1467,10 +1314,9 @@ fn the_session_model_disclosure_names_the_level_that_won() {
     assert!(line.contains("is not serving it"), "{line}");
 }
 
-/// **The sentence, verbatim.** The deliverable of requirement 3 is a sentence on
-/// the screen, so it is pinned here rather than described: a change to it is a
-/// change to what the operator reads, and that is a thing to be deliberate about
-/// rather than a thing to notice later.
+/// The sentence, verbatim. The deliverable of requirement 3 is a sentence on the screen, so it is
+/// pinned here rather than described: a change to it is a change to what the operator reads, which is a
+/// thing to be deliberate about rather than to notice later.
 #[test]
 fn the_session_model_sentence_is_this_one() {
     use crate::leticode_config::Level;
@@ -1522,10 +1368,8 @@ fn the_session_model_sentence_is_this_one() {
     );
 }
 
-/// **No file at all is the built-in default, and says so.** The fresh config is
-/// exactly the daemon that read no `leticode.toml` at either level and was given
-/// no `--provider`: the fourth level, named, rather than a silence the operator
-/// has to interpret.
+/// No file at all is the built-in default, and says so - the fourth level, named, rather than a
+/// silence the operator has to interpret.
 #[test]
 fn no_file_at_all_is_the_builtin_default_and_says_so() {
     let c = Config::for_this_box("/tmp");
@@ -1547,9 +1391,9 @@ fn no_file_at_all_is_the_builtin_default_and_says_so() {
     );
 }
 
-/// **The user file is disclosed as its own level, and the project's over it.**
+/// The user file is disclosed as its own level, and the project's over it.
 /// Two files, two lines, because the operator who wrote one of them needs to see
-/// which one spoke — and the project line names the keys in force after the merge.
+/// which one spoke - and the project line names the keys in force after the merge.
 #[test]
 fn the_user_file_is_disclosed_as_its_own_level() {
     let mut c = Config::for_this_box("/tmp");
@@ -1585,7 +1429,7 @@ fn the_user_file_is_disclosed_as_its_own_level() {
     );
 }
 
-/// **The settings row says `unlimited`, not `0`.** An operator reading a table of
+/// The settings row says `unlimited`, not `0`. An operator reading a table of
 /// numbers reads `0` as "zero rounds allowed", which is the opposite.
 #[test]
 fn an_unbounded_backstop_reads_as_unlimited_not_as_zero() {
@@ -1610,14 +1454,14 @@ fn an_unbounded_backstop_reads_as_unlimited_not_as_zero() {
     );
 }
 
-/// Off is reachable and is **said out loud**, because a refusal that can only be
+/// Off is reachable and is said out loud, because a refusal that can only be
 /// routed around teaches people to route around refusals.
 #[test]
 fn turning_the_progress_check_off_is_a_declared_state() {
     let mut c = Config::for_this_box("/tmp");
     c.stall_rounds = 0;
     // With a backstop still armed. Both off is a DIFFERENT state and has its
-    // own disclosure and its own test below — reading them as one is how an
+    // own disclosure and its own test below - reading them as one is how an
     // operator comes to believe something is still catching runaway turns.
     c.max_tool_rounds = 200;
     let d = c
@@ -1646,12 +1490,9 @@ fn the_default_is_no_spill_and_it_says_so() {
     );
 }
 
-/// The defect this replaced: the adjudication line was a sentence asserting
-/// "M1 is read-only tools, which never prompt", printed regardless of what the
-/// session had seated. Nothing here checks that a *particular* wording is
-/// produced — what it checks is that the wording MOVES when the wiring does.
-/// A banner that says the same thing about a read-only session and a session
-/// with `write` and `edit` in it is not a disclosure.
+/// The defect this replaced: the adjudication line asserted "M1 is read-only tools, which never
+/// prompt", printed regardless of what the session had seated. What is checked here is that the wording
+/// MOVES when the wiring does - a banner that says the same thing about both is not a disclosure.
 #[test]
 fn the_adjudication_line_reads_the_wiring_rather_than_asserting_it() {
     let c = Config::for_this_box("/tmp");
@@ -1706,11 +1547,9 @@ fn the_adjudication_line_reads_the_wiring_rather_than_asserting_it() {
     );
     assert_ne!(w.detail, u.detail);
 
-    // **A fourth thing, and it is the one §4b is about.** An adjudicator over a
-    // writable backend whose denials go nowhere is not a boundary an operator
-    // has: they see a task that stopped and never the decision that stopped it.
-    // The disclosure must therefore differ from the fully wired one AND must
-    // not read as on.
+    // A fourth thing, and it is the one §4b is about. An adjudicator over a writable backend whose
+    // denials go nowhere is not a boundary an operator has: they see a task that stopped and never the
+    // decision that stopped it. The line must differ from the fully wired one and must not read as on.
     let blind = GateWiring {
         denials_surfaced: false,
         ..wired.clone()
@@ -1726,13 +1565,9 @@ fn the_adjudication_line_reads_the_wiring_rather_than_asserting_it() {
     );
 }
 
-/// **Nothing widens by default**, as a test rather than as a sentence at the
-/// top of the file.
-///
-/// The whole of this strand is capabilities becoming reachable, and the rule it
-/// is under is that an invocation which passes no flag gets exactly what it got
-/// before. Four fields decide that and all four are checked here, because the
-/// way this regresses is somebody making one of them "sensible" in isolation.
+/// Nothing widens by default, as a test rather than as a sentence at the top of the file: an
+/// invocation that passes no flag gets exactly what it got before. Four fields decide it, and the way
+/// this regresses is somebody making one of them "sensible" in isolation.
 #[test]
 fn the_default_seat_is_what_shipped_before() {
     let c = Config::for_this_box("/tmp");
@@ -1749,12 +1584,9 @@ fn the_default_seat_is_what_shipped_before() {
     assert!(!c.seat.needs_exec_backend());
 }
 
-/// A typo in `--role` names the five rather than falling back to the default.
-///
-/// Falling back would give an operator who typed `--role codre` a read-only
-/// session that looks like the one they asked for and cannot edit anything —
-/// found out one turn later, which is the cost this whole file is written
-/// against.
+/// A typo in `--role` names the list rather than falling back to the default: falling back would give
+/// an operator who typed `--role codre` a read-only session that looks like the one they asked for
+/// and cannot edit anything - found out one turn later.
 #[test]
 fn an_unknown_role_is_refused_with_the_list() {
     let e = Seat::parse("codre").unwrap_err();
@@ -1774,14 +1606,9 @@ fn an_unknown_role_is_refused_with_the_list() {
     assert_eq!(Seat::parse("opencode").unwrap(), Seat::Leticode);
 }
 
-/// The model adjudicator **parses, and refuses by name without an oracle.**
-///
-/// It used to fail at parse time with a message about T25/D13, because there was
-/// no oracle in the build at all. There is one now (`crate::oracle::HttpOracle`),
-/// so the choice is legal and the missing piece moved one layer down: an
-/// endpoint. The refusal it produces there names `--oracle` — see
-/// `Harness::open_with_registry`. Rejecting it here again would say this build
-/// has no model adjudicator, which is no longer true.
+/// The model adjudicator parses, and refuses by name without an oracle. It used to fail at parse
+/// time because the build had no oracle at all; there is one now, so the missing piece moved one layer
+/// down - an endpoint, whose refusal names `--oracle` (`Harness::open_with_registry`).
 #[test]
 fn the_model_adjudicator_parses_now_that_an_oracle_exists() {
     assert_eq!(
@@ -1790,15 +1617,9 @@ fn the_model_adjudicator_parses_now_that_an_oracle_exists() {
     );
 }
 
-/// Every seam this strand wired is disclosed, and each one **moves** with the
-/// wiring rather than being a sentence.
-///
-/// The defect this guards is the one already paid for four times in one night:
-/// a banner that said "M1 is read-only tools" about sessions with write tools,
-/// a `describe` that said `read-only` for every backend including the writable
-/// one, and a constant `writable + UNSANDBOXED EXEC`. Nothing here asserts a
-/// particular wording. What it asserts is that the wording is different when
-/// the wiring is.
+/// Every seam this strand wired is disclosed, and each one moves with the wiring rather than being a
+/// sentence - the defect already paid for four times in one night. Nothing here asserts a particular
+/// wording; what it asserts is that the wording is different when the wiring is.
 #[test]
 fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     let c = Config::for_this_box("/tmp");
@@ -1880,7 +1701,7 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     );
 }
 
-/// **Whether a subagent can be placed in a VM is said at start, not found out at spawn** —
+/// Whether a subagent can be placed in a VM is said at start, not found out at spawn -
 /// FIRECODE-NOTES item 4: *"Resolve the binary and probe capabilities at daemon start, and
 /// publish them in the banner."* Only where a subagent can be started at all.
 #[test]
@@ -1940,11 +1761,9 @@ fn every_thing_that_is_off_is_disclosed() {
 
 #[test]
 fn the_system_prompt_carries_nothing_volatile() {
-    // §5.2 rule 1, as a test rather than as a habit.
-    // `branch` and `commit` are words of the queue rule now (`working`), not values; the
-    // values are what this guards — a home path, a date — and the scratch path, the one
-    // value the prompt does carry, is masked out of the fingerprint
-    // (`harness::instructions_of`).
+    // §5.2 rule 1, as a test rather than as a habit. `branch` and `commit` are words of the queue rule
+    // now (`working`), not values; the values are what this guards - a home path, a date - and the
+    // scratch path, the one value the prompt does carry, is masked out of the fingerprint.
     let f = SeatFacts {
         scratch: None,
         ..seat()
@@ -1963,10 +1782,9 @@ fn the_system_prompt_carries_nothing_volatile() {
     }
 }
 
-/// **The daemon's own logs are not in the workspace** (TODO R92.4): a child's workspace is its
-/// worktree, and `.letibot/*.jsonl` there made every finished child's tree look dirty. With a
-/// logs root they go under it, one directory per session; a fixture without one keeps the old
-/// place, so no test writes into the box's real data directory.
+/// The daemon's own logs are not in the workspace : a child's workspace is its
+/// worktree, and `.letibot/*.jsonl` there made every finished child's tree look dirty. A fixture with
+/// no logs root keeps the old place, so no test writes into the box's real data directory.
 #[test]
 fn the_daemons_logs_go_under_the_logs_root_one_directory_per_session() {
     let mut cfg = Config::for_this_box("/tmp/ws");
@@ -1976,7 +1794,7 @@ fn the_daemons_logs_go_under_the_logs_root_one_directory_per_session() {
     assert_eq!(cfg.daemon_logs(), PathBuf::from("/data/letibot/logs/s-7"));
 }
 
-/// **Only the session `--vm` placed mounts its workspace** - not a child attached to an ancestor's
+/// Only the session `--vm` placed mounts its workspace - not a child attached to an ancestor's
 /// VM (that is the ancestor's mount), not one whose caller named a tree to copy (a reviewer), and
 /// not with `--vm-copy`. On a Mac; elsewhere nothing mounts.
 #[test]

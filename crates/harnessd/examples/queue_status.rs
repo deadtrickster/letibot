@@ -1,17 +1,15 @@
-//! **Measure the `queue` status shapes against a store** — the operator's report of 2026-10-30 was
-//! about the SIZE of the answer (*"it is more than 60 rows for queue status tool call now - and you
-//! guys defocus and get confused"*), so the number that has to be measured is lines, on the box's
-//! own rows rather than a fixture's.
+//! Measure the `queue` status shapes against a store: the report that started this was about the SIZE
+//! of the answer - more than sixty rows for one `queue status` call - so the number that has to be
+//! measured is lines, on the box's own rows rather than a fixture's.
 //!
 //! ```sh
 //! cargo run --offline -p letibot-harnessd --example queue_status -- <store.db> <workspace> [name]
 //! ```
 //!
-//! `<workspace>` is the folder a session would be seated in, so the default scope is the one a
-//! model there gets; `[name]` is what to ask for in the third shape. It goes through the real
-//! `SessionQueue`, so the shapes are the ones the tool returns and not a second copy of them. The
-//! last block is what the tool printed BEFORE the scoping — the whole box in full — which is the
-//! number this change is measured against.
+//! `<workspace>` is the folder a session would be seated in, so the default scope is the one a model
+//! there gets; `[name]` is what to ask for in the third shape. It goes through the real
+//! `SessionQueue`, so the shapes are the ones the tool returns. The last block is what the tool printed
+//! BEFORE the scoping - the whole box in full - which is the number this is measured against.
 
 use std::path::PathBuf;
 
@@ -50,7 +48,7 @@ fn main() {
             Err(why) => println!("===== {what} — refused =====\n{why}"),
         }
     }
-    // **And the answer this replaces**: every repository, every open or parked row, in full.
+    // And the answer this replaces: every repository, every open or parked row, in full.
     match Store::open(&PathBuf::from(store))
         .map_err(|e| e.to_string())
         .and_then(|s| status(&s, None))

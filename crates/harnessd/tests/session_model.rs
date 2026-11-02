@@ -1,31 +1,5 @@
-//! **A session says who ANSWERS, not what the vocabulary binds** — the operator's *"with
-//! `--new` it started with qwen, not default model"*, 2026-10-26.
-//!
-//! Two models are in play in every daemon and they are different facts:
-//!
-//! * `Config::model` — the local **binding**, the alias whose GGUF renders the prompt and whose
-//!   ids the ledger counts. The launcher passes it on every start (`--model`), so it is
-//!   `qwen-3.8-flash-next` even on a box whose turns never go to a local server.
-//! * `Config::prompt_model_name()` — **who answers**, which is `deepseek/deepseek-flash` when
-//!   `~/.config/letibot/providers.toml` says `[default] provider = "deepseek"`.
-//!
-//! `Sessions::wiring` (what a head's `Hello` carries and what the picker draws) and the
-//! `model_id` a session's store row keeps were both written from the BINDING. So a session the
-//! operator started on their default provider was described as a local one in three places at
-//! once — the header's first frame, the ctrl-s picker, `letibot --sessions` — while its turns
-//! went to deepseek. The `model` settings row was already right, which is what made it visible:
-//! one session, two names.
-//!
-//! # What this asserts, and what it deliberately does not
-//!
-//! It asserts the DESCRIPTION: the wiring and the row name the answering model, and a session
-//! opened later by a head (`Work::Open`, the door `letibot --new` reaches) is described the same
-//! way as the daemon's first one. It does **not** assert that the turns go to deepseek — that is
-//! `Config::provider`, which `harnessd`'s own startup resolves once and `Sessions` clones into
-//! every session it opens; re-measuring it here would need a provider, a key and a network.
-//!
-//! No GGUF and no model: the byte vocabulary is the door `idle_clock.rs` and `no_vocab.rs` take,
-//! so this runs on a machine with no vocabulary file.
+//! A session says who ANSWERS, not what the vocabulary binds. Two models are in play in
+//! every daemon and they are different facts
 
 use std::path::PathBuf;
 
@@ -68,7 +42,7 @@ fn the_operators_box(dir: &std::path::Path) -> Config {
     cfg.session_id = "s-first".into();
     // What the launcher passes: the vocabulary this box has a GGUF for.
     cfg.model = "qwen-3.8-flash-next".into();
-    // Nothing serves this port — no turn runs here, and a test must not be able to reach the
+    // Nothing serves this port - no turn runs here, and a test must not be able to reach the
     // box's own model server by accident.
     cfg.endpoint = letibot_turn::Endpoint::new("127.0.0.1", 9);
     // `[default] provider = "deepseek"`, resolved by `harnessd`'s startup before any session.
@@ -88,11 +62,9 @@ fn the_operators_box(dir: &std::path::Path) -> Config {
     cfg
 }
 
-/// **The wiring a head is handed names the answering model, not the bound one.**
-///
-/// `SessionWiring` is the `Hello`'s word about the session, and the header draws it before any
-/// settings row has arrived — which is exactly the first frame of a session that was just
-/// created, so this is the frame the operator read as *"it started with qwen"*.
+/// The wiring a head is handed names the answering model, not the bound one: `SessionWiring` is the
+/// `Hello`'s word about the session, and the header draws it before any settings row has arrived -
+/// exactly the first frame of a session that was just created.
 #[test]
 fn a_sessions_wiring_names_who_answers_and_not_the_vocabulary() {
     let dir = TempDir::new("lb-wiring-model");
@@ -111,12 +83,9 @@ fn a_sessions_wiring_names_who_answers_and_not_the_vocabulary() {
     assert_eq!(wiring.endpoint, cfg.endpoint.authority());
 }
 
-/// **And a session opened LATER — a head's `--new`, `Work::Open` — is described the same way.**
-///
-/// The lazy door (`Sessions::harness_as`) clones the daemon's config, so the session runs on the
-/// daemon's provider; what this pins is that nothing about that door picks the binding up again
-/// for the description. The row it writes and the wiring it registers are the two things a
-/// picker and a `Hello` read.
+/// And a session opened LATER - a head's `--new`, `Work::Open` - is described the same way. The
+/// lazy door clones the daemon's config, so the session runs on the daemon's provider; what this
+/// pins is that nothing about that door picks the binding up again for the description.
 #[test]
 fn a_session_a_head_opens_is_described_as_the_first_one_was() {
     let dir = TempDir::new("lb-new-session-model");

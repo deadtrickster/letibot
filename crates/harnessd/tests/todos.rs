@@ -1,15 +1,6 @@
-//! The todo tool's harness half: the board is restored from the store at open.
-//!
-//! The tool's own behaviour is tested in `letibot-tools` (`todo_write` replaces
-//! the whole list, refuses by name, moves the board's version). The store's
-//! round-trip is tested in `letibot-tokencore`. What only *this* crate can assert
-//! is the seam between them: a harness opened over a session whose model wrote
-//! todos comes back with those todos on its board — a resume that opened on an
-//! empty plan would send the model back to re-deriving work it had already
-//! organised, which is the exact waste the list exists to prevent.
-//!
-//! It needs the vocabulary GGUF and **not** the model server. `LETIBOT_VOCAB_GGUF`
-//! overrides the path.
+//! The todo tool's harness half: the board is restored from the store at open. The tool's
+//! own behaviour is tested in `letibot-tools` (`todo_write` replaces the whole list refuses
+//! by name, moves the board's version).
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Harness, Parts};
@@ -23,10 +14,9 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.dialect = WANTED;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default (a daemon on the byte vocabulary needs
+    // none), so a harness built here is handed one - the same path this file's `vocab_gguf` gate
+    // consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -46,7 +36,7 @@ fn a_resume_comes_back_with_the_plan_the_model_was_working_from() {
     let session_id = "todos-restore-test";
     {
         // A previous run: the session exists and its model wrote a plan. The
-        // session row first — the todo row carries a foreign key to it, which is
+        // session row first - the todo row carries a foreign key to it, which is
         // what makes an orphan list unrepresentable.
         let s = Store::open(&path).expect("seeding");
         s.put_session(&SessionRecord {
@@ -154,30 +144,8 @@ impl Drop for TempDir {
     }
 }
 
-// =====================================================================
-// The idle clock: who starts it, and the two paths that did not.
-// =====================================================================
-//
-// **The operator, twice.** First on the feature: *"at which point my todos will be
-// reminded to a model?"* — then on the gap, with the evidence in front of them:
-// *"so when I bring session back it will not fire right now - this is exactly what i
-// see with rano"*.
-//
-// They were right, and the cause is one line of provenance: `Sessions::rearm_todo_nag`
-// is the ONLY writer of `nag_due`, and it had exactly one caller — the end of
-// `after_turn`, whose own comment says *"Every turn ends here, so this is where the
-// idle clock starts."* So the clock counted from a TURN BOUNDARY and nothing else,
-// which left two paths with no clock at all:
-//
-//   · a row the OPERATOR adds to an IDLE session — the model is quiet, the operator
-//     has just said what they want done, and nothing ever reminds it;
-//   · a session REOPENED with an unfinished plan — `nag_due` is in-memory, so a
-//     daemon that came back had nothing armed and the idle worker had nothing to wake
-//     for. This is the rano case exactly.
-//
-// Both now arm. What is asserted here is that a DEADLINE EXISTS after each, which is
-// the whole of the fix: whether it then fires is `deliver_due_nags`' business and is
-// the same code the turn-end path has always used.
+// ===================================================================== The idle clock
+// who starts it, and the two paths that did not.
 
 use letibot_harnessd::Sessions;
 use letibot_harnessd::sessions::Outcome;
@@ -187,7 +155,7 @@ use letibot_sessionlog::registry::Registry;
 
 mod support;
 
-/// A store holding one session with an unfinished plan. The session row first —
+/// A store holding one session with an unfinished plan. The session row first -
 /// the todo row carries a foreign key to it.
 fn a_session_with_an_open_plan(tag: &str) -> (TempDir, std::path::PathBuf, String) {
     let dir = TempDir::new(tag);
@@ -303,7 +271,7 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
         "nothing to check yet, so nothing is armed"
     );
 
-    // The head pushes a row — the same command `push-operator-todos` puts on the queue
+    // The head pushes a row - the same command `push-operator-todos` puts on the queue
     // when the operator adds one.
     let cmd = QueuedCommand {
         head_id: "test-head".into(),
@@ -336,13 +304,9 @@ fn a_row_the_operator_adds_to_an_idle_session_arms_the_clock() {
     );
 }
 
-/// **R77: an operator's ADD arms the check at the shorter window, not the idle minute.** What
-/// tells an add from a head re-pushing its half is `the_operator_added`, pinned in
+/// An operator's ADD arms the check at the shorter window, not the idle minute. What tells
+/// an add from a head re-pushing its half is `the_operator_added`, pinned in
 /// `sessions/idle_nag.rs`.
-///
-/// The session opens with the model's row open, so its clock is already armed a minute out. The
-/// operator's row is added LAST, the way the head appends it; the deadline that follows is the
-/// operator-add window's (ten seconds), which is the daemon half of *"didnt arrive the next nag"*.
 #[test]
 fn a_row_the_operator_adds_arms_the_check_sooner_than_the_idle_window() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -386,18 +350,8 @@ fn a_row_the_operator_adds_arms_the_check_sooner_than_the_idle_window() {
     );
 }
 
-/// **THE OPERATOR'S VERB REACHES A ROW THE MODEL WROTE — end to end, through the daemon.**
-///
-/// The hole, MEASURED: a row the model wrote that waits on a person's hand could not be silenced
-/// at all — `todo_write` refuses `postponed` (a model that could silence its own plan could
-/// abandon it), and `/todo postpone|resume N` numbered the operator's own rows. So the operator's
-/// verb now takes the row's own WORDS, and `moved` carries the state move beside the half they
-/// own.
-///
-/// What only this crate can assert is the seam: the words are resolved against the MODEL's half
-/// on the daemon's own board, the row is set aside rather than touched in any other way, and the
-/// write is PERSISTED — a silence that lived only in memory would be gone at the next restart,
-/// which is the one thing `Postponed` was asked for (*"they persist"*).
+/// THE OPERATOR'S VERB REACHES A ROW THE MODEL WROTE - end to end, through the daemon. A
+/// row the model wrote that waits on a person's hand could not be silenced at all
 #[test]
 fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -431,7 +385,7 @@ fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
     assert_eq!(row.by, TodoBy::Model, "and it is still the model's row");
     assert_eq!(rows.len(), 1, "nothing was added or removed: {rows:#?}");
 
-    // **And the lift**, the same way — the state is reversible, which is what makes it a silence
+    // And the lift, the same way - the state is reversible, which is what makes it a silence
     // rather than a quiet way to retire somebody else's row.
     h.set_operator_todos(
         Vec::new(),
@@ -444,12 +398,7 @@ fn the_operators_verb_sets_aside_a_row_the_model_wrote() {
     assert_eq!(rows[0].status, TodoStatus::Pending, "{rows:#?}");
 }
 
-/// **A plan the store did not take is said on the session's log** — R67 item 15.
-///
-/// `flush_todos`' failures at the operator's door, the review queue's board and a fired condition
-/// used to be `eprintln!` and nothing else, so the head that just moved a row was told nothing
-/// when the store refused it. The store is made to refuse by moving its `todo` table away through
-/// a second connection; a `/todo` move naming a row that is not there is the second sentence.
+/// A plan the store did not take is said on the session's log.
 #[test]
 fn a_plan_the_store_refuses_is_said_on_the_hub() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -461,7 +410,7 @@ fn a_plan_the_store_refuses_is_said_on_the_hub() {
     let hub = Hub::new(&cfg.session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session must open");
 
-    // **`open_private`**: the refusal has to come from OUTSIDE the harness's connection, and
+    // `open_private`: the refusal has to come from OUTSIDE the harness's connection, and
     // `Store::open` would hand back the very connection `h` writes through.
     let other = Store::open_private(&path).expect("a connection of its own");
     other

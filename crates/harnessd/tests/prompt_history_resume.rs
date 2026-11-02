@@ -1,11 +1,6 @@
-//! **A restarted daemon gives a head the session's earlier prompts, bodies and all** — the
-//! fact the composer's Up history is now derived from.
-//!
-//! The operator: *"i worked - sent 30 prompts. then restart, send 2. and arrow up sees only
-//! these two"*. The head now builds its history from the session's operator rows; that is
-//! only as good as what a fresh attach to a RESUMED session carries. This runs the real
-//! `harnessd` twice over one store — three prompts, a kill, a resume — and reads the second
-//! daemon's `Hello` snapshot.
+//! A restarted daemon gives a head the session's earlier prompts, bodies and all - the fact
+//! the composer's Up history is now derived from. The operator sent thirty prompts
+//! restarted, sent two, and arrow-up saw only the last two.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -167,7 +162,7 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
         }
         // Let the last turn land in the store before the kill.
         std::thread::sleep(Duration::from_millis(800));
-        // **A head restarted against the live daemon** — the other "restart".
+        // A head restarted against the live daemon - the other "restart".
         let (_h2, hello2, mut r2) = HeadClient::attach(
             home.join("d.sock"),
             "s-hist",
@@ -186,7 +181,7 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
         }
     }
 
-    // **The restart**, over the same store and session id: a resume.
+    // The restart, over the same store and session id: a resume.
     let _d = start(&home);
     let (_head, hello, mut r) =
         HeadClient::attach(home.join("d.sock"), "s-hist", 0, "tui", "dead", caps)
@@ -201,8 +196,8 @@ fn a_resumed_sessions_snapshot_carries_every_earlier_prompt() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// The operator's prompts a fresh head gets: from the snapshot, and from what follows it (a
-/// resume republishes its rows as events) — the two places a head builds its rows from.
+/// The operator's prompts a fresh head gets: from the snapshot, and from what follows it (a resume
+/// republishes its rows as events) - the two places a head builds its rows from.
 fn collect(
     hello: ServerFrame,
     r: &mut letibot_sessionlog::wire::FrameReader<std::os::unix::net::UnixStream>,
@@ -226,8 +221,8 @@ fn collect(
         ),
         _ => None,
     };
-    // What the snapshot carries, and what the resume republishes after it — a head builds
-    // its rows from both, so the history is built from both.
+    // What the snapshot carries, and what the resume republishes after it - a head builds its rows
+    // from both, so the history is built from both.
     let mut carried: Vec<String> = snapshot
         .map(|s| {
             s.items

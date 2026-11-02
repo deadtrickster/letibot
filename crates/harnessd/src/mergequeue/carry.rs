@@ -1,29 +1,13 @@
-//! **What the landing tree does not have, and the project's way to give it** — `[queue]
-//! gate_carry`.
-//!
-//! A git worktree carries what git tracks and nothing else. The firecode session found the cost,
-//! 2026-10-11: *"The queue runs the gate in a landing worktree … A git worktree doesn't carry
-//! gitignored files, so that tree has no `images/` and no `vendor/` — no guest rootfs, no kernel,
-//! no firecracker. Every check that boots a VM fails, which is precisely the failed list."* The
-//! gate peaked at 1.6 GiB of 40.9 GiB because no VM booted, and `main` was declared RED for a
-//! reason that is not in the code.
-//!
-//! So a project names the gitignored inputs its gate needs, and each is COPIED from the
-//! operator's checkout into the landing tree before every gate run ([`carry`]) — `rsync -a
-//! --delete` when rsync is on the box (an unchanged file is not copied again), else a fresh
-//! recursive copy. Never a symlink: a gate that writes into a carried directory writes into its
-//! own copy, not the operator's checkout.
-//!
-//! And when a gate fails with nothing carried, the red notice names the ignored directories the
-//! checkout has and the landing tree lacks ([`hint`]) — one sentence, so the next model to read
-//! a red like firecode's knows where to look.
+//! What the landing tree does not have, and the project's way to give it - `[queue]
+//! gate_carry`. A worktree carries what git tracks, so firecode's tree had no `images/` and
+//! no VM booted, and `main` was RED for a reason not in the code.
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use super::git::git;
 
-/// How the notice sentence starts — `notices::health` finds it in the evidence by this.
+/// How the notice sentence starts - `notices::health` finds it in the evidence by this.
 pub const LANDING_LACKS: &str = "The landing tree has no ";
 
 /// What the hint never names: build outputs the gate makes for itself.
@@ -32,8 +16,8 @@ const BUILD_OUTPUTS: &[&str] = &["target"];
 /// At most this many names in the hint; the rest are "…".
 const HINT_NAMES: usize = 8;
 
-/// **One `gate_carry` entry, checked by its shape** — relative, inside the repository, not the
-/// repository itself and not `.git`. The refusal names the entry.
+/// One `gate_carry` entry, checked by its shape - relative, inside the repository, not `.git`.
+/// The refusal names the entry.
 pub fn validate(entry: &str) -> Result<PathBuf, String> {
     let p = Path::new(entry.trim());
     let refuse = |why: &str| {
@@ -80,16 +64,14 @@ fn have_rsync() -> bool {
     })
 }
 
-/// **Copy each `entries` path from the checkout `repo` into the landing tree `wt`**, replacing
-/// what the landing tree had there. Refused, by name, when an entry is outside the repository
-/// (by its shape, or by a symlink that resolves outside), is missing from the checkout, or is
-/// TRACKED at the landing tree's commit — a tracked path carried from the checkout would gate
-/// the operator's copy instead of the branch's.
+/// Copy each `entries` path from the checkout `repo` into the landing tree `wt`, replacing
+/// what the tree had there. Refused when an entry is outside the repository, missing from the
+/// checkout, or TRACKED at the landing tree's commit - a tracked path would gate the operator's copy.
 pub fn carry(repo: &Path, wt: &Path, entries: &[String]) -> Result<(), String> {
     carry_with(repo, wt, entries, have_rsync())
 }
 
-/// [`carry`] with the copier chosen — the tests run both.
+/// [`carry`] with the copier chosen - the tests run both.
 pub fn carry_with(repo: &Path, wt: &Path, entries: &[String], rsync: bool) -> Result<(), String> {
     if entries.is_empty() {
         return Ok(());
@@ -193,9 +175,8 @@ fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// **The top-level gitignored directories the checkout has and the landing tree lacks** —
-/// from `git ls-files --others --ignored --exclude-standard --directory` in the checkout, less
-/// the build outputs the landing tree makes for itself and anything it already has.
+/// The top-level gitignored directories the checkout has and the landing tree lacks - the
+/// build outputs it makes for itself, and anything it already has, are not named.
 pub fn missing_ignored(repo: &Path, wt: &Path) -> Vec<String> {
     let Ok(list) = git(
         repo,
@@ -231,7 +212,7 @@ pub fn missing_ignored(repo: &Path, wt: &Path) -> Vec<String> {
     out
 }
 
-/// **The one sentence a failed gate's notice adds**, or `None` — only when nothing is carried
+/// The one sentence a failed gate's notice adds, or `None` - only when nothing is carried
 /// and the landing tree lacks an ignored directory the checkout has.
 pub fn hint(repo: &Path, wt: &Path, carried: &[String]) -> Option<String> {
     if !carried.is_empty() {

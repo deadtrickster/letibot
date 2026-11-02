@@ -1,15 +1,5 @@
-//! **The operator's verbs on the two queues** — `/queue approve|restart|veto|rm|reset|clean|regate`.
-//!
-//! Every verb is a conditional move on the row's CURRENT state (read, then moved only if still
-//! there), recorded in the history under the operator's session. Two rulings shape them:
-//!
-//! * **Decision 5**: *"the operator may approve over the reviewer (`/queue approve` on a rejected
-//!   or unreviewed entry), recorded as the operator's approval; it still runs the merge gate."* An
-//!   approve binds the head the branch has NOW, and hands it to the merge queue in the same
-//!   transaction; nothing here touches git or the gate.
-//! * **Nothing is deleted.** `rm` and `clean` WITHDRAW rows (a terminal state, with the person's
-//!   words), because the history of a row is the record R61 exists to keep; the pane shows open
-//!   rows and the recent past, not every row ever.
+//! The operator's verbs on the two queues - `/queue
+//! approve|restart|veto|rm|reset|clean|regate`.
 
 use std::path::Path;
 
@@ -61,9 +51,9 @@ fn find(store: &Store, id: &str) -> Result<Found, String> {
     }
 }
 
-/// **The repository a `/queue` verb typed in a session at `workspace` may act in** (R92 item 5)
-/// — `None` is every repository. [`QueueScope::Here`] is the session's own (the queues' key for
-/// its workspace), and a session of no repository is told so with the lines that reach one.
+/// The repository a `/queue` verb typed in a session at `workspace` may act in: `None` is every
+/// repository. [`QueueScope::Here`] is the session's own (the queues' key for its workspace), and a
+/// session of no repository is told so with the lines that reach one.
 pub fn scope_repository(workspace: &Path, scope: &QueueScope) -> Result<Option<String>, String> {
     match scope {
         QueueScope::All => Ok(None),
@@ -83,10 +73,9 @@ pub fn scope_repository(workspace: &Path, scope: &QueueScope) -> Result<Option<S
     }
 }
 
-/// **Every repository a `/queue` verb may act in** — [`scope_repository`] for several: `[None]` is
-/// every repository, a session of one repository is `[Some(it)]`, and a session of a folder that
-/// is one project of several (`git::repos_of_workspace`) is each of them. The dispatch runs a
-/// sweep once per entry, and a row verb in the one entry that holds the row ([`row_repository`]).
+/// Every repository a `/queue` verb may act in - [`scope_repository`] for several: `[None]`
+/// is every repository, a session of one repository is `[Some(it)]`, and a session of a
+/// folder that is one project of several (`git::repos_of_workspace`) is each of them.
 pub fn scope_repositories(
     workspace: &Path,
     scope: &QueueScope,
@@ -103,8 +92,8 @@ pub fn scope_repositories(
     }
 }
 
-/// **The repository the row `id` is a row of** — for a verb in a session of several to act in
-/// the right one. `None` for a row no queue holds, which the verb itself refuses by name.
+/// The repository the row `id` is a row of - for a verb in a session of several to act in the
+/// right one. `None` for a row no queue holds, which the verb itself refuses by name.
 pub fn row_repository(store: &Store, id: &str) -> Option<String> {
     match find(store, id).ok()? {
         Found::Review(r) => Some(r.repository),
@@ -112,9 +101,9 @@ pub fn row_repository(store: &Store, id: &str) -> Option<String> {
     }
 }
 
-/// **Whether the row `id` names is in `repository`** (R92 item 5) — `None` is every repository.
-/// A row of another repository is refused with the line that acts on it, so a verb typed in one
-/// project's session never moves another project's row by accident.
+/// Whether the row `id` names is in `repository` (`None` is every repository). A row of another
+/// repository is refused with the line that acts on it, so a verb typed in one project's session
+/// never moves another project's row by accident.
 pub fn in_scope(store: &Store, id: &str, repository: Option<&str>) -> Result<(), String> {
     let Some(here) = repository else {
         return Ok(());
@@ -145,9 +134,9 @@ fn by(session: &str) -> String {
     format!("operator:{session}")
 }
 
-/// **Approve over the reviewer** (decision 5) — a review row that is waiting, under review,
-/// rejected, undecided or blocked becomes `approved` at the head its branch has NOW, and a merge
-/// row is born for it; the merge gate still runs.
+/// Approve over the reviewer: a review row that is waiting, under review, rejected, undecided or
+/// blocked becomes `approved` at the head its branch has NOW, and a merge row is born for it; the
+/// merge gate still runs.
 pub fn approve(
     store: &Store,
     id: &str,
@@ -223,7 +212,7 @@ pub fn approve(
     ))
 }
 
-/// **Try again** — a parked review back to `waiting`, a parked landing back to `queued`.
+/// Try again - a parked review back to `waiting`, a parked landing back to `queued`.
 pub fn restart(
     store: &Store,
     id: &str,
@@ -233,8 +222,8 @@ pub fn restart(
     restart_by(store, id, &by(session), events)
 }
 
-/// [`restart`], with the mover named whole — `agent:<session>` for the `queue` tool (R76 item 2),
-/// so the history says a model did it and not the operator.
+/// [`restart`], with the mover named whole - `agent:<session>` for the `queue` tool, so the history
+/// says a model did it and not the operator.
 pub fn restart_by(
     store: &Store,
     id: &str,
@@ -307,8 +296,8 @@ pub fn restart_by(
     }
 }
 
-/// **The operator's rejection** — a review rejected in the person's words (the complaints go back
-/// with the next restart's message); a landing withdrawn.
+/// The operator's rejection - a review rejected in the person's words (the complaints go back with
+/// the next restart's message); a landing withdrawn.
 pub fn veto(
     store: &Store,
     id: &str,
@@ -357,10 +346,8 @@ pub fn veto(
             })
         }
         Found::Merge(m) => {
-            // **A running gate is taken out by `rm`, not by `veto`** — `veto` is *rejected in your
-            // words, sent back to the child*, and a landing has no child left to send it to. The
-            // pane offers `d` on a `gating` row and nothing on `v` (`ui::panes::queue::verb_moves`),
-            // so this is the sentence a person who typed the other letter gets.
+            // A running gate is taken out by `rm`, not by `veto` - `veto` is *rejected in your words
+            // sent back to the child*, and a landing has no child left to send it to.
             if m.state == MergeState::Gating {
                 return Err(format!(
                     "`{}` is `gating`; `/queue rm {}` takes it out of line while its gate runs",
@@ -385,10 +372,9 @@ fn withdraw_merge(
     who: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    // **`gating` is withdrawable too** — *take it out of line* is the person's answer to a gate that
-    // is going nowhere, and refusing it was the pane offering no way out of the one state a queue
-    // gets stuck in. What makes that safe is not this check but `finish_land`'s: a landing whose row
-    // has left `gating` does not land, whatever its gate said.
+    // `gating` is withdrawable too: *take it out of line* is the person's answer to a gate
+    // that is going nowhere, and refusing it left the pane no way out of the one state a queue
+    // gets stuck in.
     if !matches!(
         m.state,
         MergeState::Queued
@@ -423,7 +409,7 @@ fn withdraw_merge(
     ))
 }
 
-/// **Take a row out** — withdrawn, with the person's words; the branch and its worktree stay.
+/// Take a row out - withdrawn, with the person's words; the branch and its worktree stay.
 pub fn remove(
     store: &Store,
     id: &str,
@@ -439,8 +425,8 @@ pub fn remove(
     )
 }
 
-/// **Take a row out, in the mover's own words** — [`remove`]'s body, and the `queue` tool's
-/// `withdraw` (R76 item 2), where `who` is `agent:<session>` and `why` the model's reason.
+/// Take a row out, in the mover's own words - [`remove`]'s body, and the `queue` tool's
+/// `withdraw`, where `who` is `agent:<session>` and `why` the model's reason.
 pub fn withdraw_by(
     store: &Store,
     id: &str,
@@ -513,7 +499,7 @@ fn parked(store: &Store, repository: Option<&str>) -> Result<Vec<String>, String
         .collect())
 }
 
-/// `/queue reset [ID]` — restart one parked row, or every one in `repository` (`None`: every
+/// `/queue reset [ID]` - restart one parked row, or every one in `repository` (`None`: every
 /// repository's).
 pub fn reset(
     store: &Store,
@@ -533,7 +519,7 @@ pub fn reset(
     Ok(format!("{n} parked row(s) restarted"))
 }
 
-/// `/queue clean [ID]` — withdraw one parked row, or every one in `repository` (`None`: every
+/// `/queue clean [ID]` - withdraw one parked row, or every one in `repository` (`None`: every
 /// repository's). Nothing is deleted.
 pub fn clean(
     store: &Store,
@@ -555,14 +541,7 @@ pub fn clean(
     ))
 }
 
-/// **Gate the target's tip again, even when that tip was already judged** (R76 item 3, R74 #4).
-///
-/// Before this a target was gated only when its tip CHANGED: a red that was the machine's, a
-/// timed-out gate, a gate whose setup was fixed outside the target (a corpus installed, a `.letibot`
-/// path made) held every landing until somebody committed to the target. The verb writes the
-/// health back to `gating` at the tip as it is NOW; the repository's queue worker sees `gating`
-/// and runs the gate on its next pass — the same door the red tip's reviewer uses when it finds
-/// the code sound. `who` is recorded on the move.
+/// Gate the target's tip again, even when that tip was already judged.
 pub fn regate(
     store: &Store,
     repository: &str,
@@ -602,7 +581,7 @@ pub fn regate(
         )
         .map_err(|e| e.to_string())?;
     announce(events, "target", target, "gating", &why);
-    // **Who will run it** — a re-gate nobody serves is a row that says `gating` for ever.
+    // Who will run it: a re-gate nobody serves is a row that says `gating` for ever.
     let leases = store.queue_leases().map_err(|e| e.to_string())?;
     let served = leases.iter().any(|l| {
         l.repository == repository
@@ -630,11 +609,8 @@ pub fn killed_backoff_ms(kills: u32) -> u64 {
         .min(CAP)
 }
 
-/// **What a daemon re-gates when it takes a repository's lease** (R76 item 3) — every target
-/// whose last verdict was `red`, `blocked` or `timed_out`. A restart was the one way out of a
-/// timed-out or blocked target before `/queue regate`, and it did not even do that: the health
-/// row said the tip was judged, so the new daemon left it alone. A green tip is not gated again
-/// (nothing about it is in doubt), and a `gating` one is already going to be.
+/// What a daemon re-gates when it takes a repository's lease: every target whose last
+/// verdict was `red`, `blocked` or `timed_out`.
 pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
     for h in store.target_healths().map_err(|e| e.to_string())? {
@@ -646,10 +622,8 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
         {
             continue;
         }
-        // **A gate killed at its memory cap is retried less often each time** (R92.25): with the
-        // same cap it dies the same way, and every lease take re-ran it at once. The wait doubles
-        // per kill of this tip — 15 min, 30, 60, … up to 8 h — counted in the store, so a restart
-        // loop is not a retry loop. `/queue regate` is the operator's way past it.
+        // A gate killed at its memory cap is retried less often each time: with the same cap it
+        // dies the same way, and every lease take re-ran it at once.
         if h.state == HealthState::Blocked
             && h.evidence.starts_with(super::gate::GATE_KILLED)
             && let Ok(Some(t)) =
@@ -725,10 +699,9 @@ mod tests {
         store.review_row(id).unwrap().unwrap().state
     }
 
-    /// **`/queue clean` in one project's session sweeps that project's queue only** (R92 item
-    /// 5) — the operator's *"the /queue is still not project scoped"*. Before, the sweep read
-    /// every repository's parked rows. A row of another repository named by id is refused with the
-    /// line that reaches it; `/queue all` is the explicit way to every repository.
+    /// `/queue clean` in one project's session sweeps that project's queue only - before, the sweep
+    /// read every repository's parked rows. A row of another repository named by id is refused with
+    /// the line that reaches it; `/queue all` is the explicit way to every repository.
     #[test]
     fn the_sweeps_and_the_row_verbs_stay_in_the_sessions_repository() {
         let dir = TempDir::new("verbs-scope");
@@ -756,13 +729,13 @@ mod tests {
         );
         assert!(in_scope(&store, "r-mine", here.as_deref()).is_ok());
 
-        // **Explicitly every repository.**
+        // Explicitly every repository.
         let all = scope_repository(&mine, &QueueScope::All).unwrap();
         assert!(in_scope(&store, "r-theirs", all.as_deref()).is_ok());
         clean(&store, None, all.as_deref(), "s-1", &|_| {}).unwrap();
         assert_eq!(state(&store, "r-theirs"), ReviewState::Withdrawn);
 
-        // **A path names one repository** — a worktree path or a subdirectory means its repository.
+        // A path names one repository - a worktree path or a subdirectory means its repository.
         std::fs::create_dir_all(mine.join("sub")).unwrap();
         let named = QueueScope::Repo(mine.join("sub").display().to_string());
         assert_eq!(
@@ -771,7 +744,7 @@ mod tests {
         );
     }
 
-    /// **A session of no repository is told so, and offered `/queue all`.**
+    /// A session of no repository is told so, and offered `/queue all`.
     #[test]
     fn a_session_outside_every_repository_is_told_and_offered_all() {
         let dir = TempDir::new("verbs-none");
@@ -784,9 +757,9 @@ mod tests {
         );
     }
 
-    /// **A session of a one-org project folder acts in each of its repositories** — the operator's
-    /// `~/Projects/stroppy-io`. Both repositories are the session's scope; a row of either is in
-    /// scope in its own; a row of a repository outside the folder is still refused.
+    /// A session of a one-org project folder acts in each of its repositories. Both repositories
+    /// are the session's scope; a row of either is in scope in its own; a row of a repository
+    /// outside the folder is still refused.
     #[test]
     fn a_one_org_folder_scopes_a_verb_to_each_of_its_repositories() {
         let dir = TempDir::new("verbs-many");

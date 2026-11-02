@@ -1,105 +1,40 @@
-//! **A model that stops because "my context is full" when it is not gets told so** — R71.
-//!
-//! The operator, 2026-10-11: *"we have similarity for notes and todos, i want to catch
-//! stupid things like this - "My context is at the wall" when models sometimes stop
-//! because yeah "my context is full, my context is almost full, my context is at the
-//! wall, blabla" when we see something like that we should slap model."*
+//! A model that stops because "my context is full" when it is not gets told so -, from the
+//! operator: *"we see something like that we should slap model"*.
 //!
 //! # Why it is wrong, not merely annoying
 //!
-//! The model cannot see its own fill; the daemon can. The wall is the HARNESS's to
-//! handle — `Config::at_the_wall` and `compact_at_the_wall` compact when it is reached,
-//! and a refused request compacts too — so a model that stops "because of the wall"
-//! has stopped work the harness would have carried, on a guess. The store says how
-//! often: assistant rows saying so in four sessions and their subagents, among them
-//!
-//! * leticl, 10-11 11:48 — *"My context is at the wall, so I'll stop here rather than
-//!   start a piece I can't finish"*;
-//! * leticl, 10-11 11:30 (and 06:13, 02:41, the same message re-sent) — *"My context is
-//!   nearly spent, and that's the honest reason to stop rather than start the
-//!   carry-by-words change"*;
-//! * pg-noop, 10-10 18:49 — *"seven concurrent answers is well past my integration
-//!   ceiling, and my own context is nearly exhausted"*;
-//!
-//! and one sentence that must NOT be slapped, because it is true and carries its
-//! numbers: 10-07 10:49 — *"It hit the **context wall** — 1,131,717 of 1,146,137
-//! tokens resident, with the next round unable to fit — and it was compacted"*. That is
-//! the line between the two: a claim the daemon can check against what it measured.
+//! The model cannot see its own fill; the daemon can. The wall is the HARNESS's to handle -
+//! `Config::at_the_wall` and `compact_at_the_wall` compact when it is reached - so a model that
+//! stops "because of the wall" has stopped work the harness would have carried, on a guess.
 //!
 //! # The mechanism, in three parts
 //!
-//! 1. **Detect** — this module, pure: [`find`] scores each sentence of a round's
-//!    assistant text (fenced code skipped, as `intent::commitments` does) with
-//!    `letibot_tools::similarity` — the notes' TF-IDF cosine — against [`EXEMPLARS`],
-//!    and keeps the best sentence at or over [`FLOOR`]. Similarity rather than a
-//!    phrase list because the operator's own list ends in *"blabla"*: a lexical list
-//!    is the `OPENERS` shape that misses a re-wording.
-//! 2. **Check the claim against the measurement** — [`Check::judge`], handed the
-//!    session's [`Fill`] by the harness. Below the wall the claim is false and the
-//!    model is told so, in the harness's own words with no numbers and no quote of
-//!    what it said ([`notice`]); at the wall it is true, the harness compacts as it
-//!    always has, and nothing is said. An unknown window is not a measurement, so it
-//!    is silence too. The measurement still decides whether the line is sent, and it
-//!    goes to the log and to the operator.
-//! 3. **Once per claim per user turn** — the intent check's own budget. A model that
-//!    repeats the excuse after being told is a finding for the operator
-//!    ([`REPEATED`], a hub warning), not a second slap.
+//! 1. Detect - this module, pure: [`find`] scores each sentence of a round's assistant text
+//!    (fenced code skipped) with `letibot_tools::similarity` against [`EXEMPLARS`] and keeps the
+//!    best sentence at or over [`FLOOR`]. Similarity rather than a phrase list, because the
+//!    operator's own list ends in *"blabla"*. 2. Check the claim against the measurement - [`Check::judge`], handed the session's
+//!    [`Fill`]. Below the wall the claim is false and the model is told so ([`notice`]); at the
+//!    wall it is true and nothing is said; an unknown window is not a measurement either. 3. Once per claim per user turn - a model that repeats the excuse after being told is a
+//!    finding for the operator ([`REPEATED`]), not a second slap.
 //!
-//! **Always on, not behind `--intent-prose`.** That flag exists because the prose
-//! heuristic can be wrong about intent. This one is gated by a measurement, so a false
-//! positive costs one line telling the model the truth about its own fill.
-//!
-//! Every claim found is **logged** to [`LOG`] — the sentence, its score, the measured
-//! fill, the window and whether it was slapped — so the floor is tuned from what
-//! happened, the way `notes-offers.jsonl` tunes the notes' offer floor.
+//! Always on, not behind `--intent-prose`: this one is gated by a measurement, so a false positive
+//! costs one line telling the model the truth about its own fill. Every claim found is logged to
+//! [`LOG`], so the floor is tuned from what happened.
 //!
 //! # How a sentence is scored: a window around the noun, owned by the speaker
 //!
-//! Plain sentence-level cosine was measured first and is not good enough, for a reason
-//! worth writing down. The excuse is very often a subordinate clause of a long sentence
-//! (*"Not starting it: the pane needs six coordinated edits (constructor, slot, fold,
-//! …) plus its tests, and at this point in my context that ends mid-edit"*), and cosine
-//! normalises by the whole sentence's length, so the clause drowns. So the score is
-//! taken over a **window of [`REACH`] terms either side of each [`ANCHORS`] noun**
-//! (`context`, `room`), and the sentence's score is its best window.
+//! Plain sentence-level cosine was not good enough: the excuse is often a subordinate clause of a
+//! long sentence and cosine normalises by the whole sentence's length, so the clause drowns. The
+//! score is a window of [`REACH`] terms either side of each [`ANCHORS`] noun, and the window must
+//! carry one of [`OWNERS`] - a claim about THIS session's fill is the only one the daemon can
+//! check. [`words`] maps `I`, `my` and `me` to [`SELF`] before the shared tokeniser (which drops
+//! them for being short) sees the text, and [`BACKGROUND`] prices the words every sentence uses, so
+//! an excuse's own words are the expensive ones.
 //!
-//! **And the window must be about the speaker's own context** — it has to carry one of
-//! [`OWNERS`]: a first-person word, `remaining` or `fresh`. That is the measurement's
-//! own condition stated lexically: the daemon can only check a claim about THIS
-//! session's fill, so a sentence about a child's wall, the context window as a subject
-//! of work (*"the context window is left unknown rather than wrong"*), or the context of
-//! a change is not a claim it can check, and it is not scored.
+//! # The floor, measured
 //!
-//! **First person is a term here, and it is not in the shared tokeniser.**
-//! `similarity::terms` drops words under three characters, which drops `I`, `my` and
-//! `me` — exactly the words that separate *"my context is at the wall"* from *"it hit
-//! the context wall"*. [`words`] maps them to one term, [`SELF`], before the shared
-//! arithmetic sees the text; `let me` is its own term (`letme`), because it is how
-//! every plan starts and is not a claim about anything the speaker holds.
-//!
-//! **The background corpus is what prices a word.** `idf` is `ln(N/df)` over the
-//! corpus, and a corpus of excuses alone prices `context` — in nearly all of them — at
-//! almost nothing. [`BACKGROUND`] is a set of sentences that say `context` in its other
-//! senses, report a wall that did happen, and talk like a coding agent about nothing
-//! in particular, so the words every sentence uses are cheap and the words an excuse
-//! uses (*spent, end, left, limit, full, nearly*) are not. Background sentences are in
-//! the corpus for their document frequencies only; a sentence is scored against the
-//! exemplars.
-//!
-//! # The floor, measured — and the gap that is left
-//!
-//! MEASURED 2026-10-11 against this box's session store
-//! (`~/.local/share/letibot/sessions.db`, read-only): ONE scan of `transcript_item`
-//! for assistant rows mentioning `context`, `run out of room` or `running low` — 4,547
-//! rows — split into sentences, deduplicated (the same message is often re-sent), and
-//! the 747 distinct sentences carrying `context`, `room` or `running low` labelled by
-//! hand. **79 positives** — a model offering its own context as the reason it stops,
-//! will not start, or hands the work on — and **641 negatives**: every other sense of
-//! the word, every report of a wall that did happen, and the TRUE report of 10-07.
-//! 27 were left out of both sides as ambiguous (*"Writing it down before my context
-//! goes"*, a precaution; *"I've run out of room to keep guessing"*; a model's own
-//! retraction quoting the excuse back, *"When I said 'I'm out of context' I was
-//! guessing"*). The scores, through [`find`] as it runs:
+//! MEASURED 2026-10-11 against this box's store: 747 distinct sentences carrying `context`, `room`
+//! or `running low`, labelled by hand - 79 positives, 641 negatives. Through [`find`]
 //!
 //! ```text
 //!   floor   positives over   negatives over
@@ -110,63 +45,37 @@
 //!   0.28        57/79            0/641
 //! ```
 //!
-//! * **Negatives:** max **0.228** (*"that `<system-update seq=1>` block … is the path
-//!   I deleted, arriving in my own context"* — first person, and about the context, and
-//!   not an excuse), then 0.222 (*"what made room for the one that survived"*). The
-//!   daemon's own *"This session is over its context budget…"* scores 0.000: its window
-//!   has no owner. The TRUE report of 10-07 scores **0.000**: its window carries no
-//!   first-person word, so it is not a claim about the speaker. The floor does not lean
-//!   on the measurement to spare it — the measurement would (it was 1,131,717 of
-//!   1,146,137), and that is the second guard, not the first.
-//! * **Positives:** 0.000 to 1.000; R71's four verbatim excuses score 0.497 (leticl,
-//!   11:48 — *"My context is at the wall…"*), 0.599, 0.719 and 0.782. Not 1.0 even where
-//!   the sentence IS an exemplar, because the score is a window's and not the sentence's.
-//! * **0.25 is above every negative measured, and below 63 of the 79 positives.**
+//! 0.25 is above every negative measured and below 63 of the 79 positives. The 16 it misses
+//! are the honest gap - most score zero because nothing in their window says whose context it is -
+//! and the log ([`LOG`]) is the out-of-sample measurement that moves the floor.
 //!
-//! **The 16 it misses are the honest gap, and they have a shape.** Four score zero
-//! because nothing in their window says whose context it is (*"there's no work left in
-//! the file I can responsibly complete in what remains of this turn's context"*); the
-//! rest are long sentences whose excuse is a few words of a subordinate clause
-//! (*"so it's not something I should start at the end of a context window, and it
-//! deserves your sign-off…"*, 0.20). A lexical tier cannot pull those up without
-//! pulling the daemon's own wall sentences up with them — the lowering from 0.25 to
-//! 0.22 buys four positives for three negatives. That is the measurement a second
-//! tier (embeddings) is owed, written down here rather than discovered later. And the
-//! cost of the miss is what it was before this check existed: the model stops, and the
-//! operator reads why.
-//!
-//! **The calibration set is in-sample**, and that is said rather than hidden: the
-//! exemplars are R71's verbatim sentences and their family (*almost full, running low,
-//! near my context limit, at the end of my context, with the context I have left, a
-//! fresh context*), which is the population the store holds. The log ([`LOG`]) is the
-//! out-of-sample measurement, and it is what moves the floor.
+//! * Negatives: max 0.228, then 0.222. The daemon's own *"This session is over its context
+//!   budget…"* scores 0.000: its window has no owner. The TRUE report of 10-07 scores 0.000
+//!   too - its window carries no first-person word, so it is not a claim about the speaker. * Positives: 0.000 to 1.000; 's four verbatim excuses score 0.497 to 0.782. Not 1.0 even
+//!   where the sentence IS an exemplar, because the score is a window's and not the sentence's.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use letibot_tools::similarity::{self, Corpus, MIN_TERM, Weights};
 
-/// **The score a sentence has to reach before it is a claim.** See the module doc for
-/// the measurement: above every one of 641 negatives (max 0.228), below 63 of 79
-/// positives.
+/// The score a sentence has to reach before it is a claim - above every one of 641 negatives
+/// (max 0.228), below 63 of 79 positives. See the module doc for the measurement.
 pub const FLOOR: f64 = 0.25;
 
-/// How many terms either side of an [`ANCHORS`] noun are scored. Measured: 5 and 6
-/// separate the calibration set at the same floor, 8 starts reaching into the next
-/// clause and loses positives; 5 is the narrower.
+/// How many terms either side of an [`ANCHORS`] noun are scored. Measured: 5 and 6 separate the
+/// calibration set at the same floor, 8 starts reaching into the next clause and loses positives.
 pub const REACH: usize = 5;
 
-/// The nouns an excuse is about. `room` because *"before I run out of room"* is the
-/// same claim in other words.
+/// The nouns an excuse is about. `room` because *"before I run out of room"* is the same claim in
+/// other words.
 pub const ANCHORS: &[&str] = &["context", "room"];
 
-/// The term a first-person word becomes — see [`words`].
+/// The term a first-person word becomes - see [`words`].
 pub const SELF: &str = "myself";
 
-/// The words that make a window a claim about the speaker's OWN context: first person,
-/// what *remains* of it, or wanting a *fresh* one. Measured: adding `left` let in
-/// *"the context window is left unknown"*, adding `turn` and `session` let in the
-/// daemon's own *"This session is over its context budget"*.
+/// The words that make a window a claim about the speaker's OWN context: first person, what
+/// *remains* of it, or wanting a *fresh* one. Measured
 pub const OWNERS: &[&str] = &[SELF, "remaining", "fresh"];
 
 /// The file each claim is appended to, under the workspace.
@@ -175,8 +84,8 @@ pub const LOG: &str = "context-claims.jsonl";
 /// The hub warning for a model that repeats the claim after being told its fill.
 pub const REPEATED: &str = "context_claim_repeated";
 
-/// **The excuses** — R71's verbatim sentences and their family. A sentence is scored
-/// against each of these and keeps its best.
+/// The excuses - 's verbatim sentences and their family. A sentence is scored against each
+/// of these and keeps its best.
 pub const EXEMPLARS: &[&str] = &[
     "My context is at the wall, so I'll stop here rather than start a piece I can't finish.",
     "My context is nearly spent, and that's the honest reason to stop rather than start the next change.",
@@ -197,23 +106,17 @@ pub const EXEMPLARS: &[&str] = &[
     "I can't finish it in what is left of this session's context.",
     "I have very little context left, so I am naming it rather than starting it.",
     "I'm at the end of what I can hold in context, so here is the state.",
-    // **The capacity claim used to justify HANDING WORK OFF**, not only stopping — added
-    // 2026-10-11 after pg-noop said *"That last piece is mechanical but it is eight sites across
-    // two files, and my context cannot carry it safely — a half-applied refactor is worse than
-    // none, … Dispatching it"* and scored under the floor: none of the stop family's words
-    // (full, spent, wall, out) are in it. The operator: *"look what we need to catch wrt
-    // context"*.
+    // The capacity claim used to justify HANDING WORK OFF, not only stopping - pg-noop's
+    // *"my context cannot carry it safely - a half-applied refactor is worse than none"* scored
+    // under the floor: none of the stop family's words (full, spent, wall, out) are in it.
     "My context cannot carry it safely, so I am dispatching it to a subagent.",
     "This is more than my context can hold, so I'll hand it to a child.",
     "My context won't survive this change, so I'm delegating it.",
     "I can't keep all of this in my context, so a subagent will do it.",
     "It is too big for my context, so I'm dispatching it with the sites named.",
-    // **The capacity claim used to RATION work, in reasoning** — added 2026-10-11 from pg-noop's
-    // reasoning, where it appeared 295 times in one transcript generation while the head showed
-    // 598k of 1M: *"Hmm — my context 49% → one call"*, *"Reply — tight (my context is long)"*,
-    // *"My context at 90% → one call + a tight reply"*. Nothing stops, so none of the families
-    // above match; the work is cut to fit a budget the harness owns. The operator: *"we have to
-    // catch 'my context'-like stuff even in reasoning"*.
+    // The capacity claim used to RATION work, in reasoning - pg-noop's reasoning, where it
+    // appeared 295 times in one transcript generation: *"Hmm - my context 49% → one call"*.
+    // Nothing stops, so none of the families above match
     "My context is at 49%, so one call.",
     "My context is long, so keep the reply tight.",
     "My context is at 90%, so one call and a tight reply.",
@@ -225,17 +128,9 @@ pub const EXEMPLARS: &[&str] = &[
     "The nag, and my context is at 73%, plenty.",
 ];
 
-/// **The other claim about the speaker's own context: that it HOLDS something** — the nearest
-/// sense to an excuse and its opposite. *"I have it in context."* is first person, about the
-/// context and short, which is nearly every term `"I have very little context left"` has, and
-/// it scored 0.530 (the operator: *"interesting - "I have it in context." triggered context
-/// nag"*). A window is a claim only when it is nearer an [`EXEMPLARS`] sentence than all of
-/// these: the excuse says something is short, these say something is there. Worded apart from
-/// the tests' sentences, so the tests measure the contrast and not a copy.
-///
-/// MEASURED 2026-10-12 against this box's store (629 assistant and reasoning rows mentioning
-/// `context` or `room`, read-only): 14 sentences over the floor before, 6 after, and the 8 it
-/// stopped are all *"I have it in context."* and *"Let me do it — I have it in context."*.
+/// The other claim about the speaker's own context: that it HOLDS something - the nearest
+/// sense to an excuse and its opposite. *"I have it in context."* is first person, about
+/// the context and short, so it scored 0.530.
 pub const HOLDING: &[&str] = &[
     "I have that in my context already.",
     "I have the file in context, no need to read it again.",
@@ -245,9 +140,9 @@ pub const HOLDING: &[&str] = &[
     "I already have the context for this.",
 ];
 
-/// **The background** — in the corpus for its document frequencies, never matched
-/// against. Reports of a wall that did happen, `context` in its other senses, and a
-/// coding agent's ordinary sentences. See the module doc.
+/// The background - in the corpus for its document frequencies, never matched against. Reports
+/// of a wall that did happen, `context` in its other senses, and a coding agent's ordinary
+/// sentences: the words every sentence uses are cheap, the ones an excuse uses are not.
 pub const BACKGROUND: &[&str] = &[
     "The child hit the context wall after 77 rounds and the session was compacted.",
     "Three subagents died at the context wall on this task.",
@@ -275,13 +170,9 @@ pub const BACKGROUND: &[&str] = &[
     "The layout leaves room for the marker at the end of the row.",
 ];
 
-/// **The words of a text, as this check counts them.**
-///
-/// `similarity::terms`'s rule — lowercased runs of letters and digits, at least
-/// [`MIN_TERM`] long — with the one difference the module doc argues for: `I`, `my`,
-/// `me`, `mine` and `myself` become [`SELF`], and `let me` becomes `letme`. `I'm`,
-/// `I'd` and `I've` come out as `I` plus a fragment the length rule drops, so they are
-/// first person too.
+/// The words of a text, as this check counts them. `similarity::terms`'s rule - lowercased
+/// runs of letters and digits, at least [`MIN_TERM`] long - with one difference: `I`, `my`
+/// `me` `mine` and `myself` become [`SELF`], and `let me` becomes `letme`.
 pub fn words(text: &str) -> Vec<String> {
     let raw: Vec<String> = text
         .split(|c: char| !c.is_alphanumeric())
@@ -309,7 +200,7 @@ pub fn words(text: &str) -> Vec<String> {
 
 /// The corpus and the exemplars' weights, built once: the corpus is constants.
 struct Detector {
-    /// [`HOLDING`], weighed — what a window must be further from than from an excuse.
+    /// [`HOLDING`], weighed - what a window must be further from than from an excuse.
     holding: Vec<Weights>,
     corpus: Corpus,
     exemplars: Vec<Weights>,
@@ -353,9 +244,9 @@ fn detector() -> &'static Detector {
     })
 }
 
-/// **How much one sentence reads like the excuse**, `0.0` to `1.0`: its best window
-/// (see the module doc), scored against its nearest exemplar. `0.0` when the sentence
-/// has no [`ANCHORS`] noun, or no window around one says whose context it is.
+/// How much one sentence reads like the excuse, `0.0` to `1.0`: its best window, scored
+/// against its nearest exemplar. `0.0` when the sentence has no [`ANCHORS`] noun, or no window
+/// around one says whose context it is.
 pub fn score(sentence: &str) -> f64 {
     let d = detector();
     let ws = words(sentence);
@@ -387,12 +278,7 @@ pub fn score(sentence: &str) -> f64 {
     best
 }
 
-/// **The sentences of a turn's prose**, fenced code skipped.
-///
-/// A paragraph is joined across its lines (a model wraps a sentence wherever it
-/// likes), a list item or heading starts a new one, and a sentence ends at `.`, `!`,
-/// `?`, `;` or `:` followed by whitespace or the end — never at the period inside
-/// `2.7` or `config.rs`, the rule `notes::first_sentence` was measured into.
+/// The sentences of a turn's prose, fenced code skipped.
 pub fn sentences(text: &str) -> Vec<String> {
     let mut paragraphs: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -457,7 +343,7 @@ pub struct Claim {
     pub score: f64,
 }
 
-/// **The claim in a round's prose**, if there is one: the best-scoring sentence at or
+/// The claim in a round's prose, if there is one: the best-scoring sentence at or
 /// over [`FLOOR`]. Ties keep the earlier sentence.
 pub fn find(text: &str) -> Option<Claim> {
     let mut best: Option<Claim> = None;
@@ -473,13 +359,9 @@ pub fn find(text: &str) -> Option<Claim> {
     best
 }
 
-/// **The session's fill, as the daemon measured it** — what a claim is checked
-/// against.
-///
-/// The harness builds this in ONE place (`Harness::context_fill`), so the day the
-/// wall's own measurement changes (R72) this check changes with it. `resident` and
-/// `window` are in the units the head shows; `at_wall` is the wall's own verdict, in
-/// whatever units it is judged in.
+/// The session's fill, as the daemon measured it - what a claim is checked against. The
+/// harness builds this in ONE place (`Harness::context_fill`), so the day the wall's own
+/// measurement changes this check changes with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fill {
     pub resident: u64,
@@ -488,8 +370,8 @@ pub struct Fill {
 }
 
 impl Fill {
-    /// Whole percent, rounded down — a model told *"99%"* at 99.7 is told the truth
-    /// about the room it has, and one told *"100%"* would read that it has none.
+    /// Whole percent, rounded down - a model told *"99%"* at 99.7 is told the truth about the room
+    /// it has, and one told *"100%"* would read that it has none.
     pub fn percent(&self) -> u64 {
         if self.window == 0 {
             return 100;
@@ -498,25 +380,16 @@ impl Fill {
     }
 }
 
-/// **The line the model is given**, in the harness's voice.
-///
-/// **No numbers.** The operator, 2026-10-12: *"we should stop giving the real numbers really, no
-/// point - just tell it stop sizing and do the work"*. A fill quoted back is one more thing to
-/// reason about, and on a false hit — a model at 93% saying "my context is 92% — carry on" — the
-/// numbers were the only part of the line that pushed it anywhere. The measurement still decides
-/// whether the line is sent (`Check::judge`) and still goes to the log and to the operator.
-///
-/// **And no quote** (R93.A1). It quoted the model's own sentence back — ✓ marks, percentages and
-/// all — and the *"my context N%"* tic began two minutes after the first numbered check: the line
-/// planted the phrase it was there to stop. The claim still goes to the log and to the operator.
-/// *"If context was the only reason"* (R93.A5) because a legitimate stop may mention context.
+/// The line the model is given, in the harness's voice. No numbers, because a fill quoted
+/// back is one more thing to reason about, and on a false hit the numbers were the only
+/// part of the line that pushed it anywhere.
 pub fn notice(_claim: &Claim, _fill: &Fill) -> String {
     "[context check] Don't size the work by context; the harness handles it. If context was the \
      only reason you stopped, continue the task."
         .to_string()
 }
 
-/// **The operator's line for a model that said it again after being told.**
+/// The operator's line for a model that said it again after being told.
 pub fn repeated(claim: &Claim, fill: &Fill) -> String {
     format!(
         "the model said its context is full again after being told it is not: \"{}\" \
@@ -550,12 +423,12 @@ pub enum Verdict {
     Slap(String),
     /// Told once already this turn: tell the operator, with this line.
     Repeated(String),
-    /// Nothing to say — the claim is true, the window is unknown, or the operator has
+    /// Nothing to say - the claim is true, the window is unknown, or the operator has
     /// already been told.
     Quiet,
 }
 
-/// **Where a claim was found**: the reply the operator reads, or the reasoning in front of it.
+/// Where a claim was found: the reply the operator reads, or the reasoning in front of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Source {
     Reply,
@@ -571,11 +444,9 @@ impl Source {
     }
 }
 
-/// **The line for a claim made in REASONING** — the model budgeting its work by its context
-/// rather than stopping, so the line does not say "continue with what you stopped"; it says whose
-/// budget the window is and what to size the work by.
-/// No numbers, for [`notice`]'s reason.
-/// No quote, for [`notice`]'s reason.
+/// The line for a claim made in REASONING - the model budgeting its work by its context rather
+/// than stopping, so the line does not say "continue with what you stopped"; it says what to size
+/// the work by. No numbers and no quote, for [`notice`]'s reasons.
 pub fn reasoning_notice(_claim: &Claim, _fill: &Fill) -> String {
     "[context check] Don't size the work by context; the harness handles it. Do the work the task \
      needs."
@@ -592,11 +463,9 @@ pub struct Finding {
 }
 
 impl Finding {
-    /// **One line to [`LOG`]**: the sentence, its score, the fill and window, and
-    /// whether the model was told. Best-effort, like the offers' log — a check that
-    /// fails to write a line about itself is still a check.
-    /// `logs` is the session's logs directory (`Config::daemon_logs`), never the workspace
-    /// (TODO R92.4).
+    /// One line to [`LOG`]: the sentence, its score, the fill and window, and whether the model
+    /// was told. Best-effort, like the offers' log - a check that fails to write a line about
+    /// itself is still a check.
     pub fn log(&self, logs: &Path, session: &str) {
         let line = serde_json::json!({
             "at": std::time::SystemTime::now()
@@ -628,7 +497,7 @@ impl Finding {
     }
 }
 
-/// **One user turn's budget**: one slap, then one warning to the operator, then
+/// One user turn's budget: one slap, then one warning to the operator, then
 /// silence. Lives in `run_rounds` beside the intent check's `nudges_left`.
 #[derive(Debug, Default)]
 pub struct Check {
@@ -641,14 +510,13 @@ impl Check {
         Check::default()
     }
 
-    /// **Judge one round's prose against the measured fill.** `None` when the prose
-    /// holds no claim; otherwise the claim and what to do about it, to be logged
-    /// whichever way it went.
+    /// Judge one round's prose against the measured fill. `None` when the prose holds no claim
+    /// otherwise the claim and what to do about it, to be logged whichever way it went.
     pub fn judge(&mut self, text: &str, fill: Option<Fill>) -> Option<Finding> {
         self.judge_from(Source::Reply, text, fill)
     }
 
-    /// **[`Check::judge`] for a round's REASONING** — the same budget, so a turn is told once
+    /// [`Check::judge`] for a round's REASONING - the same budget, so a turn is told once
     /// whichever half said it, and the reasoning's own line.
     pub fn judge_reasoning(&mut self, text: &str, fill: Option<Fill>) -> Option<Finding> {
         self.judge_from(Source::Reasoning, text, fill)
@@ -698,10 +566,9 @@ mod tests {
         at_wall: true,
     };
 
-    /// **pg-noop's reasoning, verbatim, is a claim** — 2026-10-11, 295 of these in one transcript
-    /// generation while the head showed 598k of 1M. The model is not stopping; it is cutting the
-    /// work to a budget the harness owns, and the tic marks are left in because that is how it
-    /// wrote them.
+    /// pg-noop's reasoning, verbatim, is a claim - 295 of these in one transcript generation.
+    /// The model is not stopping; it is cutting the work to a budget the harness owns, and the tic
+    /// marks are left in because that is how it wrote them.
     #[test]
     fn rationing_by_context_in_reasoning_is_a_claim() {
         for s in [
@@ -718,7 +585,7 @@ mod tests {
         }
     }
 
-    /// **A reasoning claim is told with the reasoning's line, on the turn's one budget.**
+    /// A reasoning claim is told with the reasoning's line, on the turn's one budget.
     #[test]
     fn a_reasoning_claim_gets_its_own_line_and_shares_the_budget() {
         let mut check = Check::new();
@@ -742,7 +609,7 @@ mod tests {
         assert_eq!(second.source, Source::Reply);
     }
 
-    /// **R71's sentences, verbatim, are claims** — the five the store gave, every one
+    /// 's sentences, verbatim, are claims - the five the store gave, every one
     /// over the floor.
     #[test]
     fn the_measured_excuses_are_claims() {
@@ -757,7 +624,7 @@ mod tests {
         }
     }
 
-    /// **The operator's own list, which ends in "blabla"** — re-wordings that are in no
+    /// The operator's own list, which ends in "blabla" - re-wordings that are in no
     /// exemplar verbatim.
     #[test]
     fn the_family_is_caught_in_other_words() {
@@ -772,8 +639,8 @@ mod tests {
         }
     }
 
-    /// **The TRUE report of 10-07 is not a claim** — and not because of the
-    /// measurement: nothing in it says whose context it is.
+    /// The TRUE report of 10-07 is not a claim - and not because of the measurement: nothing in
+    /// it says whose context it is.
     #[test]
     fn the_true_report_is_not_a_claim() {
         let s = "It hit the **context wall** — 1,131,717 of 1,146,137 tokens resident, with \
@@ -782,7 +649,7 @@ mod tests {
         assert_eq!(find(s), None);
     }
 
-    /// **"Context" in the senses this repository uses it all day.**
+    /// "Context" in the senses this repository uses it all day.
     #[test]
     fn the_other_senses_of_context_are_not_claims() {
         for s in [
@@ -800,11 +667,9 @@ mod tests {
         }
     }
 
-    /// **Having something in context is not a claim about running out of it** — the operator:
-    /// *"interesting - "I have it in context." triggered context nag"*, and the letim log's own
-    /// *"hmm, the task is intricate and I have the context."*, scored 0.313 and slapped at 888,887
-    /// of 1,000,000. Both are short, first person and about the context, which is nearly every
-    /// term `"I have very little context left"` has; neither says anything is short.
+    /// Having something in context is not a claim about running out of it - *"I have it in
+    /// context."* scored 0.313 and was slapped at 888,887 of 1,000,000. Both it and *"the task
+    /// is intricate and I have the context"* are short, first person and about the context
     #[test]
     fn having_it_in_context_is_not_a_claim() {
         for s in [
@@ -819,7 +684,7 @@ mod tests {
         }
     }
 
-    /// **The live miss of 2026-10-11** — a capacity claim used to justify delegating, which the
+    /// The live miss of 2026-10-11 - a capacity claim used to justify delegating, which the
     /// stop family did not reach. It must score over the floor now.
     #[test]
     fn a_context_that_cannot_carry_the_work_is_a_claim() {
@@ -830,8 +695,8 @@ mod tests {
         assert!(best >= FLOOR, "scored {best:.3}, under the floor {FLOOR}");
     }
 
-    /// The first-person words the shared tokeniser drops are one term here, and
-    /// `let me` is not one of them.
+    /// The first-person words the shared tokeniser drops are one term here, and `let me` is not one
+    /// of them.
     #[test]
     fn first_person_is_a_term_and_let_me_is_not_first_person() {
         assert_eq!(
@@ -840,8 +705,8 @@ mod tests {
         );
     }
 
-    /// Fenced code is not prose, and a period inside a number or a path is not the
-    /// end of a sentence.
+    /// Fenced code is not prose, and a period inside a number or a path is not the end of a
+    /// sentence.
     #[test]
     fn sentences_skip_fences_and_keep_numbers_whole() {
         let text = "First one at 2.7 s in config.rs. Second\none wraps.\n\
@@ -871,8 +736,8 @@ mod tests {
         assert!(c.sentence.starts_with("My context is at the wall"), "{c:?}");
     }
 
-    /// **Below the wall, the model is told — once, without the numbers.** Then the
-    /// operator is told, once, with them. Then nothing.
+    /// Below the wall, the model is told - once, without the numbers. Then the operator is
+    /// told, once, with them. Then nothing.
     #[test]
     fn one_slap_then_one_warning_then_silence() {
         let excuse = "My context is nearly spent, so I'll stop here.";
@@ -881,7 +746,7 @@ mod tests {
         let Verdict::Slap(line) = &first.verdict else {
             panic!("the first claim is slapped: {first:?}")
         };
-        // R93.A1: no quote — the model's own sentence said back re-planted the phrase.
+        // .A1: no quote - the model's own sentence said back re-planted the phrase.
         assert!(!line.contains("nearly spent"), "{line}");
         assert!(
             line.starts_with("[context check] Don't size the work by context"),
@@ -898,8 +763,8 @@ mod tests {
         assert_eq!(third.verdict, Verdict::Quiet);
     }
 
-    /// **At the wall the claim is true** — the harness compacts, and the model is not
-    /// told it is wrong. An unknown window is not a measurement either.
+    /// At the wall the claim is true - the harness compacts, and the model is not told it is
+    /// wrong. An unknown window is not a measurement either.
     #[test]
     fn a_true_claim_and_an_unmeasured_one_are_quiet() {
         let excuse = "My context is at the wall, so I'll stop here.";
@@ -928,7 +793,7 @@ mod tests {
         assert_eq!(grouped(1_000), "1,000");
     }
 
-    /// **The log line carries what tunes the floor.**
+    /// The log line carries what tunes the floor.
     #[test]
     fn a_finding_is_logged_with_its_score_and_fill() {
         let dir = std::env::temp_dir().join(format!(

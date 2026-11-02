@@ -1,41 +1,6 @@
-//! **One top-level session's connection to the box's room** — the tool's verbs behind it, the bell
-//! that becomes a wake, and the beat the daemon runs on the session's behalf.
-//!
-//! # The three things this file is
-//!
-//! 1. **[`SessionRoom`] is the `room` tool's half.** `crates/tools` has no socket and no wire; it
-//!    has [`letibot_tools::builtins::room::RoomLink`], and this is the implementation that speaks
-//!    [`letibot_room::Request`] over the coordinator's socket and answers in sentences.
-//! 2. **The bell.** A [`letibot_room::Event`] arrives on the connection's reader thread, becomes a
-//!    sentence ([`super::wake::sentence`]) in the session's queue, and rings the worker's bell —
-//!    which is firecode's fourth rule satisfied in code: *a bell is something that can inject a
-//!    turn.* A session that only ever reads the room when a person prompts it is a mailbox, and the
-//!    room would be read when somebody happened to look.
-//! 3. **The beat on the session's behalf.** [`SessionRoom::turn_started`] begins beating and
-//!    [`SessionRoom::turn_ended`] stops. This is the difference between a design that works and one
-//!    that blames the model: a model that must remember to call `beat` is thinking about its work,
-//!    and the ninety-second lease would take its item while it works. The beat is the daemon's
-//!    because the turn clock is the daemon's.
-//!
-//! # A subagent has no link
-//!
-//! The room is for top-level sessions only, and a subagent speaks through its parent. So a session
-//! with a `parent_session_id` is given **no link at all** rather than a link that refuses: the tool
-//! it would reach is not on its seat either, and two refusals for one rule is one too many to
-//! explain. The refusal that matters is the room's own, at the door.
-//!
-//! # The restart, and the two notes it leaves
-//!
-//! The pane's fifth control is not a room verb: it is a **daemon lifetime**, asked of the
-//! supervisor (`super::supervise`) and never performed by the coordinator on itself. Two things
-//! follow, and both are here because this is the object that holds the socket:
-//!
-//! * [`SessionRoom::restart`] asks the supervisor and then writes the [`letibot_room::Marker`]
-//!   beside the socket — *who pressed it, and when* — so the pane can say why the room is a new one.
-//! * The reader thread **watches the room's instance** (the lease's `started_ms`). An instance that
-//!   changes with no marker naming it is a room that died and came back, and that is written as
-//!   [`letibot_room::Cause::Crashed`]. An observation never overwrites an act: a marker that
-//!   already claims the instance is left alone.
+//! One top-level session's connection to the box's room - the `room` tool's verbs behind it, the
+//! bell that becomes a wake, and the beat the daemon runs while a turn does. A subagent has no link
+//! at all: the room is for top-level sessions, and the refusal that matters is the room's own.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
@@ -47,44 +12,38 @@ use super::supervise::{RestartFrame, RoomSupervisor};
 use super::wake;
 use crate::plugins::room_feed::{RestartView, RoomFeed, RoomSnapshot};
 
-/// **How often the room is read for the pane**, and how old a drawn picture may be.
-///
-/// One second, because that is the finest thing a row says (an age in `{}s`) and because the feed's
-/// clock is quantised to the same second (`room_feed::CLOCK_QUANTUM_MS`) — a faster read would be
-/// answered from a cache and drawn identically. It runs on a thread of its own and never on a
-/// caller's: a pane is drawn on the daemon's idle pass, and a coordinator that is up but wedged
-/// must not hold that pass.
+/// How often the room is read for the pane, and how old a drawn picture may be. One second
+/// because that is the finest thing a row says and the feed's clock is quantised to the same second
+/// it runs on its own thread, so a wedged coordinator never holds the daemon's idle pass.
 pub const PANE_READ_EVERY_MS: u64 = 1_000;
 
-/// **A session's room.** One per top-level session, held by its `Harness` and by its tool.
+/// A session's room. One per top-level session, held by its `Harness` and by its tool.
 pub struct SessionRoom {
     client: Client,
     session: String,
     socket: std::path::PathBuf,
-    /// **Which project's room this connection is in** — `letibot_room::project_key`'s answer for
-    /// the session's project root, and the half of the room's name that is not the box's. Resolved
-    /// once, at the open, because a session does not move between projects.
+    /// Which project's room this connection is in - the half of the room's name that is not the
+    /// box's. Resolved once, at the open, because a session does not move between projects.
     project: String,
-    /// **The tree, from the daemon that can see it** — `None` on a link whose caller has no
-    /// registry (a fixture, the coordinator's own daemon). A link with none sends no `Members`
-    /// frame, and its room holds whoever its daemon described last.
+    /// The tree, from the daemon that can see it - `None` on a link whose caller has no
+    /// registry (a fixture, the coordinator's own daemon). A link with none sends no `Members`.
     roster: Option<Arc<dyn crate::room::roster::RosterSource>>,
     /// The beat, while a turn is running. `None` between turns, which is exactly when the lease is
-    /// counting — see [`SessionRoom::turn_ended`].
+    /// counting - see [`SessionRoom::turn_ended`].
     beat: Mutex<Option<Beat>>,
-    /// **The room as the PANE last saw it** — read on [`SessionRoom::reader`]'s thread, so that
+    /// The room as the PANE last saw it - read on [`SessionRoom::reader`]'s thread, so that
     /// drawing a pane is a clone and never a socket call. `None` until the first read lands.
     room: Mutex<Option<RoomSnapshot>>,
-    /// **Who may restart the box's room on this session's behalf** — `None` on the coordinator's
-    /// own daemon, on a box with no launcher, and on a fixture. A session with none is a pane that
-    /// offers no restart key rather than a key that would refuse.
+    /// Who may restart the box's room on this session's behalf - `None` on the coordinator's
+    /// own daemon, on a box with no launcher, and on a fixture: a pane that offers no key rather
+    /// than a key that would refuse.
     supervisor: Option<Arc<dyn RoomSupervisor>>,
-    /// **The room instance this link last saw** — the lease's `started_ms`. A change here that no
+    /// The room instance this link last saw - the lease's `started_ms`. A change here that no
     /// marker claims is a crash, which is the one cause of a restart nobody asks for.
     seen: Mutex<Option<u64>>,
-    /// **The worker's bell**, kept as well as handed to the client — see [`SessionRoom::note_gap`].
-    /// A gap in the connection is the one thing a session must be woken for that no event can
-    /// carry, because the events are exactly what it did not hear.
+    /// The worker's bell, kept as well as handed to the client - see [`SessionRoom::note_gap`]
+    /// a gap in the connection is the one thing no event can carry, because the events are exactly
+    /// what it did not hear.
     bell: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
@@ -98,15 +57,9 @@ impl std::fmt::Debug for SessionRoom {
 }
 
 impl SessionRoom {
-    /// **Connect as `session`**, with `bell` rung for every event the room sends about it.
-    ///
-    /// `bell` is a closure rather than the registry so this type needs no daemon: the caller —
-    /// `Harness::open` — has the bell, and what it does with it is one `ring_wake`.
-    ///
-    /// **`project` is which room this is**, and it is the whole of *a room is a project's*: the
-    /// name on the wire is `letibot_room::room_name(&host_key, project)`, so a session in another
-    /// project dials another room on the same socket and the coordinator refuses a name that is not
-    /// this box's. `roster` is the tree, which the room cannot see for itself.
+    /// Connect as `session`, with `bell` rung for every event the room sends about it.
+    /// `bell` is a closure rather than the registry so this type needs no daemon. `project` is
+    /// which room this is - the name on the wire is `room_name(&host_key, project)`.
     pub fn connect(
         session: &str,
         socket: &Path,
@@ -116,28 +69,16 @@ impl SessionRoom {
         supervisor: Option<Arc<dyn RoomSupervisor>>,
     ) -> Result<Arc<SessionRoom>, String> {
         let me = session.to_string();
-        // **This box's key, read once.** Both questions below are derivations from it, and
-        // `host_key` shells out to `uname -n`: two calls for one answer is a subprocess a session's
-        // open does not need to pay for twice.
+        // This box's key, read once. Both questions below derive from it, and `host_key` shells
+        // out to `uname -n`: a session's open need not pay for that twice.
         let key = letibot_room::host_key();
-        // **The arbiter is not woken by the queue's traffic.** The coordinator's own session is the
-        // arbiter, so the server routes every event to it — that is how a question reaches it — but
-        // a turn per `post` would be a turn per item somebody else made, on the one session whose
-        // job is to answer questions. `Raised`, `Asked` and `Ruled` are its business; the rest it
-        // reads when it looks (`room queue`, `room questions`).
+        // The arbiter is not woken by the queue's traffic. The server routes every event to it -
+        // that is how a question reaches it - but a turn per `post` would be a turn per item
+        // somebody else made, on the one session whose job is to answer questions.
         let arbiter = session == letibot_room::coordinator_session(&key);
-        // **A tag's agent hears its own tag, and a note is not a turn.** Two rules in one audience:
-        //
-        // * **its own tag only** — the server addresses an event to the sessions queued under that
-        //   tag and, since this slice, to the tag's agent; this check is the other half of that
-        //   one rule, and it is what makes *a tag's bell does not ring for another tag's item* a
-        //   property of the connection rather than of the router alone.
-        // * **a turn only for a dispute** — the operator's cost answer: a claim, a healthy beat and
-        //   a finished item are comparisons the room has already made, so they arrive as NOTES
-        //   (`wake::push`) that the agent reads when something does earn a turn. Only `Raised` and
-        //   `Asked` ring the bell. Under the other cost model — a turn per event — every claim on
-        //   this box would be one model call per tag, which is the bill this design exists to
-        //   refuse.
+        // A tag's agent hears its own tag, and a note is not a turn - the operator's cost answer
+        // a claim, a healthy beat and a finished item are comparisons the room already made, so they
+        // arrive as notes and only `Raised` and `Asked` ring the bell.
         let tag = letibot_room::tag_of_session(&key, session);
         let wake: letibot_room::client::Wake = {
             let bell = Arc::clone(&bell);
@@ -145,9 +86,8 @@ impl SessionRoom {
             Arc::new(move |event: &letibot_room::Event| {
                 use letibot_room::Event;
                 if let Some(tag) = tag.as_deref() {
-                    // A `Ruled` carries no tag of its own (the room answers which item it was
-                    // about), so its arrival is the addressing: the server only sends one to the
-                    // sessions the item's tag reaches.
+                    // A `Ruled` carries no tag of its own, so its arrival IS the addressing: the
+                    // server only sends one to the sessions the item's tag reaches.
                     let mine = event.tag() == tag || matches!(event, Event::Ruled { .. });
                     if !mine {
                         return;
@@ -168,7 +108,7 @@ impl SessionRoom {
                 {
                     return;
                 }
-                // **The push, then the ring** — a ring with nothing behind it is a wake that finds
+                // The push, then the ring - a ring with nothing behind it is a wake that finds
                 // nothing and costs a pass over the store.
                 if let Some(line) = wake::sentence(event) {
                     wake::push(&me, line);
@@ -176,8 +116,8 @@ impl SessionRoom {
                 }
             })
         };
-        // **The room's name, derived from the box and the project** — never invented, and the
-        // coordinator holds the same two halves to what a `Hello` says (`Server::project_of_hello`).
+        // The room's name, derived from the box and the project - never invented, and the
+        // coordinator checks a `Hello` against the same two halves.
         let named = letibot_room::room_name(&key, project);
         let client = Client::connect_named(socket, Speaker::top_level(session), named, wake)
             .map_err(|e| e.to_string())?;
@@ -190,9 +130,8 @@ impl SessionRoom {
             beat: Mutex::new(None),
             room: Mutex::new(None),
             supervisor,
-            // **The first sighting is not a crash.** A daemon that connects to a room which has
-            // been up for an hour did not witness anything, so the instance is recorded and no
-            // marker is written.
+            // The first sighting is not a crash. A daemon that connects to a room which has
+            // been up for an hour did not witness anything, so no marker is written.
             seen: Mutex::new(letibot_room::room_started_ms(socket)),
             bell,
         });
@@ -200,16 +139,15 @@ impl SessionRoom {
         Ok(room)
     }
 
-    /// **Start the thread that keeps the pane's picture of the room.** It holds a `Weak`, so the
-    /// connection is not kept open by a reader — the same rule the client's own reader thread
-    /// keeps, and the reason a dropped session's close is seen by the coordinator at once.
+    /// Start the thread that keeps the pane's picture of the room. It holds a `Weak`, so a
+    /// reader never keeps the connection open - the same rule the client's own reader keeps.
     fn reader(me: &Arc<SessionRoom>) {
         let weak: Weak<SessionRoom> = Arc::downgrade(me);
         let _ = std::thread::Builder::new()
             .name(format!("room-pane-{}", me.session))
             .spawn(move || {
                 loop {
-                    // **The first read happens now**, not a second from now: a session's panes are
+                    // The first read happens now, not a second from now: a session's panes are
                     // announced as it opens, and the frame after this one should have a room in it.
                     let Some(me) = weak.upgrade() else {
                         return;
@@ -217,35 +155,27 @@ impl SessionRoom {
                     let snap = me.read_room();
                     *me.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
                     me.note_instance();
-                    // **The tree, on the same tick as the pane's read.** A room keeps no store, so
-                    // a restarted coordinator knows nobody until a daemon says — and a session
-                    // list is the daemon's to give (`crate::room::roster`). Sending it every poll
-                    // rather than on a change is what makes that self-healing, and it is one small
-                    // frame a second on a connection that is already reading one.
+                    // The tree, on the same tick as the pane's read. A room keeps no store, so a
+                    // restarted coordinator knows nobody until a daemon says - and sending it every
+                    // poll rather than on a change is what makes that self-healing.
                     me.say_who_is_here();
-                    // **And a gap in the bell, said once.** A connection that was down and is back
-                    // was handed a count with its `Welcome`; the events themselves are gone, so the
-                    // session is woken to re-read the state rather than left believing it heard
-                    // everything (`wake::missed_line`). After the tree, because the wake it rings
-                    // may read the room — and a room that has just been told who is in it is the
-                    // one the woken turn should see.
+                    // And a gap in the bell, said once. A connection that was down and is back
+                    // was handed a count with its `Welcome`; the events are gone, so the session is
+                    // woken to re-read the state rather than left believing it heard everything.
                     me.note_gap();
                     drop(me);
                     std::thread::sleep(std::time::Duration::from_millis(PANE_READ_EVERY_MS));
                     if weak.strong_count() == 0 {
-                        // The session is gone. Its `Client` went with it, which closed the socket,
-                        // which is the coordinator's `note_gone` — so there is nothing to do here
-                        // and nothing to say.
+                        // The session is gone. Its `Client` went with it, which closed the socket -
+                        // the coordinator's `note_gone` - so there is nothing to do here.
                         return;
                     }
                 }
             });
     }
 
-    /// **Tell the room who is in it** — the project's tree, from the daemon that can see it.
-    ///
-    /// A failure is not said: a room that cannot be reached is already drawn as `unreadable` by the
-    /// read above, and a second sentence about the same fact is a wall of notices.
+    /// Tell the room who is in it - the project's tree, from the daemon that can see it. A
+    /// failure is not said: the read above already draws an unreachable room as `unreadable`.
     fn say_who_is_here(&self) {
         let Some(roster) = self.roster.as_ref() else {
             return;
@@ -254,23 +184,22 @@ impl SessionRoom {
         let _ = self.client.request(&Request::Members { rows });
     }
 
-    /// **Which project's room this is** — the key half of its name.
+    /// Which project's room this is - the key half of its name.
     pub fn project(&self) -> &str {
         &self.project
     }
 
-    /// **The room, in one read** — every item, every open question, the arbiter, and the identity.
-    ///
-    /// A room that cannot be read is not an error here: it is a snapshot whose `unreadable` carries
-    /// the sentence, because the pane must draw *nobody answered* rather than an empty queue.
+    /// The room, in one read - every item, every open question, the arbiter, and the identity.
+    /// A room that cannot be read is not an error here: the snapshot's `unreadable` carries the
+    /// sentence, because the pane must draw *nobody answered* rather than an empty queue.
     fn read_room(&self) -> RoomSnapshot {
         let welcome = self.client.welcome();
         let base = RoomSnapshot {
             lease_ms: welcome.lease_ms,
             threshold: welcome.threshold,
-            // **Every read carries the restart note**, because the note is about the room the
-            // read is of: a pane that showed the queues without saying the room had just begun
-            // again would be the opaque screen the feature exists to remove.
+            // Every read carries the restart note, because the note is about the room the read is
+            // of: queues drawn without saying the room had just begun again would be the opaque
+            // screen the feature exists to remove.
             restart: self.restart_view(),
             ..RoomSnapshot::default()
         };
@@ -315,22 +244,9 @@ impl SessionRoom {
         &self.socket
     }
 
-    /// **Restart the box's room — asked of its supervisor, never performed here.**
-    ///
-    /// The act is a [`RestartFrame`] handed to [`RoomSupervisor::restart`], and the order is the
-    /// design:
-    ///
-    /// 1. **Was there a room to stop?** Asked of the lease before the act, because that is the
-    ///    difference between a restart and a start — and the difference between *this key emptied
-    ///    the queue* and *the queue was already gone*.
-    /// 2. **Ask.** A refusal comes back as a sentence and is published by the caller; nothing is
-    ///    written to the marker, because a restart that did not happen is not a restart.
-    /// 3. **Write the note** — after the act, carrying the NEW room's `started_ms`, so the pane can
-    ///    say when and why, and so the reader thread's own observation knows this instance is
-    ///    accounted for.
-    /// 4. **Re-read at once**, so the frame after the key is the new room rather than the old one's
-    ///    last picture. The client re-opens its socket by itself (`Client::request`), which is the
-    ///    same reconnect a coordinator that restarted under it would have forced anyway.
+    /// Restart the box's room - asked of its supervisor, never performed here. The order is the
+    /// design: ask the lease whether there was a room to stop (a restart and a start are different
+    /// sentences), ask the supervisor, write the note for the NEW instance, then re-read at once.
     pub fn restart(&self) -> Result<String, String> {
         let supervisor = self.supervisor.as_ref().ok_or_else(|| {
             "this daemon holds no supervisor for the box's room, so it cannot restart it. The \
@@ -346,9 +262,9 @@ impl SessionRoom {
         };
         let said = supervisor.restart(&frame)?;
         let instance = letibot_room::room_started_ms(&self.socket).unwrap_or(0);
-        // **The cause is what the act found, not what it hoped.** A restart with nothing running
-        // is a start, and saying so is the difference between a person believing their key threw
-        // the queue away and knowing the room had already gone.
+        // The cause is what the act found, not what it hoped - a restart with nothing running
+        // is a start, and saying so is the difference between *my key emptied the queue* and *the
+        // room had already gone*.
         let cause = if frame.was_running {
             Cause::Asked
         } else {
@@ -369,13 +285,9 @@ impl SessionRoom {
         Ok(format!("{said} — and it begins with no items at all"))
     }
 
-    /// **Watch the room's instance, and write the note nobody asked for.**
-    ///
-    /// An instance that is not the one this link last saw, and that no marker already claims, is a
-    /// room that died and came back — the third of the three causes, and the only one that is an
-    /// observation rather than an act. The guard matters in both directions: a restart this daemon
-    /// asked for is not a crash, and the daemon's own marker must not be overwritten by the reader
-    /// thread noticing the same change a moment later.
+    /// Watch the room's instance, and write the note nobody asked for. An instance that is not
+    /// the one this link last saw, and that no marker already claims, is a room that died and came
+    /// back: a restart this daemon asked for is not a crash, and an act's note is never overwritten.
     fn note_instance(&self) {
         let Some(instance) = letibot_room::room_started_ms(&self.socket) else {
             // No lease is no room: there is no new instance to name, and the pane's own
@@ -405,17 +317,9 @@ impl SessionRoom {
             .write(&path);
     }
 
-    /// **Report a gap in the bell, once** — firecode's second rule at the one place the room can be
-    /// honest about it.
-    ///
-    /// The room keeps no log, so an event addressed to a session whose connection was down is
-    /// gone. What the room CAN say is how many there were (`Client::take_missed`, taken so one gap
-    /// is one sentence), and the honest client is the one that wakes the session for it: a note
-    /// nobody rings for is a mailbox, which is the thing this whole file exists not to be.
-    ///
-    /// It rings **once per gap and never per event**, so the cost rule the tag agents are built on
-    /// (`wake::push` for a comparison, `bell()` for a judgement) is not broken by it: a reconnect is
-    /// a rare event, and the number in the sentence is what the model acts on.
+    /// Report a gap in the bell, once - the room keeps no log, so an event addressed to a
+    /// session whose connection was down is gone and the count is all the room can say. A note
+    /// nobody rings for is a mailbox; ringing once per gap keeps the tag agents' cost rule.
     fn note_gap(&self) {
         let (count, since_ms) = self.client.take_missed();
         if count == 0 {
@@ -428,7 +332,7 @@ impl SessionRoom {
         (self.bell)(&self.session);
     }
 
-    /// **What the pane is told about the restart** — whether this host may ask for one, why not
+    /// What the pane is told about the restart - whether this host may ask for one, why not
     /// when it may not, and the note the last one left.
     fn restart_view(&self) -> RestartView {
         RestartView {
@@ -442,7 +346,7 @@ impl SessionRoom {
         }
     }
 
-    /// **A turn is running: say so for as long as it does.** Idempotent — a second call while a beat
+    /// A turn is running: say so for as long as it does. Idempotent - a second call while a beat
     /// is already running is the same beat, because two would double every message.
     pub fn turn_started(&self) {
         let mut slot = self.beat.lock().unwrap_or_else(|e| e.into_inner());
@@ -451,8 +355,8 @@ impl SessionRoom {
         }
     }
 
-    /// **The turn is over: stop beating.** The lease now counts from the last beat, which is the
-    /// fact the room measures — a session whose turn ended is alive and *not working on it*.
+    /// The turn is over: stop beating. The lease now counts from the last beat, which is the
+    /// fact the room measures - a session whose turn ended is alive and *not working on it*.
     pub fn turn_ended(&self) {
         let mut slot = self.beat.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(beat) = slot.take() {
@@ -461,23 +365,8 @@ impl SessionRoom {
     }
 
     /// One verb, and the sentence a model reads back.
-    ///
-    /// **`claim` acknowledges itself** — firecode's third rule, *acknowledge before acting*, because
-    /// silence reads as absence: from the queue, a claim with no word on it is indistinguishable
-    /// from a session that took the item and died. The room has a field for exactly that
-    /// (`Claim::said`), so the word is one more frame on a connection that is already open — and it
-    /// is said HERE rather than left to the model, because a model at work is precisely the one that
-    /// will not think about the queue's bookkeeping.
-    ///
-    /// **`said` and not `waiting`.** The obvious field was `Claim::waits_on`, and it was the wrong
-    /// one: `waits_on` is what a reminder reads to decide the holder still has to act, so a claim
-    /// that acknowledged itself through `waiting` made every claim look like *nothing here is mine
-    /// to move* — and the reminder never fired (`crate::room::remind`, `crates/room/src/wire.rs`'s
-    /// version-5 note).
-    ///
-    /// A refusal of the acknowledgement is not a refusal of the claim: the claim stands, and the
-    /// sentence says which half landed. A model told *you hold #7* and then *the room was not told
-    /// what it is for* can act; one told only the first would believe the queue could see it.
+    /// `claim` acknowledges itself - silence reads as absence, and a model at work will not think
+    /// about the queue's bookkeeping. It is `said` and not `waits_on`, which silences the reminder.
     pub fn call(&self, verb: &str, args: &serde_json::Value) -> Result<String, String> {
         let request = request_of(verb, args)?;
         let acknowledges = matches!(verb, "claim" | "claim_item");
@@ -503,18 +392,9 @@ impl SessionRoom {
         })
     }
 
-    /// **"Seen, doing X", on the room** — the sentence [`SessionRoom::call`] adds to a claim.
-    ///
-    /// `doing` is the caller's own words when it gave any (`claim` accepts the `text` field the
-    /// `waiting` verb documents), and a bare *working on it* otherwise: a claim whose holder said
-    /// nothing is still better answered than one that never spoke, and the room's reminder shape
-    /// wants a sentence either way.
-    ///
-    /// **It is [`Request::Acknowledge`] and not [`Request::Waiting`]** — the two are opposite facts
-    /// and the room keeps them apart. `waiting` writes `Claim::waits_on`, which is what a reminder
-    /// reads to decide the holder still has to act, so an acknowledgement sent as a wait silenced
-    /// every reminder there was: a holder that says *I am on it* was read as *nothing here is my
-    /// work* (`crates/room/src/wire.rs`'s version-5 note).
+    /// "Seen, doing X", on the room - the sentence [`SessionRoom::call`] adds to a claim.
+    /// It is [`Request::Acknowledge`] and not [`Request::Waiting`]: `waiting` writes
+    /// `Claim::waits_on`, which silences every reminder there is.
     fn ack(&self, item: u64, doing: &str) -> Result<String, String> {
         let doing = doing.trim();
         let text = if doing.is_empty() {
@@ -532,17 +412,9 @@ impl SessionRoom {
             .map_err(|e| e.to_string())
     }
 
-    /// **Every reminder the room owes, as data rather than as a sentence.**
-    ///
-    /// The `reminders` VERB answers a model in words (`answer_sentence`), and the daemon's pass
-    /// needs the same answer as values: one row per item a session holds, with the wait it declared
-    /// and whether its beat has gone quiet. A daemon that parsed the sentence back would be reading
-    /// its own formatting, so the request is sent here and the reply read as the struct it is.
-    ///
-    /// **It is the whole room's list, not this session's** — `reminders` is one read for the room —
-    /// so the caller filters by `Reminder::session`. That is deliberate rather than sloppy: the
-    /// coordinator answers in one frame, and a per-session read would be a second frame shape for a
-    /// question the room already answers.
+    /// Every reminder the room owes, as data rather than as a sentence. The `reminders` VERB
+    /// answers a model in words, and a daemon that parsed its own sentence back would be reading its
+    /// own formatting. It is the WHOLE room's list, so the caller filters by `Reminder::session`.
     pub fn reminders(&self) -> Result<Vec<letibot_room::Reminder>, String> {
         let response = self
             .client
@@ -551,9 +423,8 @@ impl SessionRoom {
         match response {
             Response::Reminders { rows } => Ok(rows),
             Response::Bye { why } => Err(format!("the room closed the connection: {why}")),
-            // **A frame that is not the answer to this read** — said as a fact rather than
-            // guessed at, because a daemon that invented a meaning here would put a wrong row on
-            // a board. A `Request::Reminders` carries no id, so there is nothing to correlate.
+            // A frame that is not the answer to this read - said as a fact rather than guessed
+            // at, because a daemon that invented a meaning here would put a wrong row on a board.
             _ => Err(
                 "the room answered a frame that is not a `reminders` read — nothing was written on \
                  the board"
@@ -569,21 +440,16 @@ impl letibot_tools::builtins::room::RoomLink for SessionRoom {
     }
 }
 
-/// **The pane's half** — the room as a feed is built from, and the four controls performed.
-///
-/// The split is the point of the slice: the LAYER decides which row to draw and which verb it
-/// offers; what a `claim` or a `release` DOES is the room's state machine, and this is the host
-/// doing it over the session's own connection — the same connection its `room` tool uses, because a
-/// second connection speaking one session would be a second close, and a close gives the claims
-/// back.
+/// The pane's half - the room as a feed is built from, and the four controls performed. The
+/// LAYER decides which row to draw and which verb it offers; what a `claim` DOES is the room's
+/// state machine, done over the session's own connection - a second close gives the claims back.
 impl RoomFeed for SessionRoom {
     fn snapshot(&self) -> RoomSnapshot {
         let welcome = self.client.welcome();
         match self.room.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             Some(snap) => snap,
-            // **The first frame is a promise, and the second is the answer.** The reader thread
-            // starts at connect and reads once a second; a pane opened before the first read lands
-            // says so rather than drawing an empty room, which would read as *nothing is queued*.
+            // The first frame is a promise, and the second is the answer. A pane opened before
+            // the first read lands says so rather than drawing an empty room.
             None => RoomSnapshot {
                 lease_ms: welcome.lease_ms,
                 threshold: welcome.threshold,
@@ -596,7 +462,7 @@ impl RoomFeed for SessionRoom {
         }
     }
 
-    /// **The pane's fifth control** — the restart, asked of the supervisor rather than of the room.
+    /// The pane's fifth control - the restart, asked of the supervisor rather than of the room.
     fn restart(&self) -> Result<String, String> {
         SessionRoom::restart(self)
     }
@@ -607,32 +473,24 @@ impl RoomFeed for SessionRoom {
             .client
             .request(&frame)
             .map_err(|e| format!("the room at {} did not answer: {e}", self.socket.display()))?;
-        // **A claim made by a key acknowledges itself too** — firecode's third rule is about the
-        // act, not about who performed it: a person who takes a row and walks off is the same
-        // silence to the queue as a model that does.
+        // A claim made by a key acknowledges itself too - the third rule is about the act, not
+        // about who performed it: a person who takes a row and walks off is the same silence.
         if let Response::Claimed { item, .. } = &response
             && verb == "claim"
         {
             let _ = self.ack(item.id, "");
         }
-        // **And re-read at once**, so the frame the person sees next is the state their key made
-        // — the reader thread would catch up within a second, and a second of *nothing happened* is
-        // the one thing a key must never look like.
+        // And re-read at once, so the frame the person sees next is the state their key made -
+        // a second of *nothing happened* is the one thing a key must never look like.
         let snap = self.read_room();
         *self.room.lock().unwrap_or_else(|e| e.into_inner()) = Some(snap);
         answer_sentence(&response, &self.session)
     }
 }
 
-/// **A request id that cannot repeat** — the verb, the entry, the clock, and a counter.
-///
-/// **The clock alone is not enough, and the failure is silent.** The room answers a repeated
-/// `(session, id)` from its replay window instead of acting twice — which is exactly what a
-/// reconnecting client needs, and exactly what swallows a second act in the same millisecond. Two
-/// round trips on a unix socket are tens of microseconds, so `claim` and `release` on one row, or
-/// the same key pressed twice, really can share a millisecond; the second would be answered *the
-/// same* rather than performed. MEASURED: the pane's own round-trip test lost an abandonment that
-/// way, and the item sat at two instead of three.
+/// A request id that cannot repeat - the verb, the entry, the clock, and a counter. The clock
+/// alone is not enough, and the failure is silent: the room answers a repeated `(session, id)`
+/// from its replay window, so two acts inside one millisecond lose the second -
 fn request_id(what: &str) -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -643,25 +501,9 @@ fn request_id(what: &str) -> String {
     )
 }
 
-/// **A row's key, as a frame** — the PANE's grammar, which is not the tool's.
-///
-/// A model's call names its arguments (`{"verb":"claim_item","item":12}`); a row names an ENTRY,
-/// which is one string that has to say both what it is about and, for a ruling, what the decision
-/// is. Two grammars, two doors, and this is the one the four controls come through:
-///
-/// | entry | verb | frame |
-/// |---|---|---|
-/// | `i12` | `claim` | `claim_item` 12 |
-/// | `i12` | `release` | `abandon` 12, *released from the room pane* |
-/// | `i12` | `abandon` | `abandon` 12, *marked abandoned from the room pane* |
-/// | `q3:retry` | `rule` | `rule` 3, `Retry` |
-/// | `q3:drop` | `rule` | `rule` 3, `Drop` |
-/// | `q3:hand:s-a` | `rule` | `rule` 3, `Hand { to: "s-a" }` |
-///
-/// **`release` and `abandon` are one verb in the room and two intentions here.** A voluntary
-/// release is still an abandonment and still counted (`docs/room.md` § *A claim is a lease with a
-/// beat*), so the difference the person gets is the sentence that lands on the item's history — and
-/// the sentence is the host's to write, not the layer's.
+/// A row's key, as a frame - the PANE's grammar, which is not the tool's: a model names its
+/// arguments, while a row names an ENTRY (`i12`, `q3:hand:s-a`). `release` and `abandon` are one
+/// verb and two sentences, and the sentence is the host's to write.
 fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
     let id = request_id(&format!("{verb}-{entry}"));
     let item_of = |entry: &str| -> Result<u64, String> {
@@ -733,7 +575,7 @@ fn pane_frame(verb: &str, entry: &str) -> Result<Request, String> {
     }
 }
 
-/// **The verb and its arguments, as a frame.** `Err` is the tool's own refusal, in its words.
+/// The verb and its arguments, as a frame. `Err` is the tool's own refusal, in its words.
 fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
     let s = |k: &str| {
         args.get(k)
@@ -743,9 +585,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             .to_string()
     };
     let n = |k: &str| args.get(k).and_then(|v| v.as_u64());
-    // **The id is minted here, per call**, and it is what makes a reconnect safe: a repeat of the
-    // same frame after a dropped socket is answered from the room's replay window instead of acting
-    // twice. See [`request_id`] for why the clock alone will not do.
+    // The id is minted here, per call, and it is what makes a reconnect safe: a repeat after a
+    // dropped socket is answered from the room's replay window instead of acting twice.
     let id = request_id(verb);
     Ok(match verb {
         "post" => Request::Post {
@@ -806,9 +647,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
                 id,
                 question: n("question").ok_or("`rule` needs `question`")?,
                 decision,
-                // **The session's own room**, which is the room its connection is in — a model
-                // ruling a question it was handed names no project, and the server resolves it
-                // against the connection.
+                // The session's own room, which is the room its connection is in: a model
+                // ruling a question it was handed names no project.
                 project: None,
             }
         }
@@ -827,7 +667,7 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
     })
 }
 
-/// **What the model reads back.** Every arm names the item and the state, because a reply a model
+/// What the model reads back. Every arm names the item and the state, because a reply a model
 /// cannot check is a reply it will ask about again.
 fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
     Ok(match response {
@@ -942,8 +782,8 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             None => format!("question #{} is still open", question.id),
         },
         Response::Refused { why, .. } => return Err(why.to_string()),
-        // **The tree, acknowledged** — a membership is a set, so the sentence says how big the one
-        // the room now holds is, which is the only thing that can differ between two sends.
+        // The tree, acknowledged - a membership is a set, so the sentence says how big the one
+        // the room now holds is.
         Response::Members { count } => {
             format!("the room now holds {count} session(s) of this project")
         }
@@ -952,9 +792,8 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             "the room is open to `{me}` (protocol {})",
             letibot_room::ROOM_PROTOCOL_VERSION
         ),
-        // **The pane's read, in a sentence** — a model never asks it (the tool's verbs have no
-        // `room` read), so this is the honest summary rather than a drawing: what the room is, how
-        // much is in it, and how many questions are open.
+        // The pane's read, in a sentence - a model never asks it, so this is an honest summary
+        // rather than a drawing: what the room is, how much is in it, how many questions are open.
         Response::Room {
             identity,
             items,
@@ -1012,7 +851,7 @@ mod tests {
         for args in cases {
             let verb = args["verb"].as_str().unwrap();
             let frame = request_of(verb, &args).unwrap_or_else(|e| panic!("{verb}: {e}"));
-            // **Every MUTATING frame carries an id** — that is what makes a reconnect's repeat
+            // Every MUTATING frame carries an id - that is what makes a reconnect's repeat
             // answerable. A read has none by design (`Request::request_id` says so): there is
             // nothing to act on twice, and a re-read is cheap and cannot be wrong.
             let mutates = !matches!(
@@ -1055,21 +894,14 @@ mod tests {
         assert!(e.contains("a tag is a lock"), "{e}");
     }
 
-    /// **The wake, end to end minus the harness**: a real server, two real connections, and the
-    /// bell the daemon rings.
-    ///
-    /// What this proves is the half that could be wrong: an event about `s-a` reaches `s-a`'s
-    /// connection, becomes a sentence in `wake`, and rings the bell — while a session with nothing
-    /// under the tag is not rung at all. What it does not prove is `Harness::wake` composing the
-    /// sentence into a turn, which is one `take()` (`wake::tests` covers the queue, and the
-    /// harness's own wake is where every notice source meets).
+    /// The wake, end to end minus the harness: a real server, two real connections, and the
+    /// bell the daemon rings - an event about `s-a` becomes a sentence and rings, while a session
+    /// with nothing under the tag is not rung. `Harness::wake` composing it into a turn is `wake`'s.
     #[test]
     fn an_event_about_a_session_rings_its_bell_and_a_reader_is_not_rung() {
-        // **Ids of this test's own, because `wake` is process-wide and keyed by session id.** The
-        // daemon it serves has one session per id, so the module is right to be; a test binary does
-        // not, and four other tests in this module connect a room as `s-a` and post or claim through
-        // it. Their sentences landed in THIS test's queue and it failed on *the sentence names who
-        // did it* — MEASURED 2026-10-31, three of six copies of this binary at once.
+        // Ids of this test's own, because `wake` is process-wide and keyed by session id. Four
+        // other tests in this module connect as `s-a` and post or claim through it, and their
+        // sentences landed in THIS test's queue.
         let me_id = "s-a-wake";
         let other_id = "s-b-wake";
         let dir = std::env::temp_dir().join(format!("letibot-room-link-{}", std::process::id()));
@@ -1101,7 +933,7 @@ mod tests {
         )
         .expect("s-b connects");
 
-        // `s-a-wake` posts, so it is a MEMBER of `ram` — a reader is not.
+        // `s-a-wake` posts, so it is a MEMBER of `ram` - a reader is not.
         me.call("post", &serde_json::json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
         let _ = other.request(&Request::Post {
@@ -1118,11 +950,9 @@ mod tests {
             .expect("a claim");
         assert!(matches!(claimed, Response::Claimed { .. }), "{claimed:?}");
 
-        // **Drained until the sentence this test is about arrives, not until the queue is not
-        // empty.** The first sentence `me` is woken by is its OWN post (a poster is a member of its
-        // tag), and the claim is a second event that lands a moment later — so `waiting() > 0` was
-        // satisfied by the first and the assertion then read a queue the claim had not reached.
-        // MEASURED 2026-10-31, two of five copies of this binary on a disk-backed `TMPDIR`.
+        // Drained until the sentence this test is about arrives, not until the queue is not
+        // empty: the first sentence `me` is woken by is its OWN post, and the claim lands a
+        // moment later.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut said: Vec<String> = Vec::new();
         while std::time::Instant::now() < deadline {
@@ -1150,8 +980,8 @@ mod tests {
             "the sentence names who did it: {said:?}"
         );
 
-        // **The arbiter is not woken by the queue's traffic.** It hears every event on its
-        // connection — that is how a question reaches it — but a `post` is not a turn.
+        // The arbiter is not woken by the queue's traffic. It hears every event on its
+        // connection - that is how a question reaches it - but a `post` is not a turn.
         let arbiter = super::super::session_id();
         let rung_arbiter: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
         let bell_arbiter: Arc<dyn Fn(&str) + Send + Sync> = {
@@ -1185,15 +1015,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A tag's agent hears its own tag, and only a dispute rings it.**
-    ///
-    /// The operator's cost answer, made structural and measured: *idle without a model call, and a
-    /// turn only when it must rule* — a claim, a healthy beat and a finished item are comparisons,
-    /// not judgements; only a dispute earns a turn. A claim and an abandonment reach this agent as
-    /// NOTES (so a turn started for another reason — a person talking to `host:ram` — reads them),
-    /// and the bell stays silent; the question rings it.
-    ///
-    /// And the other half: another tag's traffic does not reach it at all.
+    /// A tag's agent hears its own tag, and only a dispute rings it. The operator's cost answer
+    /// made structural: a claim, a healthy beat and a finished item are comparisons and reach it as
+    /// NOTES; only the question rings. And another tag's traffic does not reach it at all.
     #[test]
     fn a_tags_agent_is_note_woken_by_its_queue_and_rung_only_by_a_dispute() {
         let dir = std::env::temp_dir().join(format!("letibot-room-tag-{}", std::process::id()));
@@ -1207,7 +1031,7 @@ mod tests {
             let rung = Arc::clone(&rung);
             Arc::new(move |session: &str| rung.lock().unwrap().push(session.to_string()))
         };
-        // **The tag's agent, by the derivation** — not a hand-written id, because the router
+        // The tag's agent, by the derivation - not a hand-written id, because the router
         // addresses it by the same function and a test that spelled its own would prove nothing.
         let key = letibot_room::host_key();
         let agent = letibot_room::tag_session(&key, "ram").expect("an agent for ram");
@@ -1227,7 +1051,7 @@ mod tests {
         )
         .expect("s-b connects");
 
-        // **A post, a claim, and an abandonment** — the queue moving, and none of it a judgement.
+        // A post, a claim, and an abandonment - the queue moving, and none of it a judgement.
         let posted = other
             .request(&Request::Post {
                 id: "p1".into(),
@@ -1245,7 +1069,7 @@ mod tests {
             item: 1,
             why: "the suite blew up".into(),
         });
-        // **And another tag's post**, which must not reach it at all.
+        // And another tag's post, which must not reach it at all.
         let _ = other.request(&Request::Post {
             id: "p2".into(),
             tag: "disk".into(),
@@ -1275,10 +1099,9 @@ mod tests {
             "and nothing about another tag's item: {notes:?}"
         );
 
-        // **A dispute rings it.** That is the one thing a tag's agent exists to rule on — and the
-        // disputing session must NOT be the holder (the room refuses `NotDisputed`), which is the
-        // case this models: `s-b` lost the item to a stale beat and comes back saying *I am still
-        // on it* after `s-c` has taken it.
+        // A dispute rings it. That is the one thing a tag's agent exists to rule on - and the
+        // disputing session must NOT be the holder, which is the case here: `s-b` lost the item to a
+        // stale beat and says *I am still on it* after `s-c` has taken it.
         let c = Client::connect(
             &path,
             Speaker::top_level("s-c"),
@@ -1317,18 +1140,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A row's entry and verb become the frame the room acts on**, and a word the pane does not
+    /// A row's entry and verb become the frame the room acts on, and a word the pane does not
     /// have is refused here rather than sent.
     #[test]
     fn a_panes_entry_and_verb_become_a_frame() {
         let id = |frame: &Request| frame.request_id().map(str::to_string);
-        // `claim` on an item is `claim_item` — the operator's own control, and it must still be the
+        // `claim` on an item is `claim_item` - the operator's own control, and it must still be the
         // head (the room refuses `NotTheHead`, which is the whole ordering rule).
         let claim = pane_frame("claim", "i12").expect("claim");
         assert!(matches!(claim, Request::ClaimItem { item: 12, .. }));
         assert!(id(&claim).is_some(), "a mutating frame carries an id");
 
-        // **`release` and `abandon` are the room's one verb and two sentences.**
+        // `release` and `abandon` are the room's one verb and two sentences.
         let release = pane_frame("release", "i12").expect("release");
         let abandon = pane_frame("abandon", "i12").expect("abandon");
         match (&release, &abandon) {
@@ -1347,7 +1170,7 @@ mod tests {
             other => panic!("both are abandonments of the same item: {other:?}"),
         }
 
-        // **`rule` names the decision in the entry**, because the decision is what was picked.
+        // `rule` names the decision in the entry, because the decision is what was picked.
         assert!(matches!(
             pane_frame("rule", "q3:retry"),
             Ok(Request::Rule {
@@ -1373,7 +1196,7 @@ mod tests {
             }) if to == "s-a"
         ));
 
-        // **And the refusals are this door's own**, in words a person can act on.
+        // And the refusals are this door's own, in words a person can act on.
         let hand = pane_frame("rule", "q3:hand").unwrap_err();
         assert!(hand.contains("names no session"), "{hand}");
         let decision = pane_frame("rule", "q3:maybe").unwrap_err();
@@ -1386,10 +1209,9 @@ mod tests {
         assert!(other.contains("four controls"), "{other}");
     }
 
-    /// **The four controls, round trip: a row's key, the room's state machine, the state it made.**
-    ///
-    /// This is the whole slice's contract in one test — the layer names a verb and an entry, the
-    /// HOST performs it over the session's own connection, and the room is what decides.
+    /// The four controls, round trip: a row's key, the room's state machine, the state it made.
+    /// The layer names a verb and an entry, the HOST performs it over the session's own connection
+    /// and the room is what decides.
     #[test]
     fn the_four_controls_reach_the_room_and_change_it() {
         let dir = std::env::temp_dir().join(format!("letibot-room-acts-{}", std::process::id()));
@@ -1420,7 +1242,7 @@ mod tests {
                 .expect("a post");
         }
 
-        // **`claim`** — on this session's behalf, and the room says so.
+        // `claim` - on this session's behalf, and the room says so.
         let said = me.act("i1", "claim").expect("a claim");
         assert!(said.contains("you hold #1"), "{said}");
         assert_eq!(
@@ -1429,7 +1251,7 @@ mod tests {
             "the item is held by the session whose pane it is"
         );
 
-        // **`release`** — the same session gives it up, and it goes back to the head of `ram`.
+        // `release` - the same session gives it up, and it goes back to the head of `ram`.
         let said = me.act("i1", "release").expect("a release");
         assert!(said.contains("went back to `ram`"), "{said}");
         let item = &server.items()[0];
@@ -1441,7 +1263,7 @@ mod tests {
             item.abandonments[0].why
         );
 
-        // **`abandon`** — the same verb, the harder sentence, and it is still one abandonment.
+        // `abandon` - the same verb, the harder sentence, and it is still one abandonment.
         me.act("i1", "claim").expect("a claim");
         me.act("i1", "abandon").expect("an abandonment");
         let item = &server.items()[0];
@@ -1452,7 +1274,7 @@ mod tests {
             item.abandonments[1].why
         );
 
-        // **And the third raises a question**, which the last control answers.
+        // And the third raises a question, which the last control answers.
         me.act("i1", "claim").expect("a claim");
         me.act("i1", "abandon").expect("the third abandonment");
         let questions = server.open_questions();
@@ -1469,7 +1291,7 @@ mod tests {
             "`retry` puts it back at the head with its count kept"
         );
 
-        // **A key the room will not take is refused in the room's own words** — the person is told
+        // A key the room will not take is refused in the room's own words - the person is told
         // what happened to it rather than left with a key that did nothing.
         let refused = me
             .act("i2", "release")
@@ -1482,7 +1304,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The pane's picture of the room is read off the socket, and the identity comes with it.**
+    /// The pane's picture of the room is read off the socket, and the identity comes with it.
     #[test]
     fn the_feed_snapshot_carries_the_rooms_identity_and_its_items() {
         let dir = std::env::temp_dir().join(format!("letibot-room-snap-{}", std::process::id()));
@@ -1503,15 +1325,12 @@ mod tests {
         me.call("post", &json!({"tag": "ram", "body": "8 GB"}))
             .expect("a post");
 
-        // **The picture arrives from a thread of its own**, so the test waits for it rather than
-        // sleeping a fixed second and hoping: a pane opened before the first read lands says *not
-        // read yet*, which is the honest first frame and a poor assertion.
+        // The picture arrives from a thread of its own, so the test waits for it rather than
+        // sleeping a fixed second: a pane opened before the first read lands says *not read yet*.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut snap = me.snapshot();
-        // **The first read is a promise and the second is the answer** — the reader thread starts
-        // at connect, so the frame it lands may be the one taken BEFORE this test's post. Waiting
-        // for the item as well as for the read is the difference between a test that measures the
-        // feed and one that measures the scheduler.
+        // The first read is a promise and the second is the answer - the frame it lands may be
+        // the one taken BEFORE this test's post, so wait for the item as well as for the read.
         while (snap.unreadable.is_some() || snap.items.is_empty())
             && std::time::Instant::now() < deadline
         {
@@ -1535,11 +1354,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The restart is a FRAME to the supervisor, and what it found decides the note's cause.**
-    ///
-    /// Two acts, one fixture supervisor: the first with no lease on the socket — nothing was
-    /// running, so the key is a start and the note says the queue was already gone — and the second
-    /// with a live lease, which is a restart and names the session whose pane it was.
+    /// The restart is a FRAME to the supervisor, and what it found decides the note's cause.
+    /// The first act has no lease on the socket - nothing was running, so the key is a start; the
+    /// second has a live lease, which is a restart and names the session whose pane it was.
     #[test]
     fn the_restart_is_a_frame_to_the_supervisor_and_the_note_says_what_it_found() {
         use std::sync::Mutex as StdMutex;
@@ -1568,7 +1385,7 @@ mod tests {
         )
         .expect("s-a connects");
 
-        // **No lease: nothing was running.** The act is a start, and the note says so — the key did
+        // No lease: nothing was running. The act is a start, and the note says so - the key did
         // not empty the queue, the room had already gone.
         let said = me.restart().expect("the supervisor answers");
         assert!(said.contains("no items at all"), "{said}");
@@ -1586,7 +1403,7 @@ mod tests {
         assert_eq!(note.by, "s-a");
         assert_eq!(note.room_started_ms, 0, "there is no lease to read");
 
-        // **A live lease: this IS a restart**, and the note names the session and the room it made.
+        // A live lease: this IS a restart, and the note names the session and the room it made.
         let lease =
             letibot_room::CoordinatorLease::owned_by(path.with_extension("lease"), "box/1/1");
         std::fs::write(
@@ -1612,7 +1429,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A supervisor that refuses leaves the room alone and says why** — and writes no note,
+    /// A supervisor that refuses leaves the room alone and says why - and writes no note
     /// because a restart that did not happen is not a restart.
     #[test]
     fn a_refused_restart_is_a_sentence_and_leaves_no_note() {
@@ -1652,7 +1469,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A host with no supervisor refuses in words**, and the sentence says which door is which:
+    /// A host with no supervisor refuses in words, and the sentence says which door is which
     /// the launcher starts coordinators, and the room's own daemon is never given one.
     #[test]
     fn a_host_with_no_supervisor_refuses_the_restart_in_words() {
@@ -1679,8 +1496,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **A room that came back with nobody asking is written as a crash — once, and never over an
-    /// act's own note.** The instance is the lease's `started_ms`, which is the only trace a room
+    /// A room that came back with nobody asking is written as a crash - once, and never over an
+    /// act's own note. The instance is the lease's `started_ms`, which is the only trace a room
     /// leaves when it is not answering.
     #[test]
     fn an_instance_that_changes_with_nobody_asking_is_a_crash_and_an_act_is_not_overwritten() {
@@ -1722,9 +1539,8 @@ mod tests {
             note.sentence(9_500)
         );
 
-        // **An act's note is not overwritten by the observation.** A marker that already claims the
-        // room the reader is looking at is left alone — the daemon asked for this restart, and
-        // saying *nobody asked* would be a lie about the last minute.
+        // An act's note is not overwritten by the observation - a marker that already claims
+        // the room the reader is looking at is left alone.
         let asked = Marker::new(9_100, 9001, Cause::Asked).by("s-a");
         asked.write(&letibot_room::marker_path(&path)).unwrap();
         *me.seen.lock().unwrap() = Some(7000);

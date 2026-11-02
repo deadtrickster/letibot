@@ -1,14 +1,6 @@
-//! **A daemon with no key asks for one** — end to end, through the real `harnessd` binary.
-//!
-//! The operator, on a box with only a provider in mind: *"id prefer leticode to ask me of
-//! course, iirc we have popus and masking for sudo"*. Before this, a provider whose key did
-//! not resolve made the daemon bind its socket and die before any head could attach.
-//!
-//! Here: no key anywhere (a scratch `HOME`, `$DEEPSEEK_API_KEY` removed), a providers.toml
-//! that only points `[deepseek] url` at a fake, and a head that answers the masked card.
-//! The fake refuses the first key with a 401 and accepts the second, so one run proves the
-//! ask, the re-ask on a refused key, the save (0600, `[default]` set), and that the key
-//! never appears in anything a head is sent.
+//! A daemon with no key asks for one - end to end, through the real `harnessd` binary.
+//! Before this, a provider whose key did not resolve made the daemon bind its socket and
+//! die before any head could attach
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -23,8 +15,8 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 const GOOD: &str = "sk-right-0123";
 const BAD: &str = "sk-wrong-4567";
 
-/// A fake DeepSeek: 401 for any key but [`GOOD`], one streamed answer for that one. Records
-/// the bearer of every request.
+/// A fake DeepSeek: 401 for any key but [`GOOD`], one streamed answer for that one, and the bearer of
+/// every request recorded.
 fn fake() -> (String, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
@@ -101,9 +93,8 @@ fn scratch() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    // Short: the socket lives under it, and macOS caps a socket path at 104 bytes.
-    // A counter too: two tests in this process can start in the same microsecond, which is
-    // all macOS's clock resolves.
+    // Short: the socket lives under it, and macOS caps a socket path at 104 bytes. A counter too
+    // because two tests can start in the same microsecond and that is all macOS's clock resolves.
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let d = letibot_sessionlog::testing::scratch_root().join(format!(
@@ -116,8 +107,8 @@ fn scratch() -> PathBuf {
     d
 }
 
-/// The next `SecretRequested` with no command — the key card — and every frame seen on
-/// the way, for the no-key-in-any-frame check.
+/// The next `SecretRequested` with no command - the key card - and every frame seen on the way, for
+/// the no-key-in-any-frame check.
 fn next_key_ask(
     r: &mut letibot_sessionlog::wire::FrameReader<std::os::unix::net::UnixStream>,
     log: &mut Vec<String>,
@@ -199,7 +190,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         .expect("harnessd starts");
     let _daemon = Daemon(child);
 
-    // **It comes up** — it used to bind and then die on the missing key.
+    // It comes up - it used to bind and then die on the missing key.
     let deadline = Instant::now() + Duration::from_secs(30);
     while !socket.exists() {
         assert!(
@@ -249,7 +240,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // **Saved, private, and the default** — the next `letibot` needs no flag.
+    // Saved, private, and the default - the next `letibot` needs no flag.
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(text.contains(&format!("key = \"{GOOD}\"")), "{text}");
     assert!(
@@ -271,7 +262,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         assert_eq!(mode, 0o600, "providers.toml is {mode:o}");
     }
 
-    // **And neither key is in anything a head was sent**, nor in the session log.
+    // And neither key is in anything a head was sent, nor in the session log.
     for f in &log {
         assert!(
             !f.contains(GOOD) && !f.contains(BAD),
@@ -290,8 +281,8 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// No head attached (a one-shot `--prompt`): refused at once, naming the variable and the
-/// file — not a ten-minute wait for a card nobody can see.
+/// No head attached (a one-shot `--prompt`): refused at once, naming the variable and the file - not
+/// a ten-minute wait for a card nobody can see.
 #[test]
 fn with_no_head_to_ask_the_refusal_names_where_a_key_goes() {
     let home = scratch();

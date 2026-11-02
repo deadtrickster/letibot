@@ -1,35 +1,6 @@
-//! **What is retryable, and for how long** — measured through a real daemon, a real head and a
-//! loopback stub, because the two reports this answers were both about *how many times the
-//! provider was asked* and nothing short of counting the stub's connections can say.
-//!
-//! # The two reports, and why they are one rule
-//!
-//! * MEASURED, a child's turn ended with `FAILED — http io: provider unreachable: io: failed to
-//!   lookup address information: Temporary failure in name resolution (nothing was recorded)`.
-//!   A DNS blip is the textbook *temporary* error, and the sentence does not say whether the
-//!   daemon tried once or six times.
-//! * Earlier, a `429` was retried **six times** before the operator saw it — a permanent refusal
-//!   presented as a transient one.
-//!
-//! Both are the same missing decision, and it is [`letibot_http::retry`]'s: three classes, one
-//! bounded ladder, and a sentence for each ending. What this file measures is the part only a
-//! wire can: **how many calls the provider actually got**, and what the operator was told.
-//!
-//!   * **A — a transport failure is retried, and the turn survives.** The stub accepts and hangs
-//!     up on the first call. Two calls, one answer, no failure: a turn that never reached the
-//!     network is tried before it is called a failure.
-//!   * **B — a `503` is retried** for the same reason, and answers on the second call.
-//!   * **C — a `401` is not retried.** One call, and the sentence is the status and the body.
-//!   * **D — a `429` that names money is not retried.** One call. This is the six-times case:
-//!     the test that would have seen six calls now sees one.
-//!   * **E — the ladder runs out, and says so**: `tried 2 times over 1s, then gave up`.
-//!
-//! # One test, five sessions, and why not five tests
-//!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs a binary's tests in parallel —
-//! `apparatus::present`'s own tests carry the measurement of what that costs. So the scratch
-//! config dir is pointed at once, by the single test that owns this process, and the five
-//! scenarios run in sequence inside it. `model_outage.rs` is the same shape for the same reason.
+//! What is retryable, and for how long - measured through a real daemon, a real head and a
+//! loopback stub, because the question is *how many times the provider was asked* and
+//! nothing short of counting the stub's connections can say.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -53,11 +24,11 @@ const ANSWER: &str = "the-provider-answered";
 /// The prompt. Nothing tool-shaped in it: this file is about the endpoint, not the work.
 const PROMPT: &str = "say hello";
 
-/// The provider's own sentence in a `503`'s body — the words a sentence must keep behind the
-/// click, because that is what gets pasted into a bug report.
+/// The provider's own sentence in a `503`'s body - the words a sentence must keep behind the click
+/// because that is what gets pasted into a bug report.
 const UNAVAILABLE: &str = "the endpoint is having a bad minute";
 
-/// What a `429` that names money says, in OpenAI's own shape — the six-times case.
+/// What a `429` that names money says, in OpenAI's own shape.
 const NO_CREDIT: &str =
     r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}"#;
 
@@ -65,15 +36,15 @@ const NO_CREDIT: &str =
 // The stub endpoint
 // ---------------------------------------------------------------------------
 
-/// **What the stub does to a call**, chosen per scenario.
+/// What the stub does to a call, chosen per scenario.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Refusal {
-    /// Accept the connection and hang up without a byte of answer — a transport failure, which
-    /// is the class a DNS lookup failure and a refused connection both land in.
+    /// Accept the connection and hang up without a byte of answer - a transport failure, which is the
+    /// class a DNS lookup failure and a refused connection both land in.
     HangUp = 0,
     /// `503 Service Unavailable`, the status a server reloading a model answers.
     Unavailable = 1,
-    /// `401 Unauthorized` — a key the provider refused.
+    /// `401 Unauthorized` - a key the provider refused.
     Unauthorized = 2,
     /// `429` whose body says the account cannot pay.
     NoCredit = 3,
@@ -124,15 +95,15 @@ fn endpoint() -> Endpoint {
             let Ok(mut conn) = stream else { continue };
             let _body = read_request(&mut conn);
             s.fetch_add(1, Ordering::SeqCst);
-            // **One connection at a time, so a load-then-subtract is a count.** The accept loop
-            // is this thread; the provider sends one request and waits for its answer.
+            // One connection at a time, so a load-then-subtract is a count. The accept loop is
+            // this thread; the provider sends one request and waits for its answer.
             let owed = l.load(Ordering::SeqCst);
             if owed > 0 {
                 l.store(owed - 1, Ordering::SeqCst);
                 match Refusal::of(h.load(Ordering::SeqCst)) {
-                    // Not a status at all: the connection goes away with nothing written, which
-                    // is what a resolver that could not answer, or a server that is restarting,
-                    // looks like from here.
+                    // Not a status at all: the connection goes away with nothing written, which is
+                    // what a resolver that could not answer, or a server that is restarting, looks
+                    // like from here.
                     Refusal::HangUp => {
                         let _ = conn.shutdown(std::net::Shutdown::Both);
                         continue;
@@ -181,8 +152,8 @@ fn answer(conn: &mut TcpStream, code: u16, why: &str, body: &str) {
     let _ = conn.flush();
 }
 
-/// Drain one request — headers plus the body `Content-Length` names — so the client's write side
-/// is finished before the reply arrives.
+/// Drain one request - headers plus the body `Content-Length` names - so the client's write side is
+/// finished before the reply arrives.
 fn read_request(s: &mut TcpStream) -> String {
     let mut acc: Vec<u8> = Vec::new();
     let mut buf = [0u8; 4096];
@@ -219,10 +190,10 @@ fn read_request(s: &mut TcpStream) -> String {
 // What one head saw
 // ---------------------------------------------------------------------------
 
-/// **Everything one head was told**, folded to the facts this file asserts on.
+/// Everything one head was told, folded to the facts this file asserts on.
 #[derive(Default)]
 struct Rec {
-    /// Every `turn_failed` sentence, in order — what the operator read under `FAILED — `.
+    /// Every `turn_failed` sentence, in order - what the operator read under `FAILED - `.
     failed: Vec<String>,
 }
 
@@ -234,8 +205,8 @@ fn fold(rec: &mut Rec, inb: Inbound) {
     }
 }
 
-/// Pump until `done`, folding every frame in. The deadline is generous — it exists so a
-/// regression reads as its missing fact rather than as a hung test.
+/// Pump until `done`, folding every frame in. The deadline is generous - it exists so a regression
+/// reads as its missing fact rather than as a hung test.
 fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline && !done(rec) {
@@ -247,8 +218,8 @@ fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     }
 }
 
-/// **How many of the stub's answers are rows yet** — read off the daemon's own snapshot rather
-/// than off an event tally, so this is the turn having ENDED and not a frame having arrived.
+/// How many of the stub's answers are rows yet - read off the daemon's own snapshot rather than
+/// off an event tally, so this is the turn having ENDED and not a frame having arrived.
 fn answers(hub: &letibot_sessionlog::hub::Hub) -> usize {
     hub.snapshot()
         .items
@@ -258,13 +229,13 @@ fn answers(hub: &letibot_sessionlog::hub::Hub) -> usize {
         .count()
 }
 
-/// **A config for one session of this file**, on the byte vocabulary and a loopback provider —
-/// so nothing here needs a GGUF, a llama.cpp or a model file of any kind.
+/// A config for one session of this file, on the byte vocabulary and a loopback provider - so
+/// nothing here needs a GGUF, a llama.cpp or a model file of any kind.
 fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
     let ws = scratch.join("ws");
     std::fs::create_dir_all(&ws).expect("the workspace");
     let mut cfg = Config::for_this_box(&ws);
-    // **Not this box's configuration** (`wired.rs`'s rule): no web search, no permission file.
+    // Not this box's configuration: no web search, no permission file.
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.dialect = Dialect::Qwen;
@@ -276,26 +247,26 @@ fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
     cfg.provider = Some(ProviderConfig {
         name: "deepseek".to_string(),
         model: Some("deepseek-chat".to_string()),
-        // **A key the session may not replace.** The 401 arm asks the operator for a new key
-        // before the ladder is consulted, and a card nobody can answer is a second subject in a
-        // file about the retry rule.
+        // A key the session may not replace. The 401 arm asks the operator for a new key before
+        // the ladder is consulted, and a card nobody can answer is a second subject in a file about
+        // the retry rule.
         api_key: Some("sk-test".to_string()),
         thinking: false,
     });
-    // **No window, so no wall.** The ledger is byte tokens here (one id per byte of the rendered
-    // text), a large number for a prompt this small, and a compaction door firing in the middle
-    // of an outage would be a second subject.
+    // No window, so no wall. The ledger is byte tokens here (one id per byte of the rendered
+    // text), a large number for a prompt this small, and a compaction door firing in the middle of an
+    // outage would be a second subject.
     cfg.context_window = None;
-    // The ladder this file measures: the policy's own waits, so a scenario's cost is the
-    // policy's and not a fixture's.
+    // The ladder this file measures: the policy's own waits, so a scenario's cost is the policy's
+    // and not a fixture's.
     cfg.http_retries = retries;
     // No `[fallback]`, so an exhausted ladder ends the turn rather than moving the session.
     cfg.fallback = Vec::new();
     cfg
 }
 
-/// **One session, one daemon, one head** — `model_outage.rs`'s arrangement: the driver on a
-/// thread of its own and the worker loop on this one.
+/// One session, one daemon, one head - the driver on a thread of its own and the worker loop on
+/// this one.
 fn drive<F>(parts: &Parts, cfg: Config, body: F) -> Rec
 where
     F: FnOnce(&mut HeadClient, &Receiver<Inbound>, &letibot_sessionlog::hub::Hub, &mut Rec)
@@ -331,9 +302,9 @@ where
         std::thread::spawn(move || {
             let mut client = client;
             let mut rec = Rec::default();
-            // **The registry is closed even if the driver panics**: a panic here would otherwise
-            // leave `daemon.run` blocked on a bell nobody rings, and a regression would read as
-            // a hung test rather than as the missing fact it is.
+            // The registry is closed even if the driver panics: a panic here would otherwise leave
+            // `daemon.run` blocked on a bell nobody rings, and a regression would read as a hung test
+            // rather than as the missing fact it is.
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 body(&mut client, &rx, &hub, &mut rec);
             }));
@@ -355,7 +326,7 @@ where
 // The test
 // ---------------------------------------------------------------------------
 
-/// **The whole of the rule, measured once, in one process** — five scenarios, five sessions.
+/// The whole of the rule, measured once, in one process - five scenarios, five sessions.
 #[test]
 fn what_is_retryable_and_what_the_operator_is_told() {
     // The operator's `providers.toml` must not be touched: point the config home at a scratch
@@ -391,14 +362,12 @@ fn what_is_retryable_and_what_the_operator_is_told() {
 
     let first = config(&scratch, "probe", 1);
     let parts = Parts::load(&first).expect("the byte vocabulary needs no model file");
-    // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
+    // The operator's per-project mode is not this test's business.
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
     // ── A. A transport failure is retried, and the turn survives ─────────────────────────
-    //
     // The stub hangs up on the first call and answers on the second. This is the class a DNS
-    // lookup failure lands in — the report the policy opens with — and the assertion that
-    // matters is the stub's own count: the turn was tried before it was called a failure.
+    // lookup failure lands in, and the assertion that matters is the stub's own count
     endpoint.refuse(1, Refusal::HangUp);
     let before = endpoint.seen();
     let cfg = config(&scratch, "transport", 1);
@@ -417,9 +386,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         rec.failed
     );
 
-    // ── B. A 503 is retried ─────────────────────────────────────────────────────────────
-    //
-    // The status a server reloading a model answers, which is the whole reason the ladder is
+    // ── B. A 503 is retried ───────────────────────────────────────────────────────────── The
+    // status a server reloading a model answers, which is the whole reason the ladder is
     // longer than one wait.
     endpoint.refuse(1, Refusal::Unavailable);
     let before = endpoint.seen();
@@ -459,9 +427,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     );
 
     // ── D. A 429 that names money is not retried: the six-times case ─────────────────────
-    //
-    // This is the test that would have seen six calls on the build before the policy: the status
-    // alone says *not yet*, and only the body says *not ever until somebody tops up*.
+    // This is the case the old build would have taken six times: the status alone says *not
+    // yet* and only the body says *not ever until somebody tops up*.
     endpoint.refuse(100, Refusal::NoCredit);
     let before = endpoint.seen();
     let cfg = config(&scratch, "no-credit", 5);
@@ -482,9 +449,8 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     );
 
     // ── E. The ladder runs out, and the sentence names the attempts ──────────────────────
-    //
-    // One retry: two calls, one second of waiting, and the ending says both — which is the fact
-    // `FAILED — http io: …` never carried.
+    // One retry: two calls, one second of waiting, and the ending says both - which is the
+    // fact `FAILED - http io: …` never carried.
     endpoint.refuse(100, Refusal::Unavailable);
     let before = endpoint.seen();
     let cfg = config(&scratch, "gives-up", 1);

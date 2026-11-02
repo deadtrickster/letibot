@@ -1,27 +1,5 @@
-//! **A nag turn arms the clock that closes out a call nothing answered** — R67 item 10, the
-//! third door.
-//!
-//! `idle_clock.rs` is this file's sibling and carries the argument: a turn dispatches tool calls,
-//! a call whose executor vanished is closed out only by `Sessions::sweep_abandoned_calls`, and
-//! the sweep runs only when the worker's wait has a deadline — so every door that runs a turn on
-//! the worker must arm it. The command arm always did; the wake arm was fixed 2026-10-10 after a
-//! nine-hour silence. The third door is the idle plan-check, `Sessions::deliver_due_nags`, and it
-//! is the worst placed of the three: it runs on the idle arm immediately AFTER the sweep spent
-//! `sweep_at`, so a call a nag turn stranded had no clock looking at it at all. The 2026-10-11
-//! review found it by reading (`sessions.rs:2379`, *"the wake arm's bug on the third door"*).
-//!
-//! # What is asserted, and why not "some clock is armed"
-//!
-//! `after_turn` re-arms the plan-check on every door, so `next_nag_at` answers `Some` after a nag
-//! turn whether or not the sweep was armed — asserting it would pass on the defect. The question
-//! is about ONE clock, so the test reads that one: `Sessions::sweep_due_at`.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not a model**: the
-//! endpoint is a local stub answering HTTP 400, which fails the nag's turn on the first attempt
-//! (`run_off_worker.rs`'s stub, for its reason — a refused port is classed `Io` and retried with
-//! doubling waits). The property is the ARMING, which happens whether or not the turn succeeds.
+//! A nag turn arms the clock that closes out a call nothing answered - the third door.
+//! `idle_clock.rs` is this file's sibling and carries the argument
 
 use std::time::Duration;
 
@@ -33,8 +11,8 @@ use letibot_turn::Endpoint;
 
 mod support;
 
-/// **A model server that refuses in the one way the retry rule respects** — `run_off_worker.rs`'s,
-/// for the reason it gives: a 400 fails the turn at once, a refused port is retried.
+/// A model server that refuses in the one way the retry rule respects: a 400 fails the turn at once
+/// where a refused port is retried.
 fn refusing_model_stub() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -84,13 +62,13 @@ fn config(store: &std::path::Path, session_id: &str, model_port: u16) -> Config 
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    // **Never this box's model server**: the nag's turn goes to the stub.
+    // Never this box's model server: the nag's turn goes to the stub.
     cfg.endpoint = Endpoint::new("127.0.0.1", model_port);
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
-/// A store holding one session with an unfinished plan — `todos.rs`'s fixture: the session row
+/// A store holding one session with an unfinished plan - `todos.rs`'s fixture: the session row
 /// first, because the todo row carries a foreign key to it.
 fn seed(path: &std::path::Path, session_id: &str) {
     let s = Store::open(path).expect("seeding");
@@ -150,9 +128,9 @@ fn a_nag_turn_arms_the_sweep_that_closes_a_call_it_stranded() {
     let mut sessions =
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
 
-    // **The premise**: nothing has armed the sweep — no command ran, no wake. What the idle arm
-    // does before delivering is spend it (`sweep_abandoned_calls`), which is exactly the state
-    // the nag door is entered in.
+    // The premise: nothing has armed the sweep - no command ran, no wake. What the idle arm does
+    // before delivering is spend it (`sweep_abandoned_calls`), which is the state the nag door is
+    // entered in.
     sessions.sweep_abandoned_calls();
     assert!(
         sessions.sweep_due_at().is_none(),

@@ -1,73 +1,54 @@
 //! `letibot-m1` as a FUNCTION, so more than one binary can be it.
 //!
-//! The M1 exit criterion: a fixed 30-turn script replayed against a client, with a
-//! judge. Offline apart from the model endpoint, which is why it is checked by its
-//! USAGE paths rather than by a run — those need no server and they are what a
-//! dispatcher can get wrong.
+//! The M1 exit criterion: a fixed 30-turn script replayed against a client, with a judge. Offline
+//! apart from the model endpoint, which is why it is checked by its USAGE paths rather than by a
+//! run - those need no server and they are what a dispatcher can get wrong.
 //!
-//! # What being a function changed, and what it deliberately did not
-//!
-//! The arguments arrive as a parameter instead of `std::env::args()`, and the final
-//! `std::process::exit(if failed { 1 } else { 0 })` becomes `return if failed { … }`
-//! so the caller decides whether the process ends — the dispatcher has its own exit
-//! convention to honour.
-//!
-//! **`die` stays.** It is called from nine places, several of them inside a closure
-//! that borrows the argument iterator, and every one is a usage error whose contract
-//! is exit 2 with a message. Making `run` return `Result` would mean threading a
-//! code through nine sites and a closure for no observable difference — the exit
-//! code and the wording are the interface, and both are preserved exactly. A library
-//! that exits is normally a defect; here it is the smaller of the two changes, and
-//! it is named rather than hidden.
-
-//! `letibot-m1` — M1's exit measurement, run against a live model.
+//! `die` stays. It is called from nine places, several inside a closure that borrows the
+//! argument iterator, and every one is a usage error whose contract is exit 2 with a message.
+//! Returning `Result` would thread a code through nine sites for no observable difference: the exit
+//! code and the wording are the interface, and both are preserved exactly.
 //!
 //! ```text
 //! letibot-m1 [--workspace DIR] [--turns N] [--dialect qwen|glm] [--effort low]
 //!            [--endpoint HOST:PORT] [--model ALIAS] [--vocab GGUF] [--json FILE]
 //! ```
 //!
-//! §17's M1 exit is *"C1–C10 pass against harnessd where opencode failed, and
-//! `f_keep` p10 ≥ 0.99 over a scripted 30-turn session"*. This runs the scripted
-//! session and reports every C-test it can reach, **and names the ones it cannot,
-//! with the reason**. A C-test that did not run is printed as `NOT RUN`, never
-//! folded into a pass count — a vacuous pass here would be exactly the failure this
-//! whole project is a reaction to.
+//! §17's M1 exit is *"C1–C10 pass against harnessd where opencode failed, and `f_keep` p10 ≥ 0.99
+//! over a scripted 30-turn session"*. Every C-test it can reach is reported, and the ones it
+//! cannot are named with the reason - `NOT RUN`, never folded into a pass count, because a
+//! vacuous pass here is exactly the failure this whole project is a reaction to.
 //!
 //! # What each C-test becomes on the token-array path
 //!
-//! `tests/fidelity/run_gate.py` gives C2 and is not re-run here; the rest are
-//! measured from the ledger and from `turn_metrics`.
+//! `tests/fidelity/run_gate.py` gives C2 and is not re-run here; the rest are measured from the
+//! ledger and from `turn_metrics`.
 //!
 //! | # | here |
 //! |---|---|
-//! | C1 | the submitted token vector at turn N is an **exact prefix** of turn N+1's. Read off the ledger, not inferred from cache numbers. |
-//! | C2 | NOT RUN — it is the fidelity gate, which needs no model. GLM 139/139, Qwen 56/56. |
+//! | C1 | the submitted token vector at turn N is an exact prefix of turn N+1's. Read off the ledger, not inferred from cache numbers. |
+//! | C2 | NOT RUN - it is the fidelity gate, which needs no model. GLM 139/139, Qwen 56/56. |
 //! | C3 | the engine's own `PrefixCheck`, which is §18.1-I1: turn N+1's prompt begins with turn N's plus what the model generated. Read off, never recomputed. |
-//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in D11's settled form — `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from **one** `PrefixCheck`. |
+//! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in D11's settled form - `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from one `PrefixCheck`. |
 //! | C5 | `f_keep` does not collapse on the submission that follows an assistant turn carrying reasoning. |
 //! | C6 | every assistant item with tool calls and empty text still owns a non-empty ledger row. |
-//! | C7 | NOT RUN live — see below. |
+//! | C7 | NOT RUN live - see below. |
 //! | C8 | every turn's `finish_reason` reaches `turn_metrics`; a `length` is never recorded as a completed turn. |
-//! | C9 | a mid-session system change leaves the stable prefix **byte-identical** and appends at the tail, and `f_keep` stays high across it. |
+//! | C9 | a mid-session system change leaves the stable prefix byte-identical and appends at the tail, and `f_keep` stays high across it. |
 //! | C10 | the server's own `n_prompt_tokens` equals ours, and equals `cached + processed`. |
 //!
-//! **C7 and C8 cannot be produced live and that is deliberate.** Both need a
-//! `length` finish, which needs either an `n_predict` cap — §5.7 removed it from
-//! the request on purpose and no test may add it back — or a 262,144-token context
-//! filled on a production box. The policy is exercised exhaustively offline in
-//! `letibot_turn::length`, which is where a *decision* belongs; what is measured
-//! here is the half that is a server behaviour, namely that `finish_reason` arrives
-//! and is carried.
+//! C7 cannot be produced live, deliberately: it needs a `length` finish, which needs either an
+//! `n_predict` cap - §5.7 removed it on purpose and no test may add it back - or a 262,144-token
+//! context filled on a production box. The policy is exercised exhaustively offline in
+//! `letibot_turn::length`; what is measured here is the server half, that `finish_reason` arrives.
 //!
 //! # `f_keep` here is D11's, and `f_sim` is printed beside it
 //!
-//! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is
-//! the *new* prompt — llama's `f_sim`, which falls purely as a function of how much
-//! the conversation grew and cannot reach 0.99 on any session that returns tool
-//! output. T22 records the defect; D11 settles C4 as `lcp / cached_entry`. Both
-//! numbers are printed, under their own names, because the old one is real and only
-//! its name was wrong.
+//! §18.2's C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
+//! prompt - llama's `f_sim`, which falls purely as a function of how much the conversation grew and
+//! cannot reach 0.99 on any session that returns tool output (T22). D11 settles C4 as `lcp /
+//! cached_entry`. Both are printed under their own names, because the old one is real and only its
+//! name was wrong.
 
 use std::path::PathBuf;
 
@@ -83,17 +64,16 @@ struct Row {
     kind: &'static str,
     m: TurnMetrics,
     /// Whether the transcript before this submission ended with an assistant turn
-    /// that carried reasoning — C5's condition.
+    /// that carried reasoning - C5's condition.
     after_reasoning: bool,
 }
 
-/// Run the M1 script over `args`, returning the process exit code.
-///
-/// `args` is what followed the program name. A usage error exits 2 from `die`
-/// rather than returning, which is stated in the module docs above.
+/// Run the M1 script over `args`, returning the process exit code. `args` is what followed
+/// the program name. A usage error exits 2 from `die` rather than returning, which is
+/// stated in the module docs above.
 pub fn run(args: &[String]) -> i32 {
     let mut cfg = Config::for_this_box(std::env::current_dir().expect("a working directory"));
-    // **A measurement of a live session on this box, so it reads this box**: the instruction
+    // A measurement of a live session on this box, so it reads this box: the instruction
     // file and the skills index are part of what a session costs, and leaving them out would
     // measure a prompt nobody runs.
     cfg.read_the_box();
@@ -136,7 +116,7 @@ pub fn run(args: &[String]) -> i32 {
     }
 
     // A nonce in the session id keeps the *session* distinct; the stable prefix is
-    // deliberately **not** nonced, because sharing a warm prefix between sessions is
+    // deliberately not nonced, because sharing a warm prefix between sessions is
     // the design (§5.2) and noncing it would measure a cold start on purpose.
     let parts = Parts::load(&cfg).unwrap_or_else(|e| die(&e.to_string()));
     let hub = Hub::new(cfg.session_id.clone());
@@ -270,17 +250,8 @@ impl Step {
     }
 }
 
-/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool
-/// script, replayed identically against any client"*).
-///
-/// It includes a mid-session system change (C9), tool calls that hit, a tool call
-/// that must fail (a path that does not exist), and a retrieval question that must
-/// abstain. It deliberately does **not** include a compaction crossing or a fork:
-/// neither exists in M1, and scripting a step the harness cannot take would be a
-/// test of the script.
-///
-/// Prompts are short and answers are asked to be short, on purpose: this runs
-/// against a box in production use with five shared slots.
+/// The scripted session (§18.2: *"a fixed 30-turn conversation with a fixed tool script
+/// replayed identically against any client"*).
 fn script(turns: usize) -> Vec<Step> {
     let ask = |s: &str| Step::Ask(s.to_string());
     let mut v = vec![
@@ -331,12 +302,6 @@ fn first_line(s: &str) -> String {
 }
 
 /// The percentile convention every figure in this file uses, stated once.
-///
-/// **Nearest-rank on `(n-1)·p`, rounded half away from zero, over the ascending
-/// sample** — so p10 of 52 values is index `round(51 × 0.10) = 5`, the 6th smallest,
-/// and no interpolation ever invents a value the session did not produce. The
-/// convention matters: with 52 samples it takes **6** low values, not 5, to move
-/// p10, so a result that turns on 3 of 52 turns must be read with this in hand.
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
         return f64::NAN;
@@ -383,22 +348,14 @@ fn judge(
             .to_string(),
     );
 
-    // ---- C3: the generation-inclusive prefix invariant --------------------
-    //
-    // Read off `PrefixCheck`, which the engine computed at the moment it had the
-    // evidence, rather than recomputed here from `prompt + predicted`. The first
-    // draft of this file did recompute it and was wrong by exactly one token on
-    // every turn: `predicted_tokens` counts what the server streamed, which
-    // includes the trailing `<|im_end|>`, and that stop token is stripped before
-    // the row is committed. The engine's `PrefixWitness` accounts for it because it
-    // records the tokens that were actually committed. Two implementations of one
-    // invariant is how a harness ends up trusting the wrong one.
+    // ---- C3: the generation-inclusive prefix invariant -------------------- Read off
+    // `PrefixCheck`, which the engine computed at the moment it had the evidence, rather than
+    // recomputed from `prompt + predicted`
     let mut c3_held = 0;
     let mut c3_short: Vec<String> = Vec::new();
-    // Every shortfall is compared against the previous submission's generation,
-    // because there is one specific shape a shortfall can have that says exactly
-    // what the server did: reuse that stops at the end of the last committed item,
-    // discarding the generation-prompt lead and the whole generation with it.
+    // Every shortfall is compared against the previous submission's generation, because one shape
+    // of shortfall says exactly what the server did: reuse that stops at the end of the last
+    // committed item, discarding the generation prompt and the whole generation with it.
     let mut c3_signature = 0;
     let mut c3_other = 0;
     let mut prev_predicted = 0u64;
@@ -468,22 +425,7 @@ fn judge(
         )
     });
 
-    // ---- C4: the f_keep distribution --------------------------------------
-    //
-    // D11: `f_keep = lcp / cached_entry`, computed as
-    // `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`.
-    //
-    // Read off `TurnMetrics::f_keep`, which reads its denominator off the same
-    // `PrefixCheck::Held` that C3 above reports its shortfall from. That is
-    // deliberate and it is the whole point of D11: C3 is the inequality
-    // `cached(N+1) >= prompt(N) + generated(N)` and C4 is its margin, over the same
-    // two numbers. Recomputing the denominator here would be a second
-    // implementation of one quantity, which is how the harness ends up trusting the
-    // wrong one — the mistake this file already documents for C3.
-    //
-    // The old C4 — `cached_tokens / prompt_tokens` — is llama's `f_sim` and is
-    // printed underneath, under its own name. It is a real number; it is just not
-    // the one with the 0.99 bar on it (T22).
+    // ---- C4: the f_keep distribution -------------------------------------- D11
     let mut keeps: Vec<f64> = rows.iter().filter_map(|r| r.m.f_keep()).collect();
     keeps.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut repre: Vec<f64> = rows.iter().map(|r| r.m.reprefill() as f64).collect();
@@ -559,12 +501,8 @@ fn judge(
         ));
     }
 
-    // `f_sim` — the OLD C4 — reported beside it so the two numbers can be told
-    // apart rather than confused. Its denominator is the whole new prompt, so its
-    // ceiling on any submission is `1 - new_tokens/prompt`: a turn that appends a
-    // 1,400-token tool result to a 5,000-token prompt cannot exceed 0.72 however
-    // perfect the cache is. A p10 over it measures the SCRIPT as much as the
-    // harness, which is why it is not the exit criterion.
+    // `f_sim` - the OLD C4 - reported beside it so the two can be told apart. Its denominator
+    // is the whole new prompt, so its ceiling on any submission is `1 - new_tokens/prompt`
     let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
     sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let ceilings: Vec<f64> = rows
@@ -597,14 +535,8 @@ fn judge(
         total_prompt,
     ));
 
-    // ---- C5: reasoning replay does not collapse the cache ------------------
-    //
-    // Measured on `f_keep`, which since D11 is the right metric for it. omp's
-    // #3528 is a *collapse* — reasoning that is not replayed makes the prompt
-    // diverge and `cached_tokens` falls off a cliff. A turn whose `f_sim` is 0.69
-    // because it appended a 1,400-token tool result has not collapsed; using
-    // `f_sim` here would report the script's shape as a cache failure, which is the
-    // same category error as reporting a tok/s number without its concurrency.
+    // ---- C5: reasoning replay does not collapse the cache ------------------ Measured on
+    // `f_keep`, which since D11 is the right metric for it.
     let after: Vec<&Row> = rows.iter().skip(1).filter(|r| r.after_reasoning).collect();
     let worst = after
         .iter()

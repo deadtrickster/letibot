@@ -1,11 +1,4 @@
-//! **The metrics instruments on a real turn** (TODO R81 phase 1) — the canned server plays the
-//! model, the turn runs through the production turn tail, and what is asserted is the rows the
-//! instruments emitted on this thread (`letibot_metrics::capture`): one `turn.start` and one
-//! `turn.end` keyed by the first round's id, a `round` per request with its time to first token,
-//! a `tool.call` with its duration, outcome and bytes, and an R71 claim carrying the REAL window
-//! (the `999999` the jsonl showed was a round trip through the ledger ratio).
-//!
-//! Needs the vocabulary GGUF and no model; no `metrics.db` is opened — the capture is the sink.
+//! The metrics instruments on a real turn
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::Config;
@@ -197,8 +190,8 @@ fn a_turn_emits_its_start_end_rounds_and_tool_call_keyed_by_one_turn_id() {
     );
 }
 
-/// **The claim's window is the window** — 1,000,000 configured, 1,000,000 recorded; the jsonl's
-/// `999999` was `shown_tokens(planning_window())`, a round trip through the ratio.
+/// The claim's window is the window - 1,000,000 configured, 1,000,000 recorded; the jsonl's
+/// `999999` was `shown_tokens(planning_window)`, a round trip through the ratio.
 #[test]
 fn a_context_claim_row_carries_the_real_window_and_its_sentence() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

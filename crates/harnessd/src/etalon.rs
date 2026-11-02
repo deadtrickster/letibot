@@ -1,33 +1,5 @@
-//! **The etalon, read against layer A as it is today.**
-//!
-//! Plan: `docs/guard-corpus-plan.md` §2 and §7. The etalon is every tool call
-//! this operator sat through — Claude Code, opencode and letibot, on every box
-//! that offered its transcripts — with the operator's words beside it and what
-//! became of it: it ran, it errored, or it was refused. Extracted by
-//! `scripts/etalon-extract.py` into JSONL; commands and utterances only, never
-//! tool output.
-//!
-//! This module answers one question about a layer-A change before it lands:
-//! **what would it have done to the calls that actually happened?** Each row's
-//! command is read by `Baseline::of_command` — today's classifier, today's lists
-//! — and its tier is crossed with the row's outcome. Two cells matter:
-//!
-//! * **ran × always_ask** — calls the operator let run (or did not stop) that
-//!   layer A would now put in front of them every time. In automode that is a
-//!   prompt the operator would not have had; the rule that fired is named so a
-//!   port can be judged rule by rule.
-//! * **refused × always_ask** — calls a human (or Claude Code's classifier)
-//!   refused that layer A would catch before any model is asked. The point of
-//!   a port.
-//!
-//! A rule that grows the first cell without growing the second does not land
-//! (plan §2). The rest of the table — `may_approve`, `auto`, `not_run` — says
-//! how much of the corpus reaches the model at all, and how much layer A cannot
-//! read (a bare name under an undeclared shell, an unresolvable construct).
-//!
-//! What this is NOT: a measurement of the gatekeeper model. That is
-//! `calibrate.rs`, over the 402 labelled rows. This is layer A alone, on forty
-//! thousand real commands.
+//! The etalon, read against layer A as it is today. Plan: `docs/guard-corpus-plan.md` §2
+//! and §7.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -41,11 +13,8 @@ pub struct Row {
     pub source: String,
     #[serde(default)]
     pub session: String,
-    /// Where the call ran. The scope half of layer A — inside or outside the
-    /// project — is judged against THIS, not against the daemon's own
-    /// workspace: the rows come from many projects, and judging an emacs
-    /// session's `cp` against letibot's tree calls every one of them
-    /// "outside the project".
+    /// Where the call ran. The scope half of layer A - inside or outside the project - is
+    /// judged against THIS, not against the daemon's own workspace
     #[serde(default)]
     pub cwd: String,
     pub tool: String,
@@ -94,29 +63,27 @@ pub struct Report {
     pub commands: usize,
     /// (source, outcome, read) → count.
     pub cells: BTreeMap<(String, String, Read), usize>,
-    /// Which `always_ask` rule fired on a row that RAN, and how often — the
+    /// Which `always_ask` rule fired on a row that RAN, and how often - the
     /// false-prompt table, by rule.
     pub prompts_by_rule: BTreeMap<&'static str, usize>,
-    /// Which rule fired on a row that was REFUSED — the catches, by rule.
+    /// Which rule fired on a row that was REFUSED - the catches, by rule.
     pub catches_by_rule: BTreeMap<&'static str, usize>,
     /// A few examples per rule of a ran-row it would prompt on, so a reader can
     /// see the command and not only the count.
     pub prompt_examples: BTreeMap<&'static str, Vec<String>>,
     /// Why layer A could not read a command, by first sentence, with counts.
     pub not_run_why: BTreeMap<String, usize>,
-    /// The constructs that made a command unreadable, by how many commands
-    /// each appears in — and, separately, how many commands each construct is
-    /// the ONLY reason for. The second number is what resolving that one
-    /// construct would recover; the first is only how common it is.
+    /// The constructs that made a command unreadable, by how many commands each appears in -
+    /// and, separately, how many commands each construct is the ONLY reason for. The second
+    /// number is what resolving that one construct would recover
     pub not_run_constructs: BTreeMap<String, (usize, usize)>,
-    /// Where here-document bodies go, by count of commands: the program that
-    /// reads the body on stdin, or the file it is redirected into (by its
-    /// extension or directory class). Plan §4b: a body headed somewhere
-    /// executable is a program, and this is how many there are to read.
+    /// Where here-document bodies go, by count of commands: the program that reads the body on
+    /// stdin, or the file it is redirected into (by its extension or directory class). Plan
+    /// §4b
     pub heredoc_sinks: BTreeMap<String, usize>,
     /// Program heads layer A does not know (`Intent::Unknown`), by count of
     /// commands they appear in. The list the next tranche of heads is chosen
-    /// from — by what this operator actually runs, not by a paper's table.
+    /// from - by what this operator actually runs, not by a paper's table.
     pub unknown_heads: BTreeMap<String, usize>,
 }
 
@@ -124,8 +91,8 @@ pub struct Report {
 pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut r = Report::default();
-    // `LETIBOT_ETALON_DUMP=path` writes one line per command — its row number,
-    // read and rule — so two builds can be diffed row by row, which the summary
+    // `LETIBOT_ETALON_DUMP=path` writes one line per command - its row number
+    // read and rule - so two builds can be diffed row by row, which the summary
     // cannot do: a rule that gains 500 and loses 500 shows as unchanged.
     let mut dump = std::env::var_os("LETIBOT_ETALON_DUMP")
         .map(|p| std::io::BufWriter::new(std::fs::File::create(p).expect("dump path")));
@@ -160,10 +127,9 @@ pub fn report(path: &Path, env: &Surroundings, limit: usize) -> Result<Report, S
             for st in &n.stages {
                 if let letibot_code::shell::Word::Literal(p) = &st.program {
                     let base = p.rsplit('/').next().unwrap_or(p).to_string();
-                    // Only the stages the table does not name: re-read THIS
-                    // stage's own text, so `git status` is judged as `git
-                    // status` and not as a bare `git`, which has no sub-verb
-                    // and would read as unknown for the wrong reason.
+                    // Only the stages the table does not name: re-read THIS stage's own text, so `git status`
+                    // is judged as `git status` and not as a bare `git`, which has no sub-verb and would read
+                    // as unknown for the wrong reason.
                     let text = n.source.get(st.span.start..st.span.end).unwrap_or(&base);
                     let probe = Baseline::of_command(text, env_for_row);
                     if probe

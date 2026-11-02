@@ -1,9 +1,6 @@
 //! What a daemon needs to know before it can open a session.
 //!
-//! Every field is a fact the daemon cannot invent. There is no `Default` for the
-//! whole struct on purpose: a default endpoint, a default model and a default
-//! workspace root together describe a session against somebody else's box, and the
-//! failure would be a running daemon rather than an error.
+//! Every field is a fact the daemon cannot invent, and there is deliberately no `Default`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -13,19 +10,14 @@ use serde_json::{Value, json};
 
 use crate::dialect::Dialect;
 
-/// **Where a project's reviewers run** — `[queue] reviewers` in `leticode.toml`, `--reviewers`
-/// on the daemon's command line, and [`Config::reviewers`] in a session.
-///
-/// Defined in `mergequeue::settings` because the project file is where a PROJECT says it; named
-/// here so every reader of a `Config` meets one word for it.
+/// Where a project's reviewers run - `[queue] reviewers` in `leticode.toml`, `--reviewers`
+/// on the daemon's command line, and [`Config::reviewers`] in a session. Defined in
+/// `mergequeue::settings`, because the project file is where a PROJECT says it.
 pub use crate::mergequeue::settings::Reviewers;
 
-/// §8.3 clause 5's budget, as configuration.
-///
-/// **`Unset` is the default and it is correct**, per D6: an unset budget is a
-/// genuine no-op, not a hidden constant. Nothing spills until somebody configures
-/// one. That is a session-config gap rather than a code one, it is invisible unless
-/// said, and `harnessd --spill-inline N` is where it stops being invisible.
+/// §8.3 clause 5's budget, as configuration. `Unset` is the default and it is correct, per
+/// D6: nothing spills until somebody configures a budget, and `harnessd --spill-inline N` is
+/// where that gap stops being invisible.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SpillPolicy {
     /// No budget. Every payload reaches the model whole. The daemon says so at
@@ -39,89 +31,47 @@ pub enum SpillPolicy {
 /// Where a spilled payload is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpillStorage {
-    /// In this process. Dies with the daemon, which makes `read_spill` a lie
-    /// across a restart — so it is only the default while the budget is `Unset`
-    /// and nothing can spill.
+    /// In this process. Dies with the daemon, which makes `read_spill` a lie across a restart -
+    /// tolerable only while the budget is `Unset` and nothing can spill.
     Memory,
     /// Under a directory, one subdirectory per session.
     Dir(PathBuf),
 }
 
-/// **Which role a session seats, and therefore what it can reach.**
-///
-/// Every capability in this harness was built behind a role and none of them was
-/// constructible: `harnessd` seated [`letibot_tools::roles::m1_orchestrator`] as a
-/// constant, so `write`, `edit`, `bash`, the job verbs, `monitor`, `todo`, `goal`,
-/// `write_plan` and `say` existed, were tested, and could not be called by anything.
-/// This enum is the flag that makes them reachable.
-///
-/// # Nothing widens by default
-///
-/// [`Seat::Orchestrator`] is the default and is exactly what a `letibot` invocation
-/// gets today: read-only tools, a read-only backend, no adjudicator, and no code
-/// path from a tool to a question (clause 4). An operator who passes no `--role`
-/// gets no new capability from this file existing. That is the property, and it is
-/// checked by a test rather than asserted here.
-///
-/// # The seat decides three things at once, and they are not independent
-///
-/// The role picks the tool list; the tool list's declared [`letibot_tools::Access`]
-/// picks the backend constructor and decides whether an adjudicator is *required*.
-/// Reading the second and third off the first is what stops a session from being
-/// seated with `edit` over a read-only backend, or with `bash` and nobody to ask —
-/// both of which start cleanly and then fail every call, which wastes a turn to
-/// discover.
+/// Which role a session seats, and therefore what it can reach. Nothing widens by default
+/// [`Seat::Orchestrator`] is what a `letibot` invocation already got. The role picks the tool list
+/// the list's `Access` picks the backend, and that decides whether an adjudicator is required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Seat {
-    /// §8.4's `orchestrator`: `read`, `grep`, `glob`, `ask_code`, `ask_corpus`,
-    /// `read_spill`. Read-only backend, no gate traffic. **The default.**
+    /// §8.4's `orchestrator`: `read`, `grep`, `glob`, `ask_code`, `ask_corpus`
+    /// `read_spill`. Read-only backend, no gate traffic. The default.
     #[default]
     Orchestrator,
-    /// D9's plan mode: read, search, the intent list, and the two things that make
-    /// a plan a plan — `write_plan` (a write scoped to plan documents by taking a
-    /// *name* rather than a path) and `say`. Needs a writable backend for the plan
-    /// file and an adjudicator for `write_plan` and `say`.
+    /// D9's plan mode: read, search, the intent list, and the two things that make a plan a plan - `write_plan` (scoped to plan documents by taking a *name*, not a path) and `say`. Needs
+    /// a writable backend and an adjudicator.
     Planner,
     /// §8.4's `researcher` with the web instead of `search_corpus`. Four of its
     /// seven seats refuse today for want of a backend; the two network ones still
     /// declare `Access::Network`, so it needs an adjudicator to be honest.
     Researcher,
-    /// §8.4's `coder` without `bash`: `read`, `write`, `edit`, `grep`, `glob`,
+    /// §8.4's `coder` without `bash`: `read`, `write`, `edit`, `grep`, `glob`
     /// `read_spill`. Writable backend.
     Coder,
-    /// The only role that can run a command: the job verbs, `monitor`, and — only
-    /// behind [`Config::allow_bash`] — `bash`. **Confined backend, never
-    /// `HostBackend::executable`.**
+    /// The only role that can run a command: the job verbs, `monitor`, and - only
+    /// behind [`Config::allow_bash`] - `bash`. Confined backend, never
+    /// `HostBackend::executable`.
     Runner,
-    /// leticode's seat: opencode's tool union by opencode's names — `read`, `write`,
-    /// `edit`, `grep`, `glob`, `todo_write`, `skill`, `lsp`, `task`, plus `bash`
-    /// behind [`Config::allow_bash`]. This is the seat that can spawn a subagent
-    /// (`task`).
-    ///
-    /// **Unconfined, on purpose.** opencode has no workspace boundary: its `read`
-    /// reaches the whole host and its permission model — not a jail — decides what a
-    /// write or a command may do. leticode is the port of that model, so it roots its
-    /// backend at `/` and leaves gating to the permission ruleset and the mode,
-    /// rather than confining to the project like `coder` and `runner`.
+    /// leticode's seat: opencode's tool union by opencode's names, `task` included, plus `bash`
+    /// behind [`Config::allow_bash`]. Unconfined, on purpose - opencode has no workspace
+    /// boundary, so the permission ruleset and the mode, not a jail, are the gate.
     Leticode,
-    /// **The merge queue's reviewer** ([`letibot_tools::runtime::roles::gatekeeper`]): `read`,
-    /// `grep`, `glob`, `read_spill`, and — behind [`Config::allow_bash`], like the runner's —
-    /// `bash` for `git diff` and `git log`. Nothing that can author code, and never a seat a
-    /// person picks: the daemon starts it as a hidden child of the session whose branch it
-    /// judges (`mergequeue::GatekeeperDoor`).
+    /// The merge queue's reviewer ([`letibot_tools::runtime::roles::gatekeeper`]): the read
+    /// tools and, behind [`Config::allow_bash`], `bash` for `git diff`. Nothing that can author
+    /// code, and never a seat a person picks - the daemon starts it (`mergequeue::GatekeeperDoor`).
     Gatekeeper,
-    /// **The standing notes' keeper** ([`letibot_tools::runtime::roles::notes_keeper`]): `read`,
-    /// `grep`, `glob`, `read_spill` and `notes` — the read tools and the one writer that can
-    /// reach a note.
-    ///
-    /// It needs a **writable** backend, because `notes` declares `Access::Write`, and it needs
-    /// **no exec backend**: it has no `bash`, so the commits a note cites are resolved for it
-    /// before it is asked ([`letibot_tools::references`]). Nothing here can author code, which
-    /// is the whole of its seat — a keeper inspects a note against the tree and repairs memory.
-    ///
-    /// Never a seat a person picks, on the gatekeeper's rule: the daemon starts it, as a hidden
-    /// child of the session whose workspace's notes it reviews. Nothing starts one yet — the
-    /// per-workspace clock is deliberately deferred — so this is the seat that clock will use.
+    /// The standing notes' keeper ([`letibot_tools::runtime::roles::notes_keeper`]): the read
+    /// tools and `notes`, the one writer that reaches a note. Never a seat a person picks - the
+    /// daemon starts it, and the per-workspace clock that will is still deferred.
     NotesKeeper,
 }
 
@@ -159,21 +109,14 @@ impl Seat {
         }
     }
 
-    /// Whether this seat needs a backend that can change the operator's tree.
-    ///
-    /// Read off the seat rather than off a flag so the two cannot disagree. The
-    /// *authoritative* answer is still the seated schemas — `GateWiring` reads
-    /// those — and this is what decides which constructor to call before the
-    /// schemas exist.
+    /// Whether this seat needs a backend that can change the operator's tree. Read off the seat
+    /// so the two cannot disagree; the *authoritative* answer is still the seated schemas, and
+    /// this decides which constructor to call before they exist.
     pub fn needs_writable_backend(self) -> bool {
         matches!(
             self,
-            // `NotesKeeper` joined on 2026-10-10, and the reason is its one writer: the `notes`
-            // tool declares `Access::Write`, so a read-only backend refuses every repair — and a
-            // keeper that cannot repair is a keeper that only complains. What keeps it from
-            // authoring code is its SEAT (no `write`, no `edit`, no `bash`), not its backend,
-            // exactly as the design has it: *"it inspects and it repairs memory; it does not
-            // edit code."*
+            // `NotesKeeper` is here for its one writer: `notes` declares `Access::Write`, and a
+            // keeper that cannot repair only complains. Its SEAT keeps it from authoring code.
             Seat::Planner | Seat::Coder | Seat::Runner | Seat::Leticode | Seat::NotesKeeper
         )
     }
@@ -181,50 +124,36 @@ impl Seat {
     /// Whether this seat needs a backend that can start processes, and therefore
     /// the boundary that goes around one.
     pub fn needs_exec_backend(self) -> bool {
-        // **Coder joined Runner on 2026-09-11**, because a role that writes code and
-        // cannot run it leaves the loop open at the point where it would have paid —
-        // the model wrote a regression test and had no way to execute it.
-        //
-        // This costs nothing in file access: `HostBackend::confined` is `writable +
-        // EXEC`, so a confined coder still edits its tree. What it adds is a boundary
-        // the writable backend does not have — a project-rooted view where a secret
-        // outside it is ABSENT rather than denied.
-        //
-        // It does NOT seat `bash`. That is still behind `--bash` for both seats, so
-        // the capability arrives because somebody typed it.
+        // Coder joined Runner on 2026-09-11: a role that writes code and cannot run it leaves
+        // the loop open where it would have paid. `HostBackend::confined` is writable + EXEC, so this
+        // adds a project-rooted boundary, not file access - and it does NOT seat `bash`.
         matches!(self, Seat::Runner | Seat::Coder | Seat::Gatekeeper)
     }
 
-    /// The read-only grants this seat needs to be useful, beyond the project.
-    ///
-    /// Empty by default and filled from `--grant-ro`, never from a table here: a grant
-    /// is the operator's decision and `Grant` carries a `why` so it can be explained
-    /// and therefore revoked.
+    /// The read-only grants this seat needs beyond the project. Empty here and filled from
+    /// `--grant-ro`: a grant is the operator's decision, and `Grant` carries a `why` so it can be
+    /// explained and revoked.
     pub fn default_grants(self) -> Vec<std::path::PathBuf> {
         Vec::new()
     }
 }
 
-/// How the daemon reaches the flowy fabric. `None` is no flowy at all — the
-/// no-flowy mode `docs/tool-design-brief.md` §3b keeps — and it is the default.
-///
-/// Every field optional: what is missing is looked up along the usual path
-/// (`$FLOWY_*`, `~/.config/flowy/env-<seat>`, `~/.config/flowy/agents/<seat>`),
-/// and the daemon's banner says where each value came from.
+/// How the daemon reaches the flowy fabric. `None` is no flowy at all - the mode
+/// `docs/tool-design-brief.md` §3b keeps - and it is the default. What is missing is looked up
+/// along the usual path, and the banner says where each value came from.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FlowyConfig {
     /// The seat's name. Omitted: `$FLOWY_AGENT`, else the only seat on the box.
     pub seat: Option<String>,
     pub addr: Option<String>,
     pub token_file: Option<PathBuf>,
-    /// Declare the inbox reader at the head of the log before listening. OFF by
-    /// default and never implied: a reader that silently appears is a typo that
-    /// produces an inbox which is permanently empty, and the same refusal appears
-    /// when the token has been switched — see `letibot_flowy::client::NodeError`.
+    /// Declare the inbox reader at the head of the log before listening. OFF by default and
+    /// never implied: a reader that silently appears is a typo producing a permanently empty
+    /// inbox - see `letibot_flowy::client::NodeError`.
     pub new_reader: bool,
 }
 
-/// A cloud provider for the turns — D10's mode 3. `None` is the local server,
+/// A cloud provider for the turns - D10's mode 3. `None` is the local server
 /// which is the default and what every invocation got before this existed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfig {
@@ -240,18 +169,9 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
-    /// **This provider's context window, from the catalogue.**
-    ///
-    /// The same models.dev number `Harness::retune_window` moves to when the
-    /// operator runs `/models`, so a session that STARTS on a provider plans
-    /// against the same wall as one that switches to it. Before this they did
-    /// not: the start path skipped the lookup entirely and left the window
-    /// `None`, and `None` is not a large window — it is no wall at all, because
-    /// every check that would compact is written `let Some(window) = …`.
-    ///
-    /// `None` when the preset or the model is not in the catalogue, which is the
-    /// honest answer and leaves the old behaviour exactly where it was for a
-    /// model nobody has a number for.
+    /// This provider's context window, from the catalogue - the same models.dev number
+    /// `Harness::retune_window` moves to on `/models`, so a session that STARTS on a provider plans
+    /// against the same wall. `None` when the catalogue has no number, which is honest, not large.
     pub fn catalogue_window(&self, cat: &letibot_provider::catalogue::Catalogue) -> Option<u64> {
         letibot_provider::Preset::parse(&self.name)
             .ok()?
@@ -259,21 +179,16 @@ impl ProviderConfig {
     }
 }
 
-/// **Where the model that answers came from**, as the startup disclosure says it.
-///
-/// Four levels, one word each — `flag`, `project`, `user`, `built-in` — plus the
-/// file when a file is where it came from and any fault found while working it
-/// out. The operator's own evening is the reason this is a value on the config
-/// rather than a sentence composed where the model is set: a disclosure that can
-/// only be produced by the code path that chose the model is a disclosure that
-/// goes missing exactly when the choice was surprising.
+/// Where the model that answers came from, as the startup disclosure says it: four levels
+/// plus the file and any fault found. A value on the config rather than a sentence composed
+/// where the model is set, so the disclosure cannot go missing exactly when it was surprising.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelSource {
     /// The level that won. [`crate::leticode_config::Level::Builtin`] is the
     /// default, which is the honest answer for a daemon nothing spoke for.
     pub level: crate::leticode_config::Level,
     /// The name that level wrote, when a level wrote one. `None` for the built-in
-    /// default, which is not a name somebody typed — it is the model the daemon
+    /// default, which is not a name somebody typed - it is the model the daemon
     /// was launched on.
     pub value: Option<String>,
     /// The file, when a file is where it came from.
@@ -282,11 +197,9 @@ pub struct ModelSource {
     /// providers.toml`, `the local server this daemon was launched against`. The
     /// short form of the same fact the level names, for the sentence.
     pub origin: String,
-    /// **A fault found at startup**, when there is one: a value that names a
-    /// model this box cannot reach, or a file's alias that the command line's
-    /// binding outranks. `None` is the quiet case. Carried here so the banner says
-    /// it — the whole point is that it is read before the first turn rather than
-    /// discovered as a 400.
+    /// A fault found at startup: a value naming a model this box cannot reach, or an alias
+    /// the command line's binding outranks. `None` is the quiet case. Carried here so the banner
+    /// says it before the first turn rather than a 400 discovering it.
     pub note: Option<String>,
 }
 
@@ -302,7 +215,7 @@ impl ModelSource {
         }
     }
 
-    /// **The precedence, in the words a reader gets**, so the rule is on the
+    /// The precedence, in the words a reader gets, so the rule is on the
     /// screen next to the value it decided rather than in a file beside it.
     pub const ORDER: &'static str = "the command line beats the project file, the project file \
          beats the user file, the user file beats the built-in default";
@@ -327,770 +240,324 @@ impl ModelSource {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub dialect: Dialect,
-    /// **The skills a session is STARTED with** — their bodies are preloaded into its prompt, on
-    /// top of the index every session gets (see `Harness::open`).
-    ///
-    /// **Declared, never inferred.** A `task {skills}` child's spec fills this for the child; a
-    /// seat nobody types for — the review queue's reviewer, through `[queue] reviewer_skills` —
-    /// fills it where the session opens. A child that names no skills of its own inherits its
-    /// parent's list, which is the spawn's `..base.clone()` and not a second field.
+    /// The skills a session is STARTED with - their bodies preloaded into its prompt on top
+    /// of the index every session gets. Declared, never inferred: a `task {skills}` child's
+    /// spec fills it, and a child that names none inherits its parent's list at the spawn.
     pub skills: Vec<String>,
-    /// **The reviewer's declared list**, from `[queue] reviewer_skills`: read by the daemon and
+    /// The reviewer's declared list, from `[queue] reviewer_skills`: read by the daemon and
     /// handed to the review queue's session as its `skills`, so every reviewer it starts carries
     /// them. Empty is the ordinary case.
     pub reviewer_skills: Vec<String>,
-    /// The alias the server reports. Recorded in `turn_metrics` and in the store;
+    /// The alias the server reports. Recorded in `turn_metrics` and in the store
     /// several models may share one dialect.
     pub model: String,
     pub endpoint: Endpoint,
-    /// The server's context window, in tokens — the wall compaction exists for.
-    /// Read from `/props` at startup (`serving::served_ctx`), overridable with
-    /// `--context-window`, and `None` when nothing said: a metered provider has
-    /// no `/props`, and a window that is not known must not be invented.
+    /// The server's context window, in tokens - the wall compaction exists for. From `/props` at
+    /// startup, overridable with `--context-window`; `None` when nothing said, because a window
+    /// that is not known must not be invented.
     pub context_window: Option<u64>,
-    /// **The token an image goes where it sits**, read from `/props` at startup
-    /// (`serving::served_media_marker`), and `None` when the endpoint says nothing —
-    /// every metered provider, and any local server without `mtmd`.
-    ///
-    /// **Fetched rather than known, because the server randomises it.** MEASURED 2026-09-27: the live
-    /// value is `<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>`, it changes with the process unless
-    /// `LLAMA_MEDIA_MARKER` pins it, and the model's OWN vision tokens
-    /// (`<|vision_start|><|image_pad|><|vision_end|>`) are answered `Failed to tokenize prompt`. So
-    /// this is a fact about the running server, like `n_ctx` and `total_slots`, and `None` here means
-    /// **no images on this endpoint** — disclosed, never guessed at.
+    /// The token an image goes where it sits, from `/props` (`serving::served_media_marker`).
+    /// Fetched because the server randomises it per process, so it is a fact about the running
+    /// server like `n_ctx` - and `None` here means no images on this endpoint, never a guess.
     pub media_marker: Option<String>,
-    /// Compact automatically when a turn leaves less than [`Config::headroom`]
-    /// of the window free. On by default where the window is known.
-    ///
-    /// `docs/compaction.md` §1: the trigger is `n_ctx` and memory pressure, and
-    /// NOT quality — depth was measured not to hurt (1.000 at 60k against 0.829
-    /// at zero). So the policy is *compact when you must, as late as possible*,
-    /// and this is the "must".
-    ///
-    /// **It gates the PRE-EMPTIVE question only** — *would the next turn fit, so
-    /// should something be tidied first?* ([`Config::should_compact`]). The other
-    /// question, *a turn was just refused for context length, is there a way
-    /// forward?*, is answered through [`Config::at_the_wall`] with this flag
-    /// deliberately absent: since 2026-10-11 this flag is the operator's alone (the
-    /// wall controller's `Stuck` is the finding — [`Config::wall`]), and a refusal
-    /// that met a stood-down compaction would be
-    /// the wedge of 2026-10-09 (session `s-1789919514688401228`: one compaction,
-    /// then thirty provider 400s in a row, none of them recovered) all over
-    /// again. See `Sessions::compact_because_refused`.
+    /// Compact automatically when a turn leaves less than [`Config::headroom`] of the window free -
+    /// *compact when you must, as late as possible*. It gates the PRE-EMPTIVE question only: a
+    /// refusal is answered through [`Config::at_the_wall`], deliberately without it.
     pub auto_compact: bool,
-    /// **What this session does at its wall** — the wall controller's state and the last
-    /// count a provider measured (`crate::wall`). Replaced `auto_compact_stood_down`, the
-    /// no-progress guard's latch, on 2026-10-11: the guard judged a fold on an ESTIMATE of
-    /// a base the provider had not seen and latched for good (pg-noop,
-    /// `s-1789919514688401228`: estimated 1,039,055, measured 507,355). `auto_compact` is
-    /// now the operator's switch alone, and the controller's `Stuck` is the finding —
-    /// written to the session row (the v19 pair) so a restart holds it, and released by
-    /// a measured count, by `/compact` or by `/auto-compact on`.
+    /// What this session does at its wall - the wall controller's state and the last count a
+    /// provider measured (`crate::wall`). Replaced `auto_compact_stood_down`, the latch that
+    /// judged a fold on an estimate and never released (`s-1789919514688401228`).
     pub wall: crate::wall::WallControl,
-    /// **The operator's pause of this session's idle plan-check** (`/nag pause`), or `None`
-    /// while the check runs. Carried here for the reason `wall`'s `Stuck` is: the store row
-    /// is written from it ([`crate::harness::Harness::pause_nags`]) and read back at open
-    /// ([`crate::harness::Harness::restore_nag_pause`]), and the settings row is drawn from it.
-    /// See [`crate::nag_pause`].
-    ///
-    /// **Never inherited**: a child's config starts as a clone of its parent's, and the open
-    /// overwrites this from the child's OWN row — a pause is one session's, see the module.
+    /// The operator's pause of this session's idle plan-check (`/nag pause`), or `None`. On
+    /// the config because the store row is written from it and read back at open. Never
+    /// inherited: the open overwrites it from the child's OWN row.
     pub nags_paused: Option<letibot_sessionlog::NagPause>,
-    /// The GGUF the vocabulary is read from. For a split model, the first shard.
-    ///
-    /// `None` is a daemon for a cloud provider: its ledger uses the byte vocabulary
-    /// (`letibot_tokencore::Vocab::bytes`), and a local model cannot be selected on it.
+    /// The GGUF the vocabulary is read from - the first shard for a split model. `None` is a
+    /// daemon for a cloud provider, whose ledger uses the byte vocabulary
+    /// (`letibot_tokencore::Vocab::bytes`).
     pub vocab_gguf: Option<PathBuf>,
     /// The root every read-only tool is confined to.
     pub workspace: PathBuf,
     pub socket: PathBuf,
-    /// `None` keeps the transcript in memory only — usable, and honest about it.
+    /// `None` keeps the transcript in memory only - usable, and honest about it.
     pub store: Option<PathBuf>,
     pub session_id: String,
     /// The session that spawned this one as a subagent, or `None` for a top-level
     /// session. Recorded into the store so a subagent tree is a fact on disk, not an
     /// id convention a picker has to reverse-engineer.
     pub parent_session_id: Option<String>,
-    /// **How deep in a subagent tree this session sits.** Zero for a root, one for its
-    /// child, and so on — a config fact rather than a seat fact, because the seat table
-    /// (*"does this role name `task`"*) can express exactly two depths, zero and
-    /// unlimited, and the ruling wants a *configured* number in between.
-    ///
-    /// Incremented once, at spawn (`harness.rs`'s `sub_cfg`), and read where `task` is
-    /// seated and where a call past [`Config::max_subagent_depth`] is refused by name.
+    /// How deep in a subagent tree this session sits - zero for a root. A config fact, not a
+    /// seat fact, because the seat table can express two depths and the ruling wants a configured
+    /// number between. Incremented once, at spawn, and read where `task` is seated.
     pub depth: u32,
-    /// Whether this session's backend is rooted at `/` — opencode parity: `read`
-    /// reaches the whole host and the permission ruleset, not a jail, is the gate.
-    ///
-    /// Set for [`Seat::Leticode`], and **inherited by its subagents**: a subagent
-    /// re-seats to [`Seat::Coder`] for its tools but must not be re-confined to a
-    /// project its parent already left. A subagent of a coder session stays confined,
-    /// because its parent is.
-    /// **What the last metered turn cost in each side's tokens**, as
-    /// `(ledger, provider)`.
-    ///
-    /// The ledger counts this conversation as a LOCAL rendered prompt, in the
-    /// session's own vocabulary and with its reasoning blocks in it. A messages
-    /// provider is sent neither: `letibot_provider::messages` drops `Reasoning`
-    /// on purpose, because DeepSeek documents that `reasoning_content` must not
-    /// be sent back. So the two numbers measure different things, and every
-    /// compaction decision was comparing one against the other.
-    ///
-    /// Measured in the operator's own store, 2026-09-20:
-    ///
-    /// | transcript | ledger    | reasoning       | ledger − reasoning | provider  |
-    /// |------------|-----------|-----------------|--------------------|-----------|
-    /// | letibot    | 1,072,176 | 363,111 (33.9%) | 709,065            | ~607,000  |
-    /// | leticl     | 1,495,702 | 400,788 (26.8%) | 1,094,914          | 1,048,607 |
-    ///
-    /// Take the reasoning out and the counts agree to 4-17%, which is ordinary
-    /// variance between two tokenizers; leave it in and the ledger runs 1.4-1.8x
-    /// high, by a factor that is not a constant — it is however much the model
-    /// thought. So the session that thinks more compacts earlier, which is the
-    /// opposite of what anybody wants. `letibot` compacted with 39% of its
-    /// window free.
-    ///
-    /// `None` until a metered turn has reported, and on a local session, where
-    /// the ledger IS the prompt and the two are the same number by construction.
-    /// **Where an HTTP head listens**, or `None` for the ordinary socket-only
+    /// Where an HTTP head listens, or `None` for the ordinary socket-only
     /// daemon. `--http HOST:PORT`. See [`crate::httphead`].
     pub http: Option<String>,
+    /// What the last metered turn cost in each side's tokens, as `(ledger, provider)`. The
+    /// ledger counts a rendered prompt with its reasoning blocks; a messages provider is sent
+    /// neither, so the ledger ran 1.4-1.8x high - the more a model thinks, the earlier it compacted.
     pub ledger_scale: Option<(u64, u64)>,
-    /// **The old pair, kept across a switch as an ESTIMATE** — `None` until a session
-    /// moves off the model it measured on, and cleared by any round on the new one. See
-    /// [`CarriedScale`] for the session that made this a field rather than a cleared
-    /// number.
+    /// The old pair, kept across a switch as an ESTIMATE - `None` until a session moves off
+    /// the model it measured on, and cleared by any round on the new one. See [`CarriedScale`].
     pub carried_scale: Option<CarriedScale>,
+    /// Whether this session's backend is rooted at `/` - opencode parity: the permission ruleset
+    /// not a jail, is the gate. Set for [`Seat::Leticode`] and inherited by its subagents
+    /// which re-seat to [`Seat::Coder`] without being re-confined.
     pub unconfined: bool,
-    /// A human name for the session, or empty.
-    ///
-    /// Empty is the default and a head then shows the id. Deliberately **not**
-    /// derived from the first prompt: a title guessed from content is a title that
-    /// changes under you, and a session picker whose rows rename themselves is a
-    /// picker you cannot learn.
+    /// A human name for the session, or empty - and then a head shows the id. Deliberately
+    /// not derived from the first prompt: a title guessed from content renames itself under
+    /// you, and a picker whose rows rename themselves is a picker you cannot learn.
     pub title: String,
     pub owner: String,
-    /// The bootstrap system prompt. Part of the stable prefix; nothing volatile
-    /// belongs in it (§5.2, and the operator paid for that rule).
-    ///
-    /// Built as [`default_system`] for a seat with no tools in [`Config::for_this_box`]
-    /// and, when [`Config::seat_prompt`] is set, **composed once, at session open**
-    /// ([`Config::compose_for_seat`]), from [`Prompts`] (the operator's `prompts.toml`),
-    /// this session's model, its seated tools, and the standing-notes files on disk.
-    /// After that it is message 0 and is never
-    /// rewritten **mid-session on a local model**: a session that started under
-    /// one prompt keeps it until a base rebuild. The standing-notes section is
-    /// the one deliberate exception to "keeps it for its whole life": every fork
-    /// re-reads the files (`Harness::reseat_target`), because a compaction is
-    /// already a cold prefill and moving the head there costs nothing extra.
-    /// `prompts.toml` itself stays a fact about NEW sessions — it is parsed once
-    /// and never re-read.
+    /// The bootstrap system prompt - message 0 of the stable prefix, and nothing volatile belongs
+    /// in it (§5.2). Composed once, at session open ([`Config::compose_for_seat`]); only a fork
+    /// re-reads the notes files, because a fork is already a cold prefill.
     pub system: String,
-    /// **Compose [`Config::system`] at open, for the tools this session seats.**
-    ///
-    /// `Some` for every session the daemon opens (`Sessions`, and a child of such a
-    /// session): `Harness::open_with_registry` replaces `system` with the composition
-    /// once the role is resolved — the seat's sections, the standing notes, then this
-    /// value's own paragraph and fabric block. `None` keeps `system` exactly as given,
-    /// which is a test's fixture or the operator's `--system`.
+    /// Compose [`Config::system`] at open, for the tools this session seats. `Some` for every
+    /// session the daemon opens; `None` keeps `system` exactly as given, which is a test's fixture
+    /// or the operator's `--system`.
     pub seat_prompt: Option<SeatPrompt>,
-    /// **What the prompt was composed from**, set at open from the seated tools —
+    /// What the prompt was composed from, set at open from the seated tools -
     /// `None` before. The fabric's later refreshes render for the same doors.
     pub seat_facts: Option<SeatFacts>,
     /// The operator's `prompts.toml`, loaded once at startup. `Default` (no
-    /// overrides) when the file is absent or was refused — which is also the
+    /// overrides) when the file is absent or was refused - which is also the
     /// byte-identical case. See [`Prompts`].
     pub prompts: Prompts,
-    /// The project's `leticode.toml`, discovered by walking up from the workspace
-    /// and loaded once at startup — **with the user file already merged under
-    /// it**, so this is the two file levels as the session reads them. `Default`
-    /// (no models) when neither file is there or both were refused — which is
-    /// also the byte-identical case: a daemon with no file runs on its own
-    /// models and discloses nothing from a file. See
-    /// [`crate::leticode_config::LeticodeConfig`].
-    ///
-    /// **Models are configuration; permissions are not.** This field carries model
-    /// names and nothing else — no seat, no tool list, no access narrowing — so a
-    /// file cannot widen a capability. The precedence that turns these into the
-    /// session's models is stated once, in
-    /// [`crate::leticode_config::precedence`]: command line beats the project
-    /// file, the project file beats the user file, the user file beats the
-    /// built-in default, and an unset key falls through.
+    /// The project's `leticode.toml`, discovered by walking up from the workspace, with the user
+    /// file already merged under it. Models are configuration; permissions are not: this carries
+    /// model names and nothing else, so a file cannot widen a capability.
     pub leticode: crate::leticode_config::LeticodeConfig,
-    /// **The user file alone**, `~/.config/letibot/leticode.toml`, as its own
-    /// value — because [`Config::leticode`] is the merge and a disclosure that
-    /// named only the merged value could not say which of the two files set a
-    /// key. This one is for the screen; the session reads the merge.
+    /// The user file alone, `~/.config/letibot/leticode.toml` - because [`Config::leticode`]
+    /// is the merge, and a disclosure naming only the merge could not say which file set a key.
+    /// This one is for the screen; the session reads the merge.
     pub leticode_user: crate::leticode_config::LeticodeConfig,
-    /// **Whether a session reads its project's `leticode.toml`** — `false` under
-    /// `--no-project-config`. Carried because one key is read per SESSION rather than once
-    /// at start: `[memory]`, whose project is the session's own workspace
-    /// ([`crate::leticode_config::memory_policy`], TODO.md R76 item 7).
+    /// Whether a session reads its project's `leticode.toml` - `false` under
+    /// `--no-project-config`. Carried because one key is read per SESSION, `[memory]`, whose
+    /// project is the session's own workspace ([`crate::leticode_config::memory_policy`]).
     pub read_project_config: bool,
-    /// **The box's own directories**: where its instruction file and its box-wide notes live.
-    ///
-    /// Read once from `$HOME` by [`Config::read_the_box`], and empty in a fixture, so a test's
-    /// prompt is a function of its own files and not of whose home the suite runs in.
+    /// The box's own directories: where its instruction file and its box-wide notes live. Read
+    /// once from `$HOME` by [`Config::read_the_box`] and empty in a fixture, so a test's prompt is
+    /// a function of its own files and not of whose home the suite runs in.
     pub box_dirs: crate::leticode_config::BoxDirs,
-    /// **The box's own skill roots** (the operator's, the shared install, the data dir a model
+    /// The box's own skill roots (the operator's, the shared install, the data dir a model
     /// writes into), filled by [`Config::read_the_box`] and empty in a fixture. The project's two
     /// conventions are the session's workspace instead: see [`Self::skill_dirs`].
     pub box_skills: letibot_tools::builtins::skill::SkillDirs,
-    /// **Where the model that answers came from.** The level, the file when a
-    /// file is where it came from, and any fault found while working it out —
-    /// because *"why is my session on deepseek"* was a whole evening, and an
-    /// answer that lives in a file the operator has to go and read is not an
-    /// answer. See [`ModelSource`].
+    /// Where the model that answers came from - the level, the file, and any fault found. An
+    /// answer that lives in a file the operator has to go and read is not an answer. See
+    /// [`ModelSource`].
     pub model_source: ModelSource,
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
     pub sampling: Value,
-    /// **Where this project sits**, as a named point. See
-    /// [`letibot_tools::mode::Mode`].
-    ///
-    /// Read from the per-project store by the daemon, never chosen here: the default
-    /// is [`letibot_tools::mode::UNSEEN_PROJECT`], which is *always-ask* — nothing that
-    /// is not a read happens without the operator.
-    ///
-    /// It is a separate field from [`Config::seat`] because they answer different
-    /// questions and conflating them is the defect this whole strand exists to undo: a
-    /// **role** says which tools are seated, a **mode** says how much approval each one
-    /// costs. `--role coder` used to mean both, so an operator who wanted to edit had
-    /// to pick a role and thereby also picked an approval policy they were never shown.
+    /// Where this project sits, as a named point ([`letibot_tools::mode::Mode`]). Read from
+    /// the per-project store, never chosen here. A separate field from [`Config::seat`] because a
+    /// role says which tools are seated and a mode says what each one costs to approve.
     pub mode: letibot_tools::mode::Mode,
-    /// The permission ruleset (allow/deny/ask per tool and pattern): the shipped
-    /// preapproved list, then `~/.config/letibot/permission.json`, then
-    /// `LETIBOT_PERMISSION` — see [`parse_permission`]. A subagent inherits this,
-    /// so its calls are governed by the same rules as the session it came from.
+    /// The permission ruleset (allow/deny/ask per tool and pattern): the shipped list, then
+    /// `~/.config/letibot/permission.json`, then `LETIBOT_PERMISSION`. A subagent inherits it, so
+    /// its calls are governed by the same rules as its parent's.
     pub permission: letibot_tools::permission::Ruleset,
     /// The flowy seat this daemon holds, when asked to. See [`FlowyConfig`].
     pub flowy: Option<FlowyConfig>,
-    /// What this session is denied below its role — a subagent's downgrade,
+    /// What this session is denied below its role - a subagent's downgrade
     /// inherited by every subagent it spawns and only ever added to. `none` for
     /// a session the operator opened. See `letibot_tools::schema::Downgrade`.
     pub downgrade: letibot_tools::schema::Downgrade,
-    /// Where this session's tools run: the host (its own boundary), or a
-    /// firecode VM — a subagent's `where`. `Host` for every session the operator
-    /// opened.
-    /// Which search provider is behind `web_search`, by name (`brave`), or `None`
-    /// for the tool that refuses. **The key is deliberately not here**: it is
-    /// resolved at attach from `$BRAVE_API_KEY` or `providers.toml`, so a secret
+    /// Which search provider is behind `web_search`, by name (`brave`), or `None` for the tool
+    /// that refuses. The key is deliberately not here: it is resolved at attach, so a secret
     /// never rides in a struct that derives `Debug`.
     pub web_search: Option<String>,
-    /// Whether `curl` egress is attached behind `web_fetch`. A bool, not a
-    /// provider name: this build has exactly one fetcher and it takes no
-    /// credential, so there is nothing to choose. Off by default — a search
-    /// provider is opted into by a key the operator placed in a file; a page
-    /// fetch is the wider door (it reads whatever the address names), so it
-    /// waits for the flag.
+    /// Whether `curl` egress is attached behind `web_fetch`. Off by default: a search provider is
+    /// opted into by a key the operator placed in a file, while a page fetch reads whatever the
+    /// address names - the wider door - so it waits for the flag.
     pub web_fetch: bool,
+    /// Where this session's tools run: the host (its own boundary), or a firecode VM - a
+    /// subagent's `where`. `Host` for every session the operator opened.
     pub placement: letibot_tools::builtins::task::Placement,
-    /// Extra arguments for `firecode up` when the placement is a VM — the
+    /// Extra arguments for `firecode up` when the placement is a VM - the
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
     /// VM under this session.
     pub vm_args: Vec<String>,
-    /// **The tree a `firecode` placement copies**, when the caller that KNOWS names one — and it
-    /// is the ONE REPOSITORY the work is in.
-    ///
-    /// `None` is *this session's own copy source*, which is not the same thing as its workspace:
-    /// [`Config::vm_copy_source`] resolves the workspace to the repository it is about, because a
-    /// session is seated where a person put it and that is not always a repository. The operator's
-    /// own box is exactly that: the daemon's `--workspace` is `/home/dead/Projects/letibot` — a
-    /// folder holding `letibot`, some worktrees, probes and scratch — while the repository the
-    /// queue serves is `/home/dead/Projects/letibot/letibot`. A VM placed on the folder copies
-    /// **72.8 GiB** of siblings, worktrees and build output, and `crates/tools/src/firecode.rs`'s
-    /// ceiling refuses it (measured 2026-10-10, three times, for two branches — the queue could
-    /// land nothing).
-    ///
-    /// So the field exists to let the one caller that knows BETTER than the resolution say so:
-    /// `Harness::serve_reviews` sets it on a reviewer from the entry's own repository
-    /// (`mergequeue::review_copy_source`), because a reviewer reads a branch and the branch is in
-    /// that repository — which is not necessarily the repository the queue's own session is seated
-    /// in, since one queue serves every repository under its workspace. It travels the same route
-    /// [`letibot_tools::builtins::task::TaskSpec::worktree`] does — the caller's word on the spec,
-    /// applied to the child's config at the spawn — and [`Config::vm_copy_source`] is the single
-    /// spelling of the decision, read by `Harness::open` when it boots the VM.
+    /// The tree a `firecode` placement copies, when the caller that KNOWS names one - the ONE
+    /// repository the work is in. `None` is [`Config::vm_copy_source`]'s resolution, because a session
+    /// is seated where a person put it, which is not always a repository.
     pub vm_source: Option<PathBuf>,
-    /// **The VM this session runs in when it is not its own** — the project of an ancestor's
-    /// firecode VM. A child of a VM-placed session placed on `host` — the tool's *"your own
-    /// boundary"* — runs in its parent's VM, on the parent's tree and toolchain (the operator:
-    /// *"children live in the _same_ vm"*). `None` for every other session. Set by the spawn;
-    /// read by `Harness::open`, which attaches rather than boots (`FirecodeBackend::attach`).
+    /// The VM this session runs in when it is not its own - the project of an ancestor's
+    /// firecode VM, because *"children live in the same vm"*. Set by the spawn; `Harness::open`
+    /// attaches rather than boots (`FirecodeBackend::attach`).
     pub vm_attach: Option<PathBuf>,
-    /// **The acceptance check this session's VM runs when it is brought down** —
-    /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited:
+    /// The acceptance check this session's VM runs when it is brought down -
+    /// [`letibot_tools::builtins::task::TaskSpec::vm_verify`], applied at the spawn. Not inherited
     /// it is set from each spawn's own spec, so a child's gate is never its parent's by accident.
     pub vm_verify: Option<String>,
-    /// **A VM session works in its workspace itself, mounted read-write** (`firecode up
-    /// --mount-rw`) - on a Mac, where firecode can mount. Set by `--where firecode` (the
-    /// launcher's `--vm`); `--vm-copy` turns it off. Read through
-    /// [`Config::vm_mounts_workspace`], which narrows it to the sessions it is for. Never
-    /// inherited by a child that gets a VM of its own (the spawn clears it).
+    /// A VM session works in its workspace itself, mounted read-write (`firecode up
+    /// --mount-rw`) - on a Mac, where firecode can mount. Set by `--where firecode`; `--vm-copy`
+    /// turns it off. Never inherited by a child that gets a VM of its own (the spawn clears it).
     pub vm_mount: bool,
-    /// **Pairs every command this session runs carries, beside the daemon's standing ones** —
-    /// set at a spawn, read by `Harness::open` into the exec host's standing environment (the
-    /// one set of pairs that survives `env_clear`).
-    ///
-    /// Today one pair: a `task_start` worktree child's `CARGO_TARGET_DIR`, the main tree's
-    /// `target/` (`harness::worktree_build_env`), so the child shares the main tree's build cache
-    /// instead of paying a cold build of the whole graph. It used to be a `.cargo/config.toml`
-    /// the runner wrote INTO the worktree, which showed up as `?? .cargo/` in every child's
-    /// status, was committed by a child's `git add -A`, and overwrote a repository's own tracked
-    /// file. An environment variable is in nobody's tree, and wins over a tracked config's
-    /// `target-dir` by cargo's own precedence.
-    ///
-    /// Inherited by a plain `task` child (it works in the same tree, so the same cache is right);
-    /// replaced at each worktree spawn.
+    /// Pairs every command this session runs carries, set at a spawn and read into the exec host's
+    /// standing environment. Today one: a worktree child's `CARGO_TARGET_DIR`, so it shares the main
+    /// tree's build cache - an env var, where a written `.cargo/config.toml` dirtied the tree.
     pub build_env: Vec<(String, String)>,
-    /// **Where the review queue's reviewers run** — the one child whose placement is decided FOR
-    /// it rather than by the call that spawns it (`Harness::serve_reviews`, and see
-    /// `crate::sessions::gatekeeper::reviewer_placement` for the whole of the decision).
-    ///
-    /// The value is [`Reviewers`] and not a bool on purpose: the question an operator asks is
-    /// *"is a reviewer trusted with my machine?"*, and the answer is two words — `host`, where
-    /// the children that AUTHOR the branches already run, and `vm`, where the reviewer is booted
-    /// in a firecode microVM. `[queue] reviewers` in the project's `leticode.toml` is the same
-    /// choice, and `--reviewers` on the daemon's command line is the third spelling of it.
-    ///
-    /// # `Host` is the default, and that is a fact about who builds a `Config`
-    ///
-    /// **A session built the ordinary way — [`Config::for_this_box`], which is the constructor
-    /// every fixture in this tree is built from — states `Host`.** So a test that drives a real
-    /// review through the real spawner cannot boot a firecracker microVM over its workspace by
-    /// forgetting a line: it would have to ask, by name, with
-    /// [`Config::allow_vm_reviewers`]. That is the one thing the placement's own arms cannot give
-    /// a test — `cfg(test)` never reaches an integration test (`session_channel` is one, and it is
-    /// the case that was measured), and a constructor that defaults to a VM is armed the moment a
-    /// fixture exists, which is the shape of a test nobody has remembered to fix booting one on
-    /// `/tmp` to answer a question it is not asking.
-    ///
-    /// **And the default is the operator's ruling of 2026-10-29**, not a safety margin: see
-    /// [`Reviewers`]. A VM-placed reviewer paid a guest exec per file read, lost a request between
-    /// the host and the guest, and took 30–60 minutes holding one of two slots — to isolate a
-    /// READER more than the subagent that wrote the branch, which runs on this machine with the
-    /// operator's own credentials.
-    ///
-    /// # Who may say `Vm`
-    ///
-    /// * **[`Config::for_the_daemon`]** reads `[queue] reviewers` from the project file of the
-    ///   daemon's own workspace, so a project that wants the isolation asks for it once in its
-    ///   repository and every daemon started there obeys.
-    /// * **`--reviewers vm`** on the daemon's command line overrides the file, which is the way
-    ///   to say it for a daemon seated above several repositories (the placement is decided once
-    ///   per pass, for the daemon, not per row).
-    /// * **A test that means to exercise the VM arm** calls [`Config::allow_vm_reviewers`] by
-    ///   name, which is the difference between a test asking for a microVM and a test that got one
-    ///   because a fixture was built.
-    ///
-    /// **And the box's own answer cannot be overridden into a VM it cannot boot.** A reviewer that
-    /// cannot start is written as a FAILED ATTEMPT on the review's row
-    /// (`Harness::serve_reviews`), so a placement this box cannot honour would park every entry in
-    /// the queue at once — on the one box that can run no reviewer at all. Such a box runs its
-    /// reviewers here and SAYS SO, in the session's own prompt, rather than falling back silently:
-    /// the state is `ReviewerPlacement::NoVm` with the reason the box gave.
+    /// Where the review queue's reviewers run - the one child whose placement is decided FOR it
+    /// (`crate::sessions::gatekeeper::reviewer_placement`). `Host` is the default and the operator's
+    /// ruling: a fixture must ask by name ([`Config::allow_vm_reviewers`]) to get a VM.
     pub reviewers: Reviewers,
-    /// **Where this daemon's merge gate runs** — `[queue] gate_host` in the project's
-    /// `leticode.toml`, `--gate-host` on the command line, and [`crate::mergequeue::gate::gate_host`]
-    /// once the daemon is up.
-    ///
-    /// `None` — the default, and the value [`Config::for_this_box`] states — is **this machine**,
-    /// which is what the gate has always been and what a fixture must get: a test that builds a
-    /// `Config` must not find its gate on another box because a file on the operator's machine said
-    /// so. The daemon is the one caller that reads the file ([`Config::for_the_daemon`]), and
-    /// `--gate-host` is the way to say it for one invocation or for a daemon seated above several
-    /// repositories.
-    ///
-    /// A name is a `[host.…]` in the operator's `hosts.toml` and nothing else: `cli::run` refuses a
-    /// flag naming one that is not there, and a file that names one is refused by
-    /// `mergequeue::gate_host` when the gate runs — with a sentence, not a red branch.
+    /// Where this daemon's merge gate runs - `[queue] gate_host`, `--gate-host`, and
+    /// [`crate::mergequeue::gate::gate_host`]. `None` is this machine, which is what a fixture must
+    /// get; the daemon is the one caller that reads the file.
     pub gate_host: Option<String>,
     /// The cloud provider the turns go to, when not the local server.
     pub provider: Option<ProviderConfig>,
-    /// **What to try when the model this session is on is OUT** — `[fallback] models`
-    /// in `providers.toml`, in the order the operator wrote it.
-    ///
-    /// Empty is the old behaviour and the default: the turn fails, as it always did.
-    /// Names are the ones `/models` accepts (`deepseek/deepseek-flash`, a
-    /// `[model."…"]` fleet name, `local`), resolved through the same door
-    /// `models_choice` when one is needed — so a name here cannot be one the verb
-    /// would refuse. See [`letibot_provider::keys::fallback_models`] for the key and
-    /// `Harness::fall_back_from` for who reads it.
-    ///
-    /// **Read once at startup**, like `[default]`: a session carries this list the
-    /// way it carries the model it was launched on, and an edit to the file takes
-    /// effect on the next daemon.
+    /// What to try when the model this session is on is OUT - `[fallback] models` in
+    /// `providers.toml`, in the order written; empty is the old behaviour. Read once at startup
+    /// like `[default]`, so an edit takes effect on the next daemon.
     pub fallback: Vec<String>,
     /// What the fabric block in the system prompt is, said by whoever composed
     /// it (`Sessions`): live, cached with its age, or unreachable. `None` when
     /// there is no seat, and then there is no block.
     pub fabric: Option<String>,
-    /// Paths bound READ-ONLY into the confined view, from `--grant-ro`.
-    ///
-    /// The boundary is hermetic by design — `$HOME` is a fresh tmpfs, so a toolchain
-    /// under it is ABSENT rather than denied, which is the same property that keeps a
-    /// secret out. That is correct and it is why `cargo` cannot run inside without one
-    /// of these.
-    ///
-    /// **Read-only means readable into the transcript.** §3's second half is not
-    /// enforced by the confinement module, so each of these is a decision with that
-    /// consequence, printed next to the grant by `Boundary::describe`.
+    /// Paths bound READ-ONLY into the confined view, from `--grant-ro`. The boundary is hermetic, so a
+    /// toolchain under `$HOME` is ABSENT rather than denied - which is why `cargo` needs one of these.
+    /// Read-only means readable into the transcript, so each is a decision with that consequence.
     pub grants_ro: Vec<std::path::PathBuf>,
-    /// **Where the merge queue's landing worktrees live** — the daemon's own
-    /// (`mergequeue::git::landing_root`, set by [`Config::for_the_daemon`]); `None` in every
-    /// fixture built with [`Config::for_this_box`], so no test reaches the box's real
-    /// `~/.local/share/letibot`. A confined session binds its repository's landing tree under
-    /// this root read-only (`harness::confined_grants`), and the queue lands under it.
+    /// Where the merge queue's landing worktrees live - the daemon's own
+    /// (`mergequeue::git::landing_root`); `None` in every fixture built with
+    /// [`Config::for_this_box`], so no test reaches the box's real `~/.local/share/letibot`.
     pub landing_root: Option<std::path::PathBuf>,
-    /// **Where a review's own checkout is made** — `<temp>/letibot-review-clones` on the daemon
-    /// (`Harness::serve_reviews`), and a fixture's own directory when it drives reviews.
-    ///
-    /// One tree per ATTEMPT, `review-<row id>-<pid>-<n>`, made by
-    /// `mergequeue::git::clone_branch` for both placements and named per attempt so a re-seat of a
-    /// row can never touch the tree its previous reviewer is reading;
-    /// `mergequeue::review::sweep_clones` reclaims the ones whose row is no longer live.
-    ///
-    /// `None` — every fixture that does not serve reviews — is the daemon's own path, and the
-    /// field exists for [`Config::landing_root`]'s reason exactly: a test that serves a review must
-    /// not write into (or sweep) the box's real directory, and the way it says so is a value
-    /// rather than a `cfg(test)` check that never reaches an integration test.
+    /// Where a review's own checkout is made - `<temp>/letibot-review-clones` on the daemon, a
+    /// fixture's own directory when it drives reviews. One tree per ATTEMPT, so a re-seat can never
+    /// touch the tree its previous reviewer is reading. `None` in every other fixture.
     pub review_clones: Option<std::path::PathBuf>,
-    /// **Whether this daemon runs the merge and review queues** — `true` unless `--no-queue` says
-    /// otherwise.
-    ///
-    /// A daemon that holds a repository's lease gates its target, lands its branches and tells
-    /// the project's sessions when its `main` is red. That is right for the daemon an operator
-    /// sits in front of and wrong for a **package worker**: a session the Claude Code bridge
-    /// starts in a package's worktree (`docs/claude-code-bridge.md`) is one of that repository's
-    /// session daemons by the queue's own rule, so on 2026-10-26 the daemon started for package
-    /// P1 took letibot's lease, found `main` red, and put an EMERGENCY in front of the package's
-    /// model before its brief — a worker told to fix a tree it was never asked about, and two
-    /// daemons interleaving landings for one repository.
-    ///
-    /// `false` ends the queue's work here and nothing else: no lease is claimed, no worker runs,
-    /// no model-facing queue notice is composed ([`crate::harness::Harness`] reads this field),
-    /// and the store watcher still relays other daemons' moves to this daemon's heads. A daemon
-    /// started without the flag is byte-for-byte what it was, and `for_this_box` — which every
-    /// fixture builds on — leaves it `true` because its store is a temp file: the flag is what
-    /// makes the difference, not the constructor.
+    /// Whether this daemon runs the merge and review queues - `true` unless `--no-queue`. Wrong
+    /// for a package worker: on 2026-10-26 one took its repository's lease, found `main` red
+    /// and put an EMERGENCY in front of a model that had never been asked about that tree.
     pub serve_queues: bool,
-    /// **This daemon is the box's ROOM COORDINATOR** (`--room`) — a whole `harnessd` whose only
-    /// job is the room: its own socket, its own data directory, no project, **no store**, and one
-    /// session of its own (`s-room-<host key>`) that arbitrates the queues.
-    ///
-    /// Set by `--room` and by nothing else, and `false` in every fixture and every folder's daemon:
-    /// there is one coordinator per box and a second one is refused by a lease, not by a flag. The
-    /// two readers are `cli::run` (which configures the socket, the session id and the model, and
-    /// starts the server) and `Harness::open` (which decides whether a session gets a room link —
-    /// see `crate::room`).
+    /// This daemon is the box's ROOM COORDINATOR (`--room`) - a whole `harnessd` whose only
+    /// job is the room: its own socket, data directory, no project, no store, and one session
+    /// (`s-room-<host key>`) that arbitrates the queues. Set by `--room` and by nothing else.
     pub room: bool,
-    /// **Whether this daemon's sessions may join the box's room.**
-    ///
-    /// `true` on the daemon's own path ([`Config::for_the_daemon`], and `--room`), `false` in every
-    /// fixture and every constructor a test builds — the same rule `landing_root` follows, and for
-    /// the same reason: a test must not reach the operator's real box. A session's `room` tool still
-    /// RESOLVES everywhere (it says there is no coordinator behind it), and the socket existing is
-    /// not enough to join: a fixture on a box where the operator runs a coordinator would otherwise
-    /// post into their queue.
+    /// Whether this daemon's sessions may join the box's room. `true` on the daemon's own
+    /// path, `false` in every fixture - the same rule `landing_root` follows, and for the same
+    /// reason: a fixture on a box where the operator runs a coordinator must not post into it.
     pub room_link: bool,
-    /// **Whether this daemon may ask the room's supervisor to restart the coordinator.**
-    ///
-    /// `true` on the daemon's own path and **`false` on the coordinator's**
-    /// ([`crate::room::coordinator::configure`] clears it): the arbiter's pane is drawn by the
-    /// process a restart would kill, and a control that kills the feed that reports it is the one
-    /// thing the operator's brief rules out. `false` in every fixture too — the same rule
-    /// `room_link` and `landing_root` follow, and here it is sharper: a test that pressed restart
-    /// would stop the operator's room.
+    /// Whether this daemon may ask the room's supervisor to restart the coordinator. `true` on
+    /// the daemon's own path and `false` on the coordinator's, because the arbiter's pane is
+    /// drawn by the process a restart would kill. `false` in every fixture too.
     pub restart_room: bool,
-    /// **Where the daemon's own logs live** — `<data dir>/logs`, one directory per session under
-    /// it (`delivery-log.jsonl`, `context-claims.jsonl`, `notes-offers.jsonl`; see
-    /// [`Config::daemon_logs`]). Set by [`Config::for_the_daemon`]; `None` in every fixture, which
-    /// then writes beside the workspace as before so no test reaches the box's real data
-    /// directory. They were in `<workspace>/.letibot/`, and a child's workspace is its worktree:
-    /// every finished child's tree looked dirty and none was ever retired (TODO R92.4).
+    /// Where the daemon's own logs live - `<data dir>/logs`, one directory per session. Set by
+    /// [`Config::for_the_daemon`]; `None` in every fixture. They were in `<workspace>/.letibot/`
+    /// and a child's workspace is its worktree, so every finished child's tree looked dirty.
     pub logs_root: Option<std::path::PathBuf>,
-    /// **Which role this session seats.** [`Seat::Orchestrator`] by default, which
+    /// Which role this session seats. [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
-    /// **`bash` stays off even behind [`Seat::Runner`], and this is the flag.**
-    ///
-    /// Not caution for its own sake — a named, still-open hole.
-    /// `docs/boundary-and-adjudication.md` §5, *"where the transcript edge is
-    /// enforced"*: §3's invariant is that secret bytes may be consumed inside the
-    /// boundary but may never enter the transcript, and the **single choke point
-    /// every tool result passes through does not exist yet**. Today each tool
-    /// builds its own body and `Baseline::of_paths` covers the path-shaped tools by
-    /// *reproducing* the rule rather than by sharing an edge.
-    ///
-    /// So [`crate::harness::Harness`]'s confined backend keeps secret bytes out of
-    /// the process's **view** — `~/.ssh` is absent from the mount namespace, not
-    /// merely denied — and nothing yet stops a tool result carrying bytes from
-    /// *inside* the view into the transcript. `bash` is the tool whose result is an
-    /// arbitrary byte stream, so it is the one that turns that gap from theoretical
-    /// into reachable. The job verbs, `monitor`, `read`, `grep` and `read_spill` do
-    /// not: their outputs are shaped by the tool.
-    ///
-    /// The disclosure says exactly this, so an operator who passes the flag is
-    /// making a decision rather than accepting a default.
+    /// `bash` stays off even behind [`Seat::Runner`], and this is the flag. A named hole, not
+    /// caution: §3's invariant is that secret bytes never enter the transcript, the choke point
+    /// that would enforce it does not exist yet, and `bash`'s result is an arbitrary byte stream.
     pub allow_bash: bool,
-    /// **How deep a subagent tree may go.** The operator's ruling, 2026-10-03:
-    /// *"subagents are absolutely allowed to spawn subagents up to configured nesting
-    /// level."* Default 3.
-    ///
-    /// It rides the config rather than the seat table for the reason above `depth`: a
-    /// seat that names `task` says *unlimited*, and one that does not says *never*, and
-    /// neither can carry a number. `task` is therefore **listed on the seat and the
-    /// limit enforced at the call**, refused by name rather than by the tool's absence —
-    /// a capability that exists but is hidden manufactures the workaround (see
-    /// `m2_coder`'s own note on `todo`).
+    /// How deep a subagent tree may go. The operator's ruling, 2026-10-03: *"subagents are
+    /// absolutely allowed to spawn subagents up to configured nesting level."* Default 3. The seat
+    /// names `task`; the limit is enforced at the call and refused by name, not by hiding the tool.
     pub max_subagent_depth: u32,
-    /// **How long a finished subagent with nothing left to do keeps its thread** — R68's
-    /// idle-child policy. `None` keeps it for the daemon's life, which is what every child did
-    /// before this existed.
-    ///
-    /// The choice, and why it is not *reap*: a child is a session (*"subagent is just another
-    /// agent … so mid turn, post turn whatever"*), so it must stay answerable after its task —
-    /// a head may attach and prompt it, a parent may `task_message` it an hour later. But a
-    /// parked child kept its whole `Harness` (transcript, ledger, `HostProcesses` with its job
-    /// captures, a SQLite connection) and a thread, for the daemon's life: R66 measured ~12 MB
-    /// and two threads per finished subagent, never released, across a tree that started 519.
-    ///
-    /// So a child that has been idle this long — no command, no wake, no plan-check armed, no
-    /// head attached, no job running and no child of its own alive — is **parked as store-only**:
-    /// its thread leaves, its hub is closed and removed from the registry, its harness is
-    /// dropped. Everything it was is in the store, so the next prompt REOPENS it: a head reaches
-    /// it from the picker (a resume, as for any stored session), and a parent's `task_message`
-    /// brings it back through the store before delivering (`HarnessTaskRunner::send`). A
-    /// reopened child is held by the daemon's worker and parks again under the same rule
-    /// (`Sessions::park_idle_children`). Default ten minutes: long enough that a parent's
-    /// follow-up in the same stretch of work finds the child as it left it, short enough that a
-    /// tree that churns through hundreds of children holds the few it is using.
+    /// How long a finished subagent with nothing left to do keeps its thread - ; `None`
+    /// keeps it for the daemon's life. Parked as store-only rather than reaped, because a child is
+    /// a session and must stay answerable: ~12 MB and two threads each, reopened by the next prompt.
     pub child_park_after: Option<std::time::Duration>,
-    /// **The starvation cap on held results** (R79): a job or subagent result nothing in the plan
-    /// waits on is held for the next turn boundary, and a turn that runs longer than this with
-    /// one held gets the batch at its next round boundary anyway. Measured from the moment the
-    /// longest-held result arrived. Default [`crate::delivery::HELD_RESULTS_CAP`], ten minutes —
-    /// the operator's number; see that constant.
+    /// The starvation cap on held results : a result nothing in the plan waits on is held
+    /// for the next turn boundary, and a turn that runs longer than this gets the batch at its next
+    /// round boundary anyway. Default [`crate::delivery::HELD_RESULTS_CAP`], the operator's number.
     pub held_results_cap: std::time::Duration,
-    /// **How long a daemon may have been down for a session's work to be restored on its own**
-    /// (`crate::restart`). Under it, subagents are resumed and monitors re-armed; over it, nothing
-    /// is restored and the model is reminded of what was running and how to bring each back. The
-    /// operator: *"if some threshold passed - say more than 1 hours after the stop, we start to
-    /// simply remind the model"*. Default [`crate::restart::RESTORE_WITHIN`], one hour;
-    /// `--restore-within SECONDS` sets it.
+    /// How long a daemon may have been down for a session's work to be restored on its own
+    /// (`crate::restart`). Under it, subagents are resumed and monitors re-armed; over it, the model is
+    /// reminded instead. Default [`crate::restart::RESTORE_WITHIN`], one hour.
     pub restore_within: std::time::Duration,
-    /// **How long a daemon with nothing to do stays up** — no head attached, no turn, no job, no
-    /// live subagent, no monitor, no plan-check armed and no queue work it serves, for this long,
-    /// and the daemon exits (`Sessions::idle_exit_due`). A daemon is detached on purpose, so
-    /// closing the terminal that started it does not end a turn — and without this nothing ever
-    /// ended it: the operator found seven of them, days old, each holding a build that had since
-    /// been replaced on disk. Everything a session is lives in the store, so the next `leticode`
-    /// in that folder starts a daemon and resumes it. Default one hour, the operator's choice;
-    /// `--idle-exit SECONDS` sets it, and `0` keeps the daemon up until it is stopped.
+    /// How long a daemon with nothing to do stays up - no head, no turn, no job, no live subagent
+    /// no monitor, no queue work - and then it exits (`Sessions::idle_exit_due`). The operator found
+    /// seven of them, days old, each holding a replaced build. Default one hour; `0` keeps it up.
     pub idle_exit_after: Option<std::time::Duration>,
-    /// **Whether this daemon is a one-shot's** — started for `letibot "a question"`, which
-    /// prints the answer and exits, taking the daemon with it.
-    ///
-    /// It changes one thing: `bash` refuses `background: true`, because there is no later head
-    /// and no daemon that would still be watching when the job's result arrives (see
-    /// `InvokeCtx::one_shot`). Everything else about the run is the same, which is why this is
-    /// a flag on the config rather than a second entry point. `cli.rs` sets it from the steps it
-    /// was handed, so a session's tools read the RUN and not a flag somebody typed twice.
+    /// Whether this daemon is a one-shot's - started for `letibot "a question"`. It changes one
+    /// thing: `bash` refuses `background: true`, because no later head and no daemon would be watching
+    /// when the result arrives. `cli.rs` sets it from the steps it was handed.
     pub one_shot: bool,
     /// Who decides a gated call. See [`AdjudicatorChoice`].
     pub adjudicator: AdjudicatorChoice,
     /// Where layer B lives, `HOST:PORT` speaking llama.cpp's `/completion`.
     /// Required by [`AdjudicatorChoice::Model`] and meaningless without it.
     pub oracle: Option<Endpoint>,
-    /// **Which model answers at that endpoint**, when it is not the one doing the
-    /// work. `[gatekeeper] model` in the operator's providers.toml.
-    ///
-    /// `None` means *the session's own model*, which is the right default for a
-    /// guard on the same server. It stopped being right the moment the operator
-    /// put the guard on another box: the request named `glm-5.3-flash` to a server
-    /// holding a 27B, and the banner announced the guard by the wrong name — a
-    /// disclosure that is a guess about which model is guarding.
+    /// Which model answers at that endpoint, when it is not the one doing the work.
+    /// `[gatekeeper] model` in providers.toml. `None` means *the session's own model*, which stopped
+    /// being right the moment the guard moved to another box: the banner announced the wrong name.
     pub oracle_model: Option<String>,
-    /// **The authority the operator has declared for their guard**, from
+    /// The authority the operator has declared for their guard, from
     /// `[gatekeeper] intents` / `max_scope` in providers.toml. `None` is the
     /// built-in floor, which is what a box that has said nothing gets.
     pub oracle_scope: Option<letibot_tools::authorise::OracleScope>,
-    /// **The memory cap a model's tool call runs under, and the most it may take without the
-    /// operator** — `providers.toml`'s `[memory]` (TODO.md R65). Built-in: 64 MiB, and half of
+    /// The memory cap a model's tool call runs under, and the most it may take without the
+    /// operator - `providers.toml`'s `[memory]`. Built-in: 64 MiB, and half of
     /// what is free.
     pub memory: letibot_tools::exec::memory::MemoryPolicy,
     /// Layer B's latency budget. The trait's default is 400ms and
     /// `ModelAdjudicator` abandons an oracle that overruns, so this is the knob
     /// that decides whether a given model can hold the seat at all.
     pub oracle_budget: std::time::Duration,
-    /// **How many output tokens the guard may spend on its answer** (R12).
-    ///
-    /// `None` is [`crate::oracle::DEFAULT_MAX_TOKENS`], which is the same value this
-    /// shipped with. It exists because of the one case where the answer is a *budget* and
-    /// not a person: a reply cut off at the ceiling before it reached a verdict is
-    /// `UnsureKind::OutOfRoom`, it says so on the card and on the corpus row, and the
-    /// thing to do about it is to raise this. Without the knob the sentence would be
-    /// telling the operator to turn a wheel that is welded on.
-    ///
-    /// Raising it costs latency on every gated call that uses the words, so it is typed
-    /// rather than inferred — `--oracle-budget-ms`'s rule, one knob along.
+    /// How many output tokens the guard may spend on its answer. `None` is
+    /// [`crate::oracle::DEFAULT_MAX_TOKENS`]. It exists for the reply cut off before a verdict
+    /// (`UnsureKind::OutOfRoom`), which says to raise this - and raising it costs latency.
     pub oracle_max_tokens: Option<usize>,
     /// What the guard is asked: a verdict, or two scores the thresholds turn
     /// into one. See `crate::oracle::Question`.
     pub oracle_question: crate::oracle::Question,
-    /// **Start with the guard model consulted on every gated call.**
-    ///
-    /// Only a starting value: `/supervise` moves it at run time, which is the point
-    /// of it being a flag on the gate rather than a mode. Meaningless without
-    /// `oracle`, and the gate says so by name rather than pretending.
+    /// Start with the guard model consulted on every gated call. Only a starting value
+    /// `/supervise` moves it at run time, which is why it is a flag on the gate rather than a mode.
+    /// Meaningless without `oracle`, and the gate says so by name rather than pretending.
     pub supervise: bool,
-    /// **Whether the intent check reads the assistant's prose as well as its tools.**
-    ///
-    /// Off by default, and the asymmetry is deliberate. The tool-declared half of
-    /// the diff — an item declared with `todo` and a turn that ran nothing — cannot
-    /// fire unless a role that seats `todo` or `goal` is in use, so it costs an
-    /// existing session nothing and is always on. The prose half
-    /// (`intent::commitments`) fires on any turn that ran no tools, which for a
-    /// plain answer is the normal case, and *"you said you would X"* landing in a
-    /// conversation that was working is the false positive that makes people turn
-    /// the whole check off.
-    ///
-    /// It is the more useful half. It is also the one with a false-positive rate
-    /// nobody has measured, so it is a flag rather than a default, and the cost of
-    /// each choice is written here rather than discovered.
+    /// Whether the intent check reads the assistant's prose as well as its tools. Off by default
+    /// the tool half cannot fire unless a role seating `todo`/`goal` is in use, while the prose half
+    /// fires on any turn that ran no tools - the false positive that turns the check off.
     pub intent_prose: bool,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
-    /// **The backstop, and only the backstop.** How many times one user turn may go
-    /// round the tool loop before the daemon stops and says so.
-    ///
-    /// This used to be the *only* stop, at 12, and it cut two legitimate sessions —
-    /// one asked to *"look at the project and suggest improvements"* and stopped
-    /// mid-investigation, one two rounds from finishing with every round doing new
-    /// work. A count of rounds measures **effort**, not progress: it is an open-loop
-    /// guard in `docs/closed-loop.md`'s terms, and it cannot tell a model that is
-    /// working hard from one that is stuck.
-    ///
-    /// [`Config::stall_rounds`] is the closed-loop half and is what actually stops a
-    /// looping turn now, so this is set far out — a real investigation of a codebase
-    /// is dozens of rounds and the old value was inside that range. What is left for
-    /// this number to catch is a turn that keeps producing genuinely new results
-    /// forever, which is a different failure and wants a different sentence.
-    ///
-    /// **`0` is unbounded, and it is the default.** The operator: *"make 200 tool
-    /// calls limit configurable and set it to infinity"*. The argument for it is
-    /// the one this field's own history already makes — a round count measures
-    /// effort and cannot tell a model that is working from one that is stuck, so
-    /// as a stop it was only ever wrong in one direction, and 200 is a number
-    /// nobody derived. `stall_rounds` is the guard that reads progress, and it is
-    /// the one that should be doing this job.
-    ///
-    /// What follows, and is disclosed rather than hidden: with this off AND
-    /// `stall_rounds` off, **nothing ends a turn but the model** — see
-    /// [`Config::disclosures`], which says exactly that when both are zero. One
-    /// off is a choice; both off is a different setting and reads as one.
+    /// The backstop, and only the backstop. How many rounds one user turn may take before the
+    /// daemon stops and says so; `0` is unbounded, and it is the default, because a round count
+    /// measures effort and not progress. [`Config::stall_rounds`] is the closed-loop half.
     pub max_tool_rounds: usize,
-    /// **How many times a round is RE-attempted when the model endpoint fails**,
-    /// after the first try. `0` is none. See `harness::MAX_HTTP_RETRIES`, which is
-    /// the default: five, doubling from a second — six calls, 31 seconds of waiting.
-    ///
-    /// **The count is the ladder's length, not its rule.** *What* is retryable lives in
-    /// `letibot_http::retry::Policy` (transport failures, and the statuses a provider uses to
-    /// say *not now*); a refusal — a 400, a 401, a 403, a 404, a 429 that names money — is
-    /// never retried however large this number is. So raising this is a decision about
-    /// patience, and it can no longer turn a permanent refusal into a minute of waiting.
-    ///
-    /// Retries and not attempts, because the first version of this field was
-    /// called `http_attempts` and `1` still retried once — the guard reads
-    /// `attempt >= budget` with `attempt` starting at zero. A field whose name
-    /// says one thing and whose arithmetic says another is a bug waiting for
-    /// somebody to set it to what the name promises; its own test caught it.
-    ///
-    /// Configurable because the right answer depends on something the daemon
-    /// cannot see — whether the endpoint is a server that might be reloading or
-    /// one that is simply not there. A caller that already knows sets `1` and is
-    /// told at once. Measured, 2026-09-20: `compact.rs` spent 63.7 seconds of wall
-    /// clock on 3.5 seconds of CPU, all of it one test waiting out this ladder
-    /// against a port its own comment called "a dead port, so the attempt fails
-    /// fast".
+    /// How many times a round is RE-attempted when the model endpoint fails, after the first try
+    /// `0` is none. The count is the ladder's length, not its rule - *what* is retryable lives in
+    /// `letibot_http::retry::Policy`, so raising this is patience. Retries, not attempts.
     pub http_retries: u32,
-    /// **How many consecutive rounds may produce nothing new before the turn stops.**
-    ///
-    /// A round counts as producing nothing new when none of its calls returned `Ok`
-    /// with a result this turn had not already seen — see [`crate::progress`]. One
-    /// round before this the model is told what the harness sees, once, so a turn
-    /// that was in fact working can say so and carry on.
-    ///
-    /// `0` turns the check off and leaves [`Config::max_tool_rounds`] as the only
-    /// stop, which is the state that cost the two sessions. It is reachable because
-    /// a refusal that can only be routed around teaches people to route around
-    /// refusals, and it is **disclosed** rather than silent.
+    /// How many consecutive rounds may produce nothing new before the turn stops. A round produces
+    /// nothing new when no call returned an `Ok` result this turn had not already seen
+    /// ([`crate::progress`]); `0` turns the check off and leaves the round count as the only stop.
     pub stall_rounds: usize,
 }
 
-/// **Who decides a gated call.**
-///
-/// `docs/tool-design-brief.md` §2.5: a gate that says "allowed" because nothing is
-/// wired is worse than no gate. The inverse is also true and is what this enum is
-/// for — a gate that refuses everything because nobody attached anything is not a
-/// safety property, it is a session that starts cleanly and then fails every call.
-/// The operator finds out one wasted turn later.
-///
-/// So a seat whose tools declare `Write`, `Exec` or `Network` gets
-/// [`AdjudicatorChoice::Console`], and there is **no value that means nobody**.
-/// That is not an oversight; see [`AdjudicatorChoice::parse`].
-///
-/// One variant today, and it is still an enum: this is the seam a second one lands
-/// on, and [`AdjudicatorChoice::parse`] is where the two refusals live with their
-/// reasons, which is the part that has to exist whether or not there is a choice
-/// to make yet.
+/// Who decides a gated call. A gate that says "allowed" because nothing is wired is worse than no
+/// gate, and one that refuses everything because nobody attached fails every call - so there is no
+/// value that means nobody. See [`AdjudicatorChoice::parse`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AdjudicatorChoice {
-    /// [`crate::oracle::HttpOracle`] behind [`letibot_tools::ModelAdjudicator`].
-    ///
-    /// The only choice that can satisfy [`letibot_tools::mode::Prereq::Oracle`],
-    /// and therefore the only one under which `automode` opens. It needs
-    /// `--oracle HOST:PORT`; without one it is a choice that cannot be built,
-    /// and `parse` says so rather than falling back to a person.
+    /// [`crate::oracle::HttpOracle`] behind [`letibot_tools::ModelAdjudicator`]. The only choice
+    /// that can satisfy [`letibot_tools::mode::Prereq::Oracle`], and therefore the only one under
+    /// which `automode` opens. It needs `--oracle HOST:PORT`, and `parse` refuses by name without it.
     Model,
-    /// [`crate::answers::HeadAdjudicator`] over the session socket.
-    ///
-    /// **The default for any seat that can reach the gate**, and the reason is which
-    /// shape people actually run: a daemon in the background with `letibot-tui`
-    /// attached. It posts `DecisionRequested`, which the head already renders, and
-    /// waits on the answer frame the head already has — see [`crate::answers`] for
-    /// why that answer cannot come in through the command queue.
-    ///
-    /// A session with no head that can answer refuses **at once**, naming that fact,
-    /// rather than sitting out a deadline.
+    /// [`crate::answers::HeadAdjudicator`] over the session socket - the default for any seat that
+    /// can reach the gate, because a daemon in the background with a head attached is the shape people
+    /// run. A session with no head refuses at once, naming that fact, not sitting out a deadline.
     #[default]
     Head,
-    /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr.
-    ///
-    /// Right for `harnessd --prompt …` and for a daemon run in a foreground
-    /// terminal, and **only** those: a head attached over the socket cannot answer
-    /// it, which is D25. It is no longer the default and it is still selectable,
-    /// because a foreground daemon with no head is a real way to run this and the
-    /// console is the only thing that can reach a person there.
+    /// [`letibot_tools::ConsoleAdjudicator`] over the daemon's own stdin/stderr. Right for
+    /// `harnessd --prompt …` and for a daemon run in a foreground terminal, and only those: a
+    /// head attached over the socket cannot answer it, which is D25.
     Console,
 }
 
 impl AdjudicatorChoice {
-    /// The two values this refuses are the interesting part.
-    ///
-    /// **`none`** would be a session with `write` or `bash` seated and nothing that
-    /// can approve a call: every gated call returns `NotRun`, the model is told
-    /// nobody decided, and the operator has a harness that looks wired and does
-    /// nothing. There is no use for that state — a session that wants no writes is
-    /// spelled `--role orchestrator`, which does not seat the tools in the first
-    /// place, so the model is not told it has a capability it cannot use. The two
-    /// spellings are not equivalent and the difference is which one lies to the
-    /// model.
-    ///
-    /// **`model`** is the one somebody reaches for after reading
-    /// `docs/boundary-and-adjudication.md`, and "unknown adjudicator" would read as
-    /// this build not having the concept. It has the concept and no oracle behind
-    /// it, which is a different fact and the one worth saying.
+    /// The two values this refuses are the interesting part. `none` would be a session that seats
+    /// `write` and refuses every call, spelled `--role orchestrator` instead; `model` has the
+    /// concept and no oracle behind it, which is the fact worth saying.
     pub fn parse(s: &str) -> Result<AdjudicatorChoice, String> {
         match s {
             "head" => Ok(AdjudicatorChoice::Head),
@@ -1104,7 +571,7 @@ impl AdjudicatorChoice {
                  does not seat the tools, so nothing is claimed and nothing refuses."
                     .into(),
             ),
-            // Wired as of the HttpOracle. It still needs `--oracle HOST:PORT`;
+            // Wired as of the HttpOracle. It still needs `--oracle HOST:PORT`
             // `Harness::open` refuses by name when the choice is made without
             // one, rather than silently falling back to a person.
             "model" => Ok(AdjudicatorChoice::Model),
@@ -1123,42 +590,9 @@ impl AdjudicatorChoice {
     }
 }
 
-/// **The base system prompt, composed per seat** (R93.G1–G5).
-///
-/// Two rules from §5.2 are visible in it, and both cost the operator real time:
-/// it says how to use the tools and never what the data contains, and it **states
-/// the answer language** — oracle's prompt did not, and a Chinese-trained model
-/// drifted into Chinese mid-sentence under Russian input.
-///
-/// # Every sentence is true for the seat that reads it
-///
-/// There used to be one constant for every seat, and it told a seat with `edit`
-/// and `write` *"You have read-only tools"*, told a coder child to use a scratch path
-/// only `harness status` could name (a tool the child does not have), and named
-/// `transcript` and `notes` to seats without them (R93.G2–G4). So a section is now a
-/// function of [`SeatFacts`] — the tools this session actually seats, read off the
-/// registry at open, and the scratch directory its backend actually has — and a
-/// sentence about a tool is written only when that tool is seated. A section with
-/// nothing true to say for the seat is left out.
-///
-/// # The scratch path is in the prompt, and the fingerprint masks it
-///
-/// It carries this daemon's pid. A session's prompt is frozen at open, so a new
-/// session pays nothing for it; what it must not do is make every session look
-/// re-composed after a daemon restart, and `harness::prefix_fingerprint` masks the
-/// pid for exactly that.
-///
-/// # `working` settles what the notices used to argue about
-///
-/// The rules on waiting, asking, context, stopping and the queue lived only in tool
-/// descriptions and notices, with nothing above them to settle a contradiction
-/// (R93.G1). They are one short section here, worded to agree with the tools: a
-/// completion *"reaches you automatically — when your current turn ends, or at once
-/// if a todo row needs it or wake is "now""* (R79).
-///
-/// Nothing volatile beyond that path: no timestamp, no cwd listing, no git branch.
-/// Adding one line to an `<env>` block once cost a full cold re-prefill of a 179k
-/// conversation.
+/// The base system prompt, composed per seat. Every sentence is true for the seat that
+/// reads it: a section is a function of [`SeatFacts`], and one with nothing true to say is left out.
+/// Nothing volatile beyond the scratch path - one added `<env>` line once cost a full re-prefill.
 pub const SECTION_NAMES: &[&str] = &[
     "identity",
     "language",
@@ -1171,10 +605,9 @@ pub const SECTION_NAMES: &[&str] = &[
     "tone",
 ];
 
-/// **What a session's base prompt is composed from** — the facts of its seat that the
-/// prompt has sentences about. Read at open (`Harness::open_with_registry`), after the
-/// role is resolved and the downgrade applied, so `tools` is what the model is actually
-/// given and not what the role meant to give it.
+/// What a session's base prompt is composed from - the facts of its seat that the prompt has
+/// sentences about. Read at open (`Harness::open_with_registry`), after the role is resolved and
+/// the downgrade applied, so `tools` is what the model is actually given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SeatFacts {
     /// The names of the seated tools.
@@ -1214,7 +647,7 @@ impl SeatFacts {
     }
 }
 
-/// `a`, `a or b`, `a, b or c` — the seated subset of a list, spelled for a sentence.
+/// `a`, `a or b`, `a, b or c` - the seated subset of a list, spelled for a sentence.
 fn either(names: &[&str]) -> String {
     match names {
         [] => String::new(),
@@ -1223,7 +656,7 @@ fn either(names: &[&str]) -> String {
     }
 }
 
-/// **The built-in text of one section for one seat**, or `None` when the section has
+/// The built-in text of one section for one seat, or `None` when the section has
 /// nothing true to say there. See [`SECTION_NAMES`].
 pub fn default_section(name: &str, f: &SeatFacts) -> Option<String> {
     let any_tool = !f.tools.is_empty();
@@ -1419,20 +852,20 @@ fn working(f: &SeatFacts) -> String {
     s
 }
 
-/// **The built-in prompt for one seat**, with no `prompts.toml`. What
+/// The built-in prompt for one seat, with no `prompts.toml`. What
 /// [`Prompts::compose`] returns when nothing overrides anything.
 pub fn default_system(f: &SeatFacts) -> String {
     Prompts::default().compose("", f)
 }
 
-/// **What only some sessions are told, composed at open with the rest** — see
+/// What only some sessions are told, composed at open with the rest - see
 /// [`Config::seat_prompt`].
 #[derive(Debug, Clone, Default)]
 pub struct SeatPrompt {
     /// The paragraph only this session is given (the review queue's), appended after
     /// the standing notes. `None` for every session the operator started.
     pub own: Option<String>,
-    /// The fabric block, for a root session holding a seat — rendered at open, when
+    /// The fabric block, for a root session holding a seat - rendered at open, when
     /// the session's tools are known, so it names only the doors it has.
     pub fabric: Option<FabricPart>,
 }
@@ -1440,7 +873,7 @@ pub struct SeatPrompt {
 /// The fabric as it was read for a session, before it is rendered for the session's tools.
 #[derive(Debug, Clone)]
 pub enum FabricPart {
-    /// Read from the node, or from the cached copy — `source` says which.
+    /// Read from the node, or from the cached copy - `source` says which.
     Read {
         ctx: letibot_flowy::FabricContext,
         source: letibot_flowy::FabricSource,
@@ -1459,55 +892,14 @@ impl FabricPart {
     }
 }
 
-/// **The per-model system-prompt overrides, from `prompts.toml`.**
-///
-/// A file the operator edits, beside `providers.toml` in the same config dir. It
-/// answers a question `providers.toml` must not: what the model is TOLD, as opposed
-/// to how it is sampled and where its key lives.
-///
-/// # Why a separate file, and a real parser
-///
-/// `providers.toml` is mode 600 because it holds provider keys, and
-/// `/models NAME --key K` WRITES it. Prompt text is not a secret, and hand-written
-/// multi-line prompt text living in a file a program rewrites by hand-rolled
-/// parsing is exactly the mangled-prompt defect this avoids. So: one file for keys,
-/// one for prompts, and a real TOML parser (`toml`) for the one file that carries
-/// arbitrary prompt bytes. The tree hand-parses the flat `key = "value"` subset
-/// elsewhere; that is a different class of content and stays that way.
-///
-/// # The keys, and why they are these
-///
-/// The keys inside a layer are the **section names** of [`SECTION_NAMES`] —
-/// `identity`, `language`, `tree`, `find_and_read`, `edit_files`, `scratch`, `notes`,
-/// `working`, `tone`. A section key replaces that one section in place, leaving the
-/// other sections and their order alone. That is the whole feature: the operator can
-/// override one section for one model without rewriting the prompt. **A section the
-/// seat has nothing true to say in is left out, overridden or not** — an override of
-/// `edit_files` does not give a read-only seat a sentence about `edit`.
-///
-/// * `[base] <section> = "…"` — a change for every model. The section is replaced
-///   for every session, and a model's own section still overrides it.
-/// * `[model."NAME"] <section> = "…"` — the same section, replaced for one model.
-///   `NAME` is the model as the daemon names it: `provider/model` for a metered
-///   session, the bare alias for a local one. A `*` in the provider position
-///   (`deepseek/*`) is a glob over that provider's models.
-/// * `<layer> system_extra = "…"` — text appended to the composed prompt, after
-///   every section. It may be set in either layer: in `[base]` it is appended for
-///   every model, and a model's own `system_extra` is appended after it. It ADDS,
-///   it does not replace.
-///
-/// There is no `[base] system` any more. The wholesale replacement it was is the
-/// shape that could not override one section for one model, and the sections are
-/// the unit now: a prompt the operator wants changed in one place is changed in one
-/// place, and the rest of the built-in prompt — and its order — is left alone. A
-/// section name this daemon does not know is refused by name, with the file's path,
-/// and the session runs on the un-overridden composition.
+/// The per-model system-prompt overrides, from `prompts.toml` - a separate file from
+/// `providers.toml` (mode 600, rewritten by `/models NAME`) because prompt text is not a secret. Its
+/// keys are [`SECTION_NAMES`], each replacing that one section in place; `system_extra` adds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Prompts {
-    /// The `[base]` section overrides, keyed by section name. Empty overrides are
-    /// dropped on load: an empty string would replace a section with nothing, and
-    /// keeping it would let an empty exact block shadow the provider glob it should
-    /// fall through to.
+    /// The `[base]` section overrides, keyed by section name. Empty overrides are dropped on
+    /// load: an empty string would replace a section with nothing, and keeping it would let an
+    /// empty exact block shadow the provider glob it should fall through to.
     base: BTreeMap<String, String>,
     /// The `[base] system_extra`, appended after the sections for every model.
     /// `None` when unset.
@@ -1528,12 +920,9 @@ struct ModelOverrides {
     system_extra: Option<String>,
 }
 
-/// The file's shape, as parsed. `deny_unknown_fields` on the top level is the
-/// report for a section this daemon does not know: a `[foo]` is a parse error
-/// carrying the parser's own message, not a silently ignored line. The keys INSIDE
-/// `[base]` and `[model."NAME"]` are section names, captured by `flatten` and
-/// checked against [`SECTION_NAMES`] in [`Prompts::load`] — a name the daemon
-/// does not know is refused there, by name, with the path.
+/// The file's shape, as parsed. `deny_unknown_fields` on the top level is the report for a
+/// section this daemon does not know - a `[foo]` is a parse error, not a silently ignored line.
+/// The keys INSIDE a layer are captured by `flatten` and checked in [`Prompts::load`].
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PromptsFile {
@@ -1543,10 +932,9 @@ struct PromptsFile {
     model: BTreeMap<String, ModelSection>,
 }
 
-/// The `[base]` layer: section overrides plus the `system_extra` appended for every
-/// model. `flatten` captures the section keys so [`Prompts::load`] can refuse an
-/// unknown section name by name; `system_extra` is named so it is not mistaken for
-/// a section.
+/// The `[base]` layer: section overrides plus the `system_extra` appended for every model.
+/// `flatten` captures the section keys so [`Prompts::load`] can refuse an unknown name by name
+/// naming `system_extra` is what stops it being mistaken for one.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 struct BaseSection {
     #[serde(flatten)]
@@ -1574,11 +962,9 @@ impl Prompts {
             .unwrap_or_else(|| PathBuf::from("prompts.toml"))
     }
 
-    /// Load `prompts.toml`. A missing file is `Ok` with no overrides — the
-    /// byte-identical case, not an error. A file that does not parse, or that names
-    /// a section this daemon does not know, is `Err` with the parser's own message
-    /// (or the section's name) and the path, so the operator can see which file
-    /// said what.
+    /// Load `prompts.toml`. A missing file is `Ok` with no overrides - the byte-identical case, not
+    /// an error. A file that does not parse, or that names a section this daemon does not know, is
+    /// `Err` with the parser's own message (or the section's name) and the path.
     pub fn load(path: &Path) -> Result<Prompts, String> {
         if !path.is_file() {
             return Ok(Prompts::default());
@@ -1641,20 +1027,13 @@ impl Prompts {
         })
     }
 
-    /// The composed system prompt for one model on one seat: the sections of
-    /// [`SECTION_NAMES`] in their order that have something true to say for `seat`
-    /// ([`default_section`]), each replaced in place by the model's override, else the
-    /// provider glob's, else `[base]`'s, else the default — plus the `system_extra`
-    /// (the base's, then the model's), appended last, when there is one.
-    ///
-    /// **The safety property:** with no file, or a file that overrides nothing, this
-    /// returns [`default_system`] for the seat byte for byte, and a test asserts it.
+    /// The composed system prompt for one model on one seat: the sections that have something true to
+    /// say for `seat`, each replaced in place by the model's override, else the provider glob's, else
+    /// `[base]`'s, then `system_extra` last. With no file it is `default_system` byte for byte.
     pub fn compose(&self, model_name: &str, seat: &SeatFacts) -> String {
-        // The exact block and the provider-glob block, if present. The exact name
-        // is a more specific instruction than a provider-wide one, so it wins per
-        // section; the glob is the fallback for a section the exact block did not
-        // set. One lookup, used for the sections and the `system_extra` alike —
-        // two matchers for one rule is the drift this tree deletes.
+        // The exact block and the provider-glob block, if present: the exact name wins per
+        // section, the glob is the fallback. One lookup for the sections and the `system_extra`
+        // alike - two matchers for one rule is the drift this tree deletes.
         let exact = self.models.get(model_name);
         let glob = model_name
             .split_once('/')
@@ -1701,37 +1080,19 @@ fn is_known_section(name: &str) -> bool {
     SECTION_NAMES.contains(&name)
 }
 
-/// A sixteenth of `w`, floored at 2k and capped at a quarter — see
+/// A sixteenth of `w`, floored at 2k and capped at a quarter - see
 /// [`Config::headroom`] for why each bound is there. One spelling, because the
 /// planning window and the shown one must reserve by the same rule.
 fn headroom_of(w: u64) -> u64 {
     (w / 16).max(2048).min(w / 4)
 }
 
-/// **The last ratio this session measured, when it was measured on a model it has since
-/// switched away from.**
-///
-/// A switch clears `Config::ledger_scale` — a measurement made on one model is not evidence
-/// about another — and clearing it is right. What it is not is a reason to refuse work:
-/// cleared, the ledger's own count was compared with the new model's window, and the ledger
-/// of a metered session is `Vocab::bytes` (one token per byte of the rendered history),
-/// which over-counts a real tokenizer by three to five times. MEASURED 2026-10-25,
-/// `s-1791394076177451000` on the way from deepseek to `glm-coding`: `context wall: stopped
-/// after 0 round(s) at 2708271 of 1000000 ledger tokens (unscaled: no round on glm-coding
-/// has measured yet)` — the turn never left the machine, and the compaction that could have
-/// made room was then refused by the provider for carrying images. The last pair this
-/// session had measured was deepseek's 2,704,409 ledger for 792,991 prompt tokens; carried
-/// across the switch it puts the same conversation at ~1,000,000 of glm's window, inside it.
-///
-/// So the old pair is kept as an **estimate, named as one**: every line that prints a count
-/// converted with it says which model measured the ratio (`Config::carried_note`), and
-/// `Config::pre_emptive_compact` still refuses to compact on it, because a pre-emptive fold
-/// on an inherited ratio is a fold nobody measured. The first round on the new model
-/// replaces it (`Harness::measure_resident` writes `ledger_scale`), which is the whole
-/// design: a measurement beats an estimate as soon as one exists.
+/// The last ratio this session measured, on a model it has since switched away from. A switch
+/// clears `Config::ledger_scale`, rightly, but the cleared count then refused a turn before it left
+/// the machine. Kept as an estimate, named as one, and never a pre-emptive fold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CarriedScale {
-    /// The model the pair was measured on, in `/models`' own spelling —
+    /// The model the pair was measured on, in `/models`' own spelling -
     /// `deepseek/deepseek-flash`. Named in every line that uses it.
     pub model: String,
     /// `(ledger tokens, that model's prompt tokens)` for ONE prompt.
@@ -1739,19 +1100,15 @@ pub struct CarriedScale {
     pub provider: u64,
 }
 
-/// **What a ledger count's relation to the answering model's count is known from** — the
-/// provenance a wall decision turns on, in one value rather than three predicates that have
-/// to agree.
-///
-/// The distinction that matters at the wall is not *is it a measurement* but *is it a
-/// measurement of THIS model*: at round 0 an unmeasured count is bytes against tokens, and
-/// stopping a turn on that comparison is how the 2026-10-25 session never sent anything.
+/// What a ledger count's relation to the answering model's count is known from - the provenance
+/// a wall decision turns on, in one value rather than three predicates that have to agree. What
+/// matters at the wall is not *is it a measurement* but *is it a measurement of THIS model*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WallBasis<'a> {
     /// The ledger IS the prompt (a local session), or a pair was measured on the model
     /// answering now.
     Measured,
-    /// The pair was measured on `model`, which this session has switched away from —
+    /// The pair was measured on `model`, which this session has switched away from -
     /// a ratio carried across the switch.
     Carried(&'a str),
     /// Nothing has measured anything: a fresh metered provider, or a session whose stored
@@ -1759,14 +1116,9 @@ pub enum WallBasis<'a> {
     Unmeasured,
 }
 
-/// **What still stops at `mode`, said after the mode's own words** — the always-ask list and layer
-/// A's `Blocked` tier are not the mode's to move, and this sentence must agree with the summary it
-/// follows rather than contradict it.
-///
-/// 2026-10-26: `allow-all (this box, consented)` was described, in the mode's own summary, as
-/// *"write, exec and network all go through without asking, the always-ask list included"* and
-/// then, in the same paragraph, as *"the always-ask list reaches you at every one of them"*. The
-/// other defect in that sentence was the word for a refused tier: *"an blocked"*.
+/// What still stops at `mode`, said after the mode's own words - the always-ask list and layer A's
+/// `Blocked` tier are not the mode's to move, and this must agree with the summary it follows: on
+/// 2026-10-26 one paragraph said both *"the list included"* and *"reaches you at every one"*.
 fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
     use letibot_tools::mode::{Boundary, Disposition};
     match mode.boundary {
@@ -1777,7 +1129,7 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
              it reaches this box. A secret leaving the boundary is still refused."
         }
         // The same absent list on a box with no boundary at all, and the reason it is absent is a
-        // person's answer rather than a confinement — which is exactly the difference the two
+        // person's answer rather than a confinement - which is exactly the difference the two
         // coordinates exist to keep visible.
         Boundary::OperatorConsented => {
             "The always-ask list does not ask here either — you consented to that, once, in \
@@ -1785,7 +1137,7 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
              secret leaving it: that is refused before any mode is consulted."
         }
         // `read-only`: there is nothing for the list to ask about, because the tools are ABSENT
-        // rather than refused — so saying it *reaches you at every one of them* would describe
+        // rather than refused - so saying it *reaches you at every one of them* would describe
         // actions this point cannot take.
         _ if mode.write == Disposition::Absent
             && mode.exec == Disposition::Absent
@@ -1803,71 +1155,27 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
 }
 
 impl Config {
-    /// How much of the window must stay free for a turn to be safe to start.
-    ///
-    /// A compaction is itself a turn: it re-sends the resident prompt and
-    /// generates a summary, so firing it with no room left fails exactly like the
-    /// turn it was meant to prevent. The reserve is the output budget plus a
-    /// margin for the instruction and the next user message.
-    ///
-    /// Measured 2026-09-15: the session that died was at ~244k of 262144 — 93% —
-    /// and the 500 arrived on the NEXT turn. A reserve of a sixteenth of the
-    /// window (16k of 262144) would have fired the compaction two turns earlier,
-    /// with room to summarise.
+    /// How much of the window must stay free for a turn to be safe to start. A compaction is itself a
+    /// turn, so firing it with no room left fails like the turn it was meant to prevent. The session
+    /// that died was at 93% and the 500 arrived on the NEXT turn.
     pub fn headroom(&self) -> u64 {
-        // A sixteenth of the window, floored at 2k so a summary has room, and
-        // CAPPED AT A QUARTER so it cannot swallow the window it is reserving in.
-        //
-        // The cap is not hypothetical: the first version was `(w/16).max(8192)`,
-        // which for any window of 8192 or less makes the reserve larger than the
-        // window, `should_compact` true on every turn, and compaction a loop that
-        // never lets a conversation start. Caught by asking what the formula does
-        // at the edges rather than at 262144.
+        // A sixteenth of the window, floored at 2k so a summary has room, and CAPPED AT A QUARTER so
+        // it cannot swallow the window it is reserving in: the first version was `(w/16).max(8192)`
+        // which made the reserve larger than the window for any window of 8192 or less.
         headroom_of(self.planning_window().unwrap_or(0))
     }
 
-    /// **The window and its reserve as a line prints them** — in the units the
-    /// window was given in, which on a metered session are the provider's.
-    ///
-    /// `shown_tokens(planning_window())` was the old spelling, and a round trip
-    /// through a ratio is not the identity: the operator read *"937686 of 999999"*
-    /// for a 1,000,000-token window (R72). The decision is still
-    /// `at_the_wall`/`should_compact` on the ledger figure; with the pair rolled to
-    /// the current count by `Harness::measure_resident`, that decision IS the count
-    /// against this window with this reserve, so printing these is printing what
-    /// was decided — without a rounding error a reader has to explain.
+    /// The window and its reserve as a line prints them - in the units the window was given in
+    /// which on a metered session are the provider's. `shown_tokens(planning_window)` was the old
+    /// spelling, and a round trip through a ratio is not the identity.
     pub fn shown_wall(&self) -> (u64, u64) {
         let w = self.context_window.unwrap_or(0);
         (w, headroom_of(w))
     }
 
-    /// Is this turn's resident size close enough to the wall to compact first?
-    /// `false` whenever the window is unknown — not knowing is not a reason to
-    /// act, and an invented number here would compact conversations that had room.
-    /// **The window, in the units the caller is counting in.**
-    ///
-    /// Every caller measures `resident` off the ledger, so the window has to be
-    /// in ledger tokens too. [`Config::context_window`] is the PROVIDER's number
-    /// — it is what the provider will refuse at, and it is what the banner
-    /// should say — so planning against it directly compares two different
-    /// counts. See [`Config::ledger_scale`] for the measurement and what it cost.
-    ///
-    /// The ratio is measured, not assumed, because it is not a constant: it is
-    /// how much of the conversation is reasoning, which varies per session and
-    /// over the life of one. Clamped to [1/4, 16] so a single odd turn cannot
-    /// move the wall somewhere absurd, and `None` stays `None` — an unknown
-    /// window is not a large one.
-    ///
-    /// **The upper bound was 4, and a real session is past it** (R72). The ratio is
-    /// how much of the history is reasoning the provider does not count, and leticl's
-    /// `s-1791151788256943467` on deepseek-flash measured 3,454,266 ledger tokens for
-    /// a conversation the provider counted at ~740k — 4.67. A clamp at 4 turns that
-    /// into a window of 4M ledger tokens, which the ledger reaches while the provider
-    /// still counts ~860k of 1M: compaction 14% early, from the clamp alone. Since the
-    /// pair is rolled to the current count before every wall decision
-    /// (`Harness::measure_resident`), it is a measurement rather than one turn's odd
-    /// ratio, and the bound is only a guard against nonsense — 16 is a history 94%
-    /// reasoning.
+    /// The window, in the units the caller is counting in. Every caller measures `resident` off the
+    /// ledger, so the window must be in ledger tokens too - `context_window` is the PROVIDER's number.
+    /// The ratio is measured, not assumed, and clamped to [1/4, 16] so one odd turn cannot move it.
     pub fn planning_window(&self) -> Option<u64> {
         let w = self.context_window?;
         let Some((ledger, provider)) = self.scale() else {
@@ -1880,13 +1188,9 @@ impl Config {
         Some((scaled.clamp((w / 4) as u128, (w as u128) * 16)) as u64)
     }
 
-    /// **The pair every conversion uses** — the measurement on the model answering now,
-    /// else the one carried across the switch from the model before it.
-    ///
-    /// The carried pair is only consulted for a METERED session: returning to the daemon's
-    /// own server makes the ledger the prompt again (`Vocab::bytes` on a cloud route,
-    /// the model's own vocabulary on a local one), and a cloud ratio applied to a local
-    /// count would be a conversion of one unit into itself.
+    /// The pair every conversion uses - the measurement on the model answering now, else the one
+    /// carried across the switch. The carried pair is only consulted for a METERED session: on a local
+    /// one the ledger IS the prompt, and a cloud ratio applied to it converts one unit into itself.
     pub fn scale(&self) -> Option<(u64, u64)> {
         if self.provider.is_none() {
             return self.ledger_scale;
@@ -1895,12 +1199,9 @@ impl Config {
             .or_else(|| self.carried_scale.as_ref().map(|c| (c.ledger, c.provider)))
     }
 
-    /// **The model whose measurement is standing in for this one's**, when that is what is
-    /// happening — `None` once a round on the current model has measured.
-    ///
-    /// Every line that prints a converted count asks this, because an estimate printed in a
-    /// measurement's clothes is this tree's most expensive kind of wrong (R72: *"1.35 is a
-    /// lie - that top was shown as 900+"*).
+    /// The model whose measurement is standing in for this one's, when that is what is happening -
+    /// `None` once a round on the current model has measured. Every line that prints a converted count
+    /// asks this: an estimate in a measurement's clothes is this tree's most expensive kind of wrong.
     pub fn carried_note(&self) -> Option<&str> {
         if self.provider.is_none() || self.ledger_scale.is_some() {
             return None;
@@ -1908,7 +1209,7 @@ impl Config {
         self.carried_scale.as_ref().map(|c| c.model.as_str())
     }
 
-    /// **Where this session's count comes from** — see [`WallBasis`]. One answer, read by
+    /// Where this session's count comes from - see [`WallBasis`]. One answer, read by
     /// the wall's decision and by the lines that explain it.
     pub fn wall_basis(&self) -> WallBasis<'_> {
         if self.provider.is_none() || self.ledger_scale.is_some() {
@@ -1920,37 +1221,9 @@ impl Config {
         }
     }
 
-    /// **Ledger tokens as the provider would count them**, or `None` if nobody
-    /// has measured the ratio yet.
-    ///
-    /// The inverse of what [`Config::planning_window`] does to the window, and it
-    /// exists because one caller genuinely needs the conversion in this
-    /// direction: a refusal the operator reads has to quote a number they can
-    /// find on their own screen, and the screen shows the PROVIDER's count.
-    ///
-    /// `None` is the load-bearing case. It means "this session has not taken a
-    /// metered turn yet, so the ratio is unmeasured", and a caller must not
-    /// substitute the ledger's own figure for it. On a metered provider the
-    /// ledger always over-counts — reasoning rows are in it and are dropped from
-    /// what is sent — so treating ledger tokens as provider tokens does not fail
-    /// safe, it fails by a measured 49% in the direction of refusing work that
-    /// would have fitted. Measured on the operator's own session, 2026-09-20:
-    /// 991,596 ledger tokens against 671,280 the provider counted, and a
-    /// `/reseat` refused against a window it would have sat inside.
-    /// **A ledger count, in the units the operator's header shows.**
-    ///
-    /// Every number the harness plans with is counted off the ledger, and on a
-    /// metered provider that is not what the header says: the ledger holds the
-    /// reasoning rows a messages provider is never sent, so it over-counts. The
-    /// operator, reading a context-wall notice that said `1350750 of 1440006`
-    /// beside a header reading 900k: *"1.35 is a lie - that top was shown as
-    /// 900+"*. It was not a lie, it was the other unit — which is the same thing
-    /// from where they were sitting.
-    ///
-    /// So a message a person reads converts first. Falls back to the ledger's own
-    /// figure where there is nothing to convert with, which is honest: that IS
-    /// the number in that case, because a local endpoint counts with the
-    /// vocabulary the ledger uses.
+    /// A ledger count, in the units the operator's header shows. The ledger holds the reasoning rows
+    /// a messages provider is never sent, so it over-counts: *"1.35 is a lie - that top was shown as
+    /// 900+"* was the other unit. Falls back to the ledger's figure when there is nothing to convert.
     pub fn shown_tokens(&self, ledger_tokens: u64) -> u64 {
         self.provider_tokens(ledger_tokens).unwrap_or(ledger_tokens)
     }
@@ -1962,22 +1235,16 @@ impl Config {
             .is_some_and(|v| v != 1_000_000)
     }
 
-    /// **A metered model with no measurement of the ratio yet** — the window between a
-    /// switch and the first round on the new model.
-    ///
-    /// **Not the same question as `!tokens_are_converted()`**, which is why it is its own
-    /// predicate: a local session's two counts agree by construction, so an unconverted
-    /// number there is the whole truth, while an unconverted number on a metered model is a
-    /// ledger figure standing in for a provider's — up to the clamp's factor of four out, in
-    /// the direction that compacts early.
-    ///
-    /// The ruling's own words: *"until then the unscaled count stands and anything that reads
-    /// it must be able to say it is unscaled rather than silently treating it as
-    /// calibrated."*
+    /// A metered model with no measurement of the ratio yet - the window between a switch and the
+    /// first round on the new model. Not the same question as `!tokens_are_converted`: a local
+    /// session's two counts agree, while an unconverted metered count must be said to be unscaled.
     pub fn tokens_are_unscaled(&self) -> bool {
         self.provider.is_some() && self.scale().is_none()
     }
 
+    /// Ledger tokens as the provider would count them, or `None` if nobody has measured the
+    /// ratio yet. `None` is load-bearing: a caller must not substitute the ledger's own figure
+    /// which over-counts by a measured 49% - the direction that refuses work which would have fitted.
     pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
         let (ledger, provider) = self.scale()?;
         if ledger == 0 || provider == 0 {
@@ -1986,27 +1253,9 @@ impl Config {
         Some(((ledger_tokens as u128 * provider as u128) / ledger as u128) as u64)
     }
 
-    /// **Is the ledger AT THE WALL — within a headroom of the window?**
-    ///
-    /// This is [`Config::should_compact`]'s threshold half, factored out because
-    /// two questions share it and only one of them is the flag's business:
-    ///
-    /// * *would the next turn fit — should something be tidied pre-emptively?* is
-    ///   [`Config::should_compact`], and `auto_compact` answers it. The no-progress
-    ///   guard stands the flag down precisely to stop that door compacting once
-    ///   per turn for ever.
-    /// * *a turn was just refused for context length — is there a way forward?*
-    ///   reads THIS method with the flag deliberately absent, because the guard
-    ///   turns the flag off **without freeing anything** and a refusal recovery
-    ///   gated on it would refuse the only lever it has. MEASURED 2026-10-09,
-    ///   session `s-1789919514688401228`: one automatic compaction made no room,
-    ///   the guard switched compaction off, and the next thirty provider refusals
-    ///   (1,048,624 / 1,049,070 / 1,049,191 tokens against a 1,048,576 limit) met
-    ///   a recovery that would not act — a wedge with no door out.
-    ///
-    /// `false` whenever the window is unknown, for the same reason
-    /// [`Config::should_compact`] says false: not knowing is not a reason to act,
-    /// and an invented number here would compact conversations that had room.
+    /// Is the ledger AT THE WALL - within a headroom of the window? [`Config::should_compact`]'s
+    /// threshold half, shared by *would the next turn fit* and *a turn was just refused - is there a
+    /// way forward?* The second reads it with the flag absent: a stood-down compaction freed nothing.
     pub fn at_the_wall(&self, resident_tokens: u64) -> bool {
         let Some(w) = self.planning_window() else {
             return false;
@@ -2014,29 +1263,16 @@ impl Config {
         resident_tokens + self.headroom() >= w
     }
 
-    /// **The PRE-EMPTIVE question: would the next turn not fit, so should
-    /// something be tidied first?** [`Config::auto_compact`]'s own gate, and the
-    /// one the no-progress guard stands down. A refusal that has already happened
-    /// is the other question — see [`Config::at_the_wall`].
+    /// The PRE-EMPTIVE question: would the next turn not fit, so should something be tidied
+    /// first? [`Config::auto_compact`]'s own gate, and the one the no-progress guard stands down.
+    /// A refusal that has already happened is the other question - see [`Config::at_the_wall`].
     pub fn should_compact(&self, resident_tokens: u64) -> bool {
         self.auto_compact && self.at_the_wall(resident_tokens)
     }
 
-    /// **The pre-emptive door's question, for a session that may be metered.**
-    ///
-    /// [`Config::should_compact`], except that a metered session with no measured scale is
-    /// never at the wall: its count is LEDGER tokens — bytes, under a cloud provider — and with
-    /// no round measured there is nothing to turn them into the provider's, so the comparison
-    /// with the provider's window is one number against another in a different unit. That is
-    /// what folded the operator's peerdb session on a plain restart, 2026-10-12: a verbatim
-    /// re-seat had cleared the stored measurement (a fork does), the daemon was restarted
-    /// before a round measured again, and 2,431,232 ledger tokens of a conversation deepseek
-    /// had counted around 600,000 were read as 2.4M of a 1M window — and summarised.
-    ///
-    /// Standing down here is the wall controller's own rule (`crate::wall`: *no latch on an
-    /// estimate*) applied to the one unmeasured base it did not fold itself. The first round
-    /// measures; a prompt that really is too long is refused by the provider, and the refused
-    /// door — which this does not touch — compacts then, on evidence.
+    /// The pre-emptive door's question, for a session that may be metered.
+    /// [`Config::should_compact`], except that a metered session with no measured scale is never at the
+    /// wall: its count is LEDGER bytes against a provider's window, which folded a real session.
     pub fn pre_emptive_compact(&self, resident_tokens: u64, metered: bool) -> bool {
         if metered && self.ledger_scale.is_none() {
             return false;
@@ -2044,22 +1280,8 @@ impl Config {
         self.should_compact(resident_tokens)
     }
 
-    /// Would a turn starting at `resident` tokens fit, with the headroom reserved?
-    ///
-    /// The gate the wall continuation reads (`turn_tail::run_turn`), and the
-    /// difference from [`Config::should_compact`] is the point: `should_compact`
-    /// answers *"must something be tidied first"* and folds in the `auto_compact`
-    /// flag, while this answers *"is there room"* as a measurement of the window
-    /// alone. The no-progress guard turns `auto_compact` off **without freeing
-    /// anything**, so a gate that read the flag would see room that is not there
-    /// and continue straight into a second wall. Unknown window: no room, for the
-    /// same reason `should_compact` says false — an invented number here would
-    /// continue turns that cannot fit.
-    /// `resident_tokens` is counted off the LEDGER, like every other caller's,
-    /// so the window it is measured against is [`Config::planning_window`] and
-    /// not the provider's raw number. Reading `context_window` here compared two
-    /// different counts and, on a metered provider where the ledger over-counts,
-    /// closed the gate on turns that had room. See `planning_window`.
+    /// Would a turn starting at `resident` tokens fit, with the headroom reserved? The gate the wall
+    /// continuation reads: *"is there room"*, where [`Config::should_compact`] folds in `auto_compact` - a flag the guard turns off without freeing anything. Measured off the LEDGER.
     pub fn room_for_next_turn(&self, resident_tokens: u64) -> bool {
         match self.planning_window() {
             Some(w) => resident_tokens + self.headroom() < w,
@@ -2067,10 +1289,9 @@ impl Config {
         }
     }
 
-    /// **Whether this session's VM mounts its workspace read-write instead of copying a tree.**
-    /// A session placed with `--vm` on a Mac, booting its own VM: not one attached to an
-    /// ancestor's (that is the ancestor's mount), and not one whose caller named the tree to copy
-    /// (`vm_source`: a reviewer is booted on its entry's repository, as a copy).
+    /// Whether this session's VM mounts its workspace read-write instead of copying a tree. A
+    /// session placed with `--vm` on a Mac, booting its own VM: not one attached to an ancestor's
+    /// (that is the ancestor's mount), and not one whose caller named the tree to copy.
     pub fn vm_mounts_workspace(&self) -> bool {
         cfg!(target_os = "macos")
             && self.vm_mount
@@ -2079,52 +1300,9 @@ impl Config {
             && self.vm_source.is_none()
     }
 
-    /// **The tree a `firecode` placement copies, as one answer** — the session's own
-    /// [`Config::vm_source`] when the caller that knows named one, the REPOSITORY its workspace is
-    /// about when it did not, and the workspace itself when there is no repository to name.
-    ///
-    /// One spelling of the decision, because two places have to agree about it: `Harness::open`
-    /// boots the VM on what this returns, and a test that asserts *which tree a VM-placed session
-    /// was copied from* has nothing else to read on a box it must not boot a VM on. A second
-    /// spelling at the call site — `cfg.vm_source.clone().unwrap_or_else(|| cfg.workspace.clone())`
-    /// — is exactly the kind of fact this tree keeps finding written twice and agreeing only by
-    /// luck.
-    ///
-    /// # Why the repository and not the workspace, and it is not the same thing
-    ///
-    /// A session is seated where a person put it, and that is not always a repository: the
-    /// operator's daemon serves `/home/dead/Projects/letibot`, a folder holding `letibot` (the
-    /// repository), its sibling worktrees and scratch — and the DAEMON's own session is seated
-    /// there on purpose, because *"the daemon's workspace"* is a real tree a session may work in.
-    /// What the folder is not is a thing to COPY. A `firecode` placement copies a tree into a VM,
-    /// the copy is the guest's whole world, and a copy of that folder measures **72.8 GiB** against
-    /// a ceiling of 8 GiB — so every VM placed on it was refused, three times in one night for two
-    /// branches, and a reviewer that cannot start is written as a failed attempt on its row: the
-    /// queue could land nothing at all (measured 2026-10-10).
-    ///
-    /// [`crate::mergequeue::repo_of_workspace`] is that resolution — the workspace itself when it
-    /// is in a repository, the nested layout the head already reads the same way
-    /// (`gitfield::project_dir`) when it is not — and THIS is the one place it is applied, which is
-    /// what makes it apply to every opener at once. Every session the daemon starts reaches this
-    /// line through `Harness::open`, and they do not all come through the same door: the daemon's
-    /// eagerly-opened first session (`Sessions::open_first_with_seat`), a head's `ResumeSession`
-    /// and the merge queue's project session (both `Sessions::harness_as`), the review queue's own
-    /// session (`Sessions::ensure_gatekeeper`, whose `open_as` is `harness_as` one arm over), and
-    /// every `task` child (the spawn in `HarnessTaskRunner`). Each builds its config from the
-    /// daemon's command line and reads it here, so a fix written into one opener would be three
-    /// openers behind — and the one that matters is whichever one is placed in a VM, which is a
-    /// fact about `--where` and about `reviewers` rather than about the door.
-    ///
-    /// # What nothing to name means
-    ///
-    /// A workspace that is in no repository and holds none — `/tmp`, a scratch directory —
-    /// resolves to nothing, and this answers the WORKSPACE, which is what every build before
-    /// `vm_source` did. The copy is then attempted and, if it is over the ceiling, refused with its
-    /// own size in the sentence: a loud failure naming the tree, and not a silent guess at a
-    /// sibling. The daemon's own box is NOT that case, and the difference is worth reading twice:
-    /// `repo_root("/home/dead/Projects/letibot")` fails — the queue's own log says `serving
-    /// /home/dead/Projects/letibot toward main` — and the same-named child below it is what this
-    /// resolves, which is why the queue's own session no longer copies the folder.
+    /// The tree a `firecode` placement copies, as one answer - [`Config::vm_source`] when the caller
+    /// that knows named one, the REPOSITORY its workspace is about when it did not, and the workspace
+    /// itself when there is no repository to name. The repository, because a folder weighed 72.8 GiB.
     pub fn vm_copy_source(&self) -> PathBuf {
         self.vm_source
             .clone()
@@ -2133,33 +1311,18 @@ impl Config {
     }
 }
 
-/// Which search provider `web_search` gets, when the operator has not said.
-///
-/// **A configured key IS the opt-in.** The operator's rule, 2026-09-15: *"i dont
-/// want to do leticode --web-search brave"*. Putting a key under `[brave]` in
-/// `providers.toml` is already a deliberate act, and requiring a flag on top of
-/// it means the capability is off in exactly the sessions whose operator went to
-/// the trouble of configuring it.
-///
-/// So: a resolvable key attaches the provider, and `--web-search none` turns it
-/// off. No key is still no tool — an unconfigured box is byte-identical to one
-/// from before this existed.
-///
-/// The cost, stated because it is real and one-time: seating a tool changes the
-/// stable prefix, so the first session after a key is added re-prefills. That is
-/// the price of turning a capability on, and it is paid once per project.
+/// Which search provider `web_search` gets, when the operator has not said. A configured key IS
+/// the opt-in - *"i dont want to do leticode --web-search brave"* - and `--web-search none` turns
+/// it off. No key is still no tool, so an unconfigured box is byte-identical to before this existed.
 fn default_web_search() -> Option<String> {
     letibot_websearch::resolve_key(None)
         .ok()
         .map(|_| "brave".to_string())
 }
 
-/// The permission ruleset, two layers in precedence order (last match wins):
-/// `~/.config/letibot/permission.json` — the preapproved list, installed from
-/// the repository's `config/permission.json` the first time no file is there
-/// and the operator's from then on; the file an *Always allow* answer appends
-/// to — then `LETIBOT_PERMISSION` (opencode's JSON object). A file that does
-/// not parse is reported on stderr and skipped, never silently emptied.
+/// The permission ruleset, two layers in precedence order (last match wins)
+/// `~/.config/letibot/permission.json` - installed from the repository's seed, and where an *Always
+/// allow* answer appends - then `LETIBOT_PERMISSION`. An unparsable file is reported and skipped.
 fn parse_permission() -> letibot_tools::permission::Ruleset {
     use letibot_tools::permission;
     let mut rules = Vec::new();
@@ -2187,23 +1350,15 @@ fn parse_permission() -> letibot_tools::permission::Ruleset {
 }
 
 impl Config {
-    /// A session against the box this repository is developed on.
-    ///
-    /// Named `for_this_box` rather than `default` because that is what it is: the
-    /// endpoint, the model alias and the GGUF path are this machine's, and a
-    /// `Default` impl would let them travel silently.
-    ///
-    /// **It is also the constructor every fixture in this tree is built from**, so the one field
-    /// that would put a microVM under a test is left at the safe end here: `reviewers` is
-    /// [`Reviewers::Host`]. The daemon — the one caller that is a live operator's box — reads the
-    /// project's own answer in [`Config::for_the_daemon`]; the field carries the whole reason, and
-    /// the short of it is that a test must not boot firecracker by forgetting a line.
+    /// A session against the box this repository is developed on - named so because the endpoint, the
+    /// model alias and the GGUF path are this machine's, and a `Default` would let them travel silently.
+    /// Every fixture builds on it, so `reviewers` is [`Reviewers::Host`].
     pub fn for_this_box(workspace: impl Into<PathBuf>) -> Config {
         Config {
             dialect: Dialect::Qwen,
             model: "qwen-3.8-flash-next".into(),
             endpoint: Endpoint::new("127.0.0.1", 8080),
-            // **No default GGUF.** This was the development box's own path, which on any
+            // No default GGUF. This was the development box's own path, which on any
             // other machine is a file that is not there; a provider needs none, and a
             // local model is named by `--vocab` (the launcher always passes one).
             vocab_gguf: None,
@@ -2224,10 +1379,8 @@ impl Config {
             system: default_system(&SeatFacts::default()),
             seat_prompt: None,
             seat_facts: None,
-            // No fallback until `run` reads `[fallback]` out of `providers.toml`. An
-            // empty list is the old behaviour exactly — a model that is out fails the
-            // turn — so a test that wants the fallback path sets this field by hand,
-            // and nothing about a daemon that never wrote the key changes.
+            // No fallback until `run` reads `[fallback]`: an empty list is the old behaviour
+            // exactly, so a test that wants the fallback path sets this field by hand.
             fallback: Vec::new(),
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes
@@ -2241,17 +1394,13 @@ impl Config {
             // `providers.toml`. Same byte-identical case at the other level.
             leticode_user: crate::leticode_config::LeticodeConfig::default(),
             read_project_config: true,
-            // **An empty box: no instruction file, no box-wide notes, no box skills.** A
-            // fixture that read this laptop's home would assert about the laptop. The daemon is
-            // the one caller that fills these (`for_the_daemon`), and a test that IS about the
-            // box passes its own.
+            // An empty box: no instruction file, no box-wide notes, no box skills. A fixture
+            // that read this laptop's home would assert about the laptop. The daemon fills these
+            // (`for_the_daemon`), and a test that IS about the box passes its own.
             box_dirs: crate::leticode_config::BoxDirs::default(),
             box_skills: letibot_tools::builtins::skill::SkillDirs::default(),
-            // Nothing has spoken for the model yet. `Builtin` is the honest
-            // starting value and the honest final one for a daemon launched with
-            // no flag and no file: the model is the one this daemon was started
-            // on, and the disclosure says exactly that rather than naming a file
-            // that did not speak.
+            // Nothing has spoken for the model yet, and `Builtin` is the honest answer: the model
+            // is the one this daemon was started on, and the disclosure says exactly that.
             model_source: ModelSource::default(),
             effort: None,
             // Deterministic by default: a harness whose own measurements move
@@ -2289,18 +1438,17 @@ impl Config {
             vm_verify: None,
             vm_mount: false,
             build_env: Vec::new(),
-            // **The safe end: a fixture must not be able to boot a microVM by forgetting a line.**
-            // `for_this_box` is what every test in this tree builds from, and the daemon — the one
-            // caller that is a live operator's box — reads the project file in `for_the_daemon`.
-            // `Host` is also the operator's own ruling of 2026-10-29. See the field.
+            // The safe end: a fixture must not be able to boot a microVM by forgetting a line.
+            // `Host` is also the operator's own ruling of 2026-10-29; the daemon reads the project
+            // file in `for_the_daemon`. See the field.
             reviewers: Reviewers::Host,
-            // **The gate runs here unless the daemon reads otherwise.** A fixture must not find
-            // its gate on another machine because a file on the operator's box said so — see the
+            // The gate runs here unless the daemon reads otherwise. A fixture must not find
+            // its gate on another machine because a file on the operator's box said so - see the
             // field, and `Config::for_the_daemon` for the one caller that reads it.
             gate_host: None,
-            // **A fixture starts no session with a skill it did not name.** The reviewer's list is
+            // A fixture starts no session with a skill it did not name. The reviewer's list is
             // the daemon's (`for_the_daemon` reads `[queue] reviewer_skills`), and a child's is its
-            // spec's — see the fields.
+            // spec's - see the fields.
             skills: Vec::new(),
             reviewer_skills: Vec::new(),
             provider: None,
@@ -2324,37 +1472,20 @@ impl Config {
             intent_prose: false,
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
-            // Far out on purpose: the progress detector is the stop, and this is the
-            // thing that catches a turn which never stops making new results.
-            // Unbounded: see the field. `stall_rounds` is the stop that measures
-            // progress, and a round count never could.
+            // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round
+            // count never could. See the field.
             max_tool_rounds: 0,
             http_retries: crate::harness::MAX_HTTP_RETRIES,
             stall_rounds: 5,
         }
     }
 
-    /// **The daemon's own configuration: [`Config::for_this_box`], with the project's own answer
-    /// to *where do my reviewers run*.**
-    ///
-    /// One function rather than a line at the daemon's entry point, so *where a reviewer may be
-    /// placed* is one thing to read, one thing to call and one thing to test — the daemon's entry
-    /// is `cli::run`, and it is the only caller. See [`Config::reviewers`] for the field and
-    /// [`Reviewers`] for the two words.
-    ///
-    /// **The project file is read HERE and the flag is not**: `[queue] reviewers` is a property
-    /// of the repository, so a daemon started in that repository obeys it without anybody
-    /// remembering a flag — and `--reviewers`, which `cli::run` applies after this returns, is how
-    /// an operator overrides it for one invocation (or for a daemon seated above several
-    /// repositories, where there is no one project file to read).
-    ///
-    /// A project file that will not parse does NOT stop the daemon: `mergequeue::settings`
-    /// refuses it by name when the queue reads it for a repository, which is where the operator
-    /// sees the sentence. Here it means the default, `host`, which is the answer that runs a
-    /// reviewer rather than the one that boots a VM nobody asked for.
+    /// The daemon's own configuration: [`Config::for_this_box`], with the project's own answer to
+    /// *where do my reviewers run*. The file is read HERE and `--reviewers` is applied by `cli::run`
+    /// afterwards; a file that will not parse means `host`, not a stopped daemon.
     pub fn for_the_daemon(workspace: impl Into<PathBuf>) -> Config {
         let mut cfg = Config::for_this_box(workspace);
-        // **The box's directories, resolved HERE and once.** The harness, the notes reader and
+        // The box's directories, resolved HERE and once. The harness, the notes reader and
         // the skills index all take them off this config afterwards, so an in-process fixture
         // cannot inherit the operator's `~/.claude` and a daemon reads it exactly as before.
         cfg.read_the_box();
@@ -2365,7 +1496,7 @@ impl Config {
         cfg.reviewer_skills = queue.reviewer_skills.clone();
         cfg.gate_host = queue.gate_host;
         cfg.landing_root = crate::mergequeue::git::landing_root().ok();
-        // **The reviewers' own directory**, beside the landing root and for the same reason: it is
+        // The reviewers' own directory, beside the landing root and for the same reason: it is
         // the daemon's, not a session's, and a fixture that serves reviews names its own.
         cfg.review_clones = Some(std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR));
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
@@ -2374,19 +1505,18 @@ impl Config {
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
             .or_else(|| crate::mergequeue::git::letibot_data_dir().map(|d| d.join("logs")));
-        // **And this daemon's sessions may join the box's room** (the room's slice 2). Set HERE and
+        // And this daemon's sessions may join the box's room (the room's slice 2). Set HERE and
         // not in `for_this_box`, which every fixture builds on: a test's session must not post into
         // the operator's queue, and the socket existing is not consent.
         cfg.room_link = true;
-        // **And this daemon may ask the launcher to restart the coordinator** (the room's slice 4).
-        // Armed HERE for the reason above, one degree sharper: the supervisor runs `letibot --room
-        // --stop`, so a fixture that pressed the pane's restart key would stop the operator's room.
-        // The coordinator's own daemon clears it — see `room::coordinator::configure`.
+        // And this daemon may ask the launcher to restart the coordinator (slice 4). Armed HERE
+        // for the reason above, one degree sharper: a fixture that pressed restart would stop the
+        // operator's room. The coordinator's own daemon clears it.
         cfg.restart_room = true;
         cfg
     }
 
-    /// **Read this box's own directories, once**: its instruction file, its box-wide notes and
+    /// Read this box's own directories, once: its instruction file, its box-wide notes and
     /// its skill roots. The one place `$HOME` is read for any of them, so everything below takes
     /// them off a config and a caller that never calls this reads an empty box.
     pub fn read_the_box(&mut self) {
@@ -2397,7 +1527,7 @@ impl Config {
         );
     }
 
-    /// **The box-wide standing notes**: the config dir's `notes/`, beside `providers.toml`, which
+    /// The box-wide standing notes: the config dir's `notes/`, beside `providers.toml`, which
     /// is the rule `Prompts::path` already uses. Empty when the config names no box, and the
     /// readers treat that as no notes rather than as a relative path into the working directory.
     pub fn global_notes(&self) -> PathBuf {
@@ -2407,15 +1537,15 @@ impl Config {
         }
     }
 
-    /// **The directories this session's skills are read from**: the box's roots from the config,
+    /// The directories this session's skills are read from: the box's roots from the config
     /// and the project's two conventions off this session's own workspace, so a child opened in
     /// another tree reads that tree's skills.
     pub fn skill_dirs(&self) -> letibot_tools::builtins::skill::SkillDirs {
         self.box_skills.in_workspace(&self.workspace)
     }
 
-    /// **This session's logs directory**: `<logs_root>/<session id>/`, or — with no logs root, as
-    /// in a fixture — `<workspace>/.letibot/`, where they were before.
+    /// This session's logs directory: `<logs_root>/<session id>/`, or - with no logs root, as
+    /// in a fixture - `<workspace>/.letibot/`, where they were before.
     pub fn daemon_logs(&self) -> PathBuf {
         match &self.logs_root {
             Some(root) => root.join(&self.session_id),
@@ -2423,26 +1553,16 @@ impl Config {
         }
     }
 
-    /// **Arm this session's review-queue reviewers for a VM** — the one named way the value behind
-    /// [`Config::reviewers`] becomes [`Reviewers::Vm`].
-    ///
-    /// Two callers, and both mean it: `cli::run` for `--reviewers vm`, and a test that MEANS to
-    /// exercise a VM placement — which is the difference between a test asking for a microVM and a
-    /// test that got one because a fixture was built. Nothing else may be the reason, which is why
-    /// this is a function and not four lines that each say the same thing in reverse.
+    /// Arm this session's review-queue reviewers for a VM - the one named way the value behind
+    /// [`Config::reviewers`] becomes [`Reviewers::Vm`]. Two callers, and both mean it: `cli::run` for
+    /// `--reviewers vm`, and a test that MEANS to exercise a VM placement.
     pub fn allow_vm_reviewers(&mut self) {
         self.reviewers = Reviewers::Vm;
     }
 
-    /// **The model name the prompt lookup runs on**: `provider/model` for a metered
-    /// session, the bare alias for a local one.
-    ///
-    /// It is the same name the operator sees in `/models` and the header, so a
-    /// `prompts.toml` written against what is on screen is a `prompts.toml` that
-    /// matches. When the operator named no model (`--provider deepseek`), the
-    /// preset's default is resolved from the catalogue rather than left off: a
-    /// `deepseek/*` glob must match the model the session actually runs on, and
-    /// `deepseek` with no model part would match nothing.
+    /// The model name the prompt lookup runs on: `provider/model` for a metered session, the bare
+    /// alias for a local one - the same name `/models` and the header show, so a `prompts.toml` written
+    /// against the screen matches. A preset's default is resolved, or no glob would match.
     pub fn prompt_model_name(&self) -> String {
         match &self.provider {
             Some(pc) => {
@@ -2462,16 +1582,9 @@ impl Config {
         }
     }
 
-    /// **Compose `system` for this session's seat. Once, at session open.**
-    ///
-    /// The sections from `prompts.toml` and this session's model, for the tools in
-    /// `seat`; then the standing notes (`notes`, read off disk by the caller); then the
-    /// session's own paragraph and its fabric block, from `prompt`. This is the only
-    /// place the prompt is built from the file, and it runs before the system message
-    /// is written into the transcript. After it, `system` is message 0 and is never
-    /// rewritten: a session that started under one prompt keeps it for its whole life,
-    /// even if the model is switched or the file is edited — an edit to `prompts.toml`
-    /// is a fact about NEW sessions, and `/reseat` is the remedy for an old one.
+    /// Compose `system` for this session's seat. Once, at session open. The sections from
+    /// `prompts.toml`, then the standing notes, then the session's own paragraph and fabric block. After
+    /// it, `system` is message 0 for the session's whole life; `/reseat` is the remedy.
     pub fn compose_for_seat(&mut self, seat: &SeatFacts, prompt: &SeatPrompt, notes: Option<&str>) {
         let name = self.prompt_model_name();
         let mut system = crate::standing_notes::replace(&self.prompts.compose(&name, seat), notes);
@@ -2488,29 +1601,9 @@ impl Config {
         self.system = system;
     }
 
-    /// The things that are off, and why.
-    ///
-    /// A daemon that does not say "spill is unset" is a daemon whose operator finds
-    /// out when a 40 MB grep result lands in the prompt.
-    ///
-    /// Takes [`GateWiring`] rather than deciding for itself, because the config does
-    /// not know which tools were seated or how the backend was opened, and a
-    /// disclosure that guesses is the thing this list exists to prevent.
-    /// **Every setting this session runs under, one row each**, for the head's
-    /// config pane (`/config`). The operator's ask: *"a config pane with all
-    /// the configs and the one that can be changed at runtime editable"*.
-    ///
-    /// Three columns beside the key. `value` is rendered, never a secret.
-    /// `source` is where the value came from **when this struct knows** — the
-    /// mode carries its own provenance, the permission rules are a file, the
-    /// provider key names its own source — and is empty otherwise, because the
-    /// flags are parsed straight into fields and "flag" would be a guess for
-    /// most of them. `editable` names the verb that changes the row now, and
-    /// is empty for the rows that take a restart, which is most of them: a
-    /// dialect, a vocabulary or a socket is what the process *is*.
-    ///
-    /// `mode_source` is the daemon's note about where the mode came from —
-    /// the project store or the flag — since the struct itself does not keep it.
+    /// Every setting this session runs under, one row each, for the head's config pane (`/config`)
+    /// `value` rendered and never a secret, `source` where this struct knows it (empty otherwise), and
+    /// `editable` the verb that changes the row now - empty for the rows that take a restart.
     pub fn settings(
         &self,
         mode_source: &str,
@@ -2531,12 +1624,9 @@ impl Config {
             r
         };
         let mut out = Vec::new();
-        // What changes now, first: it is what the pane is for.
-        //
-        // **The mode's choices travel with it.** `Mode::NAMED` is the one list
-        // and the head is given it rather than keeping a copy — which it did,
-        // and which drifted: it offered `supervised`, which is not a mode, and
-        // not `automode-edits`, which is.
+        // What changes now, first: it is what the pane is for. The mode's choices travel with it
+        // - `Mode::NAMED` is the one list, given to the head rather than copied, because the copy it
+        // kept drifted: it offered `supervised`, which is not a mode.
         out.push(choices(
             row(
                 "mode",
@@ -2549,29 +1639,15 @@ impl Config {
                 .map(|m| m.name)
                 .collect::<Vec<_>>(),
         ));
-        // **What answers the turns**, with the models this box can actually reach.
-        // The choices travel with the row for the `mode` row's reason: a head that
-        // kept its own copy of a list got it wrong, and this list is not even
-        // fixed at build time — it comes from the catalogue.
+        // What answers the turns, with the models this box can actually reach. The choices
+        // travel with the row for the `mode` row's reason: a head that kept its own copy of a list
+        // got it wrong, and this list is not even fixed at build time - it comes from the catalogue.
         {
             let cat = letibot_provider::catalogue::Catalogue::load();
             let mut names = vec!["local".to_string()];
-            // **The local models this fleet declares, right after `local`.**
-            //
-            // This row is what the head's model PICKER draws, and it was the half the
-            // first cut missed: `models_choice` resolved a declared name and
-            // `models_listing` printed one, so `/models dense78` worked and the text
-            // listing showed it — while bare `/models`, which opens the picker, built
-            // its rows from here and knew only the compiled-in presets. The operator:
-            // *"there is no dense78"*, on a daemon that had the block, the binary and
-            // the name all working.
-            //
-            // That is this row's own warning coming true from the other side — *"a head
-            // that kept its own copy of a list got it wrong"* — except the stale list
-            // was the daemon's, and a feature reachable only by typing its name exactly
-            // is a feature nobody discovers.
-            //
-            // Above the presets because they cost nothing to run: no key, no meter.
+            // The local models this fleet declares, right after `local`. This row is what the head's
+            // model PICKER draws, and the first cut built it from the compiled-in presets only - so bare
+            // `/models` knew no `dense78` the daemon had working. Above the presets: no key, no meter.
             for m in letibot_provider::keys::local_models(None) {
                 names.push(m.name);
             }
@@ -2579,14 +1655,9 @@ impl Config {
                 names.push(format!("{}/{}", p.name, p.default_model(&cat)));
             }
             let now = match &self.provider {
-                // The local alias is kept in the value, because this row replaced
-                // the read-only one that carried it and a pane that stopped
-                // naming the model the server is running would be a worse row.
-                // The first word is what a picker matches on, so it stays `local`.
-                // **Named when it is a declared local model**, so the picker shows the
-                // row the operator is on rather than the bare word `local`. Matched on
-                // the address, because that is what the switch actually moved: two
-                // blocks can name one alias and only the endpoint says which is live.
+                // The local alias is kept in the value, and named when it is a declared local
+                // model, so the picker shows the row the operator is on. Matched on the address
+                // because that is what the switch moved: two blocks can name one alias.
                 None => match letibot_provider::keys::local_models(None)
                     .into_iter()
                     .find(|m| {
@@ -2636,10 +1707,9 @@ impl Config {
             ),
             &["on", "off"],
         ));
-        // **The idle plan-check, and whether the operator has paused it** — `on`, or `paused
-        // until 14:30`. A row because a pause must be findable where every other runtime switch
-        // is: a silent board is otherwise indistinguishable from a broken clock. The head keys
-        // its resident line on the `paused` spelling; see `crate::nag_pause::setting_value`.
+        // The idle plan-check, and whether the operator has paused it - `on`, or `paused until
+        // 14:30`. A row because a pause must be findable where every other runtime switch is: a
+        // silent board is otherwise indistinguishable from a broken clock. See `nag_pause`.
         out.push(row(
             "nags",
             crate::nag_pause::setting_value(
@@ -2653,19 +1723,9 @@ impl Config {
             },
             "/nag pause [30m|2h] · /nag resume",
         ));
-        // **And which of those rows this box can actually use** — the operator's ask of
-        // 2026-10-04: *"model peeker should green models we have keys for. — if i choose a model
-        // without key picker should ask for the key"*.
-        //
-        // **Only the daemon can answer it, and that is why it is a row.** Whether a preset
-        // resolves a key is a fact about this box — an environment variable, a stored key, or the
-        // key opencode filed under its own provider id — and a head that guessed would green a row
-        // that refuses at the first turn. It travels as a row for the reason `daemon.verbs` does:
-        // the half that owns the fact publishes it, and the half that draws it reads it rather
-        // than keeping a copy that drifts.
-        //
-        // `local` is absent on purpose: it needs no credential, so its presence in this list
-        // would be a claim about a key rather than about reachability.
+        // And which of those rows this box can actually use - *"model peeker should green models we
+        // have keys for"*. Only the daemon can answer it: a head that guessed would green a row that
+        // refuses at the first turn. `local` is absent on purpose - it needs no credential.
         {
             let keyed: Vec<&str> = letibot_provider::presets::ALL
                 .iter()
@@ -2679,10 +1739,9 @@ impl Config {
                 "/models PROVIDER/MODEL --key PASTE",
             ));
         }
-        // **And the rows that need no credential at all**, which is the other half of
-        // the same question and cannot live in the row above — see
-        // `MODEL_KEYLESS_KEY`. The operator: *"dense78 needs a key this box does not
-        // hold"*, about a box on the LAN that has no key and wants none.
+        // And the rows that need no credential at all, which is the other half of the same
+        // question and cannot live in the row above - see `MODEL_KEYLESS_KEY`. The operator
+        // *"dense78 needs a key this box does not hold"*, about a box on the LAN that wants none.
         {
             let mut keyless = vec!["local".to_string()];
             for m in letibot_provider::keys::local_models(None) {
@@ -2695,20 +1754,9 @@ impl Config {
                 "",
             ));
         }
-        // **The names an operator may run themselves** — R24 part two, decision 3.
-        //
-        // Carried on the wire rather than compiled into a head, and that is the whole
-        // requirement: a list a head holds is a list that drifts, and the daemon is the side
-        // that ENFORCES this one — see `ClientFrame::OperatorCall`'s handler, which refuses
-        // anything else by name. `choices` is empty because this is not a closed set of values
-        // for the *setting*; it is the list, and a head reads `value`.
-        // **The list, and beside it each name's bare form** — R31 and R32.
-        //
-        // `value` stays the comma-joined names because that is what it has always been and a
-        // head reading it keeps working; `tools` is the same list described, so a head can
-        // turn `/web_search blabla` into the JSON the wire wants and complete a path for
-        // `/read` while knowing nothing about either tool. See
-        // [`letibot_sessionlog::protocol::HeadRunTool`].
+        // The names an operator may run themselves - part two, decision 3. Carried on the wire
+        // rather than compiled into a head: a list a head holds drifts, and the daemon is the side that
+        // ENFORCES this one. `value` stays the comma-joined names; `tools` is the same list described.
         let mut tools_row = row(
             letibot_sessionlog::HEAD_RUN_TOOLS_KEY,
             letibot_sessionlog::HEAD_RUN_TOOLS.join(","),
@@ -2717,23 +1765,18 @@ impl Config {
         );
         tools_row.tools = door_tools.to_vec();
         out.push(tools_row);
-        // **The verbs this daemon answers** — R32, and the same argument as the tool list
-        // above: a head completes `/`-commands from a table, a head that does not recognise
-        // a verb forwards it, so this half of the namespace is the daemon's to publish. The
-        // head's own verbs come from its own dispatcher; neither enumerates the other's.
+        // The verbs this daemon answers -, and the same argument: a head completes
+        // `/`-commands from a table and forwards a verb it does not know, so this half of the
+        // namespace is the daemon's to publish. Neither enumerates the other's.
         out.push(row(
             letibot_sessionlog::protocol::DAEMON_VERBS_KEY,
             crate::slash::VERBS.join(","),
             "default",
             "",
         ));
-        // **The sections a compaction's record has** — R27, and the same argument as the
-        // row above it: a list a head holds is a list that drifts, and this one is the
-        // daemon's own template. A head reads `value` and splits on `,`, and an absent
-        // row means a daemon older than this — *no structure to draw*, so the sentence in
-        // the warning's `detail` is all there is and it draws exactly what it drew
-        // before. `choices` is empty for the reason `head-run.tools`' is: this is not a
-        // closed set of values for a setting, it is the list.
+        // The sections a compaction's record has -, and the same argument: a list a head
+        // holds drifts, and this one is the daemon's own template. An absent row means a daemon older
+        // than this, and the head then draws the warning's `detail` sentence as it did before.
         out.push(row(
             letibot_sessionlog::COMPACTION_SECTIONS_KEY,
             letibot_turn::WIRE_SECTIONS.join(","),
@@ -2749,9 +1792,8 @@ impl Config {
             "",
             "",
         ));
-        // **Where the model may work without asking.** The base prompt names it too,
-        // for a seat that can write a file there (`default_section`'s `scratch`); this
-        // row is the operator's copy, for the config pane.
+        // Where the model may work without asking. The base prompt names it too, for a seat
+        // that can write there; this row is the operator's copy, for the config pane.
         out.push(row(
             "scratch",
             crate::harness::scratch_dir().display().to_string(),
@@ -2762,9 +1804,9 @@ impl Config {
         if let Some(p) = &self.parent_session_id {
             out.push(row("parent", p.clone(), "", ""));
         }
-        // The `model` row is up with the changeable ones now: it used to sit here,
-        // read-only, saying only the local alias — which is not what answers the
-        // turns once a provider is set, and not something a head could act on.
+        // The `model` row is up with the changeable ones now: read-only here, it said only the
+        // local alias - not what answers the turns once a provider is set, and nothing a head
+        // could act on.
         out.push(row(
             "dialect",
             self.dialect.name().to_string(),
@@ -2791,14 +1833,9 @@ impl Config {
             "",
             "",
         ));
-        // **The row a stood-down compaction is found by.** The value carries the
-        // pair that turned it off (shown in the operator's units, like every other
-        // number the pane renders) because `off` alone cannot tell the reader
-        // WHICH of the two states it is: a `--no-auto-compact` the operator typed,
-        // or the no-progress guard acting on its own after a summary that gained
-        // no room. One is a choice, the other is a finding, and a head that draws
-        // a resident line for the second must not draw it for the first. The
-        // spelling `off — …` is what the head keys on; see its `auto-compact` arm.
+        // The row a stood-down compaction is found by. The value carries the pair that turned it
+        // off, because `off` alone cannot say WHICH state it is: a `--no-auto-compact` the operator
+        // typed, or the wall controller acting on its own - a choice versus a finding.
         out.push(row(
             "auto-compact",
             match (self.auto_compact, &self.wall.state) {
@@ -2825,9 +1862,9 @@ impl Config {
             },
             "",
         ));
-        // **The controller's state and the last measured count, always** — the
-        // `auto-compact` row above keys the head's resident line on `off —`, and this one
-        // is the state behind it in every case, including the ones that are not news.
+        // The controller's state and the last measured count, always - the `auto-compact` row
+        // above keys the head's resident line on `off -`, and this one is the state behind it in
+        // every case, including the ones that are not news.
         out.push(row(
             "wall",
             self.wall.row("tokens"),
@@ -2887,9 +1924,9 @@ impl Config {
         ));
         out.push(row(
             "oracle.max_tokens",
-            // **The ceiling** (R12). Shown rather than implied, because a reply cut off at
-            // it is a *budget* rather than an unreadable answer and this is the number to
-            // raise — and a number an operator cannot see is a number they cannot act on.
+            // The ceiling. Shown rather than implied: a reply cut off at it is a *budget*
+            // rather than an unreadable answer, and this is the number to raise - a number an
+            // operator cannot see is a number they cannot act on.
             match self.oracle_max_tokens {
                 None => format!("{} (default)", crate::oracle::DEFAULT_MAX_TOKENS),
                 Some(n) => n.to_string(),
@@ -3053,19 +2090,14 @@ impl Config {
         out
     }
 
+    /// The things that are off, and why - a daemon that does not say *spill is unset* is one whose
+    /// operator finds out when a 40 MB grep result lands in the prompt. It takes [`GateWiring`]
+    /// rather than deciding, because a disclosure that guesses is what this list exists to prevent.
     pub fn disclosures(&self, wiring: &GateWiring) -> Vec<Disclosure> {
         let mut out = Vec::new();
-        // **Which models the project file set, said at startup.** The operator's
-        // ask, and the half of the loud-failure rule that answers "where did this
-        // model come from" from the screen: a file that changes which model answers
-        // is disclosed by name, so a session that runs on a project's models does not
-        // read as one that runs on the daemon's. Absent file, or a file that set
-        // nothing, discloses nothing — the byte-identical case, and a banner that
-        // named a file that set nothing would be a disclosure that is a guess.
-        //
-        // **Two levels, two lines**, because they are two files and the operator
-        // who wrote one of them needs to see which one spoke. The project line is
-        // the merge the session actually reads, so it names the keys in force.
+        // Which models the project file set, said at startup - a file that changes which model
+        // answers is disclosed by name, so a session on a project's models does not read as one on the
+        // daemon's. Two levels, two lines, because the operator needs to see which one spoke.
         if let Some(path) = &self.leticode.path {
             let set = self.leticode.set_models();
             if !set.is_empty() {
@@ -3095,11 +2127,9 @@ impl Config {
                 ));
             }
         }
-        // **Which model answers, and which level said so.** The operator's
-        // question of the evening: *"why is my session on deepseek"*, with the
-        // answer in a file they had to go and find. Here it is on the screen, one
-        // line, and the precedence is the same line rather than a thing to look
-        // up.
+        // Which model answers, and which level said so. *"why is my session on deepseek"*, with
+        // the answer in a file they had to go and find: here it is one line, and the precedence is
+        // the same line rather than a thing to look up.
         out.push(Disclosure::on(
             "session model",
             self.model_source.render(&self.prompt_model_name()),
@@ -3127,7 +2157,7 @@ impl Config {
                 }
             }
         }
-        // **The stop condition, said out loud.** A turn that can only be stopped by a
+        // The stop condition, said out loud. A turn that can only be stopped by a
         // round count is the state that cut two working sessions, and an operator who
         // does not know which of the two guards is armed cannot read a stop.
         let backstop = match self.max_tool_rounds {
@@ -3135,10 +2165,9 @@ impl Config {
             n => format!("{n} rounds"),
         };
         match (self.stall_rounds, self.max_tool_rounds) {
-            // **Both off: nothing but the model ends a turn.** Not a refusal — the
-            // operator asked for the backstop to come off and the progress check is
-            // theirs to arm — but it is a different setting from either one alone
-            // and has to read as one.
+            // Both off: nothing but the model ends a turn. Not a refusal - the operator asked
+            // for the backstop to come off and the progress check is theirs to arm - but it is a
+            // different setting from either one alone and has to read as one.
             (0, 0) => out.push(Disclosure::off(
                 "progress check",
                 "NOTHING STOPS A TURN",
@@ -3174,22 +2203,18 @@ impl Config {
                  Pass --store PATH.",
             ));
         }
-        // R7, found live 2026-09-10: GLM's end-of-turn token is also the *name* of
-        // a thing an agent may be asked to write, so a turn can stop mid-thought
-        // with a normal `stop` and no content. The engine owns the parse and the
-        // commitment, so the check is unconditional — which is why it is disclosed
-        // as on rather than left out: a list of only the optional checks implies
-        // the unconditional ones are absent.
+        // , found live 2026-09-10: GLM's end-of-turn token is also the *name* of a thing an agent
+        // may be asked to write, so a turn can stop mid-thought with a normal `stop`. Disclosed as on
+        // because a list of only the optional checks implies the unconditional ones are absent.
         out.push(Disclosure::on(
             "mid-reasoning check",
             "a turn that stops inside an unterminated reasoning block with no \
              assistant content fails as UnfinishedReasoning and the loop asks the \
              model to continue",
         ));
-        // Retrieval, the web tools, the forge and MCP: computed from what the
-        // session attached and what it seated, never asserted. This line used to be
-        // a constant sentence about `ask_code`, which was true and unchecked — the
-        // same defect `GateWiring` exists to make unwriteable, one subject over.
+        // Retrieval, the web tools, the forge and MCP: computed from what the session attached and
+        // what it seated, never asserted. This line used to be a constant sentence about `ask_code`
+        // which was true and unchecked - the same defect `GateWiring` exists to make unwriteable.
         for row in wiring.external.startup_disclosures() {
             out.push(Disclosure {
                 subject: row.subject.into(),
@@ -3198,11 +2223,9 @@ impl Config {
                 active: row.active,
             });
         }
-        // **Where this project sits.** First of the three, because it is the one an
-        // operator changes and the other two are consequences of it: the role says
-        // which tools exist, the adjudicator says who answers, and this says how much
-        // any of it costs. It was the missing line — an operator could read which role
-        // was seated and could not read what that role would ask them.
+        // Where this project sits. First of the three, because it is the one an operator changes
+        // and the other two are consequences of it: the role says which tools exist, the adjudicator
+        // says who answers, and this says how much any of it costs. It was the missing line.
         out.push(Disclosure {
             subject: "mode".into(),
             state: String::new(),
@@ -3213,10 +2236,9 @@ impl Config {
             ),
             active: true,
         });
-        // **The preapproved list.** What never asks, by count and by source, and
-        // where an *Always allow* answer lands — so an operator who is asked about
-        // `git status` can see that the list did not cover it rather than wonder
-        // whether the list exists.
+        // The preapproved list. What never asks, by count and by source, and where an *Always
+        // allow* answer lands - so an operator who is asked about `git status` can see that the list
+        // did not cover it rather than wonder whether the list exists.
         {
             use letibot_tools::permission;
             let file = permission::file_path();
@@ -3249,14 +2271,9 @@ impl Config {
                 active: true,
             });
         }
-        // **The scratch directory, to the MODEL.** The settings row beside the
-        // workspace one is for the head's config pane; this is the disclosure the
-        // `harness` tool reads, and the model is the reader that needs the path —
-        // the prompt tells it the directory is its own and this says where.
-        //
-        // One place, spelled out, so there is nothing to guess: a model that
-        // invented `/tmp/scratch` would be writing to shared temp space, where
-        // deleting is an ask and another process may already own the name.
+        // The scratch directory, to the MODEL. The settings row is for the head's config pane
+        // this is the disclosure the `harness` tool reads, and the model is the reader that needs the
+        // path - one that invented `/tmp/scratch` would be writing to shared temp space.
         out.push(Disclosure {
             subject: "scratch".into(),
             state: String::new(),
@@ -3271,7 +2288,7 @@ impl Config {
             ),
             active: true,
         });
-        // **The seat, read from the resolved registry rather than from `--role`.**
+        // The seat, read from the resolved registry rather than from `--role`.
         // A role that resolved to fewer tools than its name suggests is exactly the
         // thing an operator should be able to see, so the names travel with it.
         out.push(Disclosure {
@@ -3302,7 +2319,7 @@ impl Config {
             ),
             active: true,
         });
-        // The backend **quotes itself**. `HostBackend::describe` used to answer
+        // The backend quotes itself. `HostBackend::describe` used to answer
         // `read-only` for every backend including the writable one, and a banner
         // that paraphrases a wiring is a banner that can be wrong about it.
         out.push(Disclosure {
@@ -3316,19 +2333,9 @@ impl Config {
             detail: wiring.backend.clone(),
             active: true,
         });
-        // **Plan mode, and the half of it this build cannot do.**
-        //
-        // Seating `planner` puts the session in plan mode for real — the state is
-        // active, so `write_plan` and the ledger mean what they say and
-        // `exit_plan_mode` is not a seat that can only refuse. What it cannot do is
-        // the *widening*: a role's tool list is `tools_json`, which is stable-prefix
-        // bytes, so re-seating `write` and `edit` mid-session rewrites message 0 and
-        // costs a full cold re-prefill of the whole conversation. That is the one
-        // thing this harness is built not to do (§5.3, measured at 179k tokens).
-        //
-        // So leaving plan mode records the plan and does not hand over the tools,
-        // and an operator who reads this knows to open a coder session against the
-        // plan rather than discovering it from a `write` that is not there.
+        // Plan mode, and the half of it this build cannot do. Seating `planner` puts the session in
+        // plan mode for real; what it cannot do is the *widening* - a role's tool list is stable-prefix
+        // bytes, so re-seating `write` costs a full cold re-prefill (§5.3, 179k tokens).
         if self.seat == Seat::Planner {
             out.push(Disclosure::off(
                 "plan mode",
@@ -3359,14 +2366,9 @@ impl Config {
         let (state, detail, active) = letibot_tools::adjudicate::startup_disclosure_for(
             &wiring.adjudicator,
             wiring.backend_writable,
-            // **The classes travel, rather than a bool that means "write".**
-            // The gate is reachable from any class that is not unattended, so a
-            // disclosure counting only writes would call a planner (`say`) or a
-            // runner (the job verbs) unattended. Passing `true` for "something
-            // is gated" fixed the on/off logic and produced a sentence saying
-            // *"Write tools are callable"* about a session with no write tools —
-            // correct about the boundary and wrong about the session, which is
-            // this defect rather than a smaller version of it.
+            // The classes travel, rather than a bool that means "write". The gate is reachable from
+            // any class that is not unattended, so a bool would call a planner (`say`) unattended - and
+            // `true` produced *"Write tools are callable"* about a session with no write tools.
             &gated_classes(wiring),
             wiring.denials_surfaced,
         );
@@ -3376,7 +2378,7 @@ impl Config {
             detail,
             active,
         });
-        // **The authorisation trail.** Only worth a line where something can reach
+        // The authorisation trail. Only worth a line where something can reach
         // the gate; on a read-only seat there is nothing to authorise.
         if wiring.has_write_tools || wiring.has_exec_tools || wiring.has_network_tools {
             if wiring.trail_installed {
@@ -3400,7 +2402,7 @@ impl Config {
                 ));
             }
         }
-        // **The corpus.** Only worth a line where something can reach the gate, for
+        // The corpus. Only worth a line where something can reach the gate, for
         // the trail's reason: a read-only seat decides nothing to record.
         if wiring.has_write_tools || wiring.has_exec_tools || wiring.has_network_tools {
             match wiring.corpus {
@@ -3433,7 +2435,7 @@ impl Config {
                 )),
             }
         }
-        // **The intent diff**, T21.3's error signal.
+        // The intent diff, T21.3's error signal.
         if wiring.intent_encoder {
             out.push(Disclosure::on(
                 "intent check",
@@ -3452,7 +2454,7 @@ impl Config {
                  is ours rather than the model's.",
             ));
         }
-        // **The monitor wake.** A poll and a wake are different facts, and T24 says
+        // The monitor wake. A poll and a wake are different facts, and T24 says
         // so in the entry that left this gap open.
         if wiring.seated.iter().any(|t| t == "monitor") {
             if wiring.monitor_wake {
@@ -3471,7 +2473,7 @@ impl Config {
                 ));
             }
         }
-        // **A subagent's downgrade**, said as what is gone: the tools of those
+        // A subagent's downgrade, said as what is gone: the tools of those
         // classes are not seated, the backend is opened without them, and the
         // ruleset denies them by name. Three readers of one fact, disclosed once.
         if !self.downgrade.is_none() {
@@ -3484,7 +2486,7 @@ impl Config {
                 ),
             ));
         }
-        // **The fabric block.** What the model was told exists on the shelf and
+        // The fabric block. What the model was told exists on the shelf and
         // in the memories, and where that reading came from.
         match (&self.flowy, &self.fabric) {
             (None, _) => {}
@@ -3512,8 +2514,8 @@ impl Config {
                 ),
             )),
         }
-        // **What `task(where: firecode)` would get on this host**, said where a subagent can be
-        // started — FIRECODE-NOTES item 4: the placement's preconditions used to be found out
+        // What `task(where: firecode)` would get on this host, said where a subagent can be
+        // started - FIRECODE-NOTES item 4: the placement's preconditions used to be found out
         // at spawn, one refusal per attempt.
         if wiring
             .seated
@@ -3562,11 +2564,9 @@ impl Config {
                 ),
             ));
         }
-        // **The banner half of a remote placement** (`docs/remote-hosts.md`). `ON` and not
-        // `off`: the capability is there and it changes where every command lands, so it
-        // says so in the line the operator reads before the first card — and it says the
-        // second half too, that this is NOT a boundary, because a disclosure that lists
-        // only what is guaranteed reads as a claim about the rest.
+        // The banner half of a remote placement (`docs/remote-hosts.md`). `ON` and not `off`: it
+        // changes where every command lands, and it says the other half too - that this is NOT a
+        // boundary - because a list of only the guarantees reads as a claim about the rest.
         if let Some(host) = self.placement.host() {
             out.push(Disclosure::on(
                 "placement",
@@ -3581,10 +2581,9 @@ impl Config {
                 ),
             ));
         }
-        // **The room.** Whether anybody said anywhere reaches this session, and as
-        // what. `--flowy` is the whole switch; the seat's own line — listening,
-        // stalled, stopped — is printed by the daemon from the seat, not from here,
-        // because a config cannot know whether a listener is actually attached.
+        // The room. Whether anybody said anywhere reaches this session, and as what. The seat's
+        // own line - listening, stalled, stopped - is printed by the daemon from the seat, not from
+        // here, because a config cannot know whether a listener is actually attached.
         match (&self.flowy, wiring.seated.iter().any(|t| t == "flowy")) {
             (None, true) => out.push(Disclosure::off(
                 "flowy",
@@ -3622,11 +2621,9 @@ impl Config {
     }
 }
 
-/// The access classes this session seated that can reach the gate, in prompt order.
-///
-/// Read off the wiring's booleans, which were themselves read off the seated schemas.
-/// `Read` and `Session` are absent because they are unattended — a read-only tool has
-/// no code path to a question (clause 4).
+/// The access classes this session seated that can reach the gate, in prompt order. Read off the
+/// wiring's booleans, which were themselves read off the seated schemas. `Read` and `Session` are
+/// absent because they are unattended - a read-only tool has no code path to a question (clause 4).
 fn gated_classes(wiring: &GateWiring) -> Vec<&'static str> {
     let mut out = Vec::new();
     if wiring.has_write_tools {
@@ -3641,19 +2638,9 @@ fn gated_classes(wiring: &GateWiring) -> Vec<&'static str> {
     out
 }
 
-/// What the session actually wired, read from it rather than asserted about it.
-///
-/// This type exists because of a defect it now makes unwriteable. The adjudication
-/// disclosure was a hard-coded sentence — *"M1 is read-only tools, which never
-/// prompt (clause 4). There is no boundary and no human in the loop."* It was true
-/// when it was written and **nothing checked it**. The moment a session seats a
-/// role containing `write` or `edit`, that banner tells the operator there is no
-/// boundary while there is one, and that nothing can prompt while everything can.
-///
-/// A banner whose job is to say what is off, and which says it from memory instead
-/// of from the wiring, is worse than no banner: it is trusted. Every field here is
-/// read at open time — [`ExecBackend::is_writable`], [`Gate::describe`], and the
-/// registry's own schemas — so the sentence cannot drift away from the session.
+/// What the session actually wired, read from it rather than asserted about it - a type that makes a
+/// defect unwriteable: the banner was a hard-coded sentence, true when written and checked by nothing
+/// so a seat with `write` was told no boundary existed while everything could prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateWiring {
     /// How the adjudicator identifies itself, or a string beginning `none`.
@@ -3662,16 +2649,14 @@ pub struct GateWiring {
     pub backend_writable: bool,
     /// Whether any seated tool declares `Access::Write`.
     pub has_write_tools: bool,
-    /// What is behind the tools that need infrastructure this box does not run,
-    /// read off the seams themselves. The same argument as the three fields above,
+    /// What is behind the tools that need infrastructure this box does not run
+    /// read off the seams themselves. The same argument as the three fields above
     /// applied to four more things that can silently be absent.
     pub external: letibot_tools::ExternalWiring,
 
-    // ---- the seams wired on top, every one of them read rather than asserted ----
-    /// The role that was **actually seated**, taken from the resolved registry.
-    /// Not the role that was *asked for*: a role that failed to resolve does not
-    /// open a session at all, and one that resolved to fewer tools than its name
-    /// suggests is a fact an operator should be able to see.
+    // ---- the seams wired on top, every one of them read rather than asserted ---- The role
+    // that was actually seated, taken from the resolved registry - not the role that was
+    // *asked for*.
     pub role: String,
     /// Every seated tool name, in prompt order. The evidence behind every boolean
     /// below, so a disclosure can be checked rather than believed.
@@ -3681,42 +2666,31 @@ pub struct GateWiring {
     pub has_exec_tools: bool,
     /// Whether any seated tool declares `Access::Network`.
     pub has_network_tools: bool,
-    /// How the execution backend describes itself — `HostBackend::describe`, which
-    /// says `read-only`, `writable`, `NOT CONFINED` or names the boundary. This
-    /// field exists because `describe` used to return `read-only` for every backend
-    /// including the writable one: four instances of one defect in one night, and
-    /// the fix is that the banner *quotes* the backend rather than paraphrasing it.
+    /// How the execution backend describes itself - `HostBackend::describe`, which says `read-only`
+    /// `writable`, `NOT CONFINED` or names the boundary. It exists because `describe` used to answer
+    /// `read-only` for every backend: the banner now *quotes* the backend rather than paraphrasing it.
     pub backend: String,
-    /// Whether a [`letibot_tools::DenialSink`] is attached, so a refusal reaches
-    /// the operator at the moment it is decided.
-    ///
-    /// `docs/boundary-and-adjudication.md` §4b: a session whose denials go nowhere
-    /// has the defect the operator named, and it is not a state to be in silently.
+    /// Whether a [`letibot_tools::DenialSink`] is attached, so a refusal reaches the operator at the
+    /// moment it is decided (`docs/boundary-and-adjudication.md` §4b: denials that go nowhere are not
+    /// a state to be in silently).
     pub denials_surfaced: bool,
-    /// Whether an authorisation trail source is installed, so the adjudicator sees
-    /// the operator's own words rather than deciding blind. `false` means every
-    /// trail is `NotCollected` — *nobody looked*, which is a different fact from an
-    /// empty trail and is why `ModelAdjudicator` refuses on one.
+    /// Whether an authorisation trail source is installed, so the adjudicator sees the operator's own
+    /// words rather than deciding blind. `false` means every trail is `NotCollected` - *nobody
+    /// looked*, which is a different fact from an empty trail, and why `ModelAdjudicator` refuses.
     pub trail_installed: bool,
     /// Whether the intent encoder is attached, so `close_the_turn` can diff what
     /// the turn *said* it would do against what ran. `false` makes every completion
-    /// `Verification::NoEncoder` — not complete, and the reason is ours.
+    /// `Verification::NoEncoder` - not complete, and the reason is ours.
     pub intent_encoder: bool,
-    /// Whether a fired monitor **wakes** the loop rather than waiting to be asked.
+    /// Whether a fired monitor wakes the loop rather than waiting to be asked.
     /// `false` means monitors are polled: `job_list` shows a firing, with why, and
     /// nothing acts on it until the model happens to look.
     pub monitor_wake: bool,
-    /// Whether the gate's decisions are written somewhere durable, and what is
-    /// already there.
-    ///
-    /// `None` means the corpus is being **discarded**: the rows live in a `Vec` on
-    /// the gate and die with this daemon. That was the state for every run this
-    /// harness has ever made, and it is not a state to be in silently — the labelled
-    /// rows are the expensive ones, they can only be collected as a side effect of
-    /// working, and nothing about a session that is dropping them looks different
-    /// from one that is keeping them.
+    /// Whether the gate's decisions are written somewhere durable, and what is already there. `None`
+    /// means the corpus is discarded: the rows die with this daemon, and nothing about a session
+    /// that is dropping them looks different from one that is keeping them.
     pub corpus: Option<letibot_tokencore::store::CorpusCounts>,
-    /// The firecode a subagent would be placed in a VM with, asked once at start — `None`
+    /// The firecode a subagent would be placed in a VM with, asked once at start - `None`
     /// when this host has none, so `task(where: firecode)` would be refused.
     pub firecode: Option<letibot_tools::firecode::Installed>,
 }
@@ -3745,21 +2719,14 @@ impl GateWiring {
     }
 }
 
-/// One thing the operator has to know about this session before they trust an
-/// answer from it.
-///
-/// Structured rather than a sentence because the banner had become a wall: five
-/// paragraphs of correct prose, in which the two words that decide whether you can
-/// trust the answer — the subject, and whether it is on — were buried mid-line.
-/// The prose is not the problem and none of it is cut; what it needed was a shape
-/// that can be *scanned*, with the sentence still under it for whoever wants to
-/// know why. [`Display`](std::fmt::Display) still renders the original one-line
-/// form, which is what a log line and `letibot-m1`'s header want.
+/// One thing the operator has to know about this session before they trust an answer from it.
+/// Structured rather than a sentence because the banner had become a wall of correct prose with the
+/// two words that decide whether to trust it - the subject, and whether it is on - buried mid-line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disclosure {
     /// `spill`, `store`, `retrieval`, `adjudication`.
     pub subject: String,
-    /// The state, in one word. `UNSET`, `MEMORY`, `INERT`, `NONE` — or empty when
+    /// The state, in one word. `UNSET`, `MEMORY`, `INERT`, `NONE` - or empty when
     /// the thing is configured and there is nothing alarming to name.
     pub state: String,
     /// What it means, in full. Never abbreviated for the banner.
@@ -3770,8 +2737,8 @@ pub struct Disclosure {
 }
 
 impl Disclosure {
-    /// Public because the daemon has disclosures the config cannot compute — the
-    /// count of stored sessions needs the store open — and a second Disclosure
+    /// Public because the daemon has disclosures the config cannot compute - the
+    /// count of stored sessions needs the store open - and a second Disclosure
     /// constructor in the binary is a second way for the banner to be shaped.
     pub fn off(subject: &str, state: &str, detail: &str) -> Disclosure {
         Disclosure {
@@ -3856,7 +2823,7 @@ mod compaction_trigger_tests {
         assert!(!cfg.should_compact(999_999));
     }
 
-    /// **An unscaled count never opens the pre-emptive door on a metered session** — it is
+    /// An unscaled count never opens the pre-emptive door on a metered session - it is
     /// ledger tokens against the provider's window. A local one has no scale to wait for, and a
     /// measured scale opens it as `should_compact` would.
     #[test]
@@ -3887,14 +2854,9 @@ mod compaction_trigger_tests {
         assert!(cfg.pre_emptive_compact(3_990_000, true), "~997k of 1M is");
     }
 
-    /// **The wall-continuation gate measures the window, not the flag.**
-    ///
-    /// `should_compact` folds in `auto_compact`, and the no-progress guard turns
-    /// that flag off WITHOUT freeing anything — so a gate that read the flag would
-    /// see room that is not there and continue straight into a second wall. The
-    /// edges: the headroom boundary is exclusive (a turn that would end exactly at
-    /// the wall does not start), and an unknown window is no room, for the same
-    /// reason `should_compact` refuses.
+    /// The wall-continuation gate measures the window, not the flag. `should_compact` folds in
+    /// `auto_compact`, and the guard turns that flag off WITHOUT freeing anything - so a gate reading
+    /// the flag would see room that is not there. The headroom boundary is exclusive.
     #[test]
     fn the_wall_continuation_gate_measures_the_window_not_the_flag() {
         let mut cfg = Config::for_this_box(std::env::temp_dir());

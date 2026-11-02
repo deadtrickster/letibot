@@ -1,21 +1,6 @@
-//! **The layers this binary carries** — `docs/plugins-plan.md` §7 step 10: the `builtin` scope is
-//! a table of modules compiled into the executable, not a directory beside it.
-//!
-//! Four things are asserted here, and each one is a way the mechanism can be silently wrong:
-//!
-//! 1. **The table is not empty** — a build whose script found no layer would otherwise ship a
-//!    binary whose bottom layer is nothing, and the failure would look like a head that draws a
-//!    plain list.
-//! 2. **A built-in loads through the real engine and answers** — `RanoLoader`, `rano_abi`, the
-//!    result block: the same path a layer on disk takes, with the same admission.
-//! 3. **A project layer of the same name masks it** — the whole point of a built-in being a layer.
-//! 4. **A layer that asks below reaches it** — with the built-in at the bottom, `{"below": …}` has
-//!    to arrive somewhere, or every project layer that edits the default is editing nothing.
-//!
-//! The modules are real: the built-in is the one `crates/builtins` compiled at build time, and the
-//! masking layer is `tests/data/below-layer/plugin.wasm`, committed for the reason
-//! `data/plugin-engine/plugin.wasm` is — a test that shells out to a compiler fails on a box
-//! without a wasm target.
+//! The layers this binary carries - `docs/plugins-plan.md` §7 step 10: the `builtin` scope
+//! is a table of modules compiled into the executable, not a directory beside it. Four
+//! things are asserted, each a way the mechanism can be silently wrong
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,7 +22,7 @@ fn builtin_stack(root: &Path) -> Stack {
     stack
 }
 
-/// The fixture layer, copied into a project's `.letibot/plugins/<name>/` — the project scope.
+/// The fixture layer, copied into a project's `.letibot/plugins/<name>/` - the project scope.
 fn project_layer(root: &Path, name: &str) -> PathBuf {
     let dir = root.join(".letibot").join("plugins").join(name);
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/below-layer");
@@ -48,9 +33,9 @@ fn project_layer(root: &Path, name: &str) -> PathBuf {
     dir
 }
 
-/// **What a `pane` hook is asked with** — the feed the built-in declares (`plugin.toml`'s
-/// `feeds = ["sessions"]`), and nothing else. A host builds this map from the manifest, so an
-/// answer that needs a feed arrives only when the layer asked for it.
+/// What a `pane` hook is asked with - the feed the built-in declares (`plugin.toml`'s
+/// `feeds = ["sessions"]`) and nothing else. A host builds this map from the manifest, so an answer
+/// that needs a feed arrives only when the layer asked for it.
 fn asked_with() -> serde_json::Value {
     json!({
         "v": letibot_plugin::pane::V,
@@ -105,17 +90,9 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
     let tmp = tempdir("table");
     let stack = builtin_stack(&tmp);
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
-    // **The expectation is READ OFF THE TABLE, not written down here.** A second list of the
-    // binary's own layers is a list that drifts the moment a built-in is added — and it did, twice
-    // in one day: `builtin_layers` failed the landings of both `plugin-command-feeds` and
-    // `plugin-tool-mount` for a layer that was correctly there.
-    //
-    // **REVERSED, and that is the behaviour rather than the intent**: `register_builtin_bytes`
-    // stacks the table newest-first, so the last entry of the sorted table is the BOTTOM layer (a
-    // table of `b-sessions, b-todo` stacks as `b-todo, b-sessions`). `crates/builtins/build.rs`
-    // documents its sorted order as the precedence and the stack is the reverse of it — harmless
-    // while no two built-ins answer the same hook, and pinned here so the next layer that shares one
-    // finds out instead of quietly answering below its neighbour.
+    // The expectation is READ OFF THE TABLE, not written down here: a second list of the
+    // binary's own layers drifts the moment a built-in is added, and it did, twice in one day.
+    // REVERSED is the behaviour and not the intent
     let mut built_in: Vec<String> = letibot_builtins::table()
         .iter()
         .map(|b| format!("b-{}", b.name))
@@ -123,9 +100,8 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
     built_in.reverse();
     assert_eq!(layers, built_in, "the binary's own layers, at the bottom");
 
-    // **The real engine answered.** A `View` that parses is the proof that the module loaded, that
-    // `rano_abi` was 1, and that the result block held a JSON document: everything before this
-    // point in the stack's life is bookkeeping, and this is the one call that runs wasm.
+    // The real engine answered: a `View` that parses is proof the module loaded, that `rano_abi` was
+    // 1, and that the result block held a JSON document. This is the one call that runs wasm.
     let input = asked_with();
     let r = stack.call("pane_sessions", &input);
     assert!(r.failures.is_empty(), "{:?}", r.failures);
@@ -138,7 +114,7 @@ fn the_table_is_not_empty_and_a_builtin_loads_through_the_real_engine() {
         view.title.contains("sessions"),
         "the pane says what it is: {view:?}"
     );
-    // The layer is the operator's by definition (DECISIONS.md D17), which the package that builds
+    // The layer is the operator's by definition, which the package that builds
     // trust reads and nothing here depends on.
     assert!(stack.layer("b-sessions").expect("the layer").trusted);
     std::fs::remove_dir_all(&tmp).ok();
@@ -149,7 +125,7 @@ fn a_project_layer_of_the_same_name_masks_the_builtin() {
     let tmp = tempdir("mask");
     project_layer(&tmp, "sessions");
     let stack = builtin_stack(&tmp);
-    // Newest on top: the project's layer, then every one of the binary's — reversed for the reason
+    // Newest on top: the project's layer, then every one of the binary's - reversed for the reason
     // the table assertion above spells out (`register_builtin_bytes` stacks newest-first).
     let layers: Vec<&str> = stack.layers().iter().map(|l| l.id.as_str()).collect();
     let mut want = vec![String::from("p1")];
@@ -185,7 +161,7 @@ fn a_layer_that_asks_below_reaches_the_builtin() {
     assert!(r.failures.is_empty(), "{:?}", r.failures);
     let answer = r.answer.expect("an answer");
     // The fixture answers *below found the sessions built-in* only when the built-in's own title
-    // was in what the stack handed it back — which is the built-in's answer, one layer down.
+    // was in what the stack handed it back - which is the built-in's answer, one layer down.
     assert_eq!(
         answer["title"], "below found the sessions built-in",
         "the layer below it answered, and what it answered reached this one: {answer}"

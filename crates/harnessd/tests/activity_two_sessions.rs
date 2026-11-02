@@ -1,41 +1,6 @@
-//! **Two sessions in one daemon, and only one of them may ever read as busy** — `PROTOCOL_VERSION`
-//! 52's activity, asked of the sessions a daemon actually holds.
-//!
-//! # The defect this pins, and what it was not
-//!
-//! MEASURED 2026-10-26: `crates/bridge/tests/end_to_end.rs` failed about one run in four at *"a
-//! session that has never run a turn times out rather than reporting one ended"* — a `wait` on the
-//! daemon's own first session answering `0 — the turn ended` after 0.8 s, about a session that had
-//! run nothing at all.
-//!
-//! It was **not** a second session's activity leaking into the first: every session has its own
-//! hub, its own `Harness`, and its own `prompt_in_flight` (`Harness::open` builds one of each), and
-//! the measured log said so — the idle session's closure was called with its own hub and its own
-//! flag. What was wrong was the flag itself: `turn_tail::run_turn` started the prompt's clock
-//! **before the door's own act**, so a door that then found nothing to say — `Harness::wake` with
-//! no notice behind it, which is what the daemon's startup ring
-//! (`Sessions::put_a_restored_session_to_work`) drains on the worker's first pass — published
-//! `waiting on: turn` for as long as the gathering took and `quiet` when it answered `Ok(None)`.
-//! A caller watching that session armed on the first value and answered on the second, with the
-//! empty message of a session that has never spoken.
-//!
-//! So the two halves below are one rule: **`turn` is published for a turn that runs and for
-//! nothing else**, and one session's turn is never another session's answer.
-//!
-//! # Why `Hub::retained()` and not a sampler
-//!
-//! `Hub::retained()` holds every event the hub published, so a value that exists for a millisecond
-//! — which is exactly what an empty wake's `turn` was — cannot be missed by looking at the wrong
-//! moment. A sampler would have to be lucky, and a test that can only fail when the machine is
-//! slow is a test that passes on Tuesdays.
-//!
-//! # What makes this runnable anywhere
-//!
-//! The sessions open on the **byte vocabulary** with a provider pointed at a loopback fake
-//! (`vocab_gguf: None`), so no model file is needed and nothing leaves 127.0.0.1. The fake's URL
-//! comes from a `providers.toml` under a scratch `XDG_CONFIG_HOME`, because that is the only door a
-//! session has to a non-preset address — which means `set_var`, which is only sound in a process
-//! whose other tests are not reading the environment. That is why this is a file of its own.
+//! Two sessions in one daemon, and only one of them may ever read as busy: `turn` is
+//! published for a turn that runs and for nothing else, so an empty wake cannot answer
+//! another session's wait.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -46,8 +11,7 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::activity::Waiting;
 use letibot_sessionlog::registry::Registry;
 
-/// The daemon's own first session — the one `open_first` opens eagerly, and the one this test needs
-/// to stay quiet.
+/// The session `open_first` opens eagerly, and the one this test needs to stay quiet.
 const FIRST: &str = "s-daemon-first";
 /// The second session: the daemon's same worker, its same `Parts`, its own hub.
 const SECOND: &str = "s-second";
@@ -56,9 +20,8 @@ const SECOND: &str = "s-second";
 fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
     let dir = TempDir::new("activity-two-sessions");
     let root = dir.path();
-    // **Nothing of the operator's may reach these sessions**: a key in their `providers.toml`
-    // would decide where a request goes, and this test's one rule is that no request leaves
-    // loopback.
+    // Nothing of the operator's may reach these sessions: a key in their `providers.toml` would
+    // decide where a request goes, and no request may leave loopback.
     std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
     // SAFETY: this binary has ONE test, and these are set before the daemon, any thread that reads
     // config, or the harness exists.
@@ -88,8 +51,7 @@ fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
     cfg.session_id = FIRST.into();
-    // The byte vocabulary and a provider — the door `activity_turn.rs` and `no_vocab.rs` take, so
-    // this runs on a machine with no model file at all.
+    // The byte vocabulary and a provider, so this runs on a machine with no model file at all.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {
         name: "deepseek".into(),
@@ -119,9 +81,8 @@ fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
     );
 
     // --- the empty wake the daemon's own startup ring drains -----------------
-    // `Sessions::put_a_restored_session_to_work` rings this session's wake at open, and the worker's
-    // first pass is `Work::Woken` → `Sessions::wake`. On a session with nothing restored that finds
-    // nothing to say — and it must therefore say nothing, above all not `turn`.
+    // `put_a_restored_session_to_work` rings this session at open; with nothing restored the wake
+    // finds nothing to say, and above all must not say `turn`.
     let before = idle.retained().len();
     let outcome = sessions.wake(FIRST);
     assert!(
@@ -157,8 +118,8 @@ fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
     );
 
     // --- and the session that ran nothing is still quiet --------------------
-    // The half the operator's `wait` reads: it was never handed a `turn` it could arm on, so a
-    // deadline on this session is a timeout rather than the last words of somebody else's turn.
+    // The half a `wait` reads: never handed a `turn` to arm on, a deadline here is a timeout and
+    // not somebody else's last words.
     assert_eq!(
         activity_changes(&idle, before),
         Vec::<String>::new(),
@@ -171,8 +132,8 @@ fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
     );
 }
 
-/// Every value this hub published after `from`, as the line a head draws — `quiet` included, which
-/// is the value a reader arms on and answers with.
+/// Every value this hub published after `from`, as the line a head draws - `quiet` included, since
+/// that is the value a reader arms on and answers with.
 fn activity_changes(hub: &Arc<letibot_sessionlog::Hub>, from: usize) -> Vec<String> {
     hub.retained()
         .into_iter()
@@ -219,8 +180,8 @@ impl Drop for TempDir {
     }
 }
 
-/// **A fake provider on a loopback port**, answering the script in order and counting the rounds —
-/// so the test can say *the model was asked*, rather than infer it from prose.
+/// A fake provider on a loopback port, answering the script in order and counting the rounds, so
+/// the test can say the model was asked rather than infer it from prose.
 struct Fake {
     url: String,
     rounds: Arc<Mutex<usize>>,
@@ -277,9 +238,8 @@ fn read_request(stream: &std::net::TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// One round as SSE — the frames `letibot-provider` parses, in the shapes
-/// `crates/bridge/tests/end_to_end.rs` serves (so the two fakes cannot drift on the wire bytes that
-/// matter).
+/// One round as SSE, in the shapes `crates/bridge/tests/end_to_end.rs` serves, so the two fakes
+/// cannot drift on the wire bytes that matter.
 fn write_sse(mut stream: std::net::TcpStream, text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut body = String::new();
@@ -308,7 +268,7 @@ fn write_sse(mut stream: std::net::TcpStream, text: &str) -> std::io::Result<()>
     stream.flush()
 }
 
-/// A duration the test never uses, kept out of the imports above on purpose: `Duration` is what a
-/// wait would be written with, and this test waits for nothing — the log already holds every value.
+/// Unused on purpose: `Duration` is what a wait would be written with, and this test waits for
+/// nothing - the log already holds every value.
 #[allow(dead_code)]
 const PATIENCE: Duration = Duration::from_secs(30);

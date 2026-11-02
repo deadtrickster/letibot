@@ -1,27 +1,6 @@
-//! **The `plugin` tool, from the model's side** — every action, through the real desk, the real
-//! plugin host and the real stack.
-//!
-//! # What is faked, and why the fakes are where they are
-//!
-//! `plugin load` runs a module and `plugin build` runs `cargo`. A test that did both for every
-//! assertion would need the wasm target, a rano checkout and three seconds per build — so the
-//! `Loader`/`Builder` seams (`docs/plugins-slice1.md` C2) are what most of this file replaces:
-//! a layer answers from files beside it, and a build writes its own module. That is the same
-//! bargain `crates/plugins`' own tests make, one level up, and it is what lets a refusal — a view
-//! the host will not draw, a module that traps — be asserted without compiling anything.
-//!
-//! **One test runs the whole loop for real** (`the_whole_loop_writes_a_pane_that_a_head_can_draw`):
-//! `scaffold` → `build` (cargo, `wasm32-unknown-unknown`, offline) → `load` (rano compiling the
-//! guest) → the pane published on the hub. It skips through `apparatus::present` when the wasm
-//! target or the rano SDK is not on this machine, because both are provisionable apparatus rather
-//! than logic — a skip that says so, and that `LETIBOT_REQUIRE_APPARATUS=1` turns into a failure
-//! so a box that HAS them can prove it.
-//!
-//! # Nothing here talks to a model or a daemon
-//!
-//! The hub is a real `Hub` (that is where a pane is published), the stack is a real `Stack`, and
-//! the tool is invoked through a real `ToolRuntime` with a gate that admits — so a refusal in
-//! these tests is the plugin tooling's own and never the boundary's.
+//! The `plugin` tool, from the model's side - every action, through the real desk, the real
+//! plugin host and the real stack. The `Loader`/`Builder` seams (`docs/plugins-slice1.md`
+//! C2) are what most of this file replaces
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -49,16 +28,9 @@ struct Tmp {
     path: PathBuf,
 }
 
-/// **The trust book this binary records into — a scratch one, never the operator's.**
-///
-/// `plugin scaffold` records the sha256 of the bytes it wrote (D17's third arm), and the book it
-/// records them in is the box's own by default: `~/.config/letibot/plugin-trust.json`. A test
-/// binary that drives the real desk must not put its fixtures in a person's file, so the path is
-/// named once here and every test in the file uses it.
-///
-/// `Once` and not a plain call, because `set_var` is process-global (Rust 2024 marks it `unsafe`
-/// for that reason): exactly one thread writes it, the value never changes, and every test reaches
-/// it through [`Tmp::new`] before anything reads the environment.
+/// The trust book this binary records into - a scratch one, never the operator's. `plugin
+/// scaffold` records the sha256 of the bytes it wrote, and the book is the box's own by
+/// default (`~/.config/letibot/plugin-trust.json`), so the path is named once here.
 fn the_books_path() -> &'static Path {
     static BOOK: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     BOOK.get_or_init(|| {
@@ -94,7 +66,7 @@ impl Tmp {
         self.path.join("project")
     }
 
-    /// The session's own plugin directory — what `PluginHost::for_session` discovers and what
+    /// The session's own plugin directory - what `PluginHost::for_session` discovers and what
     /// `plugin scaffold` writes into.
     fn plugins(&self) -> PathBuf {
         self.path.join("plugins")
@@ -111,10 +83,9 @@ impl Drop for Tmp {
 // The fakes: a layer that answers from files, and a build that writes its own module
 // ---------------------------------------------------------------------------------------------
 
-/// **A module that answers from files beside it.** `answer.json` is what the layer says;
-/// `second.json`, when it exists, is what it says once a look's result is in the input (the shape
-/// the example dashboard has: one frame that asks for the file, one that draws it). A `TRAP` file
-/// makes every call a trap, which is how `load`'s refusal of a trapping module is asserted.
+/// A module that answers from files beside it. `answer.json` is what the layer says
+/// `second.json`, when it exists, is what it says once a look's result is in the input (the
+/// shape the example dashboard has: one frame that asks for the file, one that draws it).
 struct FileModule {
     hooks: Vec<String>,
     dir: PathBuf,
@@ -142,7 +113,7 @@ impl Module for FileModule {
         Ok(Some(text))
     }
 
-    /// A number a test can recognise in `plugin test`'s report — the fuel a layer costs is
+    /// A number a test can recognise in `plugin test`'s report - the fuel a layer costs is
     /// otherwise only ever printed from a real module.
     fn fuel(&self) -> u64 {
         4242
@@ -166,7 +137,7 @@ impl Loader for FileLoader {
     }
 }
 
-/// **The gate's step 1, without cargo**: the layer's `next.json` becomes its `answer.json` and a
+/// The gate's step 1, without cargo: the layer's `next.json` becomes its `answer.json` and a
 /// module, and a `FAIL` file makes the build fail with a compiler's own words.
 struct FileBuilder;
 
@@ -209,9 +180,8 @@ impl Rig {
         Rig::built(loader, builder, tag, None)
     }
 
-    /// The same, with **the daemon's session list** — the feed a pane on disk is drawn from
-    /// (`docs/plugins-plan.md` §4.9). `Sessions::open_plugins` is what hands a real host one; here
-    /// the fixture's list stands in for it.
+    /// The same, with the daemon's session list - the feed a pane on disk is drawn from.
+    /// `Sessions::open_plugins` hands a real host one; here the fixture's list stands in for it.
     fn with_feed(
         loader: impl Loader + 'static,
         builder: impl Builder + 'static,
@@ -241,7 +211,7 @@ impl Rig {
             Some(feed) => host.with_sessions(feed),
             None => host,
         });
-        // The slot the daemon fills in `Sessions::open_plugins`, filled here by hand — which is
+        // The slot the daemon fills in `Sessions::open_plugins`, filled here by hand - which is
         // the whole of what that function does for this tool.
         let slot: Arc<Mutex<Option<Arc<PluginHost>>>> = Arc::new(Mutex::new(Some(host.clone())));
         let desk: Arc<dyn PluginDesk> = Arc::new(SessionPlugins::new(
@@ -284,7 +254,7 @@ impl Rig {
         (r.outcome, rendered)
     }
 
-    /// The same, asserting the call succeeded — most actions are expected to work.
+    /// The same, asserting the call succeeded - most actions are expected to work.
     fn ok(&self, args: &str) -> String {
         let (outcome, rendered) = self.call("plugin", args);
         assert!(matches!(outcome, ToolOutcome::Ok), "{args}: {rendered}");
@@ -360,7 +330,7 @@ const A_VIEW: &str = r#"{"title":"the deploy queue","panels":[
 // scaffold, stack, build
 // ---------------------------------------------------------------------------------------------
 
-/// **`scaffold` writes the three files, and the stack finds them** — the first step of the loop,
+/// `scaffold` writes the three files, and the stack finds them - the first step of the loop
 /// and the one that decides every identifier the rest of it uses.
 #[test]
 fn scaffold_writes_a_plugin_the_stack_then_lists() {
@@ -379,9 +349,8 @@ fn scaffold_writes_a_plugin_the_stack_then_lists() {
     }
     // The template is a source, not a binary: the gate builds what is here.
     assert!(!dir.join(WASM).exists());
-    // And the stack is honest about what is IN FORCE: a scaffold is a source, and nothing about
-    // it is applied until `plugin load` says so — so a layer that is on disk and not loaded is
-    // not listed as if it were answering.
+    // And the stack is honest about what is IN FORCE: a scaffold is a source, and nothing about it
+    // is applied until `plugin load` says so - so a layer on disk is not listed as if it answered.
     let stack = rig.ok(r#"{"action":"stack"}"#);
     assert!(stack.contains("no layers at all"), "{stack}");
 }
@@ -404,8 +373,8 @@ fn scaffolding_the_same_name_twice_is_refused_and_names_the_one_that_is_there() 
 #[test]
 fn a_hook_kind_this_host_does_not_run_is_refused_with_the_one_it_does() {
     let rig = Rig::new("hook-kind");
-    // **`condition` is a kind now** (2b): a layer that answers it is scaffolded, and its hook is
-    // named after the subject, not the kind alone.
+    // `condition` is a kind now: a layer that answers it is scaffolded, and its hook is named
+    // after the subject, not the kind alone.
     let said = rig.ok(r#"{"action":"scaffold","name":"watch","purpose":"x","hook":"condition"}"#);
     assert!(said.contains("answers `condition_watch`"), "{said}");
     // And a kind this host does not run is refused with the ones it does.
@@ -415,7 +384,7 @@ fn a_hook_kind_this_host_does_not_run_is_refused_with_the_one_it_does() {
     assert!(refused.contains("on_tool_call"), "{refused}");
 }
 
-/// **`build` compiles the layer and installs the artifact** — and a failed build hands back the
+/// `build` compiles the layer and installs the artifact - and a failed build hands back the
 /// compiler's own words, because that is the half a model edits.
 #[test]
 fn build_installs_the_module_and_a_failure_returns_the_compilers_words() {
@@ -454,7 +423,7 @@ fn building_a_plugin_this_session_does_not_have_names_the_ones_it_does() {
 // load: the shadow gate, and what it refuses
 // ---------------------------------------------------------------------------------------------
 
-/// **A good plugin is applied hot and its pane is published** — the end of the loop, and the only
+/// A good plugin is applied hot and its pane is published - the end of the loop, and the only
 /// thing an operator sees. The pane arrives on the hub without anybody opening it, which is how a
 /// head learns its title (C4).
 #[test]
@@ -473,9 +442,9 @@ fn load_applies_a_good_plugin_and_publishes_its_pane() {
     assert_eq!(panes[0].1["title"], "the deploy queue");
 }
 
-/// **A view the host would refuse never reaches a screen.** `q` is one of the host's own keys
-/// (C3), so a panel claiming it is a view the head cannot drive — and the layer does not answer
-/// afterwards either.
+/// A view the host would refuse never reaches a screen. `q` is one of the host's own keys, so a
+/// panel claiming it is a view the head cannot drive - and the layer does not answer afterwards
+/// either.
 #[test]
 fn load_refuses_a_view_the_host_would_not_draw() {
     let rig = Rig::new("load-bad-view");
@@ -502,7 +471,7 @@ fn load_refuses_a_view_the_host_would_not_draw() {
     assert!(stack.contains("no layers at all"), "{stack}");
 }
 
-/// **A module that traps is refused, and the refusal says nothing was applied.**
+/// A module that traps is refused, and the refusal says nothing was applied.
 #[test]
 fn load_refuses_a_plugin_that_traps() {
     let rig = Rig::new("load-trap");
@@ -514,7 +483,7 @@ fn load_refuses_a_plugin_that_traps() {
     assert!(rig.panes().is_empty());
 }
 
-/// **The gate's own steps run first**: a build that fails stops `load` before any of the module's
+/// The gate's own steps run first: a build that fails stops `load` before any of the module's
 /// answers are looked at, and the report says so.
 #[test]
 fn load_reports_a_failed_build_with_the_compiler_output() {
@@ -533,7 +502,7 @@ fn load_reports_a_failed_build_with_the_compiler_output() {
     );
 }
 
-/// **A reload is `load` again**, and the pane changes — a layer's second version takes effect on
+/// A reload is `load` again, and the pane changes - a layer's second version takes effect on
 /// the next call, with no restart (`docs/plugins-plan.md` §2.3).
 #[test]
 fn loading_a_rebuilt_layer_replaces_what_the_pane_says() {
@@ -561,8 +530,8 @@ fn loading_a_rebuilt_layer_replaces_what_the_pane_says() {
 // test, stack, disable/enable, plugin_hooks
 // ---------------------------------------------------------------------------------------------
 
-/// **`test` reports the answer, the layer that answered, the fuel, and whether the host would
-/// draw it** — the read that a model makes before it applies anything.
+/// `test` reports the answer, the layer that answered, the fuel, and whether the host would
+/// draw it - the read that a model makes before it applies anything.
 #[test]
 fn test_names_the_view_the_layer_and_the_fuel() {
     let rig = Rig::new("test");
@@ -576,12 +545,8 @@ fn test_names_the_view_the_layer_and_the_fuel() {
     assert!(said.contains("a view the host can drive"), "{said}");
 }
 
-/// **A view the host would refuse is REPORTED as refused**, not hidden: `test` is where a model
+/// A view the host would refuse is REPORTED as refused, not hidden: `test` is where a model
 /// finds that out, and silence there would send it to `load` for the same answer.
-///
-/// The layer here answers a good first frame and a bad one once a look's result is in the input —
-/// which is how a real plugin comes to draw something the host will not take, and the one case
-/// `load` cannot catch for it (it asked the synthetic frame, not this one).
 #[test]
 fn test_says_when_the_host_would_refuse_the_view() {
     let rig = Rig::new("test-refuse");
@@ -606,8 +571,8 @@ fn test_says_when_the_host_would_refuse_the_view() {
     );
 }
 
-/// **A pane that asks for a look says so**, which is the frame a head draws while the host reads
-/// the file — and the reason a first frame may legitimately have no numbers in it.
+/// A pane that asks for a look says so, which is the frame a head draws while the host reads
+/// the file - and the reason a first frame may legitimately have no numbers in it.
 #[test]
 fn test_says_when_the_pane_asks_for_a_look() {
     let rig = Rig::new("test-look");
@@ -622,7 +587,7 @@ fn test_says_when_the_pane_asks_for_a_look() {
     assert!(said.contains(".letibot/deploy.json"), "{said}");
 }
 
-/// **`disable` takes a layer out without deleting it, and `enable` puts it back** — the bisect for
+/// `disable` takes a layer out without deleting it, and `enable` puts it back - the bisect for
 /// *"which of my fixes broke this"*.
 #[test]
 fn disable_takes_a_layer_out_and_enable_puts_it_back() {
@@ -661,7 +626,7 @@ fn an_unknown_layer_is_refused_with_the_ones_there_are() {
     assert!(refused.contains("s1 (deploy)"), "{refused}");
 }
 
-/// **`plugin_hooks` is the host's own contract**, and it is what a model reads before it writes a
+/// `plugin_hooks` is the host's own contract, and it is what a model reads before it writes a
 /// view: the input, the output, the keys and a worked example.
 #[test]
 fn plugin_hooks_is_the_hosts_own_contract_with_a_worked_example() {
@@ -676,9 +641,8 @@ fn plugin_hooks_is_the_hosts_own_contract_with_a_worked_example() {
             "the contract never names `{field}`: {said}"
         );
     }
-    // The worked example is in the document, and it is one the host accepts: it parses into a
-    // View and validates (the contract module's own tests hold the round trip; this is the
-    // reader's half).
+    // The worked example is in the document, and it is one the host accepts: it parses into a View
+    // and validates (the contract module's own tests hold the round trip; this is the reader's).
     let start = said.find("```json\n{").expect("an example") + "```json\n".len();
     let end = said[start..].find("\n```").expect("the fence closes") + start;
     let example: Value = serde_json::from_str(&said[start..end]).expect("the example is JSON");
@@ -690,7 +654,7 @@ fn plugin_hooks_is_the_hosts_own_contract_with_a_worked_example() {
     let (outcome, said) = rig.call("plugin_hooks", r#"{"hook":"digest"}"#);
     assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{said}");
     assert!(said.contains("`digest` is not a hook kind"), "{said}");
-    // **The four patch points are pages of their own**, each built from the SDK's types.
+    // The four patch points are pages of their own, each built from the SDK's types.
     let (outcome, said) = rig.call("plugin_hooks", r#"{"hook":"condition"}"#);
     assert!(matches!(outcome, ToolOutcome::Ok), "{said}");
     for field in ["look", "every_s", "max_ttl_s", "fired", "state", "github"] {
@@ -701,9 +665,8 @@ fn plugin_hooks_is_the_hosts_own_contract_with_a_worked_example() {
     }
 }
 
-/// **A session with no host behind the tool says which** — never an absence reading as a missing
-/// capability of the build. (A subagent's harness is opened by its parent's runner, so this is a
-/// real state and not a test fiction.)
+/// A session with no host behind the tool says which - never an absence reading as a missing
+/// capability of the build. A subagent's harness is opened by its parent's runner, so this is real.
 #[test]
 fn a_session_with_no_plugin_host_refuses_the_actions_that_need_one() {
     let tmp = Tmp::new("no-host");
@@ -756,8 +719,8 @@ fn a_session_with_no_plugin_host_refuses_the_actions_that_need_one() {
 // The real thing: a scaffolded plugin, built by cargo, loaded by rano, drawn by a head
 // ---------------------------------------------------------------------------------------------
 
-/// **Is the wasm target installed?** Read off the toolchain's own `rustlib` directory rather than
-/// by running `rustup`, so the check costs no process — and every way of *having* it (rustup, a
+/// Is the wasm target installed? Read off the toolchain's own `rustlib` directory rather than
+/// by running `rustup`, so the check costs no process - and every way of *having* it (rustup, a
 /// distro toolchain, `RUSTUP_HOME` elsewhere) puts the directory in one of the places asked.
 fn wasm_target() -> bool {
     let mut roots: Vec<PathBuf> = Vec::new();
@@ -784,17 +747,7 @@ fn wasm_target() -> bool {
         })
 }
 
-/// **The whole loop, for real**: `scaffold` → `build` → `load` → the pane on the hub.
-///
-/// The pieces are the production ones at every step — `CargoBuilder` runs cargo for
-/// `wasm32-unknown-unknown` offline, `RanoLoader` is wasmtime compiling the guest, the stack is the
-/// session's own, and the pane is published to a real `Hub`. What the guest answers is the
-/// template's own view, which is exactly what a model gets at the first step and what the head
-/// would draw.
-///
-/// **Both apparatuses are provisionable and both are named**: the wasm target, and the rano SDK the
-/// template's `Cargo.toml` points at. `LETIBOT_REQUIRE_APPARATUS=1` turns either absence into a
-/// failure, so a box that has them cannot pass by skipping.
+/// The whole loop, for real: `scaffold` → `build` → `load` → the pane on the hub.
 #[test]
 fn the_whole_loop_writes_a_pane_that_a_head_can_draw() {
     let sdk = scaffold::sdk();
@@ -844,9 +797,8 @@ fn the_whole_loop_writes_a_pane_that_a_head_can_draw() {
     assert!(said.contains("first-pane"), "{said}");
 }
 
-/// **The SDK path the template writes is the one this box can resolve**, so the real loop above is
-/// not gated on a path that could never be right — and a box with `LETIBOT_RANO_SDK` set reads
-/// that.
+/// The SDK path the template writes is the one this box can resolve, so the real loop above is
+/// not gated on a path that could never be right - and `LETIBOT_RANO_SDK` overrides it.
 #[test]
 fn the_templates_sdk_is_resolved_from_the_box() {
     let sdk = scaffold::sdk();
@@ -859,9 +811,9 @@ fn the_templates_sdk_is_resolved_from_the_box() {
         assert_eq!(sdk.path, explicit);
         return;
     }
-    // **The workspace depends on rano by git rev**, so the source cargo resolved it from is on every
-    // box that built this daemon, and that, not a checkout somebody is expected to have cloned
-    // under `$HOME`, is where the template's path has to point.
+    // The workspace depends on rano by git rev, so the source cargo resolved it from is on
+    // every box that built this daemon, and that, not a checkout under `$HOME`, is where the path
+    // points.
     assert!(
         sdk.found,
         "the rano SDK this workspace depends on was not found: `{}`",
@@ -869,7 +821,7 @@ fn the_templates_sdk_is_resolved_from_the_box() {
     );
 }
 
-/// **`session_plugins_dir` is the one spelling of the session scope** — the directory the host
+/// `session_plugins_dir` is the one spelling of the session scope - the directory the host
 /// discovers, the tool scaffolds into and the daemon builds its host over.
 #[test]
 fn the_session_scope_is_one_directory_for_every_reader() {
@@ -884,9 +836,8 @@ fn the_session_scope_is_one_directory_for_every_reader() {
 // The seat, and the daemon's half of the wiring
 // ---------------------------------------------------------------------------------------------
 
-/// An adjudicator that exists to be ATTACHED, not to decide — the seat under test seats tools that
-/// must be adjudicated, and nothing in these tests runs a turn. `wired.rs` makes the same one for
-/// the same reason.
+/// An adjudicator that exists to be ATTACHED, not to decide - the seat under test seats tools that
+/// must be adjudicated, and nothing in these tests runs a turn.
 struct Attached;
 
 impl letibot_tools::Adjudicator for Attached {
@@ -907,7 +858,7 @@ impl letibot_tools::Adjudicator for Attached {
 }
 
 /// A session config on the byte vocabulary with a provider that is named and never called: no
-/// GGUF, no server, no key — `idle_clock.rs`'s and `plugins_pane.rs`'s fixture.
+/// GGUF, no server, no key - `idle_clock.rs`'s and `plugins_pane.rs`'s fixture.
 fn byte_config(session: &str, seat: letibot_harnessd::config::Seat) -> letibot_harnessd::Config {
     let mut cfg = letibot_harnessd::Config::for_this_box("/tmp");
     cfg.dialect = letibot_harnessd::Dialect::Qwen;
@@ -925,10 +876,9 @@ fn byte_config(session: &str, seat: letibot_harnessd::config::Seat) -> letibot_h
     cfg
 }
 
-/// **The seat that writes code carries the loop**, which is the brief's *"seated where `task` is:
-/// the leticode and coder seats"* — and the reason it must be proved on a real registry is that a
-/// role naming a tool nobody registered REFUSES to open at all, so the failure mode of getting
-/// this wrong is every `leticode` session on the box.
+/// The seat that writes code carries the loop, and it must be proved on a real registry: a role
+/// naming a tool nobody registered REFUSES to open at all, so getting this wrong would cost every
+/// `leticode` session on the box.
 #[test]
 fn the_leticode_seat_seats_the_plugin_tools_on_a_real_registry() {
     use letibot_harnessd::config::Seat;
@@ -950,14 +900,14 @@ fn the_leticode_seat_seats_the_plugin_tools_on_a_real_registry() {
         );
     }
     // And a harness opened by hand has no host: the daemon builds that when it opens the session
-    // (`Sessions::open_plugins`), so the tool must say so rather than inventing an empty stack.
+    // so the tool must say so rather than inventing an empty stack.
     assert!(
         h.plugin_host().is_none(),
         "a bare Harness::open is not a session the daemon serves"
     );
 }
 
-/// **The daemon hands the tool the very host its panes are drawn from** — the one line that keeps
+/// The daemon hands the tool the very host its panes are drawn from - the one line that keeps
 /// `plugin load` from building a second stack, and the reason `plugin_host` exists at all.
 #[test]
 fn opening_a_session_through_sessions_fills_the_plugin_slot() {
@@ -999,7 +949,7 @@ fn opening_a_session_through_sessions_fills_the_plugin_slot() {
 // ---------------------------------------------------------------------------------------------
 
 /// The sessions the nick list is drawn from, as the daemon's registry would answer them: two
-/// conversations and a subagent — which a nick list must NOT show.
+/// conversations and a subagent - which a nick list must NOT show.
 struct Nicks;
 
 impl letibot_harnessd::plugins::feed::SessionFeed for Nicks {
@@ -1022,12 +972,7 @@ impl letibot_harnessd::plugins::feed::SessionFeed for Nicks {
     }
 }
 
-/// **`plugins/builtin/irc`, copied into a session's plugin directory as a layer of its own.**
-///
-/// The built-in is compiled by `crates/builtins` at build time, so its own `Cargo.toml` points at
-/// its neighbours by relative path (`../abi`, `../../../crates/plugin-sdk`) — which resolve inside
-/// this repository and nowhere else. A copy is rewritten to absolute paths, which is exactly what a
-/// person iterating on a built-in outside the binary does.
+/// `plugins/builtin/irc`, copied into a session's plugin directory as a layer of its own.
 fn copy_the_nick_list(dir: &Path) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -1058,14 +1003,8 @@ fn copy_the_nick_list(dir: &Path) {
     .expect("a manifest the session's directory can build");
 }
 
-/// **The live loop, for the nick list**: `plugin build` → `plugin load` → the pane redrawn, with
-/// nothing of the host rebuilt in between.
-///
-/// The pieces are the production ones at every step: `CargoBuilder` runs cargo for
-/// `wasm32-unknown-unknown` offline, `RanoLoader` is wasmtime compiling the guest, the stack is the
-/// session's own, and the pane is published to a real `Hub` — the frame a head draws. What it is
-/// asked with is the session feed (`docs/plugins-plan.md` §4.9), so the rows are the daemon's
-/// sessions and not a fixture inside the guest.
+/// The live loop, for the nick list: `plugin build` → `plugin load` → the pane redrawn
+/// with nothing of the host rebuilt in between.
 #[test]
 fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
     let here = wasm_target();
@@ -1083,7 +1022,7 @@ fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
     );
     copy_the_nick_list(&rig.tmp.plugins().join("irc"));
 
-    // 1. `plugin build` — cargo, the wasm target, offline.
+    // 1. `plugin build` - cargo, the wasm target, offline.
     let built = rig.ok(r#"{"action":"build","name":"irc"}"#);
     assert!(built.contains("plugin.wasm"), "{built}");
     assert!(
@@ -1091,7 +1030,7 @@ fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
         "cargo produced no module: {built}"
     );
 
-    // 2. `plugin load` — through the shadow gate, then the stack the head is drawn from.
+    // 2. `plugin load` - through the shadow gate, then the stack the head is drawn from.
     let loaded = rig.ok(r#"{"action":"load","name":"irc"}"#);
     assert!(loaded.contains("loaded `irc` as layer `s1`"), "{loaded}");
 
@@ -1132,7 +1071,7 @@ fn the_nick_list_builds_loads_and_is_drawn_without_rebuilding_the_host() {
     as_view.validate().expect("a view the host accepts");
 
     // 4. And `plugin test` asks the same hook through the same stack, so a person iterating sees
-    //    the same rows without a head at all.
+    // the same rows without a head at all.
     let said = rig.ok(r#"{"action":"test"}"#);
     assert!(said.contains("answered by `s1`"), "{said}");
     assert!(said.contains("the habr article"), "{said}");

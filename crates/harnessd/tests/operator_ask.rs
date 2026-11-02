@@ -1,20 +1,6 @@
-//! **A todo row that waits on the OPERATOR, end to end through the daemon's own door** — the
-//! loud state on the hub, the settings row and the picker's brief; the answer as a head sends it
-//! (`CommandKind::AnswerTodo`) in every shape the card offers; the row unblocked with the reply on
-//! it; the model told at once; and the question surviving a restart.
-//!
-//! The operator, verbatim: *"a todo can be dependent on todo, and todo can be dependend on ME. if
-//! model says todo is dependent on ME the other heads of the todo DAG keep firing, model told to
-//! try to figure it out anyways, and the heads show loud notification that im waited. i guess we
-//! will force models to do choice for todo - so when it says it waits for ME it give me that choice
-//! list with an optioin to enter my freetext. and then when i submit todo becomes unblocked with
-//! reply attached"*.
-//!
-//! # What this needs
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not a model**: the
-//! endpoint is a port nothing listens on. The turn an answer starts fails at the send — what is
-//! asserted is that it was STARTED with the answer as its prompt, which is the row on the hub.
+//! A todo row that waits on the OPERATOR, end to end through the daemon's own door - the
+//! loud state on the hub, the settings row and the picker's brief; the answer as a head
+//! sends it (`CommandKind::AnswerTodo`) in every shape the card offers
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::sessions::StoreSessions;
@@ -54,7 +40,7 @@ fn asking(content: &str, question: &str) -> TodoItem {
     }
 }
 
-/// Four rows, each asking the operator something — one per shape of answer — and one row that
+/// Four rows, each asking the operator something - one per shape of answer - and one row that
 /// asks nobody anything.
 fn seeded(tag: &str) -> (std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!(
@@ -162,7 +148,7 @@ fn rows(hub: &Hub, code: &str) -> Vec<String> {
         .collect()
 }
 
-/// The operator's prompts the hub has seen, as text — the turns the answers started.
+/// The operator's prompts the hub has seen, as text - the turns the answers started.
 fn prompts(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
@@ -189,12 +175,8 @@ fn needs_of(path: &std::path::Path, id: &str, content: &str) -> Vec<TodoNeed> {
         .needs
 }
 
-/// **The heads are told loudly, and the four answers each unblock their row** — *"the heads show
-/// loud notification that im waited"* and *"when i submit todo becomes unblocked with reply
-/// attached"*. The settings row and the picker's brief say how many questions wait; an option,
-/// an option with a note, typed words and an abstention each replace the question with the reply
-/// on the row (the title untouched), start a turn whose prompt is the `[answer]` line, and the
-/// loud state clears when the last one is answered.
+/// The heads are told loudly, and the four answers each unblock their row. The settings row
+/// and the picker's brief say how many questions wait
 #[test]
 fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -289,9 +271,9 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
         "an abstention tells the model to state its assumption"
     );
     assert_eq!(asks_row(&registry, &id), "none", "the loud state clears");
-    // **And each one is said as an ANSWER** — the notice that a question stopped waiting names the
-    // route, so a take-back (`todo_write`'s `detach`, which leaves the same board with the question
-    // gone) reads differently from a person's answer. See `operator_ask::settled_words`.
+    // And each one is said as an ANSWER - the notice that a question stopped waiting names the route
+    // so a take-back (`todo_write`'s `detach`, which leaves the same board with the question gone)
+    // reads differently from a person's answer. See `operator_ask::settled_words`.
     let settled = rows(&hub, "operator_question_settled");
     assert_eq!(settled.len(), 4, "{settled:#?}");
     for (row, _, _) in replies {
@@ -310,11 +292,9 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
     assert_eq!(brief.waits_on_operator, 0, "the picker's mark clears");
 }
 
-/// **A question asked from here on is announced; a refused answer is said; a restart keeps the
-/// waiting row.** The operator's own row gets a question through the head's push (the same door
-/// the pane echoes edges through), which publishes `waiting_on_operator`; an option the row never
-/// offered is refused by name and leaves the question open; and a daemon opened again on the same
-/// store reads the row back still waiting and says so in its settings.
+/// A question asked from here on is announced; a refused answer is said; a restart keeps
+/// the waiting row. The operator's own row gets a question through the head's push (the
+/// same door the pane echoes edges through), which publishes `waiting_on_operator`
 #[test]
 fn a_waiting_row_is_announced_survives_a_refusal_and_a_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -371,7 +351,7 @@ fn a_waiting_row_is_announced_survives_a_refusal_and_a_restart() {
             TodoNeed::Operator { .. }
         ));
     }
-    // **The restart**: a new daemon on the same store.
+    // The restart: a new daemon on the same store.
     let (_sessions, registry) = opened(&parts, &path, &id);
     assert!(
         asks_row(&registry, &id).starts_with("5 — "),

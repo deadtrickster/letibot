@@ -1,35 +1,5 @@
-//! The adjudication corpus behind the `decisions` tool.
-//!
-//! The sibling of [`crate::transcript_source`], and the same seam for the same
-//! reason: `letibot-tools` cannot name `letibot-tokencore`, so the tool declares
-//! a [`DecisionSource`] and this implements it.
-//!
-//! # Filtering in SQL, and why the predicates are not columns
-//!
-//! The tool's arguments are the names a person uses — `by=oracle`, `verdict=deny`,
-//! `asked=true` — and the mapping onto the thirty-column `adjudication` table
-//! lives here, in one file, once. That is the whole bargain the operator asked
-//! for: *"the model shouldn't derive the storage, its format, or what path it"*
-//! is at.
-//!
-//! Two mappings are worth naming because a caller would get them wrong:
-//!
-//! * **`by` matches a prefix.** The stored value is `human:dead`, `oracle:glm`,
-//!   `boundary:flow`, `gate:timeout` — a decider and its identity joined by a
-//!   colon. The question is almost always about the decider, so `by=boundary`
-//!   finds `boundary:flow` and `boundary:always_ask`. `operator` is accepted as a
-//!   synonym for `human`, because that is the word the rest of the system uses.
-//! * **`asked` is not `verdict_by = human`.** The corpus keeps them apart on
-//!   purpose: `asked` means a person was actually put in front of the call, and a
-//!   standing rule the operator wrote earlier decides plenty of calls nobody was
-//!   asked about. Collapsing them is how a corpus stops being able to say which
-//!   labels cost a human a keystroke.
-//!
-//! # The counts the tool reports are the store's own
-//!
-//! [`Store::corpus_counts`] already computes them, with the reasoning for why
-//! there are four rather than three written at its definition. Recomputing them
-//! here would be a second definition of "measured" that drifts from the first.
+//! The adjudication corpus behind the `decisions` tool. The sibling of
+//! [`crate::transcript_source`], and the same seam for the same reason
 
 use letibot_tokencore::rusqlite;
 use letibot_tokencore::store::{ASKED_SQL, DISAGREEMENT_SQL, MEASURED_SQL, Store};
@@ -157,10 +127,9 @@ impl DecisionSource for StoreDecisions {
         let store = self.store();
         let conn = store.connection();
 
-        // A single decision by id ignores every other predicate, including the
-        // session: an id is already unique, and a `request=` that came back empty
-        // because the caller was in a different session is the miss this tool
-        // exists to stop.
+        // A single decision by id ignores every other predicate, including the session: an id is
+        // already unique, and a `request=` that came back empty because the caller was in a
+        // different session is the miss this tool exists to stop.
         if let Some(want) = &q.request {
             let mut stmt = conn
                 .prepare(&format!(
@@ -188,11 +157,9 @@ impl DecisionSource for StoreDecisions {
             wheres.push("session_id = ?1".to_string());
             binds.push(Box::new(s.clone()));
         }
-        // **The scope's clause and binds, kept apart from the filters'.** The miss
-        // report lists what is present in the SCOPE, because a query that matched
-        // nothing has no values of its own to list — so these are reused after the
-        // filter binds have been pushed. Sharing one vector gives a statement with
-        // one placeholder and five parameters, which rusqlite refuses.
+        // The scope's clause and binds, kept apart from the filters'. The miss report lists
+        // what is present in the SCOPE, because a query that matched nothing has no values of its
+        // own to list - so these are reused after the filter binds have been pushed.
         let scope_sql = wheres
             .first()
             .map(|w| format!(" WHERE {w}"))
@@ -243,7 +210,7 @@ impl DecisionSource for StoreDecisions {
         .unwrap_or(0) as usize;
 
         // `last` caps the match set before the page is taken, so `last=64` with a
-        // filter means the newest 64 MATCHING decisions — the same reading
+        // filter means the newest 64 MATCHING decisions - the same reading
         // `transcript` gives it.
         let cap = q.last.map(|n| (n as usize).min(matched)).unwrap_or(matched);
         let take = q.limit.min(cap.saturating_sub(q.offset));
@@ -278,7 +245,7 @@ impl DecisionSource for StoreDecisions {
             session_id: scope.clone().unwrap_or_else(|| "any".into()),
             scanned,
             matched: cap,
-            // Computed over the SCOPE, not over the filtered set — a miss report
+            // Computed over the SCOPE, not over the filtered set - a miss report
             // listing "the verdicts present" from a query that matched nothing
             // would list nothing.
             verdicts_present: distinct(&conn, "verdict", &scope_sql, &scope_binds),
@@ -315,19 +282,8 @@ impl DecisionSource for StoreDecisions {
         };
         Ok(DecisionCounts {
             total: one(""),
-            // **The predicates are imported, not re-typed.** This function is the
-            // scoped twin of `Store::corpus_counts`, and the two drifted exactly as a
-            // copied `WHERE` clause does: `measured` read
-            // `oracle_ms IS NOT NULL`, which matches **every** row because
-            // `oracle_ms` is `0` and never NULL — the scoped banner announced that
-            // every decision in the session was measured against a model. And
-            // `disagreements` read `operator_kind IS NOT NULL`, which counts a ruling
-            // the operator *agreed* with; on this box 2026-09-21 that reported `1863`
-            // where the true figure is `1294`.
-            //
-            // Both are now interpolated from the one definition in the store crate.
-            // A count is not measuring what its NAME says, it is measuring what its
-            // PREDICATE says — so there is one predicate.
+            // The predicates are imported, not re-typed. This function is the scoped twin of
+            // `Store::corpus_counts`, and the two drifted exactly as a copied `WHERE` clause does
             decided_by_operator: one(&format!(" AND {ASKED_SQL}")),
             measured: one(&format!(" AND {MEASURED_SQL}")),
             disagreements: one(&format!(" AND {DISAGREEMENT_SQL}")),
@@ -355,10 +311,8 @@ fn distinct(
     scope_sql: &str,
     binds: &[Box<dyn rusqlite::ToSql>],
 ) -> Vec<String> {
-    // `column` is never caller-supplied — the three call sites pass literals — so
-    // interpolating it is safe, and the scope is still bound. The scope has
-    // already opened a `WHERE` when it is non-empty, so this continues it with
-    // `AND` rather than opening a second one.
+    // `column` is never caller-supplied - the three call sites pass literals - so
+    // interpolating it is safe, and the scope is still bound.
     let joiner = if scope_sql.is_empty() { "WHERE" } else { "AND" };
     let sql = format!(
         "SELECT DISTINCT {column} FROM adjudication{scope_sql} \

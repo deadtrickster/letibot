@@ -1,23 +1,6 @@
 //! The daemon's command line, as a function rather than a `main`.
-//!
-//! # Why this is the cleanest of the five
-//!
-//! `harnessd`'s binary already had its body in `fn run() -> Result<i32, String>` with a
-//! four-line `main` dispatching on it — so the move is a lift rather than an untangling.
-//! What changed is only what being a library forces: the arguments arrive as a
-//! parameter instead of `std::env::args()`, and the caller decides the process's fate
-//! from the returned `Result`. The `harnessd: {e}` prefix a person sees is unchanged,
-//! because it is the ROLE's name and this is still the daemon role.
-//!
-//! # What was checked
-//!
-//! Five non-daemon paths, captured from the binary before the move and compared after:
-//! `--help` 0, an unknown argument 1, a store that cannot be opened 1, `--rename` with
-//! no value 1, and `--latest-session` against the same bad store 1. The paths that
-//! START a daemon are deliberately not in that list — a test that launches one is a
-//! test that leaves one running.
 
-//! `harnessd` — the daemon.
+//! `harnessd` - the daemon.
 //!
 //! ```text
 //! harnessd [--workspace DIR] [--socket PATH] [--store PATH]
@@ -42,13 +25,13 @@
 //!
 //! # The store queries answer before anything is loaded
 //!
-//! `--list-sessions` and its three siblings return **before** `Parts::load`, before
+//! `--list-sessions` and its three siblings return before `Parts::load`, before
 //! the endpoint health check and before the socket is bound. That is not an
 //! optimisation: `letibot --sessions` has to work when the model server is down, and
 //! a listing that first insisted on a 0.6-second GGUF load and a live `/health`
 //! would be a listing you cannot use to find out what went wrong.
 //!
-//! With one or more `--prompt` it runs them in order and exits — which is what
+//! With one or more `--prompt` it runs them in order and exits - which is what
 //! makes a scripted session a shell command rather than a program, and it is how
 //! `letibot-m1` drives its own measurement.
 
@@ -61,19 +44,9 @@ use crate::{Daemon, Dialect, Outcome, OutcomeSaid, Parts, Sessions};
 use letibot_sessionlog::registry::Registry;
 use letibot_turn::Endpoint;
 
-/// Resolve the credentials and open the seat. Every refusal in here names what
-/// was looked at, because "no flowy" and "the wrong flowy" must not read alike.
-/// **The daemon's boot, said on the first session's hub** (TODO R92.2, R92.3).
-///
-/// The socket binds before the session opens — a second daemon must find out it is second before
-/// a vocabulary is loaded — and the launcher execs the head as soon as it listens. So a head is
-/// attached to a session that cannot run anything until the worker starts, sometimes for minutes
-/// (a model server probe has a 3-minute read timeout; a long transcript is re-tokenised on
-/// resume). Each step is published as `daemon_starting` (`starting: <step>`), the end as
-/// `daemon_started`, and a failure's reason as `daemon_start_failed` BEFORE the hubs close, so the
-/// head shows why instead of a closed connection. Warnings rather than a new event: they are in
-/// the hub's log, so a head that attaches mid-boot replays the step it missed, and no protocol
-/// changes.
+/// Resolve the credentials and open the seat. Every refusal in here names what was looked
+/// at, because "no flowy" and "the wrong flowy" must not read alike. The daemon's boot
+/// said on the first session's hub.
 struct Boot {
     hub: Option<std::sync::Arc<letibot_sessionlog::hub::Hub>>,
 }
@@ -109,7 +82,7 @@ impl Boot {
         );
     }
 
-    /// **Why the boot failed, on the hub, and a moment for a head to read it** before the caller
+    /// Why the boot failed, on the hub, and a moment for a head to read it before the caller
     /// shuts the daemon down. Answers `why`, for the caller's `Err`.
     fn failed(&self, why: String) -> String {
         self.say(
@@ -145,40 +118,9 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
     Ok(seat)
 }
 
-/// **Apply a `main_model` from a file to the session's config.**
-///
-/// A `main_model` is a model name, the same shape the operator types for `--model`
-/// and the names `/models` offers: a `provider/model` for a metered session, a bare
-/// alias for a local one. This is the one place that turns that name into the `cfg`
-/// fields the session runs on, and it is the file half of the precedence — called
-/// for the user level and then for the project level, each over the last, and never
-/// when the command line chose who answers.
-///
-/// A `provider/model` name sets the metered provider; a bare alias sets the local
-/// model and **clears the provider**, because the two are the two ways a session's
-/// turns go and a name is one or the other, not both. The clearing is the half that
-/// gives the operator their local model back: `[default] provider = deepseek` in
-/// `providers.toml` is read into `cfg.provider` below this, and a file that says
-/// `main_model = "glm-5.3-flash"` is a file saying *answer on this box*. The
-/// provider's key is not set here: it is resolved along the usual path
-/// (`$PROVIDER_API_KEY`, then `providers.toml`), and a file that names a model but
-/// not a key is a model the operator has a key for, not a secret the file carries.
-///
-/// # `bound`: the alias `--model` bound, and why it is not overwritten
-///
-/// The launcher passes `--model` on every start, and what it names is the LOCAL
-/// alias — the vocabulary this daemon tokenises with (`scripts/letibot` labels the
-/// two facts apart in its own banner: `model` is the binding, `answers` is what
-/// answers). So `--model` is not a choice of who answers and does not suppress a
-/// file's `main_model`; but it IS the binding, and a file that re-bound it would
-/// point the daemon's GGUF at weights the server is not serving. That failure is
-/// `400 Prompt contains invalid tokens` at the first turn, which names nothing.
-///
-/// So a file's bare alias clears the provider — the half that decides who answers —
-/// and does not overwrite a binding the command line set. When the two disagree the
-/// disagreement is RETURNED and the caller puts it on the screen, because a file
-/// the operator wrote that silently did not take effect is the defect this whole
-/// feature is against.
+/// Apply a `main_model` from a file to the session's config. A `main_model` is a model
+/// name, the same shape the operator types for `--model` and the names `/models` offers: a
+/// `provider/model` for a metered session, a bare alias for a local one.
 pub(crate) fn apply_main_model(
     cfg: &mut Config,
     model: &str,
@@ -211,19 +153,8 @@ pub(crate) fn apply_main_model(
     }
 }
 
-/// **What `--reviewers WORD` does to a `Config`** — the flag's whole body, in a function so the
-/// one thing it must get right is a value a test can read.
-///
-/// Two spellings and nothing else ([`Reviewers::parse`] refuses anything else BY NAME, with both
-/// words in the sentence — a flag whose only wrong values are silent is the shape this tree keeps
-/// closing). **`vm` goes through [`Config::allow_vm_reviewers`]**, which is the named way a value
-/// becomes `Vm` — the same function a test that means to exercise a VM placement calls — so the
-/// flag and the test ask for the microVM by the same door.
-///
-/// The flag wins over the project file because of where it is parsed: `Config::for_the_daemon`
-/// reads `[queue] reviewers` first and the argument loop runs after it, so this overwrites that
-/// value — and `host` overwrites it too, which is the half a daemon seated above several
-/// repositories needs (there is one file it could read and several projects it serves).
+/// What `--reviewers WORD` does to a `Config` - the flag's whole body, in a function so
+/// the one thing it must get right is a value a test can read.
 fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
     match Reviewers::parse(word)? {
         Reviewers::Vm => cfg.allow_vm_reviewers(),
@@ -232,14 +163,9 @@ fn apply_reviewers_flag(cfg: &mut Config, word: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// **Where this session's tools run, from the two asks the command line can carry** — R100.
-///
-/// A VM and a machine used to be alternatives: one field written by both arms, so the flag that
-/// came last won and the other ask was dropped without a word. They are two asks, and the pair
-/// means what it should now: a VM **on** that machine, booted by the host's own `firecode` over
-/// the session's ssh link, with the guest as the boundary and the branch coming home the way
-/// every remote placement's does. A host that cannot boot one is refused by
-/// [`letibot_tools::remote::SshBackend::place`], with what it is missing.
+/// Where this session's tools run, from the two asks the command line can carry -.
+/// A VM and a machine used to be alternatives: one field written by both arms, so the flag
+/// that came last won and the other ask was dropped without a word.
 fn placement_from_flags(
     vm: bool,
     host: Option<&str>,
@@ -253,13 +179,9 @@ fn placement_from_flags(
     }
 }
 
-/// **A `provider/model` name a file set that this box cannot reach**, as a sentence.
-///
-/// No network and no endpoint, so this is asked of every model name in either file:
-/// the provider must be one this build knows, and a key for it must resolve here.
-/// The alternative is the failure the tree has paid for three times — a *plausible*
-/// string reaching the first turn and coming back as a `401` that names neither the
-/// file nor the line that wrote it.
+/// A `provider/model` name a file set that this box cannot reach, as a sentence. No
+/// network and no endpoint, so this is asked of every model name in either file: the
+/// provider must be one this build knows, and a key for it must resolve here.
 pub(crate) fn unreachable_provider(model: &str) -> Option<String> {
     let (provider, m) = model.split_once('/')?;
     let Ok(preset) = letibot_provider::Preset::parse(provider) else {
@@ -290,18 +212,9 @@ pub(crate) fn unreachable_provider(model: &str) -> Option<String> {
     None
 }
 
-/// **A bare local alias that names a model this daemon cannot reach**, as a sentence.
-///
-/// Asked only of the name that decides THIS daemon's own turns — `main_model` — and
-/// `served` is the alias the local server reports off `/props`. A `subagent_model` is
-/// decided per spawn, and the guard's model answers at the `[gatekeeper]` endpoint,
-/// which is a different server on this fleet: comparing either against this daemon's
-/// would be a false alarm, and a warning that cries wolf is worse than none.
-///
-/// `local` is reachable by definition — it is the word the file's own documentation
-/// uses for *this daemon's server* (`LeticodeConfig::spawn_model`) — and so is a
-/// `[model."..."]` block in `providers.toml` that carries an address, because that is
-/// a model `/models NAME` can switch to.
+/// A bare local alias that names a model this daemon cannot reach, as a sentence. Asked
+/// only of the name that decides THIS daemon's own turns - `main_model` - and `served` is
+/// the alias the local server reports off `/props`.
 fn unreachable_local(cfg: &Config, model: &str, served: Option<&str>) -> Option<String> {
     if model.eq_ignore_ascii_case("local") {
         return None;
@@ -331,10 +244,9 @@ fn unreachable_local(cfg: &Config, model: &str, served: Option<&str>) -> Option<
     }
 }
 
-/// **Every model name either file set, with the faults this box can see.**
-///
-/// The provider-shaped half is asked of all of them; the local half only of
-/// `main_model`, which is the one that decides this daemon's own turns.
+/// Every model name either file set, with the faults this box can see. The
+/// provider-shaped half is asked of all of them; the local half only of `main_model`, which
+/// is the one that decides this daemon's own turns.
 fn unreachable_models(
     cfg: &Config,
     files: &crate::leticode_config::LeticodeConfig,
@@ -572,39 +484,14 @@ enum Step {
     Slash(String),
 }
 
-/// **How long the daemon's exit waits for the subagent threads it started**, and why that
-/// number.
-///
-/// The wait is [`Sessions::drain_subagents`]'s, and the reason there is one at all is the
-/// process's exit: `exit()` runs every ELF finalizer, so a child still inside libllama's
-/// tokenizer when `_dl_fini` unloads `libggml-cuda` takes SIGSEGV — the crash measured on
-/// `message_between_turns`, `si_addr: 0x3`, after every test had printed `ok`.
-///
-/// **Why 5 seconds, from the two ends of the case.** The drain stops the children first, so
-/// what this waits on is a child that has been TOLD to stop. Three kinds of child answer at
-/// once: one parked between turns leaves on the closed hub, one between rounds leaves at its
-/// next round boundary — the round loop already polls its steering on 250 ms slices
-/// (`Harness::sleep_unless_closed`) — and one in a tool call leaves when that call returns.
-/// Several times the slice covers the first two, and it is longer than any single tokenization
-/// of a prompt this box has measured. What is left is the child inside ONE model call or one
-/// long tool, which cannot be interrupted at all: a local turn here has been measured in
-/// minutes, so a bound large enough for that case would make every Ctrl-C wait minutes for a
-/// case a larger number cannot fix anyway. Past this the exit gives up, says which session it
-/// could not wait for, and takes the crash risk rather than the hang — the same ruling
-/// `drop(merge_queue)` makes below, for the same reason: a daemon that will not stop is worse
-/// than a row the next daemon recovers.
+/// How long the daemon's exit waits for the subagent threads it started, and why that
+/// number. The wait is [`Sessions::drain_subagents`]'s, and the reason there is one at all
+/// is the process's exit
 const SUBAGENT_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// **The daemon's memory caps, said once, by the daemon** — R64/R65.
-///
-/// This sentence used to be printed by the `harnessd` binary's `main`, so every short-lived
-/// invocation of that binary said it: `--continue` asks the same binary for the newest session id
-/// (`--latest-session`), and the operator's terminal got *"harnessd: memory caps OFF — …"* from
-/// the ask and then the same line from the daemon that actually started, twice around a banner
-/// that was already being drowned by other lines (measured 2026-10-26).
-///
-/// So the delegation happens in [`run`], before anything can start a child, and the WORDS are
-/// said here — past every verb that answers and exits, at the top of the daemon's own log.
+/// The daemon's memory caps, said once, by the daemon - /. This sentence used to
+/// be printed by the `harnessd` binary's `main`, so every short-lived invocation of that
+/// binary said it
 fn say_memory_caps() {
     match letibot_tools::exec::delegate_memory() {
         Ok(scope) => eprintln!(
@@ -615,12 +502,9 @@ fn say_memory_caps() {
     }
 }
 
-/// **Nothing this process booted on another machine outlives it.** A guest is booted by a
-/// placement, and a `run` that then returns early (an error opening the session, a verb that is
-/// not a daemon at all) never reaches a backend's close, so it comes down here instead.
-///
-/// A declared guard and not a call at each exit: `run` has dozens of returns, and the ones that
-/// matter are the ones nobody wrote a line for.
+/// Nothing this process booted on another machine outlives it. A guest is booted by a
+/// placement, and a `run` that then returns early (an error opening the session, a verb
+/// that is not a daemon at all) never reaches a backend's close, so it comes down here
 struct GuestsDown;
 
 impl Drop for GuestsDown {
@@ -635,32 +519,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // Declared first, so it is dropped LAST: after every session, daemon and seat has had its own
     // chance to close its backend and say where its work went.
     let _guests = GuestsDown;
-    // **Step into the daemon's own cgroup leaf before anything here can start a child** (R64/R65)
-    // — `delegate_memory` refuses when the cgroup already holds another pid, so a `git` the
-    // startup ran first would turn every tool call of this daemon's life uncapped. Said by
-    // [`say_memory_caps`], on the daemon's path only: see that function for why the sentence
-    // moved out of the `harnessd` binary's `main`.
+    // Step into the daemon's own cgroup leaf before anything here can start a child
+    // - `delegate_memory` refuses when the cgroup already holds another pid, so a
+    // `git` the startup ran first would turn every tool call of this daemon's life uncapped.
     let _ = letibot_tools::exec::delegate_memory();
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    // **`for_the_daemon`, and not `for_this_box`.** The daemon is the one caller that is a live
-    // operator's box running the review queue, so this is where the PROJECT's answer to *where do
-    // my reviewers run* is read (`[queue] reviewers`) — every fixture builds its `Config` with
-    // `for_this_box`, which says `host`, and a test that means to exercise a VM placement asks for
-    // one by name (`Config::allow_vm_reviewers`). `--reviewers vm` below overrides the file. See
-    // `Config::reviewers` for the whole of the reason.
+    // `for_the_daemon`, and not `for_this_box`. The daemon is the one caller that is a
+    // live operator's box running the review queue, so this is where the PROJECT's answer to
+    // *where do my reviewers run* is read (`[queue] reviewers`) - every fixture builds its
     let mut cfg = Config::for_the_daemon(cwd);
-    // **The guard model comes from config, not from a flag.**
-    //
-    // `[gatekeeper] endpoint = "HOST:PORT"` in `~/.config/letibot/providers.toml`,
-    // beside the provider keys, because an endpoint is a property of the box and not
-    // of an invocation. `--oracle` still overrides it below, for a one-off. A
-    // missing section, an unreadable file and a malformed address are all "no
-    // guard" — this is read at startup and must never be a reason a daemon does not
-    // start.
-    // `[memory]`: the cap a model's tool call runs under, and the most it may ask for without
-    // the operator. A malformed value refuses the start BY NAME, for `[gatekeeper]`'s reason
-    // below: a typo that left the built-in in force while the operator believes they set
-    // their own is the banner-says-one-thing defect.
+    // The guard model comes from config, not from a flag. `[gatekeeper] endpoint =
+    // "HOST:PORT"` in `~/.config/letibot/providers.toml`, beside the provider keys, because an
+    // endpoint is a property of the box and not of an invocation.
     {
         let m = letibot_provider::memory(None);
         let parse = |key: &str,
@@ -684,8 +554,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(a) = parse("ceiling", &m.ceiling)? {
             cfg.memory.ceiling = a;
         }
-        // **The merge gate's own cap** (R76 item 6): every gate step runs in a cgroup of its
-        // own beside the daemon's leaf, under this — half of what is free when the gate starts
+        // The merge gate's own cap : every gate step runs in a cgroup of its
+        // own beside the daemon's leaf, under this - half of what is free when the gate starts
         // unless `gate` says otherwise (`uncapped` keeps the scope and the peak, with no cap).
         let gate = letibot_tools::exec::memory::Ask::parse(m.gate.as_deref()).map_err(|e| {
             format!(
@@ -694,10 +564,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             )
         })?;
         crate::mergequeue::gate::set_gate_memory(gate);
-        // **The daemon's own throttle** (R66): `memory.high` on its leaf, so a daemon that grows
-        // without bound is slowed by the kernel instead of taking the box — 16 GiB unless
-        // `daemon_high` says otherwise (`max` turns it off). Only in a delegated scope; anywhere
-        // else there is no leaf of the daemon's own to set it on, and `memwatch` still logs.
+        // The daemon's own throttle : `memory.high` on its leaf, so a daemon that grows
+        // without bound is slowed by the kernel instead of taking the box - 16 GiB unless
+        // `daemon_high` says otherwise (`max` turns it off). Only in a delegated scope
         let high = match m.daemon_high.as_deref().map(str::trim) {
             Some("max") => None,
             other => {
@@ -725,19 +594,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if let Some(ep) = gk.endpoint.as_deref().and_then(|s| Endpoint::parse(s).ok()) {
             cfg.oracle = Some(ep);
         }
-        // The guard's own model, when it is not the one doing the work. Read here
-        // beside the endpoint because they describe the same server, and a file that
-        // names a model nobody reads is a setting the operator will reasonably
-        // believe took effect.
+        // The guard's own model, when it is not the one doing the work. Read here beside the
+        // endpoint because they describe the same server, and a file that names a model nobody
+        // reads is a setting the operator will reasonably believe took effect.
         if let Some(m) = gk.model.filter(|m| !m.trim().is_empty()) {
             cfg.oracle_model = Some(m);
         }
-        // **The authority the operator declares for their own guard.** Refused by
-        // name rather than narrowed silently: a `[gatekeeper] intents` line with a
-        // typo in it would otherwise leave the guard at the floor while the
-        // operator believes they widened it, which is the shape of every other
-        // "the banner says one thing and the session does another" defect this
-        // tree refuses.
+        // The authority the operator declares for their own guard. Refused by name rather than
+        // narrowed silently
         if !gk.intents.is_empty() || gk.max_scope.is_some() || !gk.tools.is_empty() {
             match letibot_tools::authorise::OracleScope::declared(
                 &gk.intents,
@@ -757,59 +621,34 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             cfg.oracle_budget = std::time::Duration::from_millis(ms);
         }
     }
-    // **Prompts and slash verbs in one ordered list.** `--prompt` could run turns
-    // headlessly and nothing could change the session between them, so the one
-    // thing worth testing about a mid-session model switch — that the turn AFTER
-    // it works — could only be done by hand in a terminal. The operator: *"check
-    // deepseek <-> qwen switch actually works midsession yourself. if there is not
-    // enough tools in the letibot-tui to drive it programmatically - add"*.
-    //
-    // Order is the whole point, so they share a list rather than being two.
+    // Prompts and slash verbs in one ordered list. `--prompt` could run turns headlessly
+    // and nothing could change the session between them, so the one thing worth testing about
+    // a mid-session model switch - that the turn AFTER it works - could only be done by hand
     let mut steps: Vec<Step> = Vec::new();
     // `--model` under `--provider` names the provider's model, not the local
     // alias; resolved after the flags, because either may come first.
     let mut model_given: Option<String> = None;
-    // **Whether the command line chose WHO ANSWERS.** That is `--provider`, and it
-    // is the flag level of the precedence: `--provider deepseek` beats the project
-    // file, the project file beats the user file, and the user file beats the
-    // built-in default.
-    //
-    // **`--model` alone is deliberately not this**, and the reason is the tree's own
-    // vocabulary rather than a convenience. `--model` names the LOCAL alias — the
-    // vocabulary this daemon tokenises with, which `scripts/letibot` labels apart
-    // from `answers` in its own banner — and the launcher passes it on EVERY start,
-    // including a start where the operator said nothing about a model at all. A
-    // `--model` that suppressed the files would make both of them unreachable for
-    // every launcher-started daemon, which is the defect this level exists to fix.
-    // Tracked rather than read off `cfg`, because `cfg.model` and `cfg.provider` are
-    // also set by the files, and the two must not be told apart by a field they
-    // share.
+    // Whether the command line chose WHO ANSWERS. That is `--provider`, and it is the flag
+    // level of the precedence: `--provider deepseek` beats the project file, the project file
+    // beats the user file, and the user file beats the built-in default.
     let mut cli_main_model = false;
-    // **The local alias `--model` bound**, when it named one. The binding and the
-    // choice of who answers are two facts and this is the other one: a file's
-    // `main_model` may clear the provider without re-binding the vocabulary — see
-    // `apply_main_model`.
+    // The local alias `--model` bound, when it named one. The binding and the choice of
+    // who answers are two facts and this is the other one: a file's `main_model` may clear the
+    // provider without re-binding the vocabulary - see `apply_main_model`.
     let mut cli_binding: Option<String> = None;
-    // **The explicit "ignore the project file".** See the flag's own note.
+    // The explicit "ignore the project file". See the flag's own note.
     let mut no_project_config = false;
 
     let mut query: Option<Query> = None;
     let mut tsv = false;
-    // `--workspace` defaults to the process's cwd for a daemon, and to *nothing* for
-    // a listing: "every session" and "every session under this directory" are
-    // different questions, and defaulting the second one silently would make
-    // `--list-sessions` hide rows without saying it had.
+    // `--workspace` defaults to the process's cwd for a daemon, and to *nothing* for a
+    // listing
     let mut scope: Option<PathBuf> = None;
 
     // `--vm-copy` said anywhere on the line wins over `--where firecode`'s mount, before it or
     // after: the operator who asked for a copy must never get the folder itself read-write.
     let mut vm_copy = false;
 
-    // **R100: where this session's tools run, as the two asks the flags actually are.** A VM
-    // (`--where firecode`) and a machine (`--host`, `--where host:NAME`) used to be one field
-    // written by both arms, so the flag that came LAST won and the other was dropped without a
-    // word. They are two asks and they are recorded as two, resolved once after the loop by
-    // [`placement_from_flags`].
     let mut vm_asked = false;
     let mut host_asked: Option<String> = None;
 
@@ -818,22 +657,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
             "--list-sessions" => query = Some(Query::List),
-            // **What Claude Code has on this box** (Package H) — the ids `--session cc-<id>`
-            // takes, with the model, the directory and the first thing that was said. Beside
-            // `--list-sessions` because it answers the same question about a different store,
-            // and it needs no store of ours at all, so it is answered before one is opened.
+            // What Claude Code has on this box (Package H) - the ids `--session cc-<id>` takes
+            // with the model, the directory and the first thing that was said.
             "--list-claude" => query = Some(Query::ListClaude),
-            // **The return trip**: this session's conversation as a transcript
+            // The return trip: this session's conversation as a transcript
             // `claude --resume <path>` opens, plus a Markdown copy a person can read.
             "--handover" => {
                 let session = next()?;
                 let to = PathBuf::from(next()?);
                 query = Some(Query::Handover { session, to });
             }
-            // **The lighter shape the operator chose**: one line on the ORIGINAL transcript
-            // saying the session was continued here, plus the Markdown handover for the
-            // fallback. The line's own words are composed, not typed — see
-            // `note_continued`.
+            // The lighter shape the operator chose: one line on the ORIGINAL transcript saying the
+            // session was continued here, plus the Markdown handover for the fallback. The line's own
+            // words are composed, not typed - see `note_continued`.
             "--note-continued" => {
                 let session = next()?;
                 let transcript = PathBuf::from(next()?);
@@ -844,15 +680,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     dir,
                 });
             }
-            // **One line on the end of a transcript Claude Code owns.** A backup first, and no
-            // write at all when a backup could not be made or proven — see
+            // One line on the end of a transcript Claude Code owns. A backup first, and no
+            // write at all when a backup could not be made or proven - see
             // `letibot_claude::handover::append_note`.
             "--note" => {
                 let transcript = PathBuf::from(next()?);
                 let text = next()?;
                 query = Some(Query::Note { transcript, text });
             }
-            // **Put a transcript back, byte for byte**, from a backup this binary made.
+            // Put a transcript back, byte for byte, from a backup this binary made.
             "--revert" => {
                 let transcript = PathBuf::from(next()?);
                 let backup = PathBuf::from(next()?);
@@ -866,26 +702,22 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 query = Some(Query::Rename(id, title));
             }
             "--delete" => query = Some(Query::Delete(next()?)),
-            // Replay the operator-answered corpus against the guard and print
-            // what it earns. `--calibrate-write` also records it where the
-            // daemon reads it at startup. See `crate::calibrate`.
-            // Re-render any stable prefix stored with no tokens, so a transcript
-            // hanging off one can be resumed again. See `Query::RepairPrefixes`.
+            // Replay the operator-answered corpus against the guard and print what it earns.
+            // `--calibrate-write` also records it where the daemon reads it at startup. See
+            // `crate::calibrate`.
             "--repair-prefixes" => query = Some(Query::RepairPrefixes),
             // Run every arm over the same rows and print them side by side. A
             // prompt change to this seam is a hypothesis until this says otherwise.
             "--compare" => query = Some(Query::Compare),
             // Print the bytes the guard is actually handed for a call it could not
-            // answer. "Look at what it is shown" — the only way to tell a prompt
+            // answer. "Look at what it is shown" - the only way to tell a prompt
             // problem from a evidence problem.
             "--show-brief" => query = Some(Query::ShowBrief),
-            // Recover shapes for decisions the operator already made, so the shape
-            // cache does not start cold on a store full of their own approvals.
-            // Re-derived with today's classifier, never reinstated from the row.
-            // Cross every command in the etalon with layer A as it is now: what
-            // would prompt, what would be caught, what cannot be read. Plan §2.
+            // Recover shapes for decisions the operator already made, so the shape cache does not
+            // start cold on a store full of their own approvals. Re-derived with today's classifier
+            // never reinstated from the row.
             "--etalon" => query = Some(Query::Etalon(PathBuf::from(next()?))),
-            // The guard itself over an etalon-shaped JSONL — an attack set, with
+            // The guard itself over an etalon-shaped JSONL - an attack set, with
             // the main task as the operator's ask. Plan §1 (BashArena). Needs
             // --oracle. Rows are seated in a scratch copy of the store.
             "--etalon-oracle" => query = Some(Query::EtalonOracle(PathBuf::from(next()?))),
@@ -900,18 +732,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--backfill-shapes-write" => query = Some(Query::Backfill { write: true }),
             "--calibrate" => query = Some(Query::Calibrate { write: false }),
             "--calibrate-write" => query = Some(Query::Calibrate { write: true }),
-            // **An empty scope is a missing argument, not "everywhere".**
-            // `Path::new("/anything").starts_with("")` is true in Rust, so an
-            // empty `--scope` matched every session in the store and `--continue`
-            // handed back the newest one on the box — the operator's report:
-            // *"--continue seems to be continuing the last global, not the last in
-            // project"*. The launcher computes the scope from `git rev-parse
-            // --show-toplevel` with `$PWD` as the fallback, and both can come back
-            // empty if the directory is gone (a pruned worktree does it).
-            //
-            // Refused by name rather than defaulted, because both defaults are
-            // wrong: "everywhere" continues somebody else's conversation, and
-            // "nowhere" reads as resume being broken.
+            // An empty scope is a missing argument, not "everywhere".
+            // `Path::new("/anything").starts_with("")` is true in Rust, so an empty `--scope` matched
+            // every session in the store and `--continue` handed back the newest one on the box - the
             "--scope" => {
                 let v = next()?;
                 if v.trim().is_empty() {
@@ -930,15 +753,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--store" => cfg.store = Some(PathBuf::from(next()?)),
             "--session" => {
                 let named = next()?;
-                // **`host` is the box's own agent, by name, and `host:<tag>` is one tag's** — the
-                // room's coordinator is `s-room-<host key>` and a tag's agent is that plus the tag,
-                // both derived from the machine so that `letibot --session host` (and
-                // `--session host:ram`) always resolve without the operator remembering a hash. The
-                // operator's ask: *"a singleton with a special session name - 'host' so i can
-                // always connect to it"*, and then *"one subsession per tag, owned by the host …
-                // so a tag can be talked to about itself"*. One resolution for both spellings
-                // (`room::session_named`), because a launcher that guessed a different name would
-                // attach to a session nobody seated.
+                // `host` is the box's own agent, by name, and `host:<tag>` is one tag's - the room's
+                // coordinator is `s-room-<host key>` and a tag's agent is that plus the tag, both derived
+                // from the machine so that `letibot --session host` (and `--session host:ram`) always
                 cfg.session_id = crate::room::session_named(&named).unwrap_or(named);
             }
             "--title" => cfg.title = next()?,
@@ -946,44 +763,33 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let m = next()?;
                 model_given = Some(m.clone());
                 cfg.model = m.clone();
-                // The binding, not the choice of who answers — see `cli_main_model`.
+                // The binding, not the choice of who answers - see `cli_main_model`.
                 cli_binding = Some(m);
             }
             "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next()?)),
             "--effort" => cfg.effort = Some(next()?),
-            // **The four flags that make anything reachable, and all four are
-            // opt-in.** Nothing here changes what an invocation without them gets.
+            // The four flags that make anything reachable, and all four are
+            // opt-in. Nothing here changes what an invocation without them gets.
             "--role" => cfg.seat = Seat::parse(&next()?)?,
-            // **The approval policy, separate from the role.** `Config::mode` has
-            // existed and been disclosed at startup since roles and policy were split
-            // -- its own doc says `--role coder` used to mean both -- but nothing ever
-            // set it, so every session ran at the `always-ask` default and the other
-            // three named points were unreachable.
-            //
-            // This is why `allow_session` did not stick: `always-ask` is
-            // `GrantScope::Once`, so a session grant is never recorded. `writes allowed`
-            // is `GrantScope::Session` and is what an operator who wants to approve
-            // edits once per session is asking for.
+            // The approval policy, separate from the role. `Config::mode` has existed and been
+            // disclosed at startup since roles and policy were split -- its own doc says `--role
+            // coder` used to mean both -- but nothing ever set it, so every session ran at the
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
-            // Bind one path read-only into the confined view. Repeatable.
-            //
-            // The boundary is hermetic: `$HOME` inside is a fresh tmpfs, so `~/.cargo`
-            // and `~/.rustup` are absent and `cargo` cannot run. This is how they come
-            // back, and it is a flag rather than a default because a grant is readable
-            // into the transcript and that is the operator's call to make.
+            // Bind one path read-only into the confined view. Repeatable. The boundary is hermetic
+            // `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are absent and `cargo`
+            // cannot run.
             "--grant-ro" => cfg.grants_ro.push(PathBuf::from(next()?)),
             "--bash" => cfg.allow_bash = true,
-            // **How deep a subagent tree may go.** Zero refuses every `task` call by
-            // name; the default is the operator's ruling (3). A flag rather than a
-            // hidden constant because it bounds a whole tree and is the one number an
-            // operator reaches for when a run should not fan out.
+            // How deep a subagent tree may go. Zero refuses every `task` call by name; the default
+            // is the operator's ruling (3). A flag rather than a hidden constant because it bounds a
+            // whole tree and is the one number an operator reaches for when a run should not fan out.
             "--max-subagent-depth" => {
                 cfg.max_subagent_depth = next()?
                     .parse()
                     .map_err(|e| format!("--max-subagent-depth: {e}"))?
             }
-            // **How long the daemon may have been down for a session's work to come back on its
-            // own** — see `crate::restart`. Seconds, because it is a span an operator types.
+            // How long the daemon may have been down for a session's work to come back on its
+            // own - see `crate::restart`. Seconds, because it is a span an operator types.
             "--restore-within" => {
                 cfg.restore_within = std::time::Duration::from_secs(
                     next()?
@@ -991,36 +797,24 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                         .map_err(|e| format!("--restore-within: {e}"))?,
                 )
             }
-            // **How long the daemon stays up with nothing to do** — see `Config::idle_exit_after`.
+            // How long the daemon stays up with nothing to do - see `Config::idle_exit_after`.
             // Seconds, and `0` for never, because a daemon an operator wants kept is one flag.
             "--idle-exit" => {
                 let secs: u64 = next()?.parse().map_err(|e| format!("--idle-exit: {e}"))?;
                 cfg.idle_exit_after = (secs > 0).then(|| std::time::Duration::from_secs(secs));
             }
-            // **A daemon that serves no queue.** The merge and review queues belong to the
-            // repository's session daemons, which means a daemon the Claude Code bridge starts
-            // in a package's worktree is one of them by construction — and on 2026-10-26 the one
-            // started for package P1 took letibot's lease, found `main` red, and put an
-            // EMERGENCY in front of the package's model before its brief. A package worker is
-            // not the repository's queue holder and must not be told to fix its `main`.
-            //
-            // It changes two things and nothing else: no `QueueService` is spawned (so no lease
-            // is claimed, no gate is run and no landing happens here), and a `Harness` composes
-            // no model-facing queue notice (see `Config::serve_queues`). The store watcher
-            // stays, so a head attached here still redraws when another daemon moves a row.
+            // A daemon that serves no queue. The merge and review queues belong to the
+            // repository's session daemons, which means a daemon the Claude Code bridge starts in a
+            // package's worktree is one of them by construction - and on 2026-10-26 the one started
             "--no-queue" => cfg.serve_queues = false,
-            // **The box's room coordinator** (the room's slice 2). A whole daemon whose only job
-            // is the room: its own socket, no store, no project, and one session of its own that
-            // arbitrates the queues. See `crate::room::coordinator` for what it configures and
-            // for the two things it refuses to start without.
+            // The box's room coordinator (the room's slice 2). A whole daemon whose only job is
+            // the room: its own socket, no store, no project, and one session of its own that
+            // arbitrates the queues.
             "--room" => cfg.room = true,
             "--adjudicator" => cfg.adjudicator = AdjudicatorChoice::parse(&next()?)?,
-            // **Layer B's endpoint.** Its own, not `--endpoint`: the guard does not
-            // have to be the model doing the work, and on this fleet it should not
-            // be — a 4B on the CPU beside a 27B on a GPU, or a second box entirely.
-            // One flag for both would make the guard follow every model change.
-            // Start supervised. Equivalent to typing `/supervise` as the first thing
-            // in the session, and there so a script does not have to.
+            // Layer B's endpoint. Its own, not `--endpoint`: the guard does not have to be the
+            // model doing the work, and on this fleet it should not be - a 4B on the CPU beside a 27B
+            // on a GPU, or a second box entirely.
             "--supervise" => cfg.supervise = true,
             "--oracle" => {
                 let v = next()?;
@@ -1030,27 +824,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     p.parse().map_err(|e| format!("oracle port: {e}"))?,
                 ));
             }
-            // The budget `ModelAdjudicator` enforces. A knob because it decides which
-            // models can hold the seat at all, and the answer is different for an
-            // oracle on this box and one across the LAN: the default 400 ms was
-            // measured against a local 4B on CPU and says nothing about a remote one.
-            //
-            // Raising it is a real decision with a cost — the gate blocks for this
-            // long on every gated call — so it is typed rather than inferred from
-            // whether the endpoint looks remote.
+            // The budget `ModelAdjudicator` enforces. A knob because it decides which models can hold
+            // the seat at all, and the answer is different for an oracle on this box and one across
+            // the LAN
             "--oracle-budget-ms" => {
                 let v = next()?;
                 cfg.oracle_budget = std::time::Duration::from_millis(
                     v.parse().map_err(|e| format!("--oracle-budget-ms: {e}"))?,
                 );
             }
-            // What the guard is asked: `verdict` (its own ALLOW/DENY/UNSURE) or
-            // `scores` (FIT and CLAIM 0-10, TraceGuard arXiv 2604.03968 §4; the
-            // thresholds derive the verdict). Plan §3; `--compare` measures both.
-            // **The guard's output ceiling** (R12). One of the four readings of an unsure
-            // answer is a *budget*: a reply stopped at `max_tokens` before it reached a
-            // verdict. That is the one whose response is a knob rather than a person, and
-            // this is the knob.
+            // What the guard is asked: `verdict` (its own ALLOW/DENY/UNSURE) or `scores` (FIT and
+            // CLAIM 0-10, TraceGuard arXiv 2604.03968 §4; the thresholds derive the verdict). Plan §3
+            // `--compare` measures both. The guard's output ceiling.
             "--oracle-max-tokens" => {
                 let v = next()?;
                 cfg.oracle_max_tokens =
@@ -1089,13 +874,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             // Where THIS session's tools run. `firecode` boots a VM on a copy of
             // the workspace, the VM is the boundary and the mode inside is
-            // allow-all — the same placement a subagent gets from `where`.
+            // allow-all - the same placement a subagent gets from `where`.
             "--where" => {
                 let w = next()?;
                 let asked = letibot_tools::builtins::task::Placement::parse(&w)
                     .map_err(|e| format!("--where: {e}"))?;
                 match asked {
-                    // **R100: the VM and the host are TWO asks**, recorded here rather than
+                    // : the VM and the host are TWO asks, recorded here rather than
                     // resolved, so the answer does not depend on which flag came first.
                     letibot_tools::builtins::task::Placement::Firecode => vm_asked = true,
                     // `--where host:NAME` is `--host NAME` under another name, and `--where
@@ -1121,24 +906,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             // A copy of one repository instead of the workspace mounted - the old placement.
             "--vm-copy" => vm_copy = true,
-            // **Where this daemon's REVIEWERS run** — `host` (the default: a reviewer child on
-            // this machine, in a checkout of the head it judges, as the subagents that author the
-            // branches already run) or `vm` (each reviewer booted in a firecode microVM).
-            //
-            // `--help` has advertised this flag since the two words were introduced and the
-            // parser never had an arm for it: `harnessd --reviewers vm` answered *unknown
-            // argument --reviewers*, which is a person being told their configuration is a typo
-            // by a build whose own help says it is not. It is here now, and it is the same shape
-            // as `--gate-host`: the project's `[queue] reviewers` is read by
-            // `Config::for_the_daemon`, and this flag is parsed AFTER it, so the flag wins — and
-            // `--reviewers host` puts it back, which is how a daemon seated above several
-            // repositories overrides the one file it could read.
+            // Where this daemon's REVIEWERS run - `host` (the default: a reviewer child on this
+            // machine, in a checkout of the head it judges, as the subagents that author the branches
+            // already run) or `vm` (each reviewer booted in a firecode microVM).
             "--reviewers" => apply_reviewers_flag(&mut cfg, &next()?)?,
-            // **Where the merge gate runs.** A name from the operator's `hosts.toml`, checked
-            // here for `--host`'s reason: a name nobody declared is refused by this line rather
-            // than by a gate that fails on the first branch after it. `local` (or an empty name)
-            // puts it back on this machine, which is how an operator overrides a project file
-            // for one daemon.
+            // Where the merge gate runs. A name from the operator's `hosts.toml`, checked here for
+            // `--host`'s reason: a name nobody declared is refused by this line rather than by a gate
+            // that fails on the first branch after it.
             "--gate-host" => {
                 let name = next()?;
                 let name = name.trim().to_string();
@@ -1152,11 +926,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     cfg.gate_host = Some(name);
                 }
             }
-            // **Where this session's TOOLS run, on another machine**
-            // (`docs/remote-hosts.md`): `--host lab2x1`, the same shape as `--vm`. The
-            // name must be one the operator declared, so it is resolved here — before a
-            // daemon starts — and a name that is not in the file is refused by this
-            // line rather than by a session that fails its first `bash`.
+            // Where this session's TOOLS run, on another machine (`docs/remote-hosts.md`): `--host
+            // lab2x1`, the same shape as `--vm`.
             "--host" => {
                 let name = next()?;
                 let hosts = letibot_tools::remote::Hosts::load();
@@ -1167,10 +938,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             // Passed to `firecode up` verbatim, repeatable: `--vm-arg --mem --vm-arg 8192`.
             "--vm-arg" => cfg.vm_args.push(next()?),
-            // What is behind `web_search`. Without it the tool refuses and names
-            // this flag, which is the state every session has had until now.
-            // The wall, when the operator knows it and the server will not say —
-            // a metered provider, or a proxy that does not serve /props.
+            // What is behind `web_search`. Without it the tool refuses and names this flag, which is
+            // the state every session has had until now. The wall, when the operator knows it and the
+            // server will not say - a metered provider, or a proxy that does not serve /props.
             "--context-window" => {
                 cfg.context_window = Some(
                     next()?
@@ -1179,13 +949,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 )
             }
             "--no-auto-compact" => cfg.auto_compact = false,
-            // **The explicit "ignore the project file".** The walk-up finds the
-            // nearest `leticode.toml` at or above the workspace, and this is how an
-            // operator says "not for this daemon" without deleting the file: a
-            // one-off against a project whose models do not apply, or a daemon that
-            // should run on its own standing choice. Off by default — the file is
-            // found and read unless this says otherwise, the way `.env` is read
-            // unless `--no-env` says otherwise.
+            // The explicit "ignore the project file". The walk-up finds the nearest
+            // `leticode.toml` at or above the workspace, and this is how an operator says "not for
+            // this daemon" without deleting the file
             "--no-project-config" => no_project_config = true,
             "--web-search" => {
                 cfg.web_search = match next()?.as_str() {
@@ -1195,12 +961,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     other => Some(other.to_string()),
                 }
             }
-            // Held by the websearch crate, not by `Config` — which derives
+            // Held by the websearch crate, not by `Config` - which derives
             // `Debug`, and a secret in a struct that can be `{:?}`-printed is a
             // secret one `eprintln!` away from a log.
             "--brave-key" => letibot_websearch::set_flag_key(next()?),
             // What is behind `web_fetch`: the curl subprocess the webfetch
-            // crate wraps. No key and no account — the flag is the whole
+            // crate wraps. No key and no account - the flag is the whole
             // opt-in, and the tool's refusal names it.
             "--web-fetch" => cfg.web_fetch = true,
             "--prompt" => steps.push(Step::Prompt(next()?)),
@@ -1224,7 +990,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cfg.http_retries = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
             // The progress check's tolerance band. `0` turns it off, and the daemon
-            // says so at startup — see `Config::disclosures`.
+            // says so at startup - see `Config::disclosures`.
             "--stall-rounds" => {
                 cfg.stall_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
@@ -1241,16 +1007,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let (h, p) = v.rsplit_once(':').ok_or("--endpoint wants HOST:PORT")?;
                 cfg.endpoint = Endpoint::new(h, p.parse().map_err(|e| format!("port: {e}"))?);
             }
-            // **`--system` is the prompt; `--system-file` is where to read one
-            // from.** It used to be the file alone, undocumented as such beyond
-            // one word in the usage line, and the operator hit it the obvious
-            // way: *"wtf is --system FILE? I also want a string"*.
-            //
-            // A value that names an existing file is REFUSED rather than guessed
-            // at. Taking a path as the prompt silently would make a scripted
-            // `--system prompt.txt` start a session whose entire system prompt is
-            // the ten characters `prompt.txt` — the failure nobody checks for,
-            // because the daemon starts and answers.
+            // `--system` is the prompt; `--system-file` is where to read one from. It used to be
+            // the file alone, undocumented as such beyond one word in the usage line, and the operator
+            // hit it the obvious way: *"wtf is --system FILE? I also want a string"*.
             "--system" => {
                 let v = next()?;
                 if std::path::Path::new(&v).is_file() {
@@ -1264,7 +1023,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cfg.system = v;
             }
             // An HTTP head beside the socket, for a daemon whose job is to answer
-            // prompts rather than to hold a conversation — the guard being the
+            // prompts rather than to hold a conversation - the guard being the
             // case it was built for. See `crate::httphead`.
             "--http" => {
                 cfg.http = Some(next()?);
@@ -1278,17 +1037,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 println!("{}", usage());
                 return Ok(0);
             }
-            // **The version, because an INSTALLER has to be able to prove the binary runs.**
-            //
-            // The one-line installer copies a binary it downloaded and then says what it got —
-            // `rano`'s own installer: *"a binary that cannot run is a failure this script would
-            // otherwise report as success"* — and the cheapest way to prove a binary runs is to ask
-            // it something it can answer without a socket, a model or a store. `--help` would do it
-            // and prints forty lines; this prints one.
-            //
-            // **`CARGO_PKG_VERSION` is the WORKSPACE's version**, which is the number the release
-            // tag has to agree with — see the root manifest. So a stale binary is visible from the
-            // same command the installer uses to check it landed.
+            // The version, because an INSTALLER has to be able to prove the binary runs. The
+            // one-line installer copies a binary it downloaded and then says what it got - `rano`'s
+            // own installer
             "-V" | "--version" => {
                 println!("harnessd {}", env!("CARGO_PKG_VERSION"));
                 return Ok(0);
@@ -1297,48 +1048,28 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **A RUN OF STEPS IS A ONE-SHOT, and the session's tools are told so.** `--prompt` and
+    // A RUN OF STEPS IS A ONE-SHOT, and the session's tools are told so. `--prompt` and
     // `--slash` are what `letibot "a question"` passes: the daemon runs the steps, prints the
-    // answers and exits, and it exits with them. Configured HERE, off the steps themselves,
-    // rather than left to whoever built the command line — a second flag meaning *one-shot*
-    // could disagree with them, and this is the fact the tools act on (`InvokeCtx::one_shot`:
-    // `bash` refuses `background: true`, because nothing will ever read that job's result).
-    //
-    // **And a one-shot serves NO queue.** It has no idle life to oversee one: it claims the
-    // leases of every repository it sits above, runs one prompt and exits, and what it leaves
-    // behind is a lease whose holder is dead — on 2026-10-26 a one-shot for one prompt held the
-    // leases of six repositories under `~/Projects/stroppy-io`, and the operator's next daemon
-    // had to give all six up (its log: *"gave up the lease of …/stroppy, … its heartbeat was
-    // 90 s old and pid 28089 is not running"*). The same two things `--no-queue` takes away
-    // (`crate::mergequeue::spawn_for`): no lease is claimed, no gate runs, no landing happens
-    // here, and no model-facing queue notice is composed.
+    // answers and exits, and it exits with them.
     cfg.one_shot = !steps.is_empty();
     if cfg.one_shot {
         cfg.serve_queues = false;
     }
 
-    // **Where this session's tools run** — one answer from the two asks, and the pair this
+    // Where this session's tools run - one answer from the two asks, and the pair this
     // build cannot honour is refused here rather than silently resolved to one of them.
     cfg.placement = placement_from_flags(vm_asked, host_asked.as_deref())?;
     // The session's VM works in the workspace itself, mounted (a Mac), unless the operator
-    // asked for a copy — said anywhere on the line, before or after `--where`.
+    // asked for a copy - said anywhere on the line, before or after `--where`.
     cfg.vm_mount = !vm_copy && cfg.placement == letibot_tools::builtins::task::Placement::Firecode;
 
-    // **Where this daemon's gate runs**, told to the queue once — the queue builds one runner for
-    // the whole daemon (`QueueEnv::production`), so this is the seam and `mergequeue::gate`
-    // reads it. `None` is this machine and is today's behaviour exactly. Said AFTER the flags so
-    // `--gate-host` is the last word over `[queue] gate_host`, which `Config::for_the_daemon`
-    // read from the project's file.
+    // Where this daemon's gate runs, told to the queue once - the queue builds one runner
+    // for the whole daemon (`QueueEnv::production`), so this is the seam and
+    // `mergequeue::gate` reads it. `None` is this machine and is today's behaviour exactly.
     crate::mergequeue::gate::set_gate_host(cfg.gate_host.clone());
 
-    // **The box's room coordinator** (the room's slice 2). Configured here, after every flag and
-    // file has spoken and before anything is loaded or bound: a coordinator with no store, its own
-    // socket and session id derived from the host, and a model it refuses to start without. See
-    // `crate::room::coordinator::configure` for each decision and its reason.
-    //
-    // A `--room` daemon is not a folder's daemon, so it is not a one-shot either: `--prompt` with
-    // `--room` would be a room that arbitrates one question and exits, which is not a thing anybody
-    // wants and is not worth a second refusal.
+    // The box's room coordinator (the room's slice 2). Configured here, after every flag
+    // and file has spoken and before anything is loaded or bound
     if cfg.room {
         crate::room::coordinator::configure(&mut cfg)?;
     }
@@ -1360,25 +1091,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         return run_query(&cfg, q, scope.as_deref(), tsv);
     }
 
-    // **What a corpus replay measured**, written beside the store by
-    // `--calibrate-write`. Read here, after `--store` is known, and
-    // absent/malformed is silently the declared scope, the same fail-open a
-    // startup read must have.
+    // What a corpus replay measured, written beside the store by `--calibrate-write`. Read
+    // here, after `--store` is known, and absent/malformed is silently the declared scope, the
+    // same fail-open a startup read must have.
     if let Some(earned) = crate::calibrate::read_calibration(&cfg) {
-        // **A measurement ADDS to a declaration; it never shrinks one.**
-        //
-        // Replacing outright was wrong, and the way it was wrong is the way that
-        // matters: a replay recommends only what it has rows for, so on this box it
-        // earned five intents and a reach of `host_project` — while the operator
-        // had set `host_other` in providers.toml, which is what their work outside the project
-        // needs. Taking the earned scope whole would have widened the intents and
-        // silently revoked the reach, in the name of evidence that never said
-        // anything about it.
-        //
-        // Both halves are the operator's own authority: one they typed, one
-        // measured from calls they answered themselves. Neither gets to quietly
-        // undo the other, so the intents are the union and the reach is the further
-        // of the two, and the evidence says it is both.
+        // A measurement ADDS to a declaration; it never shrinks one. Replacing outright was
+        // wrong, and the way it was wrong is the way that matters
         cfg.oracle_scope = Some(match cfg.oracle_scope.take() {
             None => earned,
             Some(declared) => letibot_tools::authorise::OracleScope::earned(
@@ -1392,42 +1110,22 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         });
     }
 
-    // One registry, seeded with the session named on the command line. A head can
-    // make more over the socket; this one is the daemon's own, and it is opened
-    // eagerly so that a dialect which does not fit the vocabulary is a startup
-    // error rather than a failure on somebody's first prompt.
-    // **The metrics writer** (TODO R81), before the registry: a session the registry creates
-    // tells the writer its parent, and an emit before the writer is installed is a no-op.
-    //
-    // And the memory caps, said here rather than by the binary: this is the first line of the
-    // DAEMON's own log, past every verb that answers and exits.
+    // One registry, seeded with the session named on the command line. A head can make more
+    // over the socket
     say_memory_caps();
     crate::instruments::start_writer(&cfg);
     let registry = Registry::new();
-    // **An older binary on a newer store: keep working, and say so in red on every head.**
-    //
-    // Asked once, here, for the same reason `say_memory_caps` is: this is past every verb that
-    // answers and exits, and before every session opens — so the sentence is on the registry
-    // before the first head can attach, and a store this build may NOT serve is a startup error
-    // naming the fix rather than a session that fails to open halfway through a boot. See
-    // `store_floor` for what each of the three answers means.
-    //
-    // **The store is opened for this and then dropped**, and with one connection per store file
-    // per process (`Store::open`) that is not one connection among several: a daemon holds ONE,
-    // and nothing else has opened this file yet, so the drop below closes it and gives its
-    // descriptor back. The sessions' first open makes it again.
-    // **Asked with `?`, so a store this build may not serve is a startup error**: the sentence it
-    // carries already names the command that fixes it, and a daemon that went on would be
-    // building sessions on a file it cannot read.
+    // An older binary on a newer store: keep working, and say so in red on every head.
+    // Asked once, here, for the same reason `say_memory_caps` is
     let said = crate::store_floor::said(&cfg)?;
-    // **Said here as well as on the heads**, and this is the daemon's own log — the file an
+    // Said here as well as on the heads, and this is the daemon's own log - the file an
     // operator reads a week later when they wonder why a build was behind. Cheap, and the one
     // place the fact is on disk before any head exists.
     if let Some(said) = &said {
         eprintln!("  {said}");
     }
     registry.set_store_older(said);
-    // **The daemon watches its own memory** — `memwatch`. One line a minute in this log, a
+    // The daemon watches its own memory - `memwatch`. One line a minute in this log, a
     // census when it crosses a step, and a warning on every session.
     crate::memwatch::spawn(
         registry.clone(),
@@ -1446,33 +1144,16 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // longer running and `ResumeSession` can find them. A daemon with no `--store`
     // sets no source and lists only what it holds, which is what it always did.
     if let Some(src) = crate::sessions::StoreSessions::open(&cfg) {
-        // **One store, two questions** (R19.2b): the same instance lists sessions the
-        // registry is not holding, and answers `FetchRow` for a row its bounded view has
-        // trimmed. Both are set here because this is the one place that knows there is a
-        // store at all.
-        // **One store, three questions** now: the same instance lists sessions, answers
-        // `FetchRow`, and serves R11's locator for the oracle's brief and reply.
+        // One store, two questions : the same instance lists sessions the registry is
+        // not holding, and answers `FetchRow` for a row its bounded view has trimmed. Both are set
+        // here because this is the one place that knows there is a store at all.
         registry.set_diagnostic_source(src.clone());
         registry.set_row_source(src.clone());
         registry.set_source(src);
     }
-    // **The smart `!`'s model half, attached whenever there is a local model to ask.**
-    //
-    // The endpoint is `cfg.oracle` — the `[gatekeeper]` endpoint read at startup, the
-    // LOCAL model — and the suggester is installed on exactly that condition, the same
-    // one the guard is attached on. A daemon with no local endpoint installs no
-    // suggester, and a `SuggestShell` then answers with an empty list: a suggestion
-    // must not cost money per keystroke, so the fallback is *nothing*, never a metered
-    // provider.
-    //
-    // **The name is the operator's `[gatekeeper] model` when they named one, and
-    // `local` otherwise — deliberately NOT the session's model.** The guard falls back
-    // to `cfg.model` (`harness.rs`), and it can afford to: its own body hardcodes
-    // `"model": "guard"` on the wire, so the name it was constructed with is only ever
-    // read by `describe`. This one puts its name in the request, and a name is a thing a
-    // proxy in front of the endpoint may ROUTE BY — an operator whose session model is a
-    // metered provider's and whose local box sits behind such a proxy would be billed per
-    // keystroke by exactly the line that exists to prevent it.
+    // The smart `!`'s model half, attached whenever there is a local model to ask. The
+    // endpoint is `cfg.oracle` - the `[gatekeeper]` endpoint read at startup, the LOCAL model
+    // - and the suggester is installed on exactly that condition, the same one the guard is
     if let Some(ep) = cfg.oracle.clone() {
         let model = cfg
             .oracle_model
@@ -1483,30 +1164,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             ep, model,
         )));
     }
-    // **The pane's pty, owned by this daemon.** (`!term`.)
-    //
-    // Installed unconditionally, and **deliberately not behind a capability check**: unlike
-    // the suggester, a pane needs no model, no endpoint and no configuration — it needs a
-    // pty, which is either there or is not, and a box without one says so in the pane's own
-    // ending rather than at startup. A driver that is absent is a `!term` that answers *no
-    // pty here*; a driver that is present and cannot open one answers the same sentence a
-    // moment later, and the difference is a `libc` call.
-    //
-    // `Weak`, because the registry stores this driver and the driver reads the registry's
-    // wiring for a session's workspace — see `Terminals`' own note.
+    // The pane's pty, owned by this daemon. (`!term`.) Installed unconditionally, and
+    // deliberately not behind a capability check
     registry.set_terminal(std::sync::Arc::new(crate::term::Terminals::new(
         std::sync::Arc::downgrade(&registry),
     )));
-    // **The stored row's parent and name come in with the first session** (R68.6), read once
-    // here at startup: the registry's entry is what every later open asks (`Registry::parent_of`,
-    // `Registry::title_of`) instead of scanning the store, so a session resumed by `--continue`
-    // must arrive knowing whose subagent it is and what the operator named it.
+    // The stored row's parent and name come in with the first session, read once
+    // here at startup
     let stored = registry.resumable(&cfg.session_id);
     let title = match (&cfg.title, &stored) {
         (t, Some(b)) if t.is_empty() => b.title.clone(),
         (t, _) => t.clone(),
     };
-    // **Who this session's parent is, by the tree's one rule** — the caller's `--parent` when it
+    // Who this session's parent is, by the tree's one rule - the caller's `--parent` when it
     // has one, else its own stored row. `Harness::open` asks the same function, so the registry's
     // entry and the session's config cannot disagree.
     let parent = registry.parent_for(
@@ -1527,21 +1197,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // another daemon owns it, and finding that out after loading a vocabulary
     // wastes the load.
     let mut daemon = Daemon::serve(registry.clone(), &cfg.socket).map_err(|e| e.to_string())?;
-    // **Where this daemon's tools run, said once and beside the socket** (RH2). The placement is
-    // a fact of the PROCESS — every session this daemon opens runs its `bash`, `read`, `write`
-    // and jobs in the same place — and the protocol carries it nowhere: a head attaching is told
-    // the model, the endpoint and the dialect, all per session, and nothing about the backend.
-    // So it is written down for the readers that need it, and the one that needs it is the
-    // bridge: `leticode_start { host }` must not join a daemon running its caller's tools
-    // somewhere else, and cannot tell from the socket alone.
-    //
-    // Written HERE and not before the bind, so only the daemon that actually holds the folder
-    // writes an answer: a second start refused for a live daemon has already failed, and must
-    // not overwrite the live daemon's record with the placement it was refused for.
-    //
-    // A failure is said and not fatal — no session depends on the file, only a head's question
-    // about one does, and a daemon that refused to start over this would be trading a whole
-    // session for a sentence.
+    // Where this daemon's tools run, said once and beside the socket (RH2). The placement
+    // is a fact of the PROCESS - every session this daemon opens runs its `bash`, `read`
+    // `write` and jobs in the same place - and the protocol carries it nowhere
     if let Err(e) = letibot_sessionlog::placement::write(&cfg.socket, &cfg.placement.as_str()) {
         eprintln!(
             "  could not record the placement beside {}: {e} — a head asking where this daemon's \
@@ -1556,22 +1214,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let boot = Boot::new(&registry, &cfg.session_id);
     boot.step("the socket is bound; starting the queues");
 
-    // **The review queue and the merge queue (R61), before the worker loop takes this thread.**
-    // Their own threads — a supervisor that claims each repository's lease and a worker per
-    // lease held — never a session's worker, and the process's one connection to the store. The
-    // reviewers are `task` children of the review queue's session (`Sessions::serve_reviews`);
-    // the threads ring it, and every move is announced on every hub (`Registry::broadcast`),
-    // because the queues are daemon-level and a pane may be open on any session.
-    //
-    // **The review desk is made HERE, not by `Parts::load` below**, because the queue's thread is
-    // started first and both loops that judge a reviewer's fate have to see one desk: the worker
-    // asks it whether a reviewer whose session is gone has already handed its verdict in, and the
-    // review pass takes the verdict and writes the row. Two desks would be two answers to one
-    // question — the worker would re-seat a row that had just been judged, and the verdict would
-    // be discarded by a pass that found the row was no longer its reviewer's (measured 2026-10-29).
+    // The review queue and the merge queue, before the worker loop takes this
+    // thread. Their own threads - a supervisor that claims each repository's lease and a
+    // worker per lease held - never a session's worker, and the process's one connection to
     let reviews = std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new());
     let merge_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // **A coordinator serves no repository**, so it claims no lease and runs no gate: `--room`
+    // A coordinator serves no repository, so it claims no lease and runs no gate: `--room`
     // sets `serve_queues` off, and `spawn_for` is not called at all rather than called and made to
     // find nothing. The room is the queue this daemon serves.
     let merge_queue = if cfg.room {
@@ -1587,11 +1235,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let session_id = cfg.session_id.clone();
     let store_path = cfg.store.clone();
 
-    // The seat, before the first session: a `--flowy` that cannot be honoured is
-    // a startup error, not a session that quietly hears nothing. Opening takes
-    // the local waiter claim and the spool; the node is not touched until the
-    // loop starts, so a node that is away right now is a stall the banner
-    // reports rather than a refusal to start.
+    // The seat, before the first session: a `--flowy` that cannot be honoured is a startup
+    // error, not a session that quietly hears nothing. Opening takes the local waiter claim
+    // and the spool
     let seat = match &cfg.flowy {
         None => None,
         Some(f) => {
@@ -1607,23 +1253,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     };
 
-    // **The user's `leticode.toml`, at one fixed path beside `providers.toml`.**
-    //
-    // The box-wide level: `main_model = "glm-5.3-flash"` here decides what a session
-    // runs on **without a flag**, for every project on this box — which is the thing a
-    // *project's* file cannot say and the thing the operator asked for. Same name,
-    // same keys, same parser as the project file (`load_user` is `load` at this path);
-    // the discovery is the whole difference, because a project file is FOUND by
-    // walking up and this one is AT AN ADDRESS.
-    //
-    // Read before the project file, because the project file overrides it, and before
-    // `[default]`, because `[default]` is the level below both.
-    //
-    // **A file that does not parse does not take the daemon down.** The file, the
-    // line the parser stopped on, and what happens instead — the same sentence
-    // `prompts.toml` already gets, and the same one the project file gets below. A
-    // user file that took every daemon on the box down would be a worse failure than
-    // the one it reports.
+    // The user's `leticode.toml`, at one fixed path beside `providers.toml`. The box-wide
+    // level
     let user_level = match crate::leticode_config::load_user() {
         Ok(u) => u,
         Err(why) => {
@@ -1647,15 +1278,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **The project's `leticode.toml`, discovered by walking up from the workspace.**
-    //
-    // Read after the user file rather than before, because the precedence is command
-    // line beats the project file, the project file beats the user file, the user file
-    // beats the built-in default, and an unset key falls through — and the user file is
-    // already loaded by the time this runs, so merging the project's keys over it now
-    // is what makes the project level win. The command line is checked rather than
-    // re-applied: a model the operator's own `--provider` named must not be overridden
-    // by one a file set.
+    // The project's `leticode.toml`, discovered by walking up from the workspace. Read
+    // after the user file rather than before, because the precedence is command line beats the
+    // project file, the project file beats the user file, the user file beats the built-in
     cfg.read_project_config = !no_project_config;
     let project_level = if no_project_config {
         eprintln!(
@@ -1666,10 +1291,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     } else {
         match crate::leticode_config::LeticodeConfig::discover(&cfg.workspace) {
             None => {
-                // No project file at or above the workspace: the daemon's own
-                // models, and nothing to name. Said rather than silent, because a
-                // project that expects a `leticode.toml` and does not find one is a
-                // setting the operator will reasonably believe took effect.
+                // No project file at or above the workspace: the daemon's own models, and nothing to name.
+                // Said rather than silent, because a project that expects a `leticode.toml` and does not
+                // find one is a setting the operator will reasonably believe took effect.
                 eprintln!(
                     "  leticode.toml: none found at or above {} — the session runs \
                      on the daemon's own models",
@@ -1706,26 +1330,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     };
 
-    // **The two file levels as one value, the project's over the user's.** This is
-    // what the spawn reads (`cfg.leticode`) and what the disclosure names, and
-    // merging here rather than at each read is what makes a project that sets one
-    // key keep the user's others.
-    //
-    // **`subagent_model` and `[roles]` do not ride the config for a path to read
-    // later** — the spawn reads them off `cfg.leticode` at the moment it seats a child
-    // (`HarnessTaskRunner::run_to_completion`), which is the only place a child's
-    // model and its samplers are decided. A key carried "for the path that reads it"
-    // and read by no path is the defect this feature is written against.
+    // The two file levels as one value, the project's over the user's. This is what the
+    // spawn reads (`cfg.leticode`) and what the disclosure names, and merging here rather than
+    // at each read is what makes a project that sets one key keep the user's others.
     cfg.leticode = user_level.overridden_by(&project_level);
     cfg.leticode_user = user_level.clone();
 
-    // **`main_model`, through the one function that states the precedence.**
-    //
-    // The command line is the flag level when it chose WHO ANSWERS — `--provider`,
-    // and not `--model`, which is the local BINDING the launcher passes on every
-    // start; see `cli_main_model` and `apply_main_model`. `[default]` is not a level
-    // here at all: it is the built-in, applied below and only if none of the three
-    // above spoke.
+    // `main_model`, through the one function that states the precedence. The command line
+    // is the flag level when it chose WHO ANSWERS - `--provider`, and not `--model`, which is
+    // the local BINDING the launcher passes on every start
     if !cli_main_model {
         if let Some((model, level)) = crate::leticode_config::precedence(
             None,
@@ -1747,7 +1360,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             };
         }
     } else if cfg.provider.is_some() {
-        // The flag level, and `Level::describe` already names `--provider` — so there
+        // The flag level, and `Level::describe` already names `--provider` - so there
         // is nothing to add and nothing that could disagree with it. The provider and
         // its model are on the front of the same sentence (`main deepseek/…`).
         cfg.model_source = crate::config::ModelSource {
@@ -1759,21 +1372,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         };
     }
 
-    // **The built-in default, and it is BELOW the two files.**
-    //
-    // `[default]` in providers.toml — what `/models NAME` writes — is the daemon's
-    // standing choice, and it is read here rather than before the files so that a
-    // line the operator wrote in `leticode.toml` outranks it. That ordering is the
-    // asymmetry this level exists to fix, and the shape of the defect is worth
-    // keeping in view: `[default]` is read into `cfg.provider` only when
-    // `cfg.provider.is_none()`, and `--model` (the launcher's binding) leaves it
-    // `None` — so a FILE outranked a COMMAND LINE, and `letibot --glm` answered on
-    // deepseek while its own banner said `glm-5.3-flash`.
-    //
-    // The Err is said, not swallowed: a daemon that comes up local while the file
-    // says deepseek is a fault the operator cannot find from the outside. The line
-    // follows the one prompts.toml already gets — the file, the parser's own message,
-    // and what happens instead.
+    // The built-in default, and it is BELOW the two files. `[default]` in providers.toml -
+    // what `/models NAME` writes - is the daemon's standing choice, and it is read here rather
+    // than before the files so that a line the operator wrote in `leticode.toml` outranks it.
     if cfg.model_source.level == crate::leticode_config::Level::Builtin {
         match letibot_provider::keys::default_choice(None) {
             Ok(Some(d)) => {
@@ -1831,13 +1432,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **The guard's model, and the adjudicator's — two words for the ONE oracle this
-    // build has**, which `load` has already refused to see disagree. The precedence
-    // goes through the one function that states it rather than being spelled out
-    // again here: there is no command-line flag for the guard's model, and
-    // `[gatekeeper] model` from providers.toml is already in `cfg.oracle_model` — so
-    // the merged file's word wins over the user's, and an unset key leaves the user's
-    // where it was.
+    // The guard's model, and the adjudicator's - two words for the ONE oracle this build
+    // has, which `load` has already refused to see disagree. The precedence goes through the
+    // one function that states it rather than being spelled out again here
     if let Some((m, _)) = crate::leticode_config::precedence(
         None,
         cfg.leticode
@@ -1849,13 +1446,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         cfg.oracle_model = Some(m);
     }
 
-    // **A model a file named that this box cannot reach, said at startup.**
-    //
-    // The third loud failure, and the one the tree has paid for three times: a name
-    // that is a *plausible* string reaches the first turn and comes back `401` or
-    // `400 Prompt contains invalid tokens`, neither of which names the file or the
-    // line that wrote it. `/props` is asked once, and only when a file set a bare
-    // local alias — a start where no file spoke pays nothing for this.
+    // A model a file named that this box cannot reach, said at startup. The third loud
+    // failure, and the one the tree has paid for three times
     if cfg.provider.is_none() {
         boot.step(format!(
             "asking the model server at {} what it serves",
@@ -1889,31 +1481,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **The per-model profile out of `providers.toml`** — `[model.<family>]` for the
-    // dialect's effort, `[model."<alias>"]` for this model's sampling.
-    //
-    // Read HERE, after the levels rather than before them, because the profile is
-    // looked up BY the alias the session runs on: a file that set `main_model` had its
-    // `[model."…"]` sampling block skipped entirely while this ran earlier, so a
-    // project or user file could name a model and get the built-in greedy literal
-    // instead of the numbers the operator wrote for those weights.
-    //
-    // This is the wire that was missing. The file has documented the two blocks, the
-    // precedence and a worked example since 2026-09-19, and nothing in the tree parsed
-    // either: `cfg.sampling` was assigned nowhere, so every daemon ran the
-    // `Config::default` greedy literal and every number written in that file did
-    // nothing. A documented knob that is silently ignored is worse than an absent one,
-    // because the operator has no way to tell the difference from the outside.
-    //
-    // **Flag beats file beats built-in**, as the file says: `--effort` is read before
-    // this and keeps its value, and sampling has no flag yet, so a block wins over the
-    // built-in whenever it says anything at all.
-    //
-    // **A block replaces the built-in rather than merging onto it.** Merging would
-    // leave `temperature = 0.0` in force under a block that set only
-    // `presence_penalty`, which is the built-in deciding the most consequential knob
-    // in a profile the operator wrote — a surprise in the one direction nobody would
-    // look for.
+    // The per-model profile out of `providers.toml` - `[model.<family>]` for the dialect's
+    // effort, `[model."<alias>"]` for this model's sampling.
     {
         let profile = letibot_provider::keys::model_profile(cfg.dialect.family(), &cfg.model, None);
         if !profile.sampling.is_empty() {
@@ -1922,7 +1491,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if cfg.effort.is_none() {
             cfg.effort = profile.effort.clone();
         }
-        // **Said, not swallowed.** The defect above was a number nobody read; a
+        // Said, not swallowed. The defect above was a number nobody read; a
         // misspelled key is the same defect one line lower, so it gets a line.
         for u in &profile.unknown {
             eprintln!(
@@ -1933,19 +1502,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **What to try when the model this session is on is OUT** — `[fallback] models`
-    // in the same file, read once here rather than at the moment of need.
-    //
-    // A model that cannot answer is the one failure a person cannot fix by waiting
-    // (MEASURED 2026-10-12: a weekly quota exhausted, 63 s of retries, the turn
-    // recorded as FAILED), and until now there was nowhere in the file to say what
-    // should answer instead. The list is theirs, in their order; this only reads it.
-    //
-    // **Said at startup**, because a fallback nobody knows is configured is a model
-    // change nobody authorised: the first notice of one should not be a turn that
-    // silently went somewhere else. A file that will not parse is a fault and says
-    // so, the same way `[default]` does — the two readers of one file must not
-    // disagree about it.
+    // What to try when the model this session is on is OUT - `[fallback] models` in the
+    // same file, read once here rather than at the moment of need. A model that cannot answer
+    // is the one failure a person cannot fix by waiting (MEASURED 2026-10-12
     match letibot_provider::keys::fallback_models(None) {
         Ok(list) if !list.is_empty() => {
             eprintln!(
@@ -1959,22 +1518,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
     }
 
-    // **Captured here rather than before the levels**, because this is the banner's
-    // copy of the model and the levels are what decide it: a file that set
-    // `main_model` would otherwise be disclosed by the daemon's own launch line.
-    // The source goes with it, because `cfg` is handed to `Sessions` a few lines
-    // down and the banner is printed after that.
+    // Captured here rather than before the levels, because this is the banner's copy of
+    // the model and the levels are what decide it: a file that set `main_model` would
+    // otherwise be disclosed by the daemon's own launch line.
     let banner_model = BannerModel::of(&cfg);
 
-    // **The operator's `prompts.toml`, read once, here.** The per-model system-prompt
-    // overrides, beside `providers.toml` in the same config dir.
-    //
-    // Read at startup rather than per session because the report belongs at startup:
-    // a file that does not parse, or that names a section this daemon does not know,
-    // is said once, with the parser's own message and the path, and the daemon runs
-    // on the built-in prompt for every session. Silently ignoring an unreadable prompt
-    // file is the failure this feature exists to forbid — somebody edits a prompt,
-    // sees no change, and cannot tell whether they were ignored.
+    // The operator's `prompts.toml`, read once, here. The per-model system-prompt
+    // overrides, beside `providers.toml` in the same config dir. Read at startup rather than
+    // per session because the report belongs at startup
     {
         let path = crate::config::Prompts::path();
         match crate::config::Prompts::load(&path) {
@@ -1985,55 +1536,29 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // **The image marker, read off the server for the same reason the window is.**
-    //
-    // It is a per-instance random value published on `/props`, so `None` means *this endpoint takes
-    // no images* — a metered provider, or a local server without `mtmd`. Nothing is assumed: the
-    // model's own vision tokens are the wrong answer and are refused by the server, which is the
-    // measurement `serving::served_media_marker` records.
+    // The image marker, read off the server for the same reason the window is. It is a
+    // per-instance random value published on `/props`, so `None` means *this endpoint takes no
+    // images* - a metered provider, or a local server without `mtmd`. Nothing is assumed
     if cfg.provider.is_none() {
         cfg.media_marker = letibot_turn::serving::served_media_marker(&cfg.endpoint);
     }
 
-    // **The wall, read off the server rather than assumed.** Only for a local
-    // endpoint: a metered provider has no `/props`, and its window stays `None`
-    // unless the operator states it, because a guessed window would either
-    // compact a conversation that had room or fail to compact one that did not.
+    // The wall, read off the server rather than assumed. Only for a local endpoint
     if cfg.context_window.is_none() {
         cfg.context_window = match &cfg.provider {
             // A local endpoint states its own window, and `/props` is the only
             // place that number is true.
             None => letibot_turn::serving::served_ctx(&cfg.endpoint),
-            // **A metered provider's window comes from the catalogue.**
-            //
-            // This used to be skipped entirely for a provider, on the reasoning
-            // that "a guessed window would either compact a conversation that had
-            // room or fail to compact one that did not". That was right when
-            // nothing here knew a cloud model's size — and it stopped being right
-            // when `catalogue` landed, which is the same models.dev number
-            // `Harness::retune_window` already switches to when the operator runs
-            // `/models`. So a session that switched mid-conversation planned
-            // against a real window and a session that STARTED on the provider
-            // planned against none at all.
-            //
-            // `None` is not a large window, it is no wall: every check that would
-            // compact reads `let Some(window) = self.cfg.context_window` and is
-            // skipped. Measured 2026-09-20 on the operator's box — `[default]
-            // provider = deepseek` in providers.toml, so this branch was taken at
-            // every start, and their session reached 1,023,545 resident tokens
-            // against a model whose catalogue limit is 1,000,000, having never
-            // once compacted. "leticl session shows 1m context and doesnt compact".
-            //
-            // A model the catalogue does not carry still yields `None`, which is
-            // the old behaviour for exactly the case the old comment was about.
+            // A metered provider's window comes from the catalogue. This used to be skipped
+            // entirely for a provider, on the reasoning that "a guessed window would either compact a
+            // conversation that had room or fail to compact one that did not".
             Some(pc) => pc.catalogue_window(&letibot_provider::catalogue::Catalogue::load()),
         };
     }
 
-    // **Loaded here, after every source of the provider has spoken** — the flag,
-    // `main_model` in leticode.toml, `[default]` in providers.toml — because which
-    // vocabulary a daemon needs depends on who answers: a cloud provider with no
-    // `--vocab` is the byte vocabulary, and that is only knowable once the provider is.
+    // Loaded here, after every source of the provider has spoken - the flag, `main_model`
+    // in leticode.toml, `[default]` in providers.toml - because which vocabulary a daemon
+    // needs depends on who answers
     boot.step("loading the vocabulary");
     let mut parts = match Parts::load(&cfg) {
         Ok(p) => p,
@@ -2043,20 +1568,14 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             return Err(why);
         }
     };
-    // **The desk the queue's thread is already holding** — see where it is made, above. Every
+    // The desk the queue's thread is already holding - see where it is made, above. Every
     // session's harness registers its own `review_verdict` against `parts.reviews`, and a
     // reviewer's verdict has to reach the queue that asked for it, so this is not a second desk.
     parts.reviews = reviews;
 
-    // **The room, before the first session opens.** The coordinator's socket has to exist when
-    // `Harness::open` builds the session's room link, and its session id has to be the arbiter's
-    // before any event can be routed to it — so it is started here, after the vocabulary (a
-    // coordinator that cannot load one has already failed) and before `open_first_with_seat`.
-    //
-    // Held in a local so an orderly stop drops it: `Coordinator::drop` unbinds the socket and gives
-    // the lease back, which is what makes the next coordinator a FRESH start rather than a takeover
-    // of a dead one. A coordinator that is killed leaves both behind on purpose — the lease is how
-    // the next one learns it was killed rather than that it never existed.
+    // The room, before the first session opens. The coordinator's socket has to exist when
+    // `Harness::open` builds the session's room link, and its session id has to be the
+    // arbiter's before any event can be routed to it - so it is started here, after the
     let _coordinator = if cfg.room {
         let bell: std::sync::Arc<dyn Fn(&str) + Send + Sync> = {
             let bell = std::sync::Arc::clone(registry.bell());
@@ -2064,12 +1583,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         };
         match crate::room::coordinator::Coordinator::start(&cfg.session_id, bell) {
             Ok(c) => {
-                // **And the tags' agents, on a thread of their own.** The coordinator's server is
-                // what knows which tags have work in them, and the registry is what knows whether a
-                // tag's agent is still there — so the upkeep is handed both and no bell: a claim,
-                // a beat and a finished item are comparisons the room has already made, and the
-                // only thing that may cost a model call is a dispute
-                // (`crate::room::wake`'s own rule).
+                // And the tags' agents, on a thread of their own. The coordinator's server is what
+                // knows which tags have work in them, and the registry is what knows whether a tag's agent
+                // is still there - so the upkeep is handed both and no bell
                 let ledger = letibot_room::AgentLedger::new();
                 c.server().with_agents(std::sync::Arc::clone(&ledger));
                 crate::room::agents::spawn(
@@ -2098,21 +1614,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let http_parts = parts.clone();
     let http_cfg = cfg.clone();
 
-    // **This daemon's life, written down** — its start now, a heartbeat while it runs, and its
-    // stop on the orderly path below — so the next daemon can say how long it was down
-    // (`crate::restart`). Before the first session opens, because that open reads the LAST
-    // daemon's life to decide what to restore.
+    // This daemon's life, written down - its start now, a heartbeat while it runs, and its
+    // stop on the orderly path below - so the next daemon can say how long it was down
+    // (`crate::restart`).
     let lifeline = crate::restart::Lifeline::start(cfg.store.clone(), registry.clone());
-    // **The VM reaper, from the start** — a VM whose owner is finished, or whose owner's daemon
-    // is gone, is brought down rather than left holding a slot every review then waits on
-    // (`crate::vm_reap`). Its own thread, so a reap that takes minutes is not the worker's; the
-    // store it writes to is the process's one connection, as everywhere else.
+    // The VM reaper, from the start - a VM whose owner is finished, or whose owner's
+    // daemon is gone, is brought down rather than left holding a slot every review then waits
+    // on (`crate::vm_reap`). Its own thread, so a reap that takes minutes is not the worker's
     crate::vm_reap::spawn(cfg.store.clone(), registry.clone());
-    // **The process supervisor, from the start** — RH7. Its own thread, and its FIRST tick is the
-    // recovery: it reads every record the last daemon left open, checks each
-    // host once, and writes down which processes are still the ones recorded. Started here rather
-    // than with the first session because a job is not a session's: one whose session has not been
-    // reopened yet still has to be checked, and a host that has gone quiet is `lost` either way.
+    // The process supervisor, from the start - RH7. Its own thread, and its FIRST tick is
+    // the recovery: it reads every record the last daemon left open, checks each host once
+    // and writes down which processes are still the ones recorded.
     crate::supervise::spawn(cfg.store.clone(), registry.clone());
     boot.step(match resume_rows(&cfg) {
         Some(n) if n > 0 => format!("resuming the session ({n} rows)"),
@@ -2143,28 +1655,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         .with_harness(&session_id, |h| (h.tokens().len(), h.ledger_head()))
         .unwrap_or((0, String::new()));
 
-    // After the session is open, not before: the adjudication line is read from the
-    // backend, the gate and the seated schemas, and none of those exist until the
-    // harness is built. A banner computed early is a banner describing a session
-    // that had not been wired yet.
+    // After the session is open, not before: the adjudication line is read from the backend
+    // the gate and the seated schemas, and none of those exist until the harness is built. A
+    // banner computed early is a banner describing a session that had not been wired yet.
     let disclosures = sessions
         .with_harness(&session_id, |h| h.config().disclosures(h.wiring()))
         .unwrap_or_default();
 
     eprintln!("harnessd: session {session_id}");
-    // **The model, AND where it came from.** The operator's own question of the
-    // evening — *"why is my session on deepseek"* — was answered by a file they had to
-    // go and read, and a banner that says `model deepseek` without saying *which
-    // level* is the same defect one line shorter. So the level is on this line, and
-    // the `session model` disclosure under it carries the whole sentence.
-    //
-    // **And it names the model that ANSWERS the turns** (2026-10-26). It printed
-    // `cfg.model` — the local vocabulary BINDING, which the launcher passes on every
-    // start — so a session whose turns went to `glm-coding/glm-5.3` was headed `model
-    // qwen-3.8-flash-next via 127.0.0.1:8080`, while its own disclosures two lines
-    // down said `main glm-coding/glm-5.3` and `turns go to glm-coding (glm-5.3)`.
-    // See [`BannerModel`]: the local binding is shown when it is a different thing,
-    // and it is labelled as the binding rather than as the model.
+    // The model, AND where it came from. The operator's own question of the evening -
+    // *"why is my session on deepseek"* - was answered by a file they had to go and read, and
+    // a banner that says `model deepseek` without saying *which level* is the same defect one
     for line in banner_model.lines() {
         eprintln!("{line}");
     }
@@ -2184,7 +1685,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     eprintln!("  sessions 1 open — a head can list them, switch, and make more");
     if let Some(seat) = &seat {
         // From the seat, not from the config: what it is, where the credential came
-        // from, and where the reader stands — a reading, not a claim.
+        // from, and where the reader stands - a reading, not a claim.
         eprintln!("  flowy    {}", seat.credentials().describe());
         match seat.reader() {
             Ok(Some(r)) => eprintln!(
@@ -2268,8 +1769,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 Ok(reply) => {
                     println!("{}", reply.text);
                     let keeps = reply.f_keep();
-                    // Under a metered provider there is no f_keep to read — the
-                    // cache figures are the provider's — so the footer says what it
+                    // Under a metered provider there is no f_keep to read - the
+                    // cache figures are the provider's - so the footer says what it
                     // does have: tokens and, when the model is priced, the cost.
                     let tail = if keeps.is_empty() {
                         let prompt: u64 = reply.metrics.iter().map(|m| m.prompt_tokens).sum();
@@ -2314,25 +1815,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 }
             }
         }
-        // **The steps are over, so the one-shot's signal grace no longer applies.** A turn that
+        // The steps are over, so the one-shot's signal grace no longer applies. A turn that
         // was interrupted properly and then spends its orderly tail (up to five seconds of
         // subagent threads, a flowy seat stopping) must not be killed by its own watchdog with a
-        // line saying the turn never came back. See `daemon::one_shot_steps_done`.
         crate::daemon::one_shot_steps_done();
         daemon.shutdown();
-        // **The same wait the serving path makes, for the same reason.** The process ends at
-        // the `Ok` below — `bin/harnessd.rs` turns it into `std::process::exit` — and a
-        // subagent thread still inside libllama when that runs the ELF finalizers is a
-        // SIGSEGV after the answers have already been printed. See `SUBAGENT_EXIT_GRACE`.
+        // The same wait the serving path makes, for the same reason. The process ends at the
+        // `Ok` below - `bin/harnessd.rs` turns it into `std::process::exit` - and a subagent
+        // thread still inside libllama when that runs the ELF finalizers is a SIGSEGV after the
         if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
             eprintln!("  {said}");
         }
-        // **And hand the placement's work back** before the process ends: a remote host's
+        // And hand the placement's work back before the process ends: a remote host's
         // branch, a VM's copy. See `Sessions::close_backends`.
         for landed in sessions.close_backends() {
             eprintln!("  {landed}");
         }
-        // **And a guest whose session was never closed here.** A session served on its own thread
+        // And a guest whose session was never closed here. A session served on its own thread
         // holds its backend there, so `close_backends` cannot reach it, and this process is about
         // to end. Bounded, and it says where each copy-out landed.
         for said in letibot_tools::remote::guests_down() {
@@ -2345,10 +1844,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         return Ok(if failed > 0 { 1 } else { 0 });
     }
 
-    // **The HTTP head, before the worker loop takes this thread.** Its own
-    // thread, its own engine, its own scratch transcripts: it shares the
-    // vocabulary and the dialect and touches no session, so nothing it does can
-    // reach the conversations this daemon is holding.
+    // The HTTP head, before the worker loop takes this thread. Its own thread, its own
+    // engine, its own scratch transcripts
     if let Some(addr) = cfg_http.clone() {
         match std::net::TcpListener::bind(&addr) {
             Ok(l) => {
@@ -2370,8 +1867,8 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     boot.done();
     eprintln!("  waiting for a head. Ctrl-C to stop.");
     daemon.run(&mut sessions, |session, said| match said {
-        // **A command a head sent, and what it came to.** The wording is the daemon's and the
-        // turn's own thread reports it through this door — one line either way.
+        // A command a head sent, and what it came to. The wording is the daemon's and the
+        // turn's own thread reports it through this door - one line either way.
         OutcomeSaid::Command(cmd, outcome) => match outcome {
             // The session is named on every line: with more than one of them, "who did
             // what" is only half the question and the other half used to be unanswerable
@@ -2382,7 +1879,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             ),
             // The base is the LEDGER's pair (the fork's own measurement), and says so: the
             // count in the provider's units is the `compacted:` line the session printed just
-            // above this one (R72 follow-up).
+            // above this one.
             Outcome::Compacted(r) => eprintln!(
                 "  {session} · {} -> compacted, base {} -> {} ledger tokens (transcript {}); {}",
                 cmd.identity,
@@ -2394,10 +1891,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
             Outcome::Ignored => {}
             // A wake handed to the session's own thread; nothing ran on this one. See
-            // `Sessions::wake` — the arm exists because the outcome is the worker's vocabulary.
+            // `Sessions::wake` - the arm exists because the outcome is the worker's vocabulary.
             Outcome::HandedOn => {}
         },
-        // **A wake has no command behind it.** It used to be the worker's own `monitor ->` line;
+        // A wake has no command behind it. It used to be the worker's own `monitor ->` line
         // now it is said by whichever thread ran the turn, in the same words.
         OutcomeSaid::Wake(outcome) => match outcome {
             Outcome::Replied(r) => eprintln!(
@@ -2409,21 +1906,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             Outcome::Compacted(_) | Outcome::Ignored | Outcome::HandedOn => {}
         },
     });
-    // **Every step of the orderly stop is SAID, as it starts** (2026-10-26). What follows is
-    // bounded but not short — a gate's process group killed, the VMs brought down, five seconds of
-    // subagent threads — and until this, the daemon was silent through all of it. `letibot --stop`
-    // waited five seconds, heard nothing, and reported *"is ignoring SIGTERM"* about a daemon that
-    // was working through exactly this list; the launcher now relays the last `  stopping: ` line
-    // it finds in this log, so the line has to exist. Stderr is the per-folder log
-    // (`~/logs/harnessd-<key>.log`), which is where the launcher reads.
+    // Every step of the orderly stop is SAID, as it starts. What follows is
+    // bounded but not short - a gate's process group killed, the VMs brought down, five
+    // seconds of subagent threads - and until this, the daemon was silent through all of it.
     eprintln!("  stopping: bringing every subagent VM down");
-    // **Every subagent's VM comes down with the daemon — first.** Their backends live on threads
-    // the process's exit does not unwind, so their `Drop` never ran and the VMs outlived it — two
-    // of the acceptance suite's own runs, 2026-10-08. firecode's `down` delivers the work. FIRST,
-    // and all at once (`down_all`), because what follows is bounded but not short and a forced
-    // stop's SIGKILL comes five seconds after its SIGTERM: three of the four VMs that held every
-    // slot on 2026-10-15 were children of a daemon that ended with no stop written. Whatever a
-    // SIGKILL still interrupts here, the next daemon's reaper finds (`crate::vm_reap`).
+    // Every subagent's VM comes down with the daemon - first. Their backends live on
+    // threads the process's exit does not unwind, so their `Drop` never ran and the VMs
+    // outlived it - two of the acceptance suite's own runs, 2026-10-08.
     letibot_tools::firecode::down_all();
     // And every guest a remote session booted, whose `down` is the host's own client: the same
     // act, one machine over, and the line says where each copy-out landed.
@@ -2431,35 +1920,28 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     for said in letibot_tools::remote::guests_down() {
         eprintln!("  {said}");
     }
-    // **The queues are told to stop.**
+    // The queues are told to stop.
     eprintln!(
         "  stopping: the merge queues (a gate in flight is killed, its row put back in line)"
     );
     merge_stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    // **Joined, and bounded**: a gate in flight is killed with its whole process group (SIGTERM,
-    // five seconds, SIGKILL) and its row goes back in line, and each worker releases its lease so
-    // a successor need not wait out the heartbeat. The v23 queue detached here and left the
-    // orphaned `cargo test` holding the worktree's `target` lock (R61 defect 6).
+    // Joined, and bounded: a gate in flight is killed with its whole process group
+    // (SIGTERM, five seconds, SIGKILL) and its row goes back in line, and each worker releases
+    // its lease so a successor need not wait out the heartbeat.
     if let Some(h) = merge_queue {
         let _ = h.join();
     }
 
     eprintln!("  stopping: closing every session");
     daemon.shutdown();
-    // The seat after the daemon: the listener's next poll window sees the stop and
-    // the waiter claim is released with it. `std::process::exit` above runs no RUST
-    // destructors, so this is said here rather than left to a drop — and it is worth
-    // being exact about the other half, because that half is this file's bug: `exit()`
-    // DOES run every ELF finalizer (`_dl_fini`), which is why the subagent threads are
-    // waited for below rather than left to the exit.
+    // The seat after the daemon: the listener's next poll window sees the stop and the waiter
+    // claim is released with it.
     if let Some(seat) = &seat {
         seat.stop();
     }
-    // **Every subagent thread this daemon started is waited for before the process ends.**
+    // Every subagent thread this daemon started is waited for before the process ends.
     // `daemon.shutdown()` above closed every hub, which is what a child parked between turns
-    // leaves on, and `drain_subagents` tells the running ones to stop first — a hub close does
-    // not end a turn already in flight. The bound is `SUBAGENT_EXIT_GRACE`'s, and what a
-    // give-up costs is the sentence printed here rather than a crash nobody can explain.
+    // leaves on, and `drain_subagents` tells the running ones to stop first - a hub close does
     eprintln!(
         "  stopping: waiting up to {}s for subagent threads to leave",
         SUBAGENT_EXIT_GRACE.as_secs()
@@ -2467,7 +1949,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(said) = sessions.drain_subagents(SUBAGENT_EXIT_GRACE).sentence() {
         eprintln!("  {said}");
     }
-    // **The orderly stop, with its exact time** — what the next daemon measures its down time from.
+    // The orderly stop, with its exact time - what the next daemon measures its down time from.
     lifeline.stopped();
     eprintln!("  stopping: done");
     drop(sessions);
@@ -2475,12 +1957,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// **What Claude Code has on this box**, one line per transcript — the id `--session
-/// cc-<id>` takes, when it was last written, how big it is, the model that answered, and the
-/// first thing that was said.
-///
-/// `--tsv` is the plain six-column data form, like `--list-sessions --tsv`: a script that
-/// wants to pick a transcript should not have to parse a table.
+/// What Claude Code has on this box, one line per transcript - the id `--session
+/// cc-<id>` takes, when it was last written, how big it is, the model that answered, and
+/// the first thing that was said.
 fn list_claude(tsv: bool) -> Result<i32, String> {
     let Some(dir) = letibot_claude::default_projects_dir() else {
         return Err("no $HOME, so no Claude Code transcript directory to list".into());
@@ -2488,7 +1967,7 @@ fn list_claude(tsv: bool) -> Result<i32, String> {
     list_claude_in(&dir, tsv)
 }
 
-/// The listing itself, against a named directory — so a test can point it at a fixture
+/// The listing itself, against a named directory - so a test can point it at a fixture
 /// instead of at the operator's transcripts, and so the sentence a box without a
 /// `~/.claude/projects` gets is the same one a caller with a wrong path gets.
 fn list_claude_in(dir: &std::path::Path, tsv: bool) -> Result<i32, String> {
@@ -2513,14 +1992,8 @@ fn list_claude_in(dir: &std::path::Path, tsv: bool) -> Result<i32, String> {
     Ok(0)
 }
 
-/// **Write this session's conversation out as a Claude Code transcript** and a Markdown
-/// copy, into `to`.
-///
-/// Two files, and they promise different things: the `.jsonl` is what
-/// `claude --resume <absolute path>` opens, and the `.md` is what survives a Claude release
-/// changing the line format. **Not into `~/.claude/projects`**: by absolute path a resume
-/// needs the file nowhere in particular, and writing into another tool's directory is a
-/// thing to do only when there is no other way.
+/// Write this session's conversation out as a Claude Code transcript and a Markdown
+/// copy, into `to`. Two files, and they promise different things
 fn handover(
     store: letibot_tokencore::store::Store,
     session: &str,
@@ -2539,10 +2012,9 @@ fn handover(
     let loaded = store
         .load_transcript(&transcript_id)
         .map_err(|e| e.to_string())?;
-    // **No per-row times, and the report says so.** This head's store records the row, its
-    // tokens and its chain — not a clock per row — so a handover cannot carry one without
-    // inventing it. `0` is "the row has no time", and `Skipped::no_time` counts the lines
-    // that left without a `timestamp`.
+    // No per-row times, and the report says so. This head's store records the row, its
+    // tokens and its chain - not a clock per row - so a handover cannot carry one without
+    // inventing it.
     let items: Vec<(u64, letibot_transcript::TranscriptItem)> = loaded
         .items
         .iter()
@@ -2563,18 +2035,8 @@ fn handover(
     Ok(0)
 }
 
-/// **The line that says a conversation moved**, on the transcript it moved from.
-///
-/// This is the shape the operator chose over a full Claude-format transcript: one
-/// conservative line on the original, pointing at a Markdown handover — so whoever opens
-/// Claude Code later sees, in the conversation they were in, that it continued here and
-/// where to read what happened.
-///
-/// The line is **composed, not typed**, because every part of it is a fact this daemon has
-/// and a person would have to look up: the session id, the span it ran over, the branch and
-/// commit, and the path of the handover. The append is
-/// [`letibot_claude::handover::append_note`]'s — a proven backup first, and a refusal while
-/// a `claude` process is live for that project.
+/// The line that says a conversation moved, on the transcript it moved from. This is
+/// the shape the operator chose over a full Claude-format transcript
 fn note_continued(
     store: letibot_tokencore::store::Store,
     session: &str,
@@ -2592,7 +2054,7 @@ fn note_continued(
     let from = letibot_claude::handover::iso_ts(row.created_ms.max(0) as u64);
     let to = letibot_claude::handover::iso_ts(now);
 
-    // Where the detail goes: the caller's directory, else the session's own workspace —
+    // Where the detail goes: the caller's directory, else the session's own workspace -
     // never `~/.claude/projects`, which is another tool's directory to write in.
     let out_dir = dir.map(std::path::Path::to_path_buf).unwrap_or_else(|| {
         std::path::Path::new(&row.workspace_root)
@@ -2669,7 +2131,7 @@ fn note_continued(
     Ok(0)
 }
 
-/// `branch @ short-sha`, or a sentence saying why it could not be read — the line names a
+/// `branch @ short-sha`, or a sentence saying why it could not be read - the line names a
 /// commit so a reader can see which tree the conversation was about, and a repository that
 /// will not answer must not cost the append.
 fn git_of(dir: &std::path::Path) -> String {
@@ -2695,8 +2157,8 @@ fn git_of(dir: &std::path::Path) -> String {
     }
 }
 
-/// **One line on the end of a transcript Claude Code owns**, with a backup taken and proven
-/// first — and nothing written at all when that backup could not be made or does not match.
+/// One line on the end of a transcript Claude Code owns, with a backup taken and proven
+/// first - and nothing written at all when that backup could not be made or does not match.
 fn append_note(transcript: &std::path::Path, text: &str) -> Result<i32, String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2719,7 +2181,7 @@ fn append_note(transcript: &std::path::Path, text: &str) -> Result<i32, String> 
     Ok(0)
 }
 
-/// **Put a transcript back, byte for byte**, from a backup this binary made.
+/// Put a transcript back, byte for byte, from a backup this binary made.
 fn revert_transcript(
     transcript: &std::path::Path,
     backup: &std::path::Path,
@@ -2736,13 +2198,8 @@ fn revert_transcript(
     Ok(0)
 }
 
-/// How many sessions the store already holds, or `None` when there is no store.
-///
-/// A `SELECT` through `Store::connection`, which is the escape hatch that exists
-/// for exactly this: the append-only guarantees are triggers, not a property of
-/// whoever holds the connection, so a read here cannot weaken them.
-/// **How many rows the first session's resume will read** — for the boot step's words; `None`
-/// with no store or no such session (a new one).
+/// How many sessions the store already holds, or `None` when there is no store. A `SELECT`
+/// through `Store::connection`, which is the escape hatch that exists for exactly this
 fn resume_rows(cfg: &Config) -> Option<u32> {
     let store = letibot_tokencore::store::Store::open(cfg.store.as_ref()?).ok()?;
     let t = store.current_transcript_id(&cfg.session_id).ok()??;
@@ -2760,19 +2217,6 @@ fn stored_sessions(cfg: &Config) -> Option<u64> {
 }
 
 /// The disclosure for what else is in the store.
-///
-/// **This used to say resume was impossible, and it was right at the time.** The
-/// sentence it carried — that the transcript, the ledger rows and the token blobs
-/// were all persisted, that `Store::load_transcript` plus `TokenLedger::restore`
-/// would rebuild them, and that what was missing was a constructor for
-/// `letibot_turn::Session` from a restored ledger — was an accurate description of a
-/// hole. `letibot_turn::resume` is that constructor, and it takes the assistant rows'
-/// tokens from `transcript_item.tokens` rather than re-rendering them, which is the
-/// one thing the old note said must not happen.
-///
-/// So the count stays and the refusal goes. The count is the part that was never
-/// decoration: a store that has been collecting transcripts for weeks and says
-/// nothing reads as an empty one.
 fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
     Disclosure {
         subject: "resume".into(),
@@ -2823,7 +2267,7 @@ enum Query {
         transcript: PathBuf,
         text: String,
     },
-    /// **The lighter shape**: the composed "continued in letibot" line on the original
+    /// The lighter shape: the composed "continued in letibot" line on the original
     /// transcript, plus the Markdown handover it points at.
     NoteContinued {
         session: String,
@@ -2844,8 +2288,8 @@ fn run_query(
     scope: Option<&std::path::Path>,
     tsv: bool,
 ) -> Result<i32, String> {
-    // **The three Claude Code verbs that need no store of ours**, answered before `--store` is
-    // required — so `--list-claude` works on a box whose daemon has never started, and
+    // The three Claude Code verbs that need no store of ours, answered before `--store` is
+    // required - so `--list-claude` works on a box whose daemon has never started, and
     // `--note`/`--revert` act on a file rather than on a session. Package H.
     match &q {
         Query::ListClaude => return list_claude(tsv),
@@ -2853,8 +2297,8 @@ fn run_query(
         Query::Revert { transcript, backup } => return revert_transcript(transcript, backup),
         _ => {}
     }
-    // **`--note-continued` needs the store** — it composes the line out of the session's own
-    // row — so it is answered below, with `--handover`, once `--store` is known.
+    // `--note-continued` needs the store - it composes the line out of the session's own
+    // row - so it is answered below, with `--handover`, once `--store` is known.
     let path = cfg
         .store
         .as_ref()
@@ -2863,34 +2307,23 @@ fn run_query(
         .map_err(|e| format!("opening {}: {e}", path.display()))?;
 
     match q {
-        // **Answered above, before the store was asked for.** Here only because a `match`
-        // must be exhaustive; reaching this arm would mean one of them had started needing
-        // a store without the three early returns being changed, and the `Ok(0)` is the
-        // arm's way of not being a panic in a daemon.
+        // Answered above, before the store was asked for. Here only because a `match` must be
+        // exhaustive
         Query::ListClaude | Query::Note { .. } | Query::Revert { .. } => Ok(0),
-        // **This session's conversation, as a transcript Claude Code can resume**, plus a
+        // This session's conversation, as a transcript Claude Code can resume, plus a
         // Markdown copy (Package H). The rows come from the store, which is the only place
         // a finished conversation exists whole.
         Query::Handover { session, to } => handover(store, &session, &to),
-        // **The lighter shape the operator chose**: a composed line on the ORIGINAL
+        // The lighter shape the operator chose: a composed line on the ORIGINAL
         // transcript, and the Markdown handover beside it.
         Query::NoteContinued {
             session,
             transcript,
             dir,
         } => note_continued(store, &session, &transcript, dir.as_deref()),
-        // **Re-render a prefix that was stored without its tokens.**
-        //
-        // A `/reseat` fork wrote its new prefix row with an empty token list and a
-        // zero `h_init`, so every transcript opened on it verifies as a broken
-        // chain at row 0 and refuses to resume — with the conversation's items all
-        // present and correct behind it, because the LIVE session rendered the
-        // prefix properly and only the store row was wrong.
-        //
-        // The row is content-addressed by its system text and tool schemas, so the
-        // tokens can be recomputed exactly: render them again through this
-        // daemon's own renderer and fill the row in. A row that already has tokens
-        // is never touched.
+        // Re-render a prefix that was stored without its tokens. A `/reseat` fork wrote its
+        // new prefix row with an empty token list and a zero `h_init`, so every transcript opened
+        // on it verifies as a broken chain at row 0 and refuses to resume - with the
         Query::RepairPrefixes => {
             let empty: Vec<(String, String, String, String)> = store
                 .connection()
@@ -2997,11 +2430,9 @@ fn run_query(
         }
         Query::Etalon(file) => {
             drop(store);
-            // The transcripts' commands ran under a fixed shell — Claude Code's,
-            // opencode's, letibot's own — so layer A reads them as it reads a
-            // live leticode session, with the shell declared. Left undeclared,
-            // 88% of the corpus is refused at "bare name under an unknown
-            // shell" (measured 2026-09-16) and the table says nothing.
+            // The transcripts' commands ran under a fixed shell - Claude Code's, opencode's, letibot's
+            // own - so layer A reads them as it reads a live leticode session, with the shell
+            // declared.
             let env = crate::harness::surroundings_for(cfg)
                 .with_pinned_shell("the etalon: the harness that recorded it ran a fixed shell");
             let r = crate::etalon::report(&file, &env, 1_000_000)?;
@@ -3094,10 +2525,9 @@ fn run_query(
             } else {
                 println!("{id} is now {title:?}");
             }
-            // A daemon holding this session has its own copy of the name in the
-            // registry and will not see this write. Said rather than papered over:
-            // the rename is durable and the running head's header is stale, which is
-            // a different thing from the rename not having happened.
+            // A daemon holding this session has its own copy of the name in the registry and will not
+            // see this write. Said rather than papered over: the rename is durable and the running
+            // head's header is stale, which is a different thing from the rename not having happened.
             eprintln!(
                 "note: a running daemon keeps its own copy of the name. Use /rename in \
                  the head to change it live."
@@ -3113,10 +2543,9 @@ fn run_query(
         },
         Query::Latest => {
             let latest = newest_conversation(scoped(&store, scope)?, scope);
-            // **What the pick walked past is said, not silently dropped.** The launcher
-            // deliberately does not capture this stream: it is the announcement of which
-            // conversation the next thing typed lands in, and a pick that skipped ten rows
-            // to reach it should say so.
+            // What the pick walked past is said, not silently dropped. The launcher deliberately
+            // does not capture this stream: it is the announcement of which conversation the next
+            // thing typed lands in, and a pick that skipped ten rows to reach it should say so.
             if latest.hidden > 0 {
                 eprintln!(
                     "skipped {} session(s) that are not conversations: a task child and the \
@@ -3134,7 +2563,7 @@ fn run_query(
 
             match &latest.pick {
                 // Printed on stdout alone, so `$(harnessd --latest-session)` is the
-                // id and nothing else. Which one it picked, and why, goes to stderr —
+                // id and nothing else. Which one it picked, and why, goes to stderr -
                 // where the launcher can echo it and a pipeline ignores it.
                 Some(s) => {
                     println!("{}", s.id);
@@ -3154,39 +2583,14 @@ fn run_query(
             }
         }
         Query::List => {
-            // **The listing is GROUPED, and it lists everything** — the operator, 2026-10-26:
-            // *"in session view the automatic sessions must be grouped somehow, so my vs auto.
-            // otherwise im lost in subagents"*, said about the head's picker and true of this
-            // listing for the same reason: one daemon's store holds their conversations and a
-            // pile of the harness's own work, and a flat list ordered by recency puts a reviewer
-            // above the thing they are doing.
-            //
-            // **What changed and what deliberately did not.** `--continue`'s resolution still
-            // reads [`is_conversation`] and nothing here touches it — a reviewer must never be
-            // what `--continue` reopens. What changes is the LISTING: it used to drop every row
-            // that is not a conversation, which made *the queue's session exists* a fact a person
-            // could not see from this command even though `--session ID` would open it. A group
-            // line with a count says the same thing and says it once.
-            //
-            // **The groups come from `letibot_sessionlog::origin`** — the marks that say what a
-            // session IS (the queue's id, the parent edge, the `origin` column, the brief a title
-            // was cut from) are one set, and the head's tree reads the same ones
-            // (`App::system_kind`, `letibot-tui`). **The two drawings are not the same shape since
-            // 2026-10-31**: this listing keeps five groups, and the picker nests `gatekeepers`,
-            // `reviewers` and `keepers` under `<project>/system`. So a session can be in a
-            // different place in the two pictures; what the two cannot disagree about is which
-            // sessions are the harness's own.
+            // The listing is GROUPED, and it lists everything - the operator, 2026-10-26: *"in
+            // session view the automatic sessions must be grouped somehow, so my vs auto.
             let all = scoped(&store, scope)?;
             let groups = grouped(&all);
             if tsv {
-                // **TSV is a data format and it does not change.** Five fields,
-                // tab-separated, one conversation per line: that is what a script cuts, and a
-                // sixth column or a group header line in the middle would break every reader
-                // for a fact a reader can compute. Whoever wants the groups reads the human
-                // listing.
-                //
-                // The filter is the old one on purpose: this is the format of *the
-                // conversations under this scope*, and it is what it always was.
+                // TSV is a data format and it does not change. Five fields, tab-separated, one
+                // conversation per line: that is what a script cuts, and a sixth column or a group header
+                // line in the middle would break every reader for a fact a reader can compute.
                 for s in all.iter().filter(|s| is_conversation(s)) {
                     println!(
                         "{}\t{}\t{}\t{}\t{}",
@@ -3213,7 +2617,7 @@ fn run_query(
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let wid = all.iter().map(|s| s.id.len()).max().unwrap_or(8);
-            // **The one row per session the listing draws**, as a closure so the two groups that
+            // The one row per session the listing draws, as a closure so the two groups that
             // are not plain rows (a child under its parent, everything else) share it.
             let row = |s: &letibot_tokencore::store::StoredSession, indent: &str| {
                 println!(
@@ -3222,11 +2626,9 @@ fn run_query(
                     s.items,
                     age(now - s.last_activity_ms),
                     s.title.clone().unwrap_or_else(|| "(unnamed)".into()),
-                    // **Where it LIVES, when that is not here.** A row whose live copy is on a
-                    // host is not a session this box is appending to, and a listing that offered
-                    // it unmarked would be offering a conversation that stopped the day it moved
-                    // (`docs/remote-hosts.md` RH4). It stays in the list — the rows are here, and
-                    // `--migrate SESSION --to local` brings it back — but it says so.
+                    // Where it LIVES, when that is not here. A row whose live copy is on a host is not a
+                    // session this box is appending to, and a listing that offered it unmarked would be
+                    // offering a conversation that stopped the day it moved (`docs/remote-hosts.md` RH4).
                     match &s.lives_on {
                         Some(on) => format!("  [lives on {on}]"),
                         None => String::new(),
@@ -3236,10 +2638,8 @@ fn run_query(
                 // title rather than three columns past it.
                 println!("{:<wid$}  {:>16}  {indent}{}", "", "", s.workspace_root);
             };
-            // **The same rows `grouped()` built**, for the one question the printing asks that the
-            // grouping does not: is this child's parent on this same group's list? (The indent.)
-            // Built from the same fields, because a second opinion about what a row is would be a
-            // second grouping.
+            // The same rows `grouped()` built, for the one question the printing asks that the
+            // grouping does not
             let rows: Vec<letibot_sessionlog::GroupRow<'_>> = all
                 .iter()
                 .map(|s| letibot_sessionlog::GroupRow {
@@ -3259,15 +2659,14 @@ fn run_query(
                 "ID", "ROWS", "AGE"
             );
             for (group, members) in &groups {
-                // **No empty group line**, for the reason the picker draws none: a header saying
+                // No empty group line, for the reason the picker draws none: a header saying
                 // `(0)` teaches a reader to skip headers.
                 if members.is_empty() {
                     continue;
                 }
-                // **A group's line, and the count that is the whole reason for it.** It is a
-                // header rather than a column: a reader scanning for their own conversation
-                // stops at `mine`, and the four lines under it answer *what else is here* in four
-                // numbers instead of forty rows.
+                // A group's line, and the count that is the whole reason for it. It is a header rather
+                // than a column: a reader scanning for their own conversation stops at `mine`, and the
+                // four lines under it answer *what else is here* in four numbers instead of forty rows.
                 println!();
                 println!(
                     "{:<wid$}  {} ({}) — {}",
@@ -3296,23 +2695,18 @@ fn run_query(
     }
 }
 
-/// Every stored session, optionally only those rooted at `scope`.
-///
-/// The scope test is a **path prefix**, not equality: a session opened in
-/// `~/Projects/rano/crates` belongs to `~/Projects/rano` for the purpose of "what was
-/// I doing here". Equality would make `--continue` miss the session you had open in
-/// a subdirectory ten minutes ago and silently resume something older.
+/// Every stored session, optionally only those rooted at `scope`. The scope test is a
+/// path prefix, not equality: a session opened in `~/Projects/rano/crates` belongs to
+/// `~/Projects/rano` for the purpose of "what was I doing here".
 fn scoped(
     store: &letibot_tokencore::store::Store,
     scope: Option<&std::path::Path>,
 ) -> Result<Vec<letibot_tokencore::store::StoredSession>, String> {
     let all = store.list_sessions().map_err(|e| e.to_string())?;
     let Some(root) = scope else { return Ok(all) };
-    // The empty path is refused at the flag, and refused again here: `starts_with("")`
-    // is true for every path, so a scope that reached this function empty would
-    // widen the query to the whole box while looking like it had narrowed it. Two
-    // guards for one mistake, because the failure is silent and the blast radius
-    // is continuing somebody else's conversation.
+    // The empty path is refused at the flag, and refused again here: `starts_with("")` is true
+    // for every path, so a scope that reached this function empty would widen the query to the
+    // whole box while looking like it had narrowed it.
     if root.as_os_str().is_empty() {
         return Err(
             "a store query was scoped to the empty path, which matches every \
@@ -3326,33 +2720,9 @@ fn scoped(
         .collect())
 }
 
-/// **Is this row a conversation a person can be brought back to?**
-///
-/// `--continue` promises to reopen *your conversation*, and a store holds three kinds of row that
-/// are sessions without being one: a sub-session, the merge queue's reviewer, and a conversation
-/// nobody ever said anything in. The first two are refused here; the third cannot be, because
-/// *has anything been said in it* is the caller's question ([`newest_conversation`]).
-///
-/// * **A sub-session** — a `task` child, or the merge queue's reviewer. The relation is
-///   `parent_session_id`, the same field the head's picker nests by (its `session_rows`), and
-///   `--list-sessions` reads this same predicate — so the listing and the resolution cannot
-///   disagree about a row again, which is exactly what they did.
-/// * **The queue's gatekeeper**, by the seat its own row recorded (its `role`, which is
-///   `Seat::Gatekeeper.as_str()`) or by the title cut from the review brief
-///   ([`letibot_sessionlog::GATEKEEPER_TITLE_PREFIX`]).
-///
-/// # Why the gatekeeper has a mark of its own when it is already a child
-///
-/// The operator's report is what the mark is for: *"restart pg-noop and was brought to one of
-/// the gatekeeper sessions"*. Ten reviewers spawned into one workspace by the merge queue made
-/// the newest row in it a reviewer, and `--continue` — which asked only for the newest row —
-/// handed back a review. The parent field alone would have skipped those ten; the seat and the
-/// title are here because a reviewer is not a conversation *wherever it sits*: a row the
-/// operator renamed keeps its seat, and a head rebuilding a row off the wire has no role to
-/// read and only the title, which is why the brief is required to begin with the mark.
-///
-/// Nothing else is filtered. A root session is a conversation however it was started, whatever
-/// its model, and whether or not it has a title.
+/// Is this row a conversation a person can be brought back to? `--continue` promises to
+/// reopen *your conversation*, and a store holds three kinds of row that are sessions
+/// without being one
 fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
     s.parent_session_id.is_none()
         && s.role.as_deref() != Some(crate::config::Seat::Gatekeeper.as_str())
@@ -3362,24 +2732,9 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
             .is_some_and(|t| t.starts_with(letibot_sessionlog::GATEKEEPER_TITLE_PREFIX))
 }
 
-/// **The stored sessions, in the groups a person reads them in** — `mine` first, then one entry
-/// per automatic kind, each with its members in the store's own order (newest activity first).
-///
-/// Separate from the printing so the decision is assertable without a terminal, and because two
-/// things read it: the human listing and the `--tsv` header line the launcher prints. The rule
-/// itself is `letibot_sessionlog::group_of`'s, so this function is a grouping and not a second
-/// opinion about what a session is.
-///
-/// **This is the five groups, and the head's picker is no longer one of its readers** (2026-10-31):
-/// `ctrl-s` draws a tree of projects, their sessions and `<project>/system/<group>`, which is a
-/// different shape over the same rows (`App::session_rows`). So `letibot --sessions` and the picker
-/// are two pictures of one daemon today; what keeps them honest is that both read
-/// `group_of`'s marks — the queue's id, the parent edge, the `origin` column — rather than each
-/// inventing what a session is.
-///
-/// Every group is returned, empty ones included: `SessionGroup::ALL`'s order is the order a
-/// person reads, and a caller that wants to skip an empty group (`(0)` headers teach a reader to
-/// skip headers) does so where it prints.
+/// The stored sessions, in the groups a person reads them in - `mine` first, then one
+/// entry per automatic kind, each with its members in the store's own order (newest
+/// activity first).
 fn grouped(
     all: &[letibot_tokencore::store::StoredSession],
 ) -> Vec<(
@@ -3396,8 +2751,8 @@ fn grouped(
                 .as_deref()
                 .and_then(letibot_sessionlog::SessionOrigin::parse)
                 .unwrap_or_default(),
-            // **The store's row has both marks**, so a reviewer parented on the operator's own
-            // conversation — the layout before the queue had a session of its own — is the queue's
+            // The store's row has both marks, so a reviewer parented on the operator's own
+            // conversation - the layout before the queue had a session of its own - is the queue's
             // work and not one of their subagents.
             role: s.role.as_deref(),
             title: s.title.as_deref().unwrap_or(""),
@@ -3416,7 +2771,7 @@ fn grouped(
 
 /// What `--latest-session` resolved to, and what it walked past on the way.
 struct Latest {
-    /// The conversation to reopen, or `None` — and the three counts below are what tells the
+    /// The conversation to reopen, or `None` - and the three counts below are what tells the
     /// three ways of having none apart.
     pick: Option<letibot_tokencore::store::StoredSession>,
     /// Rows in scope before anything was skipped. The difference between *nothing is here* and
@@ -3428,41 +2783,16 @@ struct Latest {
     empty: usize,
 }
 
-/// **The newest session that is a CONVERSATION** — the rule `--continue` implements.
-///
-/// # The rule
-///
-/// Of the sessions stored under the scope, take the ones that are conversations
-/// ([`is_conversation`]) and have at least one row, and return the newest. "Newest" is
-/// `last_activity_ms`, which is the last row's time — the order `Store::list_sessions` already
-/// returns — and an **exact** workspace match beats a descendant of it, so standing in `~` and
-/// asking to continue hands back the `~` conversation rather than the one in
-/// `~/Projects/rano`. The sort is stable, so within each of those two groups recency stands.
-///
-/// # The edges, named
-///
-/// * **A root with no rows is skipped, not returned.** A daemon writes the session row at
-///   startup and nobody may ever prompt into it; those rows are often the newest in the table,
-///   and picking one answers `--continue` with an empty screen — indistinguishable from resume
-///   being broken. This is the rule that was already here; it is unchanged.
-/// * **A child that is newer than every root does not win, and does not lift its parent's
-///   time either.** The pick is the newest root's own last utterance. Promoting a root by its
-///   children's activity is a second notion of recency that would let a reviewer's clock decide
-///   where the person lands — which is the defect being fixed, one step removed.
-/// * **A child whose parent is gone is still skipped.** An orphan row is a sub-session that
-///   lost its parent, not a conversation that grew one; it is reachable by id (`--session ID`,
-///   and the picker nests it under nothing) and is never what `--continue` opens.
-/// * **A workspace holding nothing but children has nothing to continue**, and the sentence for
-///   it says exactly that rather than "no stored session" — see [`nothing_to_continue`].
+/// The newest session that is a CONVERSATION - the rule `--continue` implements. # The
+/// rule Of the sessions stored under the scope, take the ones that are conversations
+/// ([`is_conversation`]) and have at least one row, and return the newest.
 fn newest_conversation(
     mut all: Vec<letibot_tokencore::store::StoredSession>,
     scope: Option<&std::path::Path>,
 ) -> Latest {
-    // An **exact** workspace match beats a descendant of it. Standing in
-    // `~` and asking to continue should not hand back the conversation you
-    // were having in `~/Projects/rano` while a `~` conversation exists; the
-    // subtree match is the fallback that makes `--continue` work from a
-    // subdirectory, not a licence to reach downwards past a closer answer.
+    // An exact workspace match beats a descendant of it. Standing in `~` and asking to
+    // continue should not hand back the conversation you were having in `~/Projects/rano`
+    // while a `~` conversation exists
     if let Some(root) = scope {
         all.sort_by_key(|s| std::path::Path::new(&s.workspace_root) != root);
     }
@@ -3487,13 +2817,9 @@ fn newest_conversation(
     }
 }
 
-/// **Why there is nothing to continue**, as a sentence a person can act on.
-///
-/// Three stores produce the same `None` and only one of them means *there is nothing here*, so
-/// the answer names which one this is. The remedy matters more than the diagnosis: a store
-/// whose every row is a sub-session is a store where `--sessions` shows nothing and a bare
-/// `letibot` starts a conversation, and a person told only "no stored session" would go looking
-/// for a fault in the store that is not there.
+/// Why there is nothing to continue, as a sentence a person can act on. Three stores
+/// produce the same `None` and only one of them means *there is nothing here*, so the
+/// answer names which one this is. The remedy matters more than the diagnosis
 fn nothing_to_continue(latest: &Latest, scope: Option<&std::path::Path>) -> String {
     let here = scope
         .map(|p| format!(" under {}", p.display()))
@@ -3534,14 +2860,8 @@ fn age(ms: i64) -> String {
     format!("{}d", h / 24)
 }
 
-/// The startup disclosures, as something that can be scanned.
-///
-/// The content is `Config::disclosures()` unchanged and unabridged. What changes is
-/// the shape: a state word in a fixed column, the subject beside it, and the
-/// sentence wrapped under them — so an operator glancing at a terminal reads
-/// `OFF retrieval` in one saccade and can then choose to read why. The previous
-/// form was five correct paragraphs run together, in which the words that decide
-/// whether an answer can be trusted were mid-sentence.
+/// The startup disclosures, as something that can be scanned. The content is
+/// `Config::disclosures()` unchanged and unabridged. What changes is the shape
 fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
     let width = cols.clamp(48, 100);
     let indent = 9usize;
@@ -3553,10 +2873,9 @@ fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
             out.push(format!("  {state}  {} — {}", d.subject, d.detail));
             continue;
         }
-        // A headline that can be read at a glance, then the sentence under it.
-        // Not one padded column: `adjudication` is twelve characters and any
-        // column wide enough for it wastes a fifth of an eighty-column terminal
-        // on every other row.
+        // A headline that can be read at a glance, then the sentence under it. Not one padded
+        // column: `adjudication` is twelve characters and any column wide enough for it wastes a
+        // fifth of an eighty-column terminal on every other row.
         out.push(format!("  {state}  {} ({})", d.subject, d.state));
         for line in wrap(&d.detail, width.saturating_sub(indent)) {
             out.push(format!("{:indent$}{line}", ""));
@@ -3565,24 +2884,13 @@ fn banner(ds: &[Disclosure], cols: usize) -> Vec<String> {
     out
 }
 
-/// **The banner's two model facts, kept apart** — what answers this session's turns and, when the
-/// daemon also holds a LOCAL binding that is a different thing, the vocabulary its token ids are
-/// cut from.
-///
-/// Read before `cfg` is handed to `Sessions` and printed after the session is open, because the
-/// banner is printed once the session exists.
-///
-/// 2026-10-26: the header said `model qwen-3.8-flash-next via 127.0.0.1:8080` on a session whose
-/// own disclosures, two lines below, said `main glm-coding/glm-5.3` and `turns go to glm-coding
-/// (glm-5.3)`. The line was `cfg.model`, which is the local VOCABULARY BINDING the launcher passes
-/// on every start and which answers nothing when a provider does. The operator reads that line to
-/// find out who they are talking to, so the answering model goes there, and the binding is said
-/// beside it under the name the launcher already uses for it (`vocab`, a record written before
-/// `answers` existed).
+/// The banner's two model facts, kept apart - what answers this session's turns and
+/// when the daemon also holds a LOCAL binding that is a different thing, the vocabulary its
+/// token ids are cut from.
 struct BannerModel {
     /// The model that answers: `provider/model` for a metered session, the local alias else.
     answers: String,
-    /// Where that name came from — a file level, a flag, the built-in default.
+    /// Where that name came from - a file level, a flag, the built-in default.
     from: String,
     /// The endpoint an answer's token ids are submitted to.
     endpoint: String,
@@ -3601,7 +2909,7 @@ impl BannerModel {
         }
     }
 
-    /// The lines, in the order the operator reads them — the answering model first, always.
+    /// The lines, in the order the operator reads them - the answering model first, always.
     fn lines(&self) -> Vec<String> {
         let Some(binding) = &self.binding else {
             // A local session: one line, and it is both facts at once.
@@ -3621,15 +2929,9 @@ impl BannerModel {
     }
 }
 
-/// **The banner's `context` line** — the window as given and, beside it, the reserve in
-/// the SAME units.
-///
-/// The reserve was `Config::headroom()`, which is the PLANNING window's: in ledger
-/// tokens, scaled by the session's ledger/provider pair. After a restart on a scratch
-/// deepseek session (window 40000, pair 21212/18246) the line read *"compacts
-/// automatically with 2905 left"* — 2500 × 21212/18246 — beside a window whose reserve
-/// is 2500. R72 follow-up, defect C: every count printed beside the window is in the
-/// window's units, which is `Config::shown_wall`.
+/// The banner's `context` line - the window as given and, beside it, the reserve in the
+/// SAME units. The reserve was `Config::headroom()`, which is the PLANNING window's: in
+/// ledger tokens, scaled by the session's ledger/provider pair.
 fn context_line(c: &crate::config::Config) -> String {
     match (c.context_window, c.auto_compact) {
         (Some(w), true) => format!(
@@ -3647,13 +2949,8 @@ fn context_line(c: &crate::config::Config) -> String {
     }
 }
 
-/// **The banner's `RESUMED` line**, its count in the unit the wall is judged in (R72
-/// follow-up, defect C). It printed the rebuilt LEDGER's length with no unit — *"21212
-/// tokens"* on a deepseek session the provider counted at ~18.2k — a third number for the
-/// one conversation beside the head's and the wall's. `counted` is that ledger length
-/// through the session's pair (`Config::shown_tokens`, which `Harness::open` brings up to
-/// date with `measure_resident`) and `Harness::token_unit`; the ledger's own figure is
-/// kept in parentheses where it differs, because the store's rows are in it.
+/// The banner's `RESUMED` line, its count in the unit the wall is judged in (
+/// follow-up, defect C).
 fn resumed_line(r: &crate::harness::ResumeReport, counted: Option<(u64, String)>) -> String {
     let ledger = r.tokens as u64;
     let tokens = match counted {
@@ -3689,7 +2986,7 @@ fn wrap(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// The terminal width, when there is a terminal. Eighty when there is not — a log
+/// The terminal width, when there is a terminal. Eighty when there is not - a log
 /// file has no width and eighty is the width a log file is read at.
 fn term_cols() -> usize {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
@@ -3704,7 +3001,7 @@ fn term_cols() -> usize {
 mod tests {
     use super::*;
 
-    /// **R100: the two asks, and the pair that means a VM on that machine** — the mapping `run`
+    /// : the two asks, and the pair that means a VM on that machine - the mapping `run`
     /// calls once the whole command line has been read. Each half alone is what it always was.
     #[test]
     fn a_vm_and_a_host_are_two_asks_and_the_pair_is_a_vm_there() {
@@ -3726,11 +3023,8 @@ mod tests {
         );
     }
 
-    /// **The Claude Code listing** (Package H): the id a person types, then the facts a
-    /// picker row needs — and the two forms, because a script should not parse a table.
-    ///
-    /// Against a fixture directory rather than `~/.claude/projects`, so this says what the
-    /// listing DOES and not what happens to be on the box running the test.
+    /// The Claude Code listing (Package H): the id a person types, then the facts a picker
+    /// row needs - and the two forms, because a script should not parse a table.
     #[test]
     fn the_claude_listing_names_the_id_the_model_and_the_first_ask() {
         let dir =
@@ -3759,7 +3053,7 @@ mod tests {
         assert_eq!(list_claude_in(&dir, false).unwrap(), 0);
 
         // A directory that is not there is a sentence naming the directory, not an empty
-        // listing — the same pair `--list-sessions` tells apart for the store.
+        // listing - the same pair `--list-sessions` tells apart for the store.
         let absent = dir.join("not-there");
         let err = list_claude_in(&absent, false).unwrap_err();
         assert!(err.contains("no Claude Code transcript directory"), "{err}");
@@ -3771,12 +3065,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// **The header names the model that ANSWERS the turns**, and says the local binding is the
-    /// binding — 2026-10-26: a session whose disclosures, two lines below, said `main
-    /// glm-coding/glm-5.3` and `turns go to glm-coding (glm-5.3)` was headed `model
-    /// qwen-3.8-flash-next via 127.0.0.1:8080`, because the line was `cfg.model`, the local
-    /// VOCABULARY binding the launcher passes on every start. The operator reads that line to find
-    /// out who they are talking to.
+    /// The header names the model that ANSWERS the turns, and says the local binding is the
+    /// binding - 2026-10-26
     #[test]
     fn the_header_names_the_model_that_answers_and_labels_the_binding() {
         // A metered session: the provider answers, the local alias is only the vocabulary.
@@ -3817,7 +3107,7 @@ mod tests {
         );
     }
 
-    /// R72 follow-up, defect C: after a restart the banner printed the reserve in the
+    /// follow-up, defect C: after a restart the banner printed the reserve in the
     /// planning window's ledger units (2905) beside a 40000 provider window whose
     /// reserve is 2500, and the RESUMED count as the ledger's length with no unit.
     #[test]
@@ -3898,19 +3188,9 @@ mod tests {
             .expect("session");
     }
 
-    /// **Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.**
-    ///
-    /// Returns the `last_activity_ms` the store then reports, which is what the resolution orders
-    /// by.
-    ///
-    /// The wait comes *before* the rows, and that is the whole of the correctness here.
-    /// `created_at` is stamped once, when a row is appended, so a fixture that waits afterwards
-    /// is waiting for a number that cannot change: two sessions written inside the same
-    /// millisecond then tie, and a tie is broken by the order the session rows were inserted —
-    /// which is the order a fixture writes them in. A test that means *the child is NEWER than
-    /// its parent* would therefore pass with the rule removed. (It did more than that the first
-    /// time this was written: the wait was after the append, the reviewer landed 0.3 ms behind
-    /// its host, the stamps came out equal and the loop spun for ever.)
+    /// Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.
+    /// Returns the `last_activity_ms` the store then reports, which is what the resolution
+    /// orders by.
     fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
         wait_past(after_ms);
         let prefix = store
@@ -3942,7 +3222,7 @@ mod tests {
                     &letibot_tokencore::ledger::LedgerRow {
                         item_id: format!("{transcript}.{seq}"),
                         // The prefix above is three tokens long, so the first row starts
-                        // after them — the store refuses a row that starts anywhere else,
+                        // after them - the store refuses a row that starts anywhere else
                         // because a resume rebuilds the chain from the prefix's length.
                         tok_offset: 3 + seq * 3,
                         tok_len: 3,
@@ -3961,7 +3241,7 @@ mod tests {
             .last_activity_ms
     }
 
-    /// Wait until the store's own clock has passed `ms` — for a fixture whose time is stamped at
+    /// Wait until the store's own clock has passed `ms` - for a fixture whose time is stamped at
     /// write time and cannot be moved afterwards.
     fn wait_past(ms: i64) {
         let now = || {
@@ -3977,11 +3257,8 @@ mod tests {
 
     struct TempDir(std::path::PathBuf);
     impl TempDir {
-        /// **A counter in the name, not only the clock.** The tests in this module run in
-        /// parallel in one process, and macOS's `SystemTime` has microsecond resolution: two
-        /// that started in the same microsecond shared a directory, and the first to finish
-        /// removed the other's store under it — `an_empty_scope_is_refused…` failed `opening`
-        /// one workspace run in a few. MEASURED 2026-10-08.
+        /// A counter in the name, not only the clock. The tests in this module run in parallel
+        /// in one process, and macOS's `SystemTime` has microsecond resolution
         fn new() -> Self {
             static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let p = std::env::temp_dir().join(format!(
@@ -4003,14 +3280,9 @@ mod tests {
         }
     }
 
-    /// **A daemon and a fixture both say `host` until something asks otherwise** — the two halves
-    /// of the property [`Config::reviewers`] states.
-    ///
-    /// Both halves are asserted because either alone is a lie: a `for_this_box` that said `vm`
-    /// would put a microVM under every test that built a fixture, and a `for_the_daemon` that
-    /// quietly said `vm` would take every review on this box back into a VM nobody asked for —
-    /// which is the 30–60-minute, one-of-two-slots review the operator ruled against on 2026-10-29.
-    /// `--reviewers vm` and `Config::allow_vm_reviewers` are the two named ways to ask.
+    /// A daemon and a fixture both say `host` until something asks otherwise - the two
+    /// halves of the property [`Config::reviewers`] states. Both halves are asserted because
+    /// either alone is a lie
     #[test]
     fn a_fixture_and_a_daemon_both_place_reviewers_on_the_host_unless_asked() {
         assert_eq!(
@@ -4028,27 +3300,16 @@ mod tests {
         assert_eq!(asked.reviewers, crate::config::Reviewers::Vm);
     }
 
-    /// **`--reviewers` is parsed, both spellings, and it wins over the file** — the flag
+    /// `--reviewers` is parsed, both spellings, and it wins over the file - the flag
     /// `--help` has advertised since the two words existed and the parser did not have.
-    ///
-    /// MEASURED 2026-10-29: `harnessd --reviewers vm` answered *unknown argument --reviewers*,
-    /// which tells an operator their configuration is a typo when the build's own help says it is
-    /// not. What is asserted here is the flag's whole body ([`apply_reviewers_flag`]) against a
-    /// `Config` the way the argument loop holds one: after `for_the_daemon`, which is the value the
-    /// project's `[queue] reviewers` put there.
-    ///
-    /// **`run` itself is not driven from here**, and the reason is not convenience: it delegates
-    /// this process's memory scope, sets the gate's cap and the gate's host process-wide, and
-    /// reads the operator's `providers.toml` — a lib test that called it would leave every other
-    /// test in this binary with settings that are not theirs (`gate_host()` in particular, which a
-    /// gate test asserts is unset). So the flag's body is a function with a name, and this is it.
+    /// MEASURED 2026-10-29
     #[test]
     fn the_reviewers_flag_takes_both_spellings_and_overrides_the_project() {
         // The default, with no flag at all.
         let mut cfg = Config::for_the_daemon("/tmp");
         assert_eq!(cfg.reviewers, Reviewers::Host, "no flag, no VM");
 
-        // `--reviewers vm` — the spelling that used to be *unknown argument*.
+        // `--reviewers vm` - the spelling that used to be *unknown argument*.
         apply_reviewers_flag(&mut cfg, "vm").expect("`vm` is one of the two words");
         assert_eq!(cfg.reviewers, Reviewers::Vm);
 
@@ -4073,12 +3334,9 @@ mod tests {
         );
     }
 
-    /// **A `main_model` from a file lands on the right `cfg` field.** A
-    /// `provider/model` name sets the metered provider, and a bare alias sets the
-    /// local model and clears the provider, because the two are the two ways a
-    /// session's turns go and a name is one or the other, not both. A regression
-    /// here would be a file that set a model the session did not run on, which is
-    /// the defect this feature exists to forbid.
+    /// A `main_model` from a file lands on the right `cfg` field. A `provider/model` name
+    /// sets the metered provider, and a bare alias sets the local model and clears the
+    /// provider, because the two are the two ways a session's turns go and a name is one or the
     #[test]
     fn a_file_main_model_lands_on_the_right_config_field() {
         // A `provider/model` name sets the metered provider.
@@ -4097,8 +3355,8 @@ mod tests {
             "the key is resolved along the usual path"
         );
 
-        // A bare alias sets the local model and clears the provider. **The clearing
-        // is the whole point**: this is the line that takes a session off
+        // A bare alias sets the local model and clears the provider. The clearing
+        // is the whole point: this is the line that takes a session off
         // `[default] provider = deepseek` and back onto the box's own model.
         let mut cfg = Config::for_this_box("/tmp");
         cfg.provider = Some(crate::config::ProviderConfig {
@@ -4115,14 +3373,9 @@ mod tests {
         assert!(cfg.provider.is_none(), "a bare alias is a local session");
     }
 
-    /// **A file's alias does not overwrite the binding `--model` set, and says so.**
-    ///
-    /// The launcher passes `--model` on every start, and what it names is the
-    /// vocabulary this daemon tokenises with. A file that re-bound it would point the
-    /// GGUF at weights the server is not serving — `400 Prompt contains invalid
-    /// tokens` at the first turn — so the binding stands, the provider is still
-    /// cleared (the half that decides who answers), and the disagreement is returned
-    /// for the banner rather than resolved in silence.
+    /// A file's alias does not overwrite the binding `--model` set, and says so. The
+    /// launcher passes `--model` on every start, and what it names is the vocabulary this
+    /// daemon tokenises with.
     #[test]
     fn a_file_alias_does_not_rebind_the_command_line_and_says_so() {
         let mut cfg = Config::for_this_box("/tmp");
@@ -4157,12 +3410,9 @@ mod tests {
         assert_eq!(cfg.model, "glm-5.3-flash");
     }
 
-    /// **A model a file named that this box cannot reach is named at startup.**
-    ///
-    /// The three shapes the tree has paid for: a provider this build does not know, a
-    /// provider with no key here, and a local alias the server is not serving. Each is
-    /// a sentence naming the value; the reachable cases are silent, because a warning
-    /// that cries wolf is worse than none.
+    /// A model a file named that this box cannot reach is named at startup. The three
+    /// shapes the tree has paid for: a provider this build does not know, a provider with no
+    /// key here, and a local alias the server is not serving.
     #[test]
     fn a_model_a_file_named_that_cannot_be_reached_is_named() {
         let cfg = Config::for_this_box("/tmp");
@@ -4171,12 +3421,9 @@ mod tests {
         let why = unreachable_provider("notaprovider/x").expect("an unknown provider is named");
         assert!(why.contains("notaprovider"), "{why}");
 
-        // A provider this build knows, with no key on this box. `grok` is the one
-        // preset whose key this tree documents as absent on the operator's box — the
-        // opencode entry is `type: oauth`, and an oauth entry is deliberately not read
-        // as a key. The test asserts the SHAPE rather than the key: whatever this box
-        // resolves, the answer is either `None` (a key is here) or a sentence naming
-        // the provider (no key is).
+        // A provider this build knows, with no key on this box. `grok` is the one preset whose key
+        // this tree documents as absent on the operator's box - the opencode entry is `type
+        // oauth`, and an oauth entry is deliberately not read as a key.
         if let Some(why) = unreachable_provider("grok/grok-4-fast") {
             assert!(why.contains("grok"), "{why}");
         }
@@ -4202,10 +3449,9 @@ mod tests {
         assert_eq!(unreachable_provider("glm-5.3-flash"), None);
     }
 
-    /// **`unreachable_models` asks the local half only of `main_model`.** The guard's
-    /// model answers at the `[gatekeeper]` endpoint and a subagent's is decided per
-    /// spawn, so comparing either against this daemon's own server would be a false
-    /// alarm — and a banner that cries wolf is a banner nobody reads.
+    /// `unreachable_models` asks the local half only of `main_model`. The guard's model
+    /// answers at the `[gatekeeper]` endpoint and a subagent's is decided per spawn, so
+    /// comparing either against this daemon's own server would be a false alarm - and a banner
     #[test]
     fn only_main_model_is_checked_against_this_daemons_own_server() {
         use crate::leticode_config::LeticodeConfig;
@@ -4229,11 +3475,9 @@ mod tests {
         );
     }
 
-    /// **The empty scope matched everything.** `Path::new("/a").starts_with("")` is
-    /// true, so a store query scoped to the empty path silently widened to the whole
-    /// box — and `--continue` then reopened the newest conversation anywhere, which
-    /// is what the operator saw: *"--continue seems to be continuing the last
-    /// global, not the last in project"*.
+    /// The empty scope matched everything. `Path::new("/a").starts_with("")` is true, so a
+    /// store query scoped to the empty path silently widened to the whole box - and
+    /// `--continue` then reopened the newest conversation anywhere, which is what the operator
     #[test]
     fn an_empty_scope_is_refused_rather_than_matching_every_session() {
         let (store, _d) = store_with(&[
@@ -4245,7 +3489,7 @@ mod tests {
         assert!(e.contains("matches every session"), "{e}");
 
         // A real scope still narrows, and no scope at all still means the whole
-        // store — the deliberate case, which this must not break.
+        // store - the deliberate case, which this must not break.
         assert_eq!(
             scoped(
                 &store,
@@ -4285,17 +3529,9 @@ mod tests {
         );
     }
 
-    /// **The listing groups the store the way `group_of` says** — mine first, then one entry per
-    /// automatic kind, each carrying its own members.
-    ///
-    /// The operator's ask is one sentence and it was about both places a session is listed:
-    /// *"in session view the automatic sessions must be grouped somehow, so my vs auto. otherwise
-    /// im lost in subagents."* The RULE is `letibot_sessionlog::group_of`'s and is tested there;
-    /// what is asserted here is that `--list-sessions` feeds it the store's own facts — the parent
-    /// edge, the queue's id, and the `origin` column a daemon writes — and not a second opinion.
-    ///
-    /// **The head's picker is not this listing** (2026-10-31): `ctrl-s` draws a tree of projects,
-    /// and the tree is `App::session_rows`' in `letibot-tui`, tested there.
+    /// The listing groups the store the way `group_of` says - mine first, then one entry
+    /// per automatic kind, each carrying its own members. The operator's ask is one sentence
+    /// and it was about both places a session is listed
     #[test]
     fn the_listing_puts_mine_first_and_the_harnesss_own_work_in_its_groups() {
         let (store, _d) = store_with(&[("s-mine", "/ws"), ("s-sub", "/ws")]);
@@ -4352,15 +3588,14 @@ mod tests {
         );
         assert_eq!(ids(letibot_sessionlog::SessionGroup::Packages), ["s-pkg"]);
         assert_eq!(ids(letibot_sessionlog::SessionGroup::OneShot), ["s-shot"]);
-        // **Mine is first**, which is the whole of *mine vs auto*: the order is
+        // Mine is first, which is the whole of *mine vs auto*: the order is
         // `SessionGroup::ALL`'s and the printer follows it.
         assert_eq!(grouped[0].0, letibot_sessionlog::SessionGroup::Mine);
     }
 
-    /// **The operator's report, as a test.** Ten reviewers spawned into one workspace by the
-    /// merge queue made the newest row in it a reviewer, and `--continue` — which asked only for
-    /// the newest row — reopened a review instead of the conversation that enqueued the work:
-    /// *"restart pg-noop and was brought to one of the gatekeeper sessions"*.
+    /// The operator's report, as a test. Ten reviewers spawned into one workspace by the
+    /// merge queue made the newest row in it a reviewer, and `--continue` - which asked only
+    /// for the newest row - reopened a review instead of the conversation that enqueued the
     #[test]
     fn a_reviewer_is_never_the_conversation_continue_reopens() {
         let (store, _d) = store_with(&[]);
@@ -4375,7 +3610,7 @@ mod tests {
         let mine = rows_for(&store, "s-mine", 3, 0);
 
         // The queue's reviewer: a child of that conversation, seated `gatekeeper`, its title cut
-        // from the review brief — and NEWER than anything the person said.
+        // from the review brief - and NEWER than anything the person said.
         session_row(
             &store,
             "s-gk",
@@ -4408,10 +3643,9 @@ mod tests {
         );
     }
 
-    /// **The seat carries the mark where the title cannot.** A reviewer the person renamed keeps
-    /// the seat its row recorded, and a head rebuilding a row from the wire has no role to read
-    /// at all — only the brief's first words. Both marks are therefore applied, and this is the
-    /// half the title alone cannot cover.
+    /// The seat carries the mark where the title cannot. A reviewer the person renamed
+    /// keeps the seat its row recorded, and a head rebuilding a row from the wire has no role
+    /// to read at all - only the brief's first words.
     #[test]
     fn a_reviewer_whose_title_was_changed_is_still_not_a_conversation() {
         let (store, _d) = store_with(&[]);
@@ -4447,10 +3681,8 @@ mod tests {
         );
     }
 
-    /// **A task child that is newer than its parent is not the answer**, and it does not lift
-    /// its parent's time either: the pick is the newest conversation's own last utterance, and
-    /// promoting a root by its children's activity would let a reviewer's clock decide where the
-    /// person lands.
+    /// A task child that is newer than its parent is not the answer, and it does not lift
+    /// its parent's time either
     #[test]
     fn a_task_child_newer_than_its_parent_is_not_the_conversation() {
         let (store, _d) = store_with(&[]);
@@ -4487,10 +3719,8 @@ mod tests {
         assert_eq!(latest.hidden, 1);
     }
 
-    /// **A child whose parent is gone is still a child**, and a workspace holding nothing else
-    /// has nothing to continue. What matters here is the sentence: it names the case and gives a
-    /// remedy, because the alternative — `no stored session` over a store that is not empty —
-    /// sends a person looking for a fault that is not there.
+    /// A child whose parent is gone is still a child, and a workspace holding nothing else
+    /// has nothing to continue. What matters here is the sentence
     #[test]
     fn a_workspace_holding_nothing_but_children_says_so() {
         let (store, _d) = store_with(&[]);
@@ -4531,10 +3761,9 @@ mod tests {
         );
     }
 
-    /// **A conversation nobody ever said anything in is skipped** — the rule that was here
-    /// before the reviewer was, pinned so the narrowing above cannot quietly drop it. These rows
-    /// are often the NEWEST in a store: a daemon writes one at startup, and picking it answers
-    /// `--continue` with an empty screen.
+    /// A conversation nobody ever said anything in is skipped - the rule that was here
+    /// before the reviewer was, pinned so the narrowing above cannot quietly drop it. These
+    /// rows are often the NEWEST in a store
     #[test]
     fn a_conversation_with_no_rows_is_not_continued() {
         let (store, _d) = store_with(&[]);
@@ -4562,7 +3791,7 @@ mod tests {
         assert_eq!(latest.empty, 1);
     }
 
-    /// The exact workspace still beats a descendant of it — asserted here because that sort
+    /// The exact workspace still beats a descendant of it - asserted here because that sort
     /// moved into [`newest_conversation`] and an untested move is a rule nobody is holding.
     #[test]
     fn an_exact_workspace_beats_a_descendant_of_it() {

@@ -10,7 +10,7 @@ use letibot_tools::exec::{ProcessHost as _, Waited};
 
 use super::*;
 
-/// **What a host answers**, in the order the test says.
+/// What a host answers, in the order the test says.
 enum Say {
     /// Every process is there.
     Alive,
@@ -20,7 +20,7 @@ enum Say {
     Fail(String),
 }
 
-/// A probe whose answers the test writes down — and which records every call and every kill, so
+/// A probe whose answers the test writes down - and which records every call and every kill, so
 /// *one check per host* and *the kill went to the group* are assertions rather than hopes.
 struct Fake {
     says: Mutex<Vec<Say>>,
@@ -123,10 +123,8 @@ fn clock(ms: i64) -> Box<dyn Fn() -> i64 + Send + Sync> {
     Box::new(move || ms)
 }
 
-/// **A pid that is alive is not the job** — the identity is, and this is the whole reason the record
-/// carries one. Measured against this very process: the same pid with a different start time is not
-/// the process, and a probe that answered `alive` on the pid alone would report a job running for
-/// ever on a box that had reused its number.
+/// A pid that is alive is not the job - the identity is, and this is the whole reason
+/// the record carries one. Measured against this very process
 #[test]
 fn a_live_pid_is_not_the_job_when_the_identity_differs() {
     let me = std::process::id();
@@ -183,7 +181,7 @@ fn a_live_pid_is_not_the_job_when_the_identity_differs() {
     );
 }
 
-/// **One check per host, whatever the number of jobs** — two local processes and three on one host
+/// One check per host, whatever the number of jobs - two local processes and three on one host
 /// cost two checks, not five, because a check is a round trip and a per-job check is how eight
 /// builds spend eight connections a second to learn one fact.
 #[test]
@@ -218,8 +216,8 @@ fn one_check_covers_every_job_of_its_host() {
     assert!(open.iter().all(|r| r.check_how.as_deref() == Some("proc")));
 }
 
-/// **A deadline is a wall clock, and it is enforced on the tick that finds it past.** The kill goes
-/// to the process group, and the record says `stopped` because something ended it on purpose —
+/// A deadline is a wall clock, and it is enforced on the tick that finds it past. The kill goes
+/// to the process group, and the record says `stopped` because something ended it on purpose -
 /// which is not `done`, and not an exit status a command ever gave.
 #[test]
 fn a_passed_deadline_kills_the_group_and_the_record_says_stopped() {
@@ -284,7 +282,7 @@ fn a_passed_deadline_kills_the_group_and_the_record_says_stopped() {
     );
 }
 
-/// **A host that did not answer leaves the job `lost`, and the next tick asks again** — a job on a
+/// A host that did not answer leaves the job `lost`, and the next tick asks again - a job on a
 /// machine that is unreachable may still be running, and a supervisor that wrote `dead` there would
 /// be reporting a death nobody witnessed.
 #[test]
@@ -318,7 +316,7 @@ fn an_unreachable_host_leaves_the_job_lost_and_the_next_tick_retries() {
     assert_eq!(probe.calls().len(), 2, "retried");
 }
 
-/// **A session's close ends what that session owns, on every host** — and an interrupt or a turn
+/// A session's close ends what that session owns, on every host - and an interrupt or a turn
 /// ending does not, which is why the only door to this is here and not on a turn's clock.
 #[test]
 fn a_teardown_ends_what_the_session_owns_and_leaves_other_sessions_alone() {
@@ -407,7 +405,7 @@ fn a_teardown_ends_what_the_session_owns_and_leaves_other_sessions_alone() {
     );
 }
 
-/// A probe that cannot reach anything — the teardown's failure path.
+/// A probe that cannot reach anything - the teardown's failure path.
 struct Silent;
 impl Probe for Silent {
     fn check(&self, _: Option<&str>, _: &[Want]) -> Checked {
@@ -418,8 +416,8 @@ impl Probe for Silent {
     }
 }
 
-/// **A restart finds what is still running, from the store alone.** The new supervisor is a new
-/// value with no memory of the old one — the records are all it has — and that is the whole point:
+/// A restart finds what is still running, from the store alone. The new supervisor is a new
+/// value with no memory of the old one - the records are all it has - and that is the whole point
 /// the daemon that wrote them is gone.
 #[test]
 fn a_restart_adopts_the_live_jobs_and_buries_the_vanished_ones() {
@@ -484,7 +482,7 @@ fn a_restart_adopts_the_live_jobs_and_buries_the_vanished_ones() {
     );
 }
 
-/// **A tick that cannot read its own work list says so** — a supervisor with no records looks exactly
+/// A tick that cannot read its own work list says so - a supervisor with no records looks exactly
 /// like a supervisor whose every job has ended, and the one thing that must not happen is the second
 /// reading being printed for the first.
 #[test]
@@ -516,12 +514,9 @@ fn a_tick_that_cannot_read_its_records_is_reported_rather_than_looking_quiet() {
     );
 }
 
-/// **`SshProbe`'s script against a real job directory**, run by a runner that executes it locally —
-/// the fake-ssh shape RH1's tests use, and never a real host.
-///
-/// Three jobs in one pass: one still running, one whose exit file says 7, and one whose pid is gone
-/// with no exit file at all. That is the whole remote state machine in one script, which is what the
-/// one-check-per-host rule costs and buys.
+/// `SshProbe`'s script against a real job directory, run by a runner that executes it
+/// locally - the fake-ssh shape RH1's tests use, and never a real host. Three jobs in one
+/// pass
 #[test]
 fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     let root = std::env::temp_dir().join(format!(
@@ -535,7 +530,7 @@ fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     let jobs = root.join("jobs");
     std::fs::create_dir_all(&jobs).unwrap();
 
-    // A real process whose command carries the marker — started and killed by this test alone.
+    // A real process whose command carries the marker - started and killed by this test alone.
     let marker = format!("supervise-marker-{}", std::process::id());
     let mut child = std::process::Command::new("sh")
         .args(["-c", &format!("sleep 60; : {marker}")])
@@ -565,7 +560,7 @@ fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     ];
     std::fs::write(jobs.join("j2.exit"), "7\n").unwrap();
 
-    // **The fake ssh**: run the script through `sh`, against this box, standing in for the host.
+    // The fake ssh: run the script through `sh`, against this box, standing in for the host.
     let run = Arc::new(|_host: &str, script: &str| {
         let out = std::process::Command::new("sh")
             .args(["-c", script])
@@ -613,11 +608,8 @@ fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A host over a temp root — or `None` when this box cannot delegate a cgroup v2 subtree.**
-///
-/// The same gate the crate's other host-spawning tests take: the absence is SAID and
-/// `LETIBOT_REQUIRE_APPARATUS=1` refuses the run, because a `#[ignore]` here would be a green
-/// suite that measured nothing.
+/// A host over a temp root - or `None` when this box cannot delegate a cgroup v2
+/// subtree. The same gate the crate's other host-spawning tests take
 fn a_host(name: &str) -> Option<(std::path::PathBuf, Arc<letibot_tools::exec::HostProcesses>)> {
     letibot_tokencore::apparatus::present(
         "a process-lifetime tree (cgroup v2; process groups on macOS)",
@@ -634,16 +626,8 @@ fn a_host(name: &str) -> Option<(std::path::PathBuf, Arc<letibot_tools::exec::Ho
     Some((root, Arc::new(host)))
 }
 
-/// **END TO END: a real job, the real recorder, a real store — `running`, then `done(0)`.**
-///
-/// This is the wiring RH7 exists for, walked the way a daemon walks it: the job is spawned, its
-/// live [`letibot_tools::exec::JobView`] is handed to `JobRecorder::process` (which is what
-/// `JobWatchSink` does the moment a call is backgrounded), the job ends, and the settlement the
-/// watcher builds is handed to `JobRecorder::record`.
-///
-/// **Nothing here is invented in the record**: the pid, the identity and the scope are read off the
-/// live view, and the assertion on the identity is the one that matters after a restart —
-/// `start:<n>` names *which* process had that pid.
+/// END TO END: a real job, the real recorder, a real store - `running`, then `done(0)`.
+/// This is the wiring RH7 exists for, walked the way a daemon walks it
 #[test]
 fn a_real_job_reads_running_and_then_done_in_the_record() {
     use letibot_tokencore::store::{ProcState, SessionRecord, Store};
@@ -701,7 +685,7 @@ fn a_real_job_reads_running_and_then_done_in_the_record() {
     assert!(got.host.is_none(), "a job on this box names no host");
     assert_eq!(got.scope, view.owner.to_string());
 
-    // **The job ends, and the settlement the watcher would build is the record's ending too.**
+    // The job ends, and the settlement the watcher would build is the record's ending too.
     let waited = host.wait_job(&id, Duration::from_secs(60));
     let state = match waited {
         Ok(Waited::Happened { state: Some(s), .. }) => s,
@@ -734,12 +718,9 @@ fn a_real_job_reads_running_and_then_done_in_the_record() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A RESTART, end to end: a fresh host adopts the record and the job is running again.**
-///
-/// The daemon that started this job is `host`; the one that finds it is `restarted`, which shares
-/// no memory with it — the store is the whole of what it has. What it must get back is a job the
-/// layers above can list, wait on and kill, and what it must NOT do is invent an exit: a process
-/// that has gone settles as [`letibot_tools::exec::JobState::Dead`].
+/// A RESTART, end to end: a fresh host adopts the record and the job is running again.
+/// The daemon that started this job is `host`; the one that finds it is `restarted`, which
+/// shares no memory with it - the store is the whole of what it has.
 #[test]
 fn a_restarted_host_adopts_a_live_job_from_its_record() {
     use letibot_tokencore::store::Store;
@@ -766,7 +747,7 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
         crate::jobwatch::JobRecorder::new(path.clone(), "s-e2e".into(), std::sync::Weak::new());
     recorder.process(&view);
 
-    // **The other daemon.** Its own tree, its own table, and the record — nothing else.
+    // The other daemon. Its own tree, its own table, and the record - nothing else.
     let restarted = letibot_tools::exec::HostProcesses::new(&root).expect("a second host");
     let rec = store.process("s-e2e", &id.0).unwrap().expect("the record");
     let adopted = restarted
@@ -789,7 +770,7 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
     assert_eq!(seen.pid, rec.pid);
     assert_eq!(seen.command, rec.command);
 
-    // **And when it is ended, it ends — killed through its own cgroup, as `job_kill` would.**
+    // And when it is ended, it ends - killed through its own cgroup, as `job_kill` would.
     restarted.kill_job(&adopted).expect("the kill reached it");
     let waited = restarted.wait_job(&adopted, Duration::from_secs(30));
     match waited {
@@ -799,7 +780,7 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
         other => panic!("the adopted job did not settle: {other:?}"),
     }
 
-    // **A record whose process is gone is `Dead`, never `exited 0`** — the half a supervisor
+    // A record whose process is gone is `Dead`, never `exited 0` - the half a supervisor
     // exists to get right, and the one an adoption thread settles.
     let mut vanished = rec.clone();
     vanished.handle = "j-vanished".into();
@@ -834,8 +815,8 @@ fn a_restarted_host_adopts_a_live_job_from_its_record() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **The operator's own workloads are not ours to end** (RH9). A `teardown_session` — the door a
-/// session's close and the daemon's stop both use — reaches `kill` for one record and not the
+/// The operator's own workloads are not ours to end (RH9). A `teardown_session` - the door a
+/// session's close and the daemon's stop both use - reaches `kill` for one record and not the
 /// other, and the refusal names the pattern.
 #[test]
 fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
@@ -865,7 +846,7 @@ fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
     let sup = Supervisor::new(Arc::clone(&store), Arc::clone(&fake) as Arc<dyn Probe>)
         .with_hosts(file.clone());
 
-    // **The refusal, in words** — the sentence the operator reads, naming the pattern.
+    // The refusal, in words - the sentence the operator reads, naming the pattern.
     let refused = sup
         .may_touch(&theirs)
         .expect_err("the operator's etcd fuzz is on the never-touch list");
@@ -876,7 +857,7 @@ fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
     // And the session's own command is not refused.
     sup.may_touch(&ours).expect("our own build may be ended");
 
-    // **A teardown ends one and not the other.** The probe was told about exactly one process.
+    // A teardown ends one and not the other. The probe was told about exactly one process.
     let torn = sup.teardown_session("s-a", "the session closing");
     assert_eq!(torn.len(), 2, "both records were open");
     let killed = fake.kills();
@@ -905,24 +886,15 @@ fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own workload on THIS box is not ours to end either** (FB) — the hole RH9 left
-/// open, closed.
-///
-/// `never_touch` used to be a `[host.NAME]` key, so a record with no host — a process on the machine
-/// the daemon runs on — had no list to be checked against at all, and the two doors that signal
-/// anything (`teardown_session` and the deadline kill) went through without asking. `[local]` is
-/// that list now, read by the same function and refused in the same sentence shape.
-///
-/// Both doors are measured here, because they are two call sites of one rule and the second is the
-/// one nobody thinks about: a **deadline** is letibot's own clock, and it is exactly as capable of
-/// killing the operator's fuzz as a teardown is.
+/// The operator's own workload on THIS box is not ours to end either (FB) - the hole
+/// RH9 left open, closed.
 #[test]
 fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
     let dir = std::env::temp_dir().join(format!("letibot-never-local-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch");
     let file = dir.join("hosts.toml");
-    // **A file with a `[local]` table and no `[host.…]` block at all**, because that is the shape
+    // A file with a `[local]` table and no `[host.…]` block at all, because that is the shape
     // that matters: the box the daemon runs on, and nothing else declared.
     std::fs::write(&file, "[local]\nnever_touch = [\"etcd\", \"pgfuzz\"]\n").expect("hosts.toml");
 
@@ -948,7 +920,7 @@ fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
     )
     .with_hosts(file.clone());
 
-    // **The refusal, in words** — the sentence the operator reads, naming the pattern.
+    // The refusal, in words - the sentence the operator reads, naming the pattern.
     let refused = sup
         .may_touch(&theirs)
         .expect_err("this box's own etcd fuzz is on the never-touch list");
@@ -957,10 +929,10 @@ fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
     assert!(refused.contains("will not signal"), "{refused}");
     assert!(refused.contains("j-etcd"), "{refused}");
     assert!(refused.contains("`[local]`"), "{refused}");
-    // And the session's own build is not refused — the rule is the list, not the box.
+    // And the session's own build is not refused - the rule is the list, not the box.
     sup.may_touch(&ours).expect("our own build may be ended");
 
-    // **The deadline door**: one tick past both deadlines ends the build and leaves theirs alone.
+    // The deadline door: one tick past both deadlines ends the build and leaves theirs alone.
     let tick = sup.tick();
     assert_eq!(tick.expired, vec!["j-build".to_string()], "{tick:?}");
     let killed = fake.kills();
@@ -978,7 +950,7 @@ fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
         assert_eq!(ended.state, ProcState::Stopped);
     }
 
-    // **The teardown door**: the same record, the same refusal — and this time the sentence goes to
+    // The teardown door: the same record, the same refusal - and this time the sentence goes to
     // the log while the row stays `lost` with `check_how = refused`.
     let torn = sup.teardown_session("s-a", "the session closing");
     assert_eq!(torn.len(), 1, "the fuzz record was the only one open there");
@@ -996,7 +968,7 @@ fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A `[local]` table that says nothing leaves this box unprotected, and that is not an error** —
+/// A `[local]` table that says nothing leaves this box unprotected, and that is not an error -
 /// a machine nobody has told us to keep anything on. The pair to the test above: the refusal comes
 /// from the list, and an absent list is *no declaration* rather than a silent default.
 #[test]

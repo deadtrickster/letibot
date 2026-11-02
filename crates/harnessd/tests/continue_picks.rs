@@ -1,26 +1,6 @@
-//! **`--continue` opens a conversation — and a reviewer is not one.**
-//!
-//! # The state this measures
-//!
-//! The launcher defines `--continue` as *reopen the newest session in THIS workspace*, and the
-//! merge queue spawns its reviewers as **sessions** — subagents of the session that enqueued the
-//! entry. Ten of them for one workspace's entries is enough to make the newest row in it a
-//! reviewer, which is what the operator hit:
-//!
-//! > *"interesting, restart pg-noop and was brought to one of the gatekeeper sessions. I guess on
-//! > exit you have to print main session id to stdout too. and make sure --continue brings me to
-//! > the main convo"*
-//!
-//! The resolution is a pure rule and its unit tests are beside it (`cli.rs`); what is asserted
-//! HERE is the interface a person and a script meet: the **one line on stdout**, which must be
-//! the conversation's id and nothing else, and the sentence on stderr for a workspace that holds
-//! nothing but children.
-//!
-//! # Why the real binary
-//!
-//! `--latest-session` is read by `~/bin/letibot` as `$(harnessd … --latest-session …)`, so the
-//! printed line IS the contract. A unit test on the resolution cannot see the printing, and the
-//! printing is the half a person meets.
+//! `--continue` opens a conversation - and a reviewer is not one. The launcher defines
+//! `--continue` as *reopen the newest session in THIS workspace*, and the merge queue
+//! spawns its reviewers as sessions - subagents of the session that enqueued the entry.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -84,18 +64,9 @@ fn session_row(
         .expect("the session row");
 }
 
-/// **Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.**
-///
-/// Returns the `last_activity_ms` the store then reports, which is what the resolution orders by.
-///
-/// The wait comes *before* the rows, and that is the whole of the correctness here. `created_at` is
-/// stamped once, when a row is appended, so a fixture that waits afterwards is waiting for a number
-/// that cannot change: two sessions written inside the same millisecond tie, and a tie is broken by
-/// the order the session rows were inserted — which is the order a fixture writes them in. A test
-/// that means *the reviewer is NEWER than the conversation* would then pass with the rule removed.
-/// (It did more than that the first time this was written: the wait was after the append, ten
-/// reviewers landed inside one millisecond of their host, the stamps came out equal and the loop
-/// spun for ever.)
+/// Give a session rows, and make sure the store's clock has passed `after_ms` FIRST.
+/// Returns the `last_activity_ms` the store then reports, which is what the resolution
+/// orders by.
 fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
     wait_past(after_ms);
     let prefix = store
@@ -127,7 +98,7 @@ fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
                 &LedgerRow {
                     item_id: format!("{transcript}.{seq}"),
                     // The prefix above is three tokens long, so the first row starts after
-                    // them — the store refuses a row that starts anywhere else, because a
+                    // them - the store refuses a row that starts anywhere else, because a
                     // resume rebuilds the chain from the prefix's length.
                     tok_offset: 3 + seq * 3,
                     tok_len: 3,
@@ -146,7 +117,7 @@ fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
         .last_activity_ms
 }
 
-/// Wait until the store's own clock has passed `ms` — for a fixture whose time is stamped at write
+/// Wait until the store's own clock has passed `ms` - for a fixture whose time is stamped at write
 /// time and cannot be moved afterwards.
 fn wait_past(ms: i64) {
     let now = || {
@@ -191,12 +162,8 @@ fn listing(store: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// **The rows a listing puts in one group** — the ids under that group's header, in the order they
-/// were drawn.
-///
-/// The listing is grouped since 2026-10-26 (`cli.rs`'s `Query::List`): a header line per group,
-/// `mine (1) — …`, then its rows, each an id at the left margin with its workspace under it. Read
-/// the header's TITLE and the ids between it and the next header.
+/// The rows a listing puts in one group - the ids under that group's header, in the order
+/// they were drawn. The listing is grouped (`cli.rs`'s `Query::List`)
 fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
     const GROUPS: [&str; 5] = ["mine", "subagents", "review queue", "packages", "one-shots"];
     let header = |l: &str| {
@@ -225,8 +192,8 @@ fn group_of_rows(listed: &str, group: &str) -> Vec<String> {
     out
 }
 
-/// **The line the launcher reads is the conversation's id**, with ten reviewers in the store
-/// ahead of it — the operator's report, end to end.
+/// The line the launcher reads is the conversation's id, with ten reviewers in the store
+/// ahead of it - the operator's report, end to end.
 #[test]
 fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
     let scratch = Scratch::new("reviewer");
@@ -237,7 +204,7 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
     let mine = rows_for(&store, "s-mine", 3, 0);
 
     // The queue's reviewers: children of that conversation, seated `gatekeeper`, their titles
-    // cut from the review brief — and every one of them NEWER than anything the person said.
+    // cut from the review brief - and every one of them NEWER than anything the person said.
     let mut newer = mine;
     for i in 0..10 {
         let id = format!("s-gk-{i}");
@@ -266,16 +233,9 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
         "and the ten rows it walked past are said rather than silently dropped: {stderr}"
     );
 
-    // **And the listing agrees with the resolution, which is what it did not do before.** The
-    // operator's own measurement is the shape asserted here: `--sessions` offers the conversation
-    // and no reviewer, so the row `--continue` picks is one of them. Two queries, one store, one
-    // answer.
-    //
-    // **Grouped since 2026-10-26**, and the group a reviewer lands in is the point: these ten are
-    // parented straight on the conversation, seated `gatekeeper`, titled from the review brief —
-    // the layout before the queue had a session of its own. They are the REVIEW QUEUE's work, not
-    // the operator's subagents, and a listing that offered them under `subagents` would be the
-    // same defect with a header on it.
+    // And the listing agrees with the resolution. `--sessions` offers the conversation and no
+    // reviewer, so the row `--continue` picks is one of them: two queries, one store, one
+    // answer. The group a reviewer lands in is the point
     let listed = listing(&path);
     assert_eq!(
         group_of_rows(&listed, "mine"),
@@ -300,7 +260,7 @@ fn the_line_on_stdout_is_the_conversation_and_not_the_reviewer() {
     );
 }
 
-/// **A workspace holding nothing but children says so, and exits 1** — which the launcher turns
+/// A workspace holding nothing but children says so, and exits 1 - which the launcher turns
 /// into its own remedy. The sentence is the point: `no stored session` over a store that is not
 /// empty sends a person looking for a fault that is not there.
 #[test]
@@ -309,7 +269,7 @@ fn a_workspace_holding_nothing_but_children_says_so_and_exits_one() {
     let path = scratch.store();
     let store = Store::open(&path).expect("opening");
 
-    // A sub-session whose parent row is not in this store — the same shape as one whose parent
+    // A sub-session whose parent row is not in this store - the same shape as one whose parent
     // was deleted, and the shape a `--scope` narrowing to a child's own workspace produces.
     session_row(
         &store,

@@ -1,106 +1,59 @@
-//! **A daemon restart, made as painless as it can be** — what a session was running when its
+//! A daemon restart, made as painless as it can be - what a session was running when its
 //! daemon (harnessd) stopped, brought back or reminded when a daemon opens it again.
 //!
-//! The operator, 2026-10-12, in two steps. First: *"and here is one more thing about restart - we
-//! should bring subagents back - i cant afford to wait till they finish. we should record them
-//! (session persist anyway) and restart automatically"*. Then, widening it: *"on restoring agents -
-//! in fact to make restarts as much painless as possible - by default we restore agents, monitors,
-//! and remind the model about jobs. Now, if some threshold passed - say more than 1 hours after
-//! the stop, we start to simply remind the model stating that time passed and this is what you wre
-//! running and how to restart that."* And the scope of it: *"this is the case for when harnessd
-//! stopped of course"*.
+//! The operator's rule: restore agents and monitors by default and remind about jobs, but past a
+//! threshold - *"more than 1 hours after the stop"* - simply remind, saying what was running.
 //!
 //! # Only a daemon stop triggers it
 //!
-//! Every record this reads is stamped with the daemon instance that wrote it
-//! (`Registry::instance`). A session opened by the daemon that already holds its records — a head
-//! attaching after hours of idle, a `/resume`, a parked child coming back — finds nothing that is
-//! not its own and does nothing. Only records written by a daemon that is no longer running are
-//! acted on, and only once: each is re-stamped or closed as it is handled.
+//! Every record is stamped with the instance that wrote it (`Registry::instance`), so a session
+//! opened by the daemon that already holds its records - a head attaching, a `/resume`, a parked
+//! child - finds nothing of its own. Each record acted on is re-stamped or closed as it is.
 //!
 //! # How long the daemon was down
 //!
-//! From the previous daemon's STOP to this daemon's START (`Registry::started_ms`), read from the
-//! `daemon_life` row the previous daemon kept ([`Lifeline`]): an orderly stop writes its exact
-//! time; after a crash the last heartbeat is the latest moment the daemon is KNOWN to have been
-//! alive (it beats every [`BEAT`]), so the down time is an estimate that can be up to one beat too
-//! long, and the notice says so.
+//! From the previous daemon's `daemon_life` row ([`Lifeline`]): an orderly stop wrote its exact
+//! time, and after a crash the last heartbeat is the latest moment it is KNOWN to have been alive
+//! so the down time can be up to one [`BEAT`] too long and the notice says so.
 //!
-//! **The threshold is applied to a different interval, and the difference is the point** (R91.8):
-//! from the STOP to the moment the session is OPENED ([`Stopped::restores`]). The two coincide for
-//! a session the daemon opens as it starts and are hours apart for one opened later — a head
-//! attaching, a `/resume`, a picker row — and the operator's rule is about the second: *"if some
-//! threshold passed - say more than 1 hours after the stop, we start to simply remind"*. Measuring
-//! to the daemon's start let a session opened four hours after the stop resume its children on the
-//! tree they were on four hours before. When the open is more than a minute after the daemon's
-//! return, the notice names both intervals.
+//! The threshold is measured from the STOP to the moment the session is OPENED, not to
+//! the daemon's start: a session opened four hours after the stop would otherwise resume its
+//! children on the tree they were on four hours before. When the open is over a minute late the
+//! notice names both intervals.
 //!
-//! **With no life row at all the stop is UNKNOWN, and is said to be.** The operator, pasting the
-//! notice the first start on a new build wrote — *"the daemon was down for 0s (stopped at …,
-//! estimated from nothing (no record said when); back at …)"* — *"these gray walls are
-//! hilarious"*. A daemon that kept no record (a build before this one, or one that crashed before
-//! its first heartbeat) did not stop "0s ago"; nobody knows when it stopped, and the notice says
-//! exactly that ([`Stopped::Unknown`]).
+//! With no life row at all the stop is UNKNOWN, and is said to be - a daemon that kept no
+//! record did not stop "0s ago", and *"down 0s (estimated from nothing)"* is the wall the operator
+//! called hilarious ([`Stopped::Unknown`]).
 //!
 //! # Under the threshold (`Config::restore_within`, default one hour)
 //!
-//! * **subagents** that were mid-task are resumed (`crate::subagent_record`);
-//! * **monitors** that were live are declared again with the call that declared them — same name,
-//!   same condition, same owner, the TTL they were declared with — and one whose condition cannot
-//!   be re-established (a job that is gone, a pid that is gone) is reported, not dropped;
-//! * **jobs** are NOT re-run — a process cannot be resumed and running a command twice can do harm
-//!   — and the model is reminded of each ([`job_line`]).
+//! * subagents that were mid-task are resumed (`crate::subagent_record`) * monitors are declared again with the call that declared them - same name, condition
+//!   owner and TTL - and one that cannot be re-established is reported, not dropped * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
+//!   each ([`job_line`]).
 //!
-//! # Over it — or not known to be under it
+//! # Over it - or not known to be under it
 //!
-//! Nothing is restored. **An unknown down time counts as over the threshold**: restoring is the
-//! act that needs the stop to have been recent (a subagent resumed hours later works on a tree
-//! that moved, a monitor re-armed watches for something long past), and reminding is what is
-//! safe however long it was — the model is told what was running and the one call that brings
-//! each back. Jobs are only ever reminded, so for them it changes nothing. The model gets one reminder of everything that was running, with the one
-//! call that brings each back (`task_resume`, `monitor`, `bash`), and is told to decide what still
-//! matters.
-//!
-//! Either way the reminder is a turn (it is news the model must act on) and the operator sees a
-//! warning on the session listing what happened: `restart_restored` when something WAS restored
-//! (a subagent resumed or delivered, a monitor re-armed), `restart_reminded` otherwise — a
-//! restart under the threshold whose only record was a job restored nothing, and saying
-//! *"restored where it could be"* over a list of reminders was wrong ([`Outcome`]).
+//! Nothing is restored; an unknown down time counts as over the threshold, because restoring is
+//! the act that needs the stop to have been recent. The model gets one reminder turn listing what
+//! was running and the call that brings each back. The operator's warning is `restart_restored`
+//! when something WAS restored and `restart_reminded` otherwise ([`Outcome`]).
 //!
 //! # And a restart with nothing running is said too
 //!
-//! The operator, 2026-10-30, after one restart had told the model something and the next had said
-//! nothing: *"mb always tell agent about restart? with the current time lol"*. That is not a
-//! courtesy, it is a clock: the model's sense of time went through a stop and a start, and only
-//! the daemon knows when. A session with nothing to restore therefore gets one sentence of its own
-//! ([`nothing_running`]), said once per (session, restart):
+//! As a clock: the model's sense of time went through a stop and a start, and only the daemon
+//! knows when ([`nothing_running`]), said once per (session, restart)
 //!
 //! ```text
 //! [restart] the daemon came back at 2026-10-12 08:10:56 UTC (down 1s, stopped at 2026-10-12
 //! 08:10:55 UTC): nothing was running
 //! ```
 //!
-//! **The return time leads it**, because the time is the whole of what this case is for; what was
-//! running is said too, and it is *nothing*. A stop no record dates is still said to be unknown,
-//! in this sentence as in the others.
-//!
-//! **And the two cases take different doors, because they are different news.** Something was
-//! running ⇒ there is work to continue, and the wake that continues it carries the notice. Nothing
-//! was running ⇒ there is nothing to continue, and the sentence is for the clock alone: it is
-//! filed into the session and read at the model's next turn (or at the next step boundary of a
-//! turn already running), never as a turn of its own. A generation spent to say *"the daemon came
-//! back at 21:28"* is a generation spent on a sentence.
-//!
-//! # Except when the session still owes something — the operator's ruling, 2026-11-01
-//!
-//! *"well it is not ok that restart notice arrived with my continue. because just before restart
-//! you said 'after restart i owe you blabla' so i expected that after restart you will continue"*.
-//! The cost argument above is right about a session with nothing to do and wrong about one with
-//! work outstanding, because there the person is waiting for the session to CONTINUE and a row is
-//! read when they type. So *nothing was running* is not the question — *nothing is owed* is, and
-//! [`Owed`] is the four facts that answer it. A session that owes anything gets the same sentence
-//! through the other door: it is queued as a notice, the daemon's own ring at open turns it into a
-//! turn, and that turn is the work continuing ([`nothing_running_but`]).
+//! The two cases take different doors. Something was running ⇒ the wake that continues it
+//! carries the notice. Nothing was ⇒ the sentence is for the clock alone, filed into the session
+//! and read at the next turn, never a turn of its own - except when the session still OWES
+//! something (*"i expected that after restart you will continue"*), where the person is waiting
+//! for it to continue and [`Owed`] sends the same sentence through the turn door
+//! ([`nothing_running_but`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -112,24 +65,14 @@ use letibot_tokencore::store::{
 };
 use letibot_transcript::{Speaker, TranscriptItem};
 
-/// How often a daemon writes its heartbeat — the bound on how wrong a crash's down time can be.
+/// How often a daemon writes its heartbeat - the bound on how wrong a crash's down time can be.
 pub const BEAT: Duration = Duration::from_secs(30);
 
-/// The default restore threshold — the operator's *"say more than 1 hours after the stop"*.
+/// The default restore threshold - the operator's *"say more than 1 hours after the stop"*.
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
-/// **This daemon's life, written down** — started now, a heartbeat every [`BEAT`] until the
-/// registry closes, and the stop: when the registry closes (the heartbeat sees it), and again
-/// with its exact time when [`Lifeline::stopped`] is called at the end of the orderly path.
-///
-/// **The stop is written through a connection opened at the START**, never a fresh one. pg-noop's
-/// daemon `d-840951`, stopped on purpose on 2026-10-15, logged *"this daemon's stop was not
-/// recorded (store schema is version 30; this build knows 29)"*: the store is shared by every
-/// daemon on the box, a newer build had migrated it while this one ran, and `Store::open` refuses
-/// a schema newer than its own. The heartbeat, on the connection it opened at the start, had kept
-/// beating until 10:37:44 — so the next daemon read a crash, and with the session's other records
-/// that came out as a stop nobody could date. A connection opened before the migration still
-/// writes `daemon_life`, which no migration changes the shape of.
+/// This daemon's life, written down - the start, a heartbeat every [`BEAT`], and the stop.
+/// The stop goes through a connection opened at the START, never a fresh one
 pub struct Lifeline {
     store: Option<Store>,
     registry: Arc<Registry>,
@@ -144,7 +87,7 @@ impl Lifeline {
             match Store::open(p).and_then(|s| s.life_started(&instance, started).map(|()| s)) {
                 Ok(s) => {
                     store = Some(s);
-                    // A second HANDLE on the same connection, moved to the heartbeat's thread:
+                    // A second HANDLE on the same connection, moved to the heartbeat's thread
                     // `Store::open` shares, so this opens no descriptor of its own.
                     if let Ok(beat) = Store::open(p) {
                         let reg = registry.clone();
@@ -162,7 +105,7 @@ impl Lifeline {
         Lifeline { store, registry }
     }
 
-    /// **The orderly stop**, said with its exact time.
+    /// The orderly stop, said with its exact time.
     pub fn stopped(&self) {
         let Some(store) = &self.store else {
             return;
@@ -174,16 +117,8 @@ impl Lifeline {
     }
 }
 
-/// **A beat every [`BEAT`] while the daemon serves — and the stop, the moment it stops serving.**
-///
-/// Every way a daemon is stopped on purpose closes its registry first: SIGINT and SIGTERM
-/// (`Daemon::catch_signals`), a head's `Stop` frame, the merge queue's stop. What follows the
-/// close is bounded but not short — the merge queue joined, the VMs brought down, the children
-/// drained, five seconds each at worst — and a head that forces the stop sends SIGKILL five
-/// seconds after SIGTERM (`letibot --stop --force`, the head's own force path). A stop written
-/// only at the end of that path is lost to the SIGKILL, and the next daemon reads a crash. So the
-/// stop is written here as soon as the close is seen, unless the orderly path has already said
-/// it; [`Lifeline::stopped`] writes the exact time over it when the path does reach its end.
+/// A beat every [`BEAT`] while the daemon serves - and the stop, the moment it stops
+/// serving.
 fn heartbeat(store: Store, registry: Arc<Registry>) {
     let mut last = std::time::Instant::now();
     while !registry.is_closed() {
@@ -203,7 +138,7 @@ fn heartbeat(store: Store, registry: Arc<Registry>) {
     }
 }
 
-/// **When the previous daemon stopped**: a fact, an estimate, or not known at all.
+/// When the previous daemon stopped: a fact, an estimate, or not known at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stopped {
     At {
@@ -211,10 +146,9 @@ pub enum Stopped {
         /// `None` for an orderly stop's own time; otherwise what the time was estimated from.
         estimated_from: Option<&'static str>,
     },
-    /// **No record says when** — the daemon kept no life row (a build before this one, or a
-    /// crash before its first heartbeat). `seen_ms` is the latest moment one of its records was
-    /// written (`0` for none): it was alive then, so the stop is no earlier — a lower bound, used
-    /// only to close a monitor whose TTL had run out before it, never to state a down time.
+    /// No record says when - the daemon kept no life row. `seen_ms` is the latest moment one
+    /// of its records was written (`0` for none): a lower bound, used only to close a monitor whose
+    /// TTL ran out before it, never to state a down time.
     Unknown { seen_ms: u64 },
 }
 
@@ -227,7 +161,7 @@ impl Stopped {
         }
     }
 
-    /// The latest moment the previous daemon is known to have been alive — the stop when it is
+    /// The latest moment the previous daemon is known to have been alive - the stop when it is
     /// known, the last record otherwise.
     pub fn no_earlier_than_ms(&self) -> u64 {
         match self {
@@ -236,25 +170,15 @@ impl Stopped {
         }
     }
 
-    /// **Whether what it was running is restored** — under `threshold` when the down time is
-    /// known; never when it is not (see the module docs).
-    ///
-    /// `opened_ms` is **when the session is being opened**, not when the daemon came up (R91.8).
-    /// The two are the same moment for a session the daemon opens as it starts, and they are
-    /// hours apart for one opened later — a head attaching to a session after a restart, a
-    /// `/resume`, a picker row — and it is the SECOND that the operator's rule is about: *"if
-    /// some threshold passed - say more than 1 hours after the stop, we start to simply remind"*.
-    /// Measuring stop → daemon start let a session opened four hours after the stop resume its
-    /// children, on the tree they were on four hours ago, and the notice said *"the daemon was
-    /// down for 5m — under the threshold, so restored"* about a session nobody had looked at
-    /// since. The harm the threshold exists to prevent is a stale tree, and that is measured
-    /// from the stop to the resume.
+    /// Whether what it was running is restored - under `threshold` from the stop to
+    /// `opened_ms`, the moment the session is being opened and not the daemon's return the harm
+    /// the threshold prevents is a stale tree, and that is measured from the stop to the
     pub fn restores(&self, opened_ms: u64, threshold: Duration) -> bool {
         self.at_ms()
             .is_some_and(|at| Duration::from_millis(opened_ms.saturating_sub(at)) < threshold)
     }
 
-    /// **The stop of the daemon that went last, among several** — the latest known stop, unless
+    /// The stop of the daemon that went last, among several - the latest known stop, unless
     /// a daemon with no record was seen alive after it (then the last stop is unknown too).
     pub fn latest(stops: impl IntoIterator<Item = Stopped>) -> Stopped {
         let mut known: Option<Stopped> = None;
@@ -287,7 +211,7 @@ impl Stopped {
     }
 }
 
-/// The stop of `instance`, read from its life row; [`Stopped::Unknown`] when it has none,
+/// The stop of `instance`, read from its life row; [`Stopped::Unknown`] when it has none
 /// `seen_ms` being the latest write among its records.
 pub fn stop_of(store: &Store, instance: &str, seen_ms: u64) -> Stopped {
     match store.life(instance).ok().flatten() {
@@ -305,17 +229,17 @@ pub fn stop_of(store: &Store, instance: &str, seen_ms: u64) -> Stopped {
     }
 }
 
-/// **What a restart did**, which decides the notice's first line and the warning's code.
+/// What a restart did, which decides the notice's first line and the warning's code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// Under the threshold, and at least one thing was brought back.
     Restored,
-    /// Under the threshold, but nothing could be or needed to be brought back — only jobs, which
+    /// Under the threshold, but nothing could be or needed to be brought back - only jobs, which
     /// are never re-run, or monitors that could not be re-armed.
     NothingRestorable,
     /// Over the threshold, or the down time is unknown: nothing was even tried.
     Reminded,
-    /// **There was nothing to try** — no subagent, monitor or job was running at the stop. The
+    /// There was nothing to try - no subagent, monitor or job was running at the stop. The
     /// sentence is [`nothing_running`]'s, and it is said for the clock alone.
     Nothing,
 }
@@ -326,7 +250,7 @@ impl Outcome {
         match self {
             Outcome::Restored => "restart_restored",
             Outcome::NothingRestorable | Outcome::Reminded => "restart_reminded",
-            // **Its own word**, because it is its own sentence: a head that read this as
+            // Its own word, because it is its own sentence: a head that read this as
             // `restart_reminded` would be told *"reminded"* about a list that does not exist.
             Outcome::Nothing => "restart_nothing",
         }
@@ -345,18 +269,12 @@ pub fn span(d: Duration) -> String {
     }
 }
 
-/// **A session opened this long after its daemon came back is told so** — the restart notice's
-/// clock is otherwise the daemon's, and a session nobody looked at for hours would read *"the
-/// daemon was down for 5m"* as if that were the whole of the gap.
+/// A session opened this long after its daemon came back is told so - otherwise a session
+/// nobody looked at for hours reads *"the daemon was down for 5m"* as the whole of the gap.
 pub const OPENED_LATE_MS: u64 = 60_000;
 
-/// **The first line of every restart notice**: how long the daemon was down (or that nobody
+/// The first line of every restart notice: how long the daemon was down (or that nobody
 /// knows), against which threshold, and what that meant.
-///
-/// `back_ms` is when the daemon came back; `opened_ms` is when the session is being opened, which
-/// is what the threshold is applied to (R91.8 — see [`Stopped::restores`]). When the two are far
-/// enough apart to matter, the same sentence names both, so the clause *"under the … restore
-/// threshold"* can never be read as a claim about a session that was away for hours.
 pub fn header(
     stop: &Stopped,
     back_ms: u64,
@@ -364,7 +282,7 @@ pub fn header(
     threshold: Duration,
     outcome: Outcome,
 ) -> String {
-    // **The empty restart is its own sentence**, not this one with an empty list: there is no
+    // The empty restart is its own sentence, not this one with an empty list: there is no
     // threshold clause to make, and the one thing it has to say is when the daemon came back.
     if outcome == Outcome::Nothing {
         return nothing_running(stop, back_ms);
@@ -392,8 +310,8 @@ pub fn header(
         Some(from) => format!(", estimated from {from}"),
         None => String::new(),
     };
-    // **The open is the moment the threshold was measured at** (R91.8), so when it is later than
-    // the daemon's own return the sentence says both — the fact the person is living through
+    // The open is the moment the threshold was measured at, so when it is later than
+    // the daemon's own return the sentence says both - the fact the person is living through
     // (`opened`) and the fact the daemon's row holds (`back`).
     let opened = match opened_ms.saturating_sub(back_ms) >= OPENED_LATE_MS {
         true => format!("; this session is opened {} after the stop", span(waited)),
@@ -424,18 +342,15 @@ pub fn header(
             span(down),
             span(threshold)
         ),
-        // Unreachable — the empty restart returned above — and written out rather than as an
-        // `unreachable!()` so that a later arm cannot make this function lie.
+        // Unreachable - the empty restart returned above - and written out rather than as an
+        // `unreachable!` so that a later arm cannot make this function lie.
         Outcome::Nothing => nothing_running(stop, back_ms),
     }
 }
 
-/// **A restart that had nothing to restore, said anyway** — the operator, 2026-10-30: *"mb always
-/// tell agent about restart? with the current time lol"*.
-///
-/// The return time leads it because the time IS this case: the model's sense of how long it was
-/// away is the one fact only the daemon has, and the rest of the sentence is what was running —
-/// nothing. A stop no record dates is said to be unknown, here as everywhere else ([`Stopped`]).
+/// A restart that had nothing to restore, said anyway - the operator: *"mb always tell
+/// agent about restart? with the current time lol"*. The return time leads it because the
+/// time IS this case: how long the model was away is the one fact only the daemon has.
 pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     let down = match stop {
         Stopped::At {
@@ -452,8 +367,8 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
                 crate::subagent_record::utc(*at_ms)
             )
         }
-        // **Not "down 0s"**: nobody knows when it stopped, and a restart with nothing running is
-        // exactly the one with no record to read it from — see the module docs.
+        // Not "down 0s": nobody knows when it stopped, and a restart with nothing running is
+        // exactly the one with no record to read it from - see the module docs.
         Stopped::Unknown { .. } => {
             "down unknown, and no record says when the previous one stopped".to_string()
         }
@@ -464,21 +379,9 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     )
 }
 
-/// **Whether a session's last row is a turn that was still going when its rows stopped.**
-///
-/// [`StoredSession::last_item`](letibot_tokencore::store::StoredSession::last_item)'s rule read
-/// from the other side, and the one fact a session with nothing else to show leaves behind: an
-/// `Assistant` with no call after it is a finished turn, and the rest are turns that never got
-/// their answer — the person's prompt (`User`), a call whose result was never written (`Assistant`
-/// with calls), a result whose next round never ran (`ToolResult`), a thought (`Reasoning`), a
-/// compaction instruction with no summary after it (`System`).
-///
-/// **A row the harness filed itself is NOT counted** (`User` with `Speaker::Agent`). The harness
-/// writes those both when it means to start a turn (a wake's notice) and when it files a sentence
-/// for later (the empty restart's own row), and a row is all the store has — so the class is left
-/// out rather than spending a call on every restart that follows a filed sentence. What that
-/// misses is a wake whose turn died before it answered; whatever caused that wake is counted by
-/// the arms above whenever it still exists.
+/// Whether a session's last row is a turn that was still going when its rows stopped - an
+/// `Assistant` with no call after it is a finished turn, and every other row is a turn that
+/// never got its answer.
 pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
     match last {
         None => false,
@@ -491,37 +394,33 @@ pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
     }
 }
 
-/// **What a session still owes when its daemon comes back** — the reason an empty restart is a
-/// TURN and not a row.
-///
-/// Every arm is a fact already in the store or on the board, and each means *somebody is waiting
-/// for this session to do something*. None of them is prose: a model that promised to continue
-/// (`"after restart i owe you"`) leaves nothing a reader can trust, so the promise itself is not
-/// an arm — what a session owes has to be something it WROTE DOWN.
+/// What a session still owes when its daemon comes back - the reason an empty restart is a
+/// TURN and not a row. Every arm is a fact in the store or on the board. None of them is
+/// prose
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Owed {
-    /// **A turn was in flight when the rows stopped** — [`mid_turn`].
+    /// A turn was in flight when the rows stopped - [`mid_turn`].
     pub mid_turn: bool,
-    /// **Settlements this daemon wrote and nobody has been told about** — a child that answered,
+    /// Settlements this daemon wrote and nobody has been told about - a child that answered
     /// or a job that ended, into a session nobody was holding
     /// (`Harness::deliver_settlements_left_undelivered`).
     pub settlements: usize,
-    /// **Rows whose condition the world now meets** — the board says the work is due
+    /// Rows whose condition the world now meets - the board says the work is due
     /// (`Harness::due_todo_rows`).
     pub due_rows: usize,
-    /// **Rows still owed** — the plan the model wrote, `Pending` or `InProgress`. A row the
+    /// Rows still owed - the plan the model wrote, `Pending` or `InProgress`. A row the
     /// operator postponed or struck off is not owed, and a completed one is not either.
     pub plan_rows: usize,
 }
 
 impl Owed {
-    /// Whether there is anything at all — the one question the door is chosen on.
+    /// Whether there is anything at all - the one question the door is chosen on.
     pub fn any(&self) -> bool {
         self.mid_turn || self.settlements + self.due_rows + self.plan_rows > 0
     }
 
-    /// **Why this restart is a turn**, as the sentence says it — every arm that holds, in the
-    /// model's own reading order: the turn it was in, then what the daemon could not deliver,
+    /// Why this restart is a turn, as the sentence says it - every arm that holds, in the
+    /// model's own reading order: the turn it was in, then what the daemon could not deliver
     /// then what the board says.
     pub fn clause(&self) -> String {
         fn rows(n: usize, one: &str, many: &str) -> String {
@@ -559,11 +458,9 @@ impl Owed {
     }
 }
 
-/// **A restart with nothing running that still owes work** — the same sentence as
-/// [`nothing_running`], with the reason it is a TURN rather than a row.
-///
-/// The clause is load-bearing: a model woken to a sentence that only says *nothing was running*
-/// has no way to know why it is reading it now, and the work it owes is what it should pick up.
+/// A restart with nothing running that still owes work - the same sentence as
+/// [`nothing_running`], with the reason it is a TURN rather than a row: a model woken to *nothing
+/// was running* alone has no way to know why it is reading it now.
 pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
     format!(
         "{} — but this session has work outstanding ({}), so this turn is that work continuing \
@@ -573,7 +470,7 @@ pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String 
     )
 }
 
-/// **The call that declares a monitor again**, as the model would write it.
+/// The call that declares a monitor again, as the model would write it.
 pub fn monitor_call(m: &StoredMonitor) -> String {
     format!("`monitor {}`", m.args_json)
 }
@@ -598,19 +495,17 @@ pub fn monitor_not_rearmed_line(m: &StoredMonitor, why: &str) -> String {
     )
 }
 
-/// **The named scope a monitor was owned by**, when it was — not `turn`, not `session`, not left
-/// to the default. Such a scope is something the model set up (a background job started under
-/// that name) and only the daemon that stopped knew about it, so a restart cannot tell what it
-/// was for or whether what ran in it still runs.
+/// The named scope a monitor was owned by, when it was - not `turn`, not `session`, not left to
+/// the default. Such a scope is something the model set up, and only the stopped daemon knew what
+/// it was for or whether anything in it still runs.
 pub fn named_owner(m: &StoredMonitor) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(&m.args_json).ok()?;
     let owner = v.get("owner")?.as_str()?.trim();
     (!owner.is_empty() && owner != "turn" && owner != "session").then(|| owner.to_string())
 }
 
-/// **A monitor owned by a named scope, as the model is told** — never re-armed on its own: the
-/// operator, *"if scopes are involved we should tell model, who knows wtf was setup and how
-/// relevant it still is"*.
+/// A monitor owned by a named scope, as the model is told - never re-armed on its own: *"who
+/// knows wtf was setup and how relevant it still is"*.
 pub fn monitor_scoped_line(m: &StoredMonitor, scope: &str) -> String {
     format!(
         "- monitor `{}` was owned by the scope `{scope}`, which the stopped daemon held — it was \
@@ -631,10 +526,10 @@ pub fn monitor_reminded_line(m: &StoredMonitor) -> String {
     )
 }
 
-/// **The notice the model gets**: the header, a line per thing that was running, and — when
-/// nothing was brought back — the one sentence of what to do about it.
+/// The notice the model gets: the header, a line per thing that was running, and - when
+/// nothing was brought back - the one sentence of what to do about it.
 pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
-    // **One sentence, and nothing after it**: there is no list, and the closing *"nothing above is
+    // One sentence, and nothing after it: there is no list, and the closing *"nothing above is
     // running now"* would be a sentence about a list that is not there.
     if outcome == Outcome::Nothing {
         return header.to_string();
@@ -653,11 +548,11 @@ pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
     text
 }
 
-/// **The hub warning's detail** — the notice's first line and one line per thing ([`said`]).
+/// The hub warning's detail - the notice's first line and one line per thing ([`said`]).
 /// The TUI's `restart_card` reads it as one line.
 pub fn warning_detail(notice: &str, said: &[String]) -> String {
     let head = notice.lines().next().unwrap_or("");
-    // **A restart with nothing in it is one line** — no trailing newline, because there is no
+    // A restart with nothing in it is one line - no trailing newline, because there is no
     // second line to end.
     if said.is_empty() {
         return head.to_string();
@@ -671,7 +566,7 @@ pub fn warning_detail(notice: &str, said: &[String]) -> String {
     )
 }
 
-/// **What the operator's warning says of each thing** — one line each, the daemon's log too.
+/// What the operator's warning says of each thing - one line each, the daemon's log too.
 pub mod said {
     pub fn resumed(name: &str) -> String {
         format!("subagent {name}: resumed")
@@ -718,16 +613,14 @@ pub mod said {
     }
 }
 
-/// **What a job row reads when the old daemon's orderly stop ended it** — `Registry::close` runs
-/// every session's `end_running("the daemon stopping")` before the process exits, and the row
-/// says `killed by` that. Such a job was running at the stop as surely as one a crash left
-/// `running`, and is reminded the same way ([`job_line`]).
+/// What a job row reads when the old daemon's orderly stop ended it - `Registry::close` runs
+/// every session's `end_running("the daemon stopping")` before the process exits. Such a job was
+/// running at the stop as surely as one a crash left `running`, and is reminded the same way.
 pub const STOPPED_WITH_THE_DAEMON: &str = "killed by the daemon stopping";
 
-/// **One background job that was running at the stop, as the model is reminded of it.**
-///
-/// `ran_ms` is how long it had run when the daemon stopped. `waiting` is the open rows that waited
-/// on it — named, with what happened to their wait.
+/// One background job that was running at the stop, as the model is reminded of it.
+/// `ran_ms` is how long it had run when the daemon stopped. `waiting` is the open rows that
+/// waited on it - named, with what happened to their wait.
 pub fn job_line(
     job: &JobRecord,
     slug: Option<&str>,
@@ -749,7 +642,7 @@ pub fn job_line(
     if !about.is_empty() {
         line.push_str(&format!(" ({})", about.join(", ")));
     }
-    // **One sentence of why**, and the command said once — in the call that runs it again.
+    // One sentence of why, and the command said once - in the call that runs it again.
     if job.state == STOPPED_WITH_THE_DAEMON {
         // The orderly stop ended it: there is nothing left running to look for.
         line.push_str(
@@ -763,7 +656,7 @@ pub fn job_line(
              action=\"list\", which kills nothing).",
         );
     }
-    // **Where its output went, read out of the command** — the record's own `redirect` was
+    // Where its output went, read out of the command - the record's own `redirect` was
     // never filled for a running row by the builds before this one, and the operator's job
     // `cd … && … > /tmp/acceptance-child.log 2>&1` was reminded as having written no file.
     let mut files: Vec<String> = job.redirect.iter().cloned().collect();
@@ -810,9 +703,8 @@ pub fn job_line(
     line
 }
 
-/// **One background job that had ENDED at the stop and whose ending never reached the model**
-/// (TODO.md R91.5) — held under R79 while a turn ran, or queued, when the daemon went down. The
-/// row's own record is all that is left: its state, its size, where its output went if anywhere.
+/// One background job that had ENDED at the stop and whose ending never reached the model - held under while a turn ran, or queued, when the daemon went down. The row's own
+/// record is all that is left.
 pub fn settled_job_line(job: &JobRecord, slug: Option<&str>) -> String {
     let mut line = format!("- job `{}`", job.handle);
     if let Some(s) = slug {
@@ -847,8 +739,8 @@ pub fn settled_job_line(job: &JobRecord, slug: Option<&str>) -> String {
     line
 }
 
-/// **The open rows of a board that wait on `handle` (or its slug)** — by `when: job` or by a
-/// `wait_on` edge — as the reminder names them.
+/// The open rows of a board that wait on `handle` (or its slug) - by `when: job` or by a
+/// `wait_on` edge - as the reminder names them.
 pub fn rows_waiting_on(rows: &[TodoItem], handle: &str, slug: Option<&str>) -> Vec<String> {
     let names = |h: &str| h == handle || slug.is_some_and(|s| s == h);
     rows.iter()
@@ -863,7 +755,7 @@ pub fn rows_waiting_on(rows: &[TodoItem], handle: &str, slug: Option<&str>) -> V
         .collect()
 }
 
-/// **A monitor declaration as the harness records it** — the `monitor` tool, wrapped so a
+/// A monitor declaration as the harness records it - the `monitor` tool, wrapped so a
 /// successful declaration is written down with its own arguments, a renewal moves its TTL, and a
 /// retirement closes it. Everything else is the tool's own.
 pub struct RecordingMonitor {
@@ -936,7 +828,7 @@ impl letibot_tools::Tool for RecordingMonitor {
 }
 
 fn ttl_of(args: &serde_json::Value) -> u64 {
-    // **A GitHub watch's default is a day**, not a monitor's five minutes — recorded as five, a
+    // A GitHub watch's default is a day, not a monitor's five minutes - recorded as five, a
     // restart would close a live watch as one that had already run out.
     let default = if args.get("github").is_some() {
         letibot_tools::exec::github::GITHUB_DEFAULT_TTL
@@ -951,7 +843,7 @@ fn ttl_of(args: &serde_json::Value) -> u64 {
 #[cfg(test)]
 mod tests {
 
-    /// **A GitHub watch is recorded with its own default life**, so a restart inside it re-arms it.
+    /// A GitHub watch is recorded with its own default life, so a restart inside it re-arms it.
     #[test]
     fn a_github_watch_is_recorded_for_a_day() {
         assert_eq!(
@@ -961,7 +853,7 @@ mod tests {
         assert_eq!(super::ttl_of(&serde_json::json!({"timer_ms": 5})), 300_000);
     }
 
-    /// **Only a scope the model named is a named owner** — `turn`, `session` and no owner at all
+    /// Only a scope the model named is a named owner - `turn`, `session` and no owner at all
     /// are the daemon's own lifetimes, and a monitor on them is re-armed as before.
     #[test]
     fn a_named_owner_is_the_models_own_scope() {
@@ -998,10 +890,9 @@ mod tests {
 
     const AT: u64 = 1_791_806_400_000;
 
-    /// **A restart with nothing running is said anyway, and the time leads it** — the operator,
-    /// 2026-10-30: *"mb always tell agent about restart? with the current time lol"*. The whole
-    /// sentence is pinned, because the return time is the one fact the case exists for and a
-    /// fragment test would let it go missing.
+    /// A restart with nothing running is said anyway, and the time leads it. The whole
+    /// sentence is pinned: the return time is the one fact the case exists for, and a fragment
+    /// test would let it go missing.
     #[test]
     fn an_empty_restart_says_when_the_daemon_came_back() {
         let back = AT + 1_000;
@@ -1026,7 +917,7 @@ mod tests {
              2026-10-12 12:00:00 UTC, estimated from its last heartbeat (it did not stop in an \
              orderly way)): nothing was running"
         );
-        // And a stop nobody dated is still said to be unknown — not `down 0s`.
+        // And a stop nobody dated is still said to be unknown - not `down 0s`.
         assert_eq!(
             nothing_running(&Stopped::Unknown { seen_ms: 0 }, back),
             "[restart] the daemon came back at 2026-10-12 12:00:01 UTC (down unknown, and no \
@@ -1034,7 +925,7 @@ mod tests {
         );
     }
 
-    /// **The empty case is one sentence and nothing else** — no list, and none of the closing
+    /// The empty case is one sentence and nothing else - no list, and none of the closing
     /// *"nothing above is running now"* the reminded notice ends with, because there is no list
     /// for it to be about. Its header comes from `header`, so the two entry points cannot drift.
     #[test]
@@ -1053,12 +944,12 @@ mod tests {
         assert_eq!(text.lines().count(), 1, "{text}");
         assert!(!text.contains("Nothing above is running now"), "{text}");
         assert!(!text.contains("threshold"), "{text}");
-        // **And the warning's detail is that one line**, with no empty second line under it.
+        // And the warning's detail is that one line, with no empty second line under it.
         assert_eq!(warning_detail(&text, &[]), text);
         assert_eq!(Outcome::Nothing.code(), "restart_nothing");
     }
 
-    /// **The case with records is untouched** — same opening, same threshold clause, same list.
+    /// The case with records is untouched - same opening, same threshold clause, same list.
     #[test]
     fn a_restart_with_records_keeps_its_own_sentence() {
         let stop = Stopped::At {
@@ -1109,11 +1000,9 @@ mod tests {
         assert!(h.contains("NOTHING was restored"), "{h}");
     }
 
-    /// **The threshold is measured to the OPEN, not to the daemon's return** (R91.8) — the
-    /// operator's *"more than 1 hours after the stop"*, which is the session's gap and not the
-    /// daemon's. A daemon that came back five minutes after the stop and a session nobody opened
-    /// for four hours: under the hour by the daemon's clock, four hours late by the session's,
-    /// and the child on a tree nothing has touched since.
+    /// The threshold is measured to the OPEN, not to the daemon's return - the
+    /// session's gap, not the daemon's. Five minutes down, four hours before anyone opened it
+    /// under the hour by one clock, four hours late by the other.
     #[test]
     fn a_session_opened_hours_after_the_stop_is_measured_from_the_open() {
         let stop = Stopped::At {
@@ -1147,15 +1036,14 @@ mod tests {
             "{h}"
         );
         assert!(h.contains("under the 1h00m restore threshold"), "{h}");
-        // And the ordinary case — opened as the daemon starts — has no such clause at all.
+        // And the ordinary case - opened as the daemon starts - has no such clause at all.
         let h = header(&stop, back, back, RESTORE_WITHIN, Outcome::Restored);
         assert!(!h.contains("this session is opened"), "{h}");
     }
 
-    /// **No record of the stop is said as no record** — the operator, of *"the daemon was down
-    /// for 0s (stopped at 2026-10-12 08:10:56 UTC, estimated from nothing (no record said
-    /// when); back at 2026-10-12 08:10:56 UTC)"*: *"these gray walls are hilarious"*. And an
-    /// unknown down time restores nothing: it counts as over the threshold.
+    /// No record of the stop is said as no record - *"these gray walls are hilarious"* about
+    /// *"down 0s (estimated from nothing)"*. An unknown down time restores nothing: it counts as
+    /// over the threshold.
     #[test]
     fn an_unknown_stop_is_said_to_be_unknown_and_restores_nothing() {
         let stop = Stopped::Unknown { seen_ms: 0 };
@@ -1190,7 +1078,7 @@ mod tests {
         }
     }
 
-    /// **The latest stop among several daemons** — and a daemon with no record seen alive after
+    /// The latest stop among several daemons - and a daemon with no record seen alive after
     /// the latest known stop makes the stop unknown.
     #[test]
     fn the_latest_stop_is_known_only_when_no_unrecorded_daemon_outlived_it() {
@@ -1213,7 +1101,7 @@ mod tests {
         );
     }
 
-    /// **Restored is said only when something was** — a restart under the threshold whose only
+    /// Restored is said only when something was - a restart under the threshold whose only
     /// record was a job was raised as `restart_restored`, *"restored where it could be"*, over a
     /// list that restored nothing.
     #[test]
@@ -1273,12 +1161,12 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("Their wait is RELEASED"), "{line}");
-        // **Said once** — the command is in the call that runs it again, not repeated before it.
+        // Said once - the command is in the call that runs it again, not repeated before it.
         assert_eq!(line.matches("cargo test").count(), 1, "{line}");
     }
 
-    /// **A job the old daemon's orderly stop ended is said to have been ended**, not to be
-    /// possibly still running — pg-noop's `slt-sweep`, `killed by the daemon stopping`.
+    /// A job the old daemon's orderly stop ended is said to have been ended, not to be
+    /// possibly still running - pg-noop's `slt-sweep`, `killed by the daemon stopping`.
     #[test]
     fn a_job_the_stop_ended_is_said_to_be_ended() {
         let mut j = job("bash criterion-slt.sh > run0/out.txt 2>&1", None);
@@ -1293,8 +1181,8 @@ mod tests {
         assert!(line.contains("To run it again: `bash {"), "{line}");
     }
 
-    /// **The operator's job, whose record had no redirect** (a running row written by a build
-    /// before this one) — reminded as having *"wrote to no file of its own"* while its log was
+    /// The operator's job, whose record had no redirect (a running row written by a build
+    /// before this one) - reminded as having *"wrote to no file of its own"* while its log was
     /// the one thing that survived. The reminder reads the command itself.
     #[test]
     fn a_job_reminder_finds_the_redirect_in_a_compound_command() {
@@ -1348,18 +1236,9 @@ mod tests {
         }
     }
 
-    /// **The orderly stop is recorded although a newer build migrated the store meanwhile** —
-    /// pg-noop's `d-840951`, stopped on purpose on 2026-10-15, logged *"this daemon's stop was
-    /// not recorded (store schema is version 30; this build knows 29)"*, and the next daemon read
-    /// a crash. The store every daemon on the box shares moved to a newer schema while this one
-    /// ran; the stop goes through the connection the start opened, which still writes.
-    ///
-    /// **What makes a fresh open refuse is the store's READER FLOOR, and the fixture raises it on
-    /// purpose** (2026-10-26). A bare version bump is now the additive case — a newer build that
-    /// only added something leaves the floor where it was, and an older daemon goes on serving
-    /// (`letibot_tokencore`'s `store::floor`). The migration this test stands for is the other
-    /// kind: it took away something an older reader reads, so it moved the floor past this build
-    /// and a fresh open is refused — which is exactly the state the stop has to survive.
+    /// The orderly stop is recorded although a newer build migrated the store meanwhile - the
+    /// shared store moved past this build while it ran, and the stop goes through the
+    /// connection the start opened, which still writes.
     #[test]
     fn the_stop_is_recorded_after_a_newer_build_migrated_the_store() {
         let dir = Scratch::new("lifeline-newer-schema");
@@ -1381,11 +1260,8 @@ mod tests {
                 [letibot_tokencore::store::SCHEMA_VERSION + 1],
             )
             .unwrap();
-        // **`open_private`, because a fresh open has to be a fresh CONNECTION.** `Store::open`
-        // hands back the connection this process already holds on the file — the one `reader`
-        // above is writing through — and a shared handle never runs `migrate`, so the floor is
-        // never consulted and the refusal this test stands for is never reached. What a daemon
-        // that starts on this store gets is the constructor below it.
+        // `open_private`, because a fresh open has to be a fresh CONNECTION: `Store::open`
+        // hands back the handle `reader` is writing through, and a shared one never runs `migrate`.
         assert!(
             Store::open_private(&dir.store()).is_err(),
             "a fresh open refuses a store whose floor is past this build — the stop must not \
@@ -1400,7 +1276,7 @@ mod tests {
         assert!(l.stopped_ms.is_some(), "the stop was not recorded: {l:?}");
     }
 
-    /// **A stop the force path cuts short is still a stop** — the registry closes first on every
+    /// A stop the force path cuts short is still a stop - the registry closes first on every
     /// stop asked for (a signal, a head's `Stop`), and a SIGKILL during the drain that follows
     /// never reaches [`Lifeline::stopped`]. The heartbeat writes the stop when it sees the close.
     #[test]

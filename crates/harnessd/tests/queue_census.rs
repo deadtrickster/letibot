@@ -1,38 +1,6 @@
-//! **The stuck-queue census, end to end: the model is WOKEN and handed the sentence.**
-//!
-//! The operator's report (2026-11-01): eight merge-queue rows sat stuck for hours, three `failed`
-//! and five `conflict`, and every one of those transitions *was* notified once as it happened.
-//! What nothing said was the TOTAL and the AGE — so `mergequeue::stuck` counts them and
-//! `Sessions::deliver_due_censuses` says so.
-//!
-//! # The defect this file exists for
-//!
-//! The first cut said it as a NOTICE (`Harness::note_to_model`): a transcript row and no turn, so
-//! it cost no model call. It also reached nobody. MEASURED the same night — a row stayed in
-//! `conflict` from 02:37 to 10:52 while the census wrote its sentence every interval into a
-//! session that was not running, and the operator's verdict on it names the mechanism exactly:
-//! *"probably doesnt even reach you"*. A notice is a MAILBOX: the model reads it at its next turn,
-//! and a session with nothing to do has none. Firecode's rule 4, which this tree enforces
-//! everywhere else — **a bell must be able to inject a turn**.
-//!
-//! So the census is a `Door::Census` turn now, and this file's central assertion is not "a row was
-//! written" but **"the model was handed the sentence"**: the stub below records every request, and
-//! the prompt is detokenized and searched. A transcript row would pass the old test and fail this
-//! one.
-//!
-//! # What it costs, which is the reason it is a decision rather than an oversight
-//!
-//! One model call per interval per project while a row is stuck. The interval is
-//! `mergequeue::stuck::STUCK_REPEAT_MS` (two hours), so eight rows stuck for a night cost five
-//! calls — against eight hours of a row nobody saw. The rate is NOT the plan's ladder: the numbers
-//! below are the queue's own units, and `sessions::STUCK_REPEAT` carries the argument.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and a model that ANSWERS —
-//! the canned frames the turn crate's tests replay, through a recording stub, which is also how
-//! the prompt can be read back. No git binary beyond `git init` (the census keys its rows by the
-//! repository git resolves), and no process tree.
+//! The stuck-queue census, end to end: the model is WOKEN and handed the sentence. Every
+//! queue transition is notified once as it happens; what nothing said was the TOTAL and the
+//! AGE, so `mergequeue::stuck` counts them and `Sessions::deliver_due_censuses` says so.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -57,10 +25,10 @@ use support::canned::Frame;
 use support::qwen::a_plain_answer_turn;
 use support::stub::{read_request, write_frames, write_props};
 
-/// What the model answers — the mark of a turn that RAN rather than one that was merely opened.
+/// What the model answers - the mark of a turn that RAN rather than one that was merely opened.
 const THE_ANSWER: &str = "census-answer-marker-read-it";
 
-/// **A temp directory, a real git repository in it, and a store** — the census keys rows by the
+/// A temp directory, a real git repository in it, and a store - the census keys rows by the
 /// repository git resolves, so a fixture that named a path that is not one would measure nothing.
 fn seeded(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String, String) {
     let dir = std::env::temp_dir().join(format!(
@@ -102,8 +70,8 @@ fn config(store: &std::path::Path, workspace: &std::path::Path, session_id: &str
     cfg
 }
 
-/// **A landing row in `to`, entered at `at`** — born from a real approval, because that is the
-/// only way the queue makes one (`Store::approve_review`).
+/// A landing row in `to`, entered at `at` - born from a real approval, because that is the only
+/// way the queue makes one (`Store::approve_review`).
 fn a_landing(store: &Store, repo: &str, id: &str, to: MergeState, at: u64) {
     let review = format!("r-{id}");
     store
@@ -195,11 +163,7 @@ fn opened<'a>(
 // The stub
 // ---------------------------------------------------------------------------
 
-/// **A model that answers every turn the same way, and keeps the request it was asked.**
-///
-/// One frame list, replayed for however many turns arrive — a fixture that had to predict the
-/// count would fail on the very defect this file is about (a census that fires per pass), and it
-/// would fail by hanging rather than by counting. The count is `turns()`.
+/// A model that answers every turn the same way, and keeps the request it was asked.
 struct Stub {
     endpoint: Endpoint,
     seen: Arc<Mutex<Vec<String>>>,
@@ -216,7 +180,7 @@ impl Stub {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { return };
                 let (line, body) = read_request(stream.try_clone().expect("clone the socket"));
-                // **`/props` is not a turn.** A session asking its endpoint for the window sends a
+                // `/props` is not a turn. A session asking its endpoint for the window sends a
                 // `GET`, and counting it as one would make every count here off by one.
                 if line.starts_with("GET ") {
                     let _ = write_props(stream);
@@ -233,13 +197,13 @@ impl Stub {
         }
     }
 
-    /// How many turns have been asked for — the count a model call raises, read from the wire
-    /// rather than from the hub, so it cannot agree with a bug in the harness.
+    /// How many turns have been asked for - the count a model call raises, read from the wire rather
+    /// than from the hub, so it cannot agree with a bug in the harness.
     fn turns(&self) -> usize {
         self.seen.lock().unwrap().len()
     }
 
-    /// **What the model was handed for turn `n`** — the request's token ids, detokenized with the
+    /// What the model was handed for turn `n` - the request's token ids, detokenized with the
     /// vocabulary the session tokenized with. This is the assertion that separates a TURN from a
     /// transcript row: a notice never reaches here.
     fn prompt_of(&self, n: usize, vocab: &Vocab) -> String {
@@ -263,8 +227,8 @@ impl Stub {
             .unwrap_or_else(|e| panic!("request {n}'s ids decode: {e}"))
     }
 
-    /// **Every prompt the model was handed**, in order — a search over the whole run rather than
-    /// one turn, so a sentence that arrived on a later turn is found where it belongs.
+    /// Every prompt the model was handed, in order - a search over the whole run rather than one
+    /// turn, so a sentence that arrived on a later turn is found where it belongs.
     #[allow(dead_code)]
     fn prompts(&self, vocab: &Vocab) -> Vec<String> {
         (0..self.turns())
@@ -275,8 +239,8 @@ impl Stub {
 
 impl Drop for Stub {
     fn drop(&mut self) {
-        // Detach rather than join: the listener lives as long as the test, and joining would
-        // block on a socket nobody will ever connect to again.
+        // Detach rather than join: the listener lives as long as the test, and joining would block on
+        // a socket nobody will ever connect to again.
         if let Some(h) = self.handle.take() {
             drop(h);
         }
@@ -287,9 +251,9 @@ impl Drop for Stub {
 // Reading the log back
 // ---------------------------------------------------------------------------
 
-/// **Every `Speaker::Agent` row on this session's log, as its text** — what the person is drawn and
-/// what the model reads at its next turn. It is NOT the evidence that a turn ran: only `turns()`
-/// and the stub's own record are.
+/// Every `Speaker::Agent` row on this session's log, as its text - what the person is drawn and
+/// what the model reads at its next turn. It is NOT the evidence that a turn ran: only `turns` and
+/// the stub's own record are.
 fn agent_rows(hub: &Hub) -> Vec<String> {
     hub.retained()
         .iter()
@@ -339,12 +303,9 @@ fn answers(hub: &Hub) -> Vec<String> {
 // THE TESTS
 // ---------------------------------------------------------------------------
 
-/// **Eight stuck rows WOKE THE MODEL with the count and the age — once, then once an interval
-/// later, then not at all once the queue recovered.**
-///
-/// FAILS on the head this change replaces, and fails in the way that matters: the census row is
-/// there (`censuses` is non-empty) and the stub recorded **no request at all** — the sentence went
-/// into a transcript nobody was going to read. That is the eight hours, in one assertion.
+/// Eight stuck rows WOKE THE MODEL with the count and the age - once, then once an interval
+/// later then not at all once the queue recovered. FAILS on a census written as a notice
+/// and fails in the way that matters
 #[test]
 fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -356,8 +317,8 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     store
         .put_session(&session_row(&id, &repo, None))
         .expect("the session row");
-    // **The operator's own eight**: three `failed` and five `conflict`, four hours old — past
-    // `STUCK_AFTER_MS`, so the census is news the first time the daemon looks.
+    // The eight rows: three `failed` and five `conflict`, four hours old - past `STUCK_AFTER_MS`
+    // so the census is news the first time the daemon looks.
     let four_hours_ago = now_ms().saturating_sub(4 * 3_600_000);
     for i in 0..3 {
         a_landing(
@@ -379,7 +340,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     }
     drop(store);
 
-    // The vocabulary first — the canned frames must speak the ids the session will send.
+    // The vocabulary first - the canned frames must speak the ids the session will send.
     let dead = config(&path, &repo, &id);
     let parts = Parts::load(&dead).expect("the vocabulary must load");
     let frames = a_plain_answer_turn(&parts.vocab, "reading the queue", THE_ANSWER, 30);
@@ -391,17 +352,14 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         ..cfg
     };
     let (mut sessions, registry) = opened(&parts, &cfg, &id);
-    // **The production windows, shortened** — the age gate is the fixture's (four hours); the two
+    // The production windows, shortened - the age gate is the fixture's (four hours); the two
     // clocks are shortened only so a test can see them tick.
     sessions.set_nag_window(Duration::from_secs(60));
     sessions.set_stuck_repeat(Duration::from_millis(200));
 
-    // **One delivery, and it is a TURN** — the model was asked, and what it was asked is the
-    // sentence: the count, the age and the verbs.
-    //
-    // The sweep is spent first, so "this door armed it" is a measurement and not a leftover: a
-    // census turn dispatches tool calls exactly as a prompt's does, and a call it stranded must be
-    // looked at by something (`nag_arms_the_sweep.rs`'s rule, on the fourth door).
+    // One delivery, and it is a TURN - the model was asked, and what it was asked is the
+    // sentence: the count, the age and the verbs. The sweep is spent first, so "this door
+    // armed it" is a measurement and not a leftover
     sessions.sweep_abandoned_calls();
     assert!(sessions.sweep_due_at().is_none(), "the fixture spent it");
     assert_eq!(sessions.deliver_due_censuses(), 1, "one session is told");
@@ -438,7 +396,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         answers(&hub)
     );
 
-    // **Three more passes inside the interval run no turn.**
+    // Three more passes inside the interval run no turn.
     for _ in 0..3 {
         std::thread::sleep(Duration::from_millis(20));
         assert_eq!(sessions.deliver_due_censuses(), 0, "nothing is due yet");
@@ -450,7 +408,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         "and one row"
     );
 
-    // **Past the interval, a second one** — the cadence, and the second model call.
+    // Past the interval, a second one - the cadence, and the second model call.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(sessions.deliver_due_censuses(), 1, "the repeat came due");
     assert_eq!(stub.turns(), 2, "a second call, an interval later");
@@ -459,7 +417,7 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         "and it is the census again"
     );
 
-    // **And the rows recover.** The next arming finds nothing stuck, and the clock stands down in
+    // And the rows recover. The next arming finds nothing stuck, and the clock stands down in
     // both directions: no turn now, and nothing armed after it.
     let store = Store::open(&path).expect("the store");
     for i in 0..3 {
@@ -505,8 +463,8 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
         "and nothing is armed for the next interval"
     );
 
-    // **And a SECOND incident** — the defect the review found in the clock. A new row goes bad
-    // YOUNG, and a clock that has already said one census must still arm for this one's crossing.
+    // And a SECOND incident - the defect the review found in the clock. A new row goes bad YOUNG
+    // and a clock that has already said one census must still arm for this one's crossing.
     let store = Store::open(&path).expect("the store");
     a_landing(&store, &key, "m-second", MergeState::Failed, now_ms());
     drop(store);
@@ -529,21 +487,8 @@ fn a_stuck_row_wakes_the_model_and_a_recovered_queue_runs_no_turn() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The plan nag and the census cannot starve each other** — the case that matters now that both
-/// are turns, because a turn END re-arms both clocks.
-///
-/// Two directions, and each is a real way one subject could silence the other:
-///
-/// * **the census runs, and the plan's check still fires.** A census turn's end re-arms the plan's
-///   clock, and the rule it applies is every turn's (`rearm`: a new notice is one base window from
-///   now). So the plan's check is postponed by at most ONE window — the price any turn pays — and
-///   not by the census's two hours, which is what a shared deadline would have cost it.
-/// * **the plan's check runs, and the census still fires at once.** Its deadline is an ANCHOR
-///   (`census_said_at`), which no turn moves, so a nag turn cannot push the census out.
-///
-/// FAILS on a clock with one shared deadline, which is the shape this would have had if the census
-/// had been put on the plan's ladder: `deliver_due_censuses` would then answer `0` for the whole
-/// interval after a check.
+/// The plan nag and the census cannot starve each other - the case that matters now that
+/// both are turns, because a turn END re-arms both clocks.
 #[test]
 fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -555,7 +500,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     store
         .put_session(&session_row(&id, &repo, None))
         .expect("the session row");
-    // **An unfinished plan**, `todos.rs`'s fixture: the check has something to ask about.
+    // An unfinished plan, so the check has something to ask about.
     store
         .put_todos(
             &id,
@@ -590,7 +535,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     sessions.set_nag_window(Duration::from_millis(1));
     sessions.set_stuck_repeat(Duration::from_secs(600));
 
-    // **The census first, while the plan's check is already due** — the order that could starve it.
+    // The census first, while the plan's check is already due - the order that could starve it.
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(sessions.deliver_due_censuses(), 1, "the census ran");
     assert_eq!(stub.turns(), 1);
@@ -603,7 +548,7 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     );
     assert_eq!(stub.turns(), 2, "both turns reached the model");
 
-    // **And the other direction**: the plan's check ran, and the census's deadline did not move —
+    // And the other direction: the plan's check ran, and the census's deadline did not move -
     // it is an ANCHOR (`census_said_at` + the repeat), which no turn touches, so a nag turn cannot
     // push the census out the way a shared deadline would.
     let armed = sessions.census_due_at(&id);
@@ -628,10 +573,9 @@ fn a_census_and_a_plan_check_do_not_postpone_each_other() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A subagent is not told.** The census is the PROJECT's — a child told *eight rows are stuck in
-/// `main`* has been handed somebody else's work, and the root-session test is what keeps it out.
-/// It runs no turn either, which is the half this change makes worth asserting: a child woken by
-/// its project's queue would be a model call per interval per child.
+/// A subagent is not told. The census is the PROJECT's - a child told *eight rows are stuck
+/// in `main`* has been handed somebody else's work, and the root-session rule is what keeps
+/// it out. It runs no turn either
 #[test]
 fn a_child_session_gets_no_census() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

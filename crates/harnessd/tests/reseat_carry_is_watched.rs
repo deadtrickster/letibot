@@ -1,21 +1,6 @@
-//! **A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.**
-//!
-//! The rano session, 2026-10-12 01:17: the operator ran a bare `/reseat` on a 971-row
-//! conversation with the head attached since the daemon's boot window, then typed `pull`. For
-//! six and a half minutes the head showed the old conversation and `queued · pull` and nothing
-//! else. The store says why: the re-ingest's fork wrote the 971 carried rows one autocommit
-//! `INSERT` at a time (their `created_at` runs 01:17:48 → 01:24:07) while a dozen daemons shared
-//! the file's single write lock, and the worker was inside that command the whole while. Then
-//! the `[reseat]` row landed and `pull` was taken right after it.
-//!
-//! So this pins, on a long conversation, a head attached BEFORE the harness opens, and a prompt
-//! queued while the re-seat runs:
-//!
-//! * the carried rows are written a chunk per transaction, and the head is told how far the
-//!   carry has got (`Filling`), from the start, ending at `total of total`;
-//! * the head goes on receiving the session's events after the fork — the turn that follows is
-//!   on its queue, and it is never demoted to a resync by the carry;
-//! * the `[reseat]` row is spoken and the operator's queued prompt is taken by that turn.
+//! A `/reseat` that carries a long conversation is a wait the head can SEE, and it ends.
+//! The operator ran a bare `/reseat` on a 971-row conversation with the head attached since
+//! the daemon's boot window
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -120,7 +105,7 @@ fn a_long_conversation(n: usize) -> Vec<TranscriptItem> {
 }
 
 /// Everything a live head is sent, collected on a thread of its own the way the server's pump
-/// drains it — so the head's queue is drained as it would be, and a demotion shows up as the
+/// drains it - so the head's queue is drained as it would be, and a demotion shows up as the
 /// `Resync` it is rather than as a test that never read its queue.
 fn follow(
     hub: std::sync::Arc<Hub>,
@@ -203,8 +188,8 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
         .expect("the seed fork lands");
     }
 
-    // The restart, and the head that reconnected across it: registered and attached BEFORE
-    // anything is opened — the boot window `b0608c1` found.
+    // The restart, and the head that reconnected across it: registered and attached BEFORE anything
+    // is opened - the boot window a head reconnecting first thing lands in.
     let serv =
         canned::Canned::serve_replies(vec![a_plain_answer(&parts.vocab, "re-seat noted")], 1);
     let mut now = seated.clone();
@@ -337,10 +322,9 @@ fn a_long_reseat_is_watched_by_a_boot_window_head_and_its_queued_prompt_is_taken
          {} ticks",
         ticks.len()
     );
-    // **The render ticks too** — the long half of the carry, which used to say `0 of N` and
-    // nothing more until the write raced through: the operator, *"progress bars do not work …
-    // always at zero"*. Between its start and its end it says how far it has got, and it ends
-    // before the write's bar begins.
+    // The render ticks too - the long half of the carry, which used to say `0 of N` and nothing more
+    // until the write raced through. Between its start and its end it says how far it has got, and it
+    // ends before the write's bar begins.
     let rendering: Vec<u64> = ticks
         .iter()
         .filter(|(w, _, _)| w.contains("rendering"))

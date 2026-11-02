@@ -1,22 +1,6 @@
-//! **The gate on a declared host, end to end, against a fake ssh** — the second implementation of
-//! [`letibot_harnessd::mergequeue::gate::GateRunner`] run through the real transport: a real
-//! `rsync`, a real `git bundle`, real `git worktree`, real `ssh` argv and the real bounded runner.
-//!
-//! The "host" is a directory on this box. `$LETIBOT_SSH` is a script that skips ssh's own flags
-//! and runs what is left — a shell command, or rsync's `--server` side — with `HOME` pointing at
-//! the rig, so `root = "~/letibot-remote"` lands under the fixture and nothing here reaches a
-//! network or the operator's own `~/letibot-remote`.
-//!
-//! What it pins, and why each one is here:
-//!
-//! | fact | measured by |
-//! |---|---|
-//! | the landing tree arrives, and so does the repository's git metadata | a step that reads a file AND resolves `main` |
-//! | the steps run in order and the run stops at the first red one | a green step then a red one, and a third `not_run` |
-//! | a red step's own output comes back as the row's evidence | the failing step's `echo` |
-//! | `CARGO_TARGET_DIR` is the host's cache, outside the tree | a step that prints it |
-//! | the second run of the same repository reuses the directory and sends almost nothing | the bundle size and the tree's presence |
-//! | a host that cannot be reached is `Infra` with a sentence | a fake ssh that answers 255 |
+//! The gate on a declared host, end to end, against a fake ssh - the second implementation
+//! of `GateRunner` run through the real transport: a real `rsync`, a real `git bundle` real
+//! `git worktree`, real `ssh` argv and the real bounded runner.
 
 use std::path::{Path, PathBuf};
 
@@ -24,25 +8,23 @@ use letibot_harnessd::mergequeue::gate::{GateControl, GateRun, GateVerdict, run_
 use letibot_tokencore::store::MergeGateOutcome;
 use letibot_tools::exec::memory::Ask;
 
-/// **One rig at a time.** `$HOME`, `$LETIBOT_HOSTS` and `$LETIBOT_SSH` are process-wide and this
+/// One rig at a time. `$HOME`, `$LETIBOT_HOSTS` and `$LETIBOT_SSH` are process-wide and this
 /// file's tests run in parallel threads, so without this the second rig to start would point the
-/// first one's ssh at its own hosts file — measured here as a green rig failing with the *down*
-/// rig's `Connection refused`. Each test holds it for its whole body.
+/// first one's ssh at its own hosts file. Each test holds it for its whole body.
 static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn only_rig() -> std::sync::MutexGuard<'static, ()> {
     ENV.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// **How long a wait may last before it is the thing that failed** — a ceiling on *the far side
-/// never ended*, never a claim about how long anything took. MEASURED 2026-11-01: the merge gate
-/// runs 226 test binaries at once and this target alone takes 57 s there, so a bound a loaded box
-/// can reach is a bound that reds `main` for the machine rather than for the gate.
+/// How long a wait may last before it is the thing that failed - a ceiling on *the far side
+/// never ended*, never a claim about how long anything took. The merge gate runs every test binary
+/// at once, so a bound a loaded box can reach would red `main` for the machine, not for the gate.
 const CEILING: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// **Run something that blocks, and fail only when the fact it is about never comes.** A gate run
+/// Run something that blocks, and fail only when the fact it is about never comes. A gate run
 /// is synchronous, so waiting for it IS the fact; [`CEILING`] is what a reader is told when it did
-/// not come, and the sentence names the condition rather than a duration.
+/// not come.
 fn within<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|s| {
         let run = s.spawn(f);
@@ -58,13 +40,9 @@ fn within<T: Send>(what: &str, f: impl FnOnce() -> T + Send) -> T {
     })
 }
 
-/// **Every process on this box whose command line names the rig's directory** — the "host" is a
+/// Every process on this box whose command line names the rig's directory - the "host" is a
 /// directory here, so this is what *still running on the host* looks like: a step's launcher is
 /// `bash <rig>/…/run/step-N.sh`, and the step itself is that launcher's group.
-///
-/// The check this replaces asked for `sleep 60` AND the rig's path on ONE line, and nothing ever
-/// carries both — a launcher's argv has the path, its child's has the command — so it could not
-/// fail for anything.
 fn running_under(rig: &Rig) -> Vec<String> {
     let out = std::process::Command::new("ps")
         .args(["-eo", "command"])
@@ -96,9 +74,9 @@ fn git(dir: &Path, args: &[&str]) {
     );
 }
 
-/// The fake ssh: skip the flags and the destination, then run the rest. One argument means a
-/// shell command (the daemon's own calls, wrapped in `bash -lc`); several mean rsync's `--server`
-/// side, which is exec'd as it stands.
+/// The fake ssh: skip the flags and the destination, then run the rest. One argument means a shell
+/// command (the daemon's own calls, wrapped in `bash -lc`); several mean rsync's `--server` side
+/// which is exec'd as it stands.
 const FAKE_SSH: &str = "#!/bin/bash\n\
      export HOME=\"$FAKE_HOME\"\n\
      export PATH=\"$FAKE_PATH\"\n\
@@ -113,10 +91,9 @@ const FAKE_SSH: &str = "#!/bin/bash\n\
      if [ $# -gt 1 ]; then exec \"$@\"; fi\n\
      exec bash -lc \"$1\"\n";
 
-/// The same fake ssh with one more job: **it answers the apparatus probe** from `$FAKE_APPARATUS`
-/// instead of running it. A real probe on this "host" would ask about the box the test happens to
-/// run on — a Mac answers *no cgroup, no bwrap*, and the assertion would then be about the machine
-/// and not about the fixture.
+/// The same fake ssh with one more job: it answers the apparatus probe from `$FAKE_APPARATUS`
+/// instead of running it. A real probe would ask about the box the test happens to run on - a Mac
+/// answers *no cgroup, no bwrap* - so the assertion would be about the machine, not the fixture.
 const FAKE_SSH_ANSWERS: &str = "#!/bin/bash\n\
      export HOME=\"$FAKE_HOME\"\n\
      export PATH=\"$FAKE_PATH\"\n\
@@ -151,7 +128,7 @@ impl Rig {
         let home = dir.join("home");
         let ssh = bin.join("ssh");
         letibot_tools::testing::write_stub(&ssh, ssh_body);
-        // The operator's file — the only place a host may come from. `mise = false` because this
+        // The operator's file - the only place a host may come from. `mise = false` because this
         // "host" is a directory on the box running the test, and a fake ssh inherits this
         // process's `PATH`: on a box with mise the default probe would wrap every call in it.
         let hosts = dir.join("hosts.toml");
@@ -201,22 +178,22 @@ impl Rig {
         self.repo.clone()
     }
 
-    /// **What the "host" answers when it is asked what apparatus it has** — set before the gate
+    /// What the "host" answers when it is asked what apparatus it has - set before the gate
     /// runs, read by [`FAKE_SSH_ANSWERS`]. Process-wide, which is why every test here holds
     /// [`only_rig`].
     fn answers(&self, said: &str) {
-        // SAFETY (Rust 2024's `unsafe` on `set_var`): one rig at a time (`ENV`), set before the gate
-        // starts, and read only by the fake ssh this test started.
+        // SAFETY (Rust 2024's `unsafe` on `set_var`): one rig at a time (`ENV`), set before the
+        // gate starts, and read only by the fake ssh this test started.
         unsafe { std::env::set_var("FAKE_APPARATUS", said) };
     }
 
-    /// **A program the "host" will find on its `PATH`** — the fake ssh exports `$FAKE_PATH` as the
+    /// A program the "host" will find on its `PATH` - the fake ssh exports `$FAKE_PATH` as the
     /// far side's `PATH`, so this is how a test stands a command in front of one the box has.
     fn host_program(&self, name: &str, body: &str) -> PathBuf {
         let path = self.dir.join("bin").join(name);
         letibot_tools::testing::write_stub(&path, body);
         let path_now = std::env::var("PATH").unwrap_or_default();
-        // SAFETY: as `answers` above — one rig, before the gate starts.
+        // SAFETY: as `answers` above - one rig, before the gate starts.
         unsafe {
             std::env::set_var(
                 "FAKE_PATH",
@@ -226,12 +203,8 @@ impl Rig {
         path
     }
 
-    /// **The n-th launcher the host was asked to run** — the step, as the machine received it. The
+    /// The n-th launcher the host was asked to run - the step, as the machine received it. The
     /// "host" is a directory here, so a test can read what a real gate could only see in a row.
-    ///
-    /// Indexed by ORDER and not by the gate's own counter, because that counter is shared with the
-    /// bundle's temporary name: a first gate that sends a bundle starts its steps at 1 and a warm
-    /// one starts at 0, which is a fact about the transport and not about the step.
     fn launcher(&self, n: usize) -> String {
         let run = self
             .dir
@@ -281,12 +254,9 @@ impl Drop for Rig {
     }
 }
 
-/// **The tree and the repository's metadata both arrive** — the two transports, measured by one
-/// step that could not pass without either: a file from the working tree, `main` from the bundle,
-/// and `git diff main HEAD` naming the branch's own file.
-///
-/// And the build cache is the host's, outside the tree, so a `git clean` or an `rsync --delete`
-/// cannot take it.
+/// The tree and the repository's metadata both arrive - the two transports, measured by one
+/// step that could not pass without either: a file from the working tree, `main` from the
+/// bundle and `git diff main HEAD` naming the branch's own file.
 #[test]
 fn the_tree_and_the_repository_arrive_and_the_steps_run_there() {
     let _only = only_rig();
@@ -331,8 +301,8 @@ fn the_tree_and_the_repository_arrive_and_the_steps_run_there() {
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::Passed);
 }
 
-/// **A step that fails on the host is red, the run stops there, and its own output is the row's
-/// evidence** — the mapping the queue's notice is built from.
+/// A step that fails on the host is red, the run stops there, and its own output is the row's
+/// evidence - the mapping the queue's notice is built from.
 #[test]
 fn a_step_that_fails_on_the_host_is_red_and_the_next_one_never_runs() {
     let _only = only_rig();
@@ -378,19 +348,9 @@ fn a_step_that_fails_on_the_host_is_red_and_the_next_one_never_runs() {
     );
 }
 
-/// **A step still running at the deadline is killed on the host and the row is `timed_out`** —
-/// and nothing is left running there. The deadline is the gate's own, two seconds in this test.
-///
-/// **"At the deadline, not at the far side's end" is a fact about the STEP, not a stopwatch over
-/// the box.** The step lives two minutes and writes one line of its own for every second of it:
-///
-/// * a gate that waited for the step would come back with `finished` in the row, and could only do
-///   so after the step's own two minutes — past [`CEILING`], so the wait fails naming that;
-/// * the step's own count says how much of it ran before the gate ended it. A kill at the two
-///   second deadline leaves a handful of beats; one at a poll's bound (30 s) leaves tens.
-///
-/// This test asserted `elapsed() < 45 s` against a far side that slept 60, and it reddened `main`
-/// twice (`d0b08db6` and an earlier tip): 15 s of headroom is nothing beside 226 test binaries.
+/// A step still running at the deadline is killed on the host and the row is `timed_out` -
+/// and nothing is left running there. "At the deadline, not at the far side's end" is a
+/// fact about the STEP, not a stopwatch over the box
 #[test]
 fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let _only = only_rig();
@@ -404,9 +364,9 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     );
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::TimedOut);
-    // **The sentence names the step's own bound** — the gate's deadline, here fifteen seconds, and
-    // not any poll's: a step is minutes and a question about the host is seconds, and a verdict that
-    // does not say which clock ran out cannot be acted on.
+    // The sentence names the step's own bound - the gate's deadline, here fifteen seconds, and
+    // not any poll's: a step is minutes and a question about the host is seconds, and a verdict
+    // that does not say which clock ran out cannot be acted on.
     let GateVerdict::TimedOut(why) = &run.verdict else {
         unreachable!()
     };
@@ -416,14 +376,14 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     );
     let out = &run.steps[0].output;
     assert!(out.contains("started"), "the step's own words: {out}");
-    // **It never reached its own end** — a step that printed `finished` is one the gate waited for.
+    // It never reached its own end - a step that printed `finished` is one the gate waited for.
     assert!(
         !out.contains("finished"),
         "the step reached its own end, so the gate waited for the far side rather than for its \
          deadline: {out}"
     );
-    // **And the step's own count says the kill came from the deadline.** `beat N` is the far side's
-    // own arithmetic, one per second it lived, so a loaded box can only make this number SMALLER:
+    // And the step's own count says the kill came from the deadline. `beat N` is the far side's
+    // own arithmetic, one per second it lived, so a loaded box can only make this number SMALLER
     // the assertion cannot fire for the machine.
     let beats = out
         .lines()
@@ -436,7 +396,7 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
         "the step ran {beats} of its own seconds before the gate ended it, and the gate's deadline \
          is 2 s: something other than the deadline ended this step (a poll's bound is 30 s): {out}"
     );
-    // **The far side's group was killed**, and this waits for that fact rather than assuming it: a
+    // The far side's group was killed, and this waits for that fact rather than assuming it: a
     // killed group takes a moment to be reaped.
     let began = std::time::Instant::now();
     loop {
@@ -452,11 +412,9 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     }
 }
 
-/// **A fake ssh whose polls are slow** — the 2026-10-30 shape. The steps are `echo`s and finish in
-/// milliseconds; what takes the time is the QUESTION, because the machine was busy compiling
-/// something else. The first poll sleeps twelve seconds (longer than the ten a poll was once
-/// allowed), and the second sleeps thirty-five (longer than the thirty it is allowed now, so it
-/// misses).
+/// A fake ssh whose polls are slow. The steps are `echo`s and finish in milliseconds; what
+/// takes the time is the QUESTION, because the machine was busy compiling something else. The first
+/// poll sleeps twelve seconds (longer than the ten a poll was once allowed), the second 35.
 const SLOW_POLL_SSH: &str = "#!/bin/bash\n\
      export HOME=\"$FAKE_HOME\"\n\
      export PATH=\"$FAKE_PATH\"\n\
@@ -479,23 +437,14 @@ const SLOW_POLL_SSH: &str = "#!/bin/bash\n\
      esac\n\
      exec bash -lc \"$1\"\n";
 
-/// **A host busy enough to be slow to answer is not a host that failed the gate** — the halt of
-/// 2026-10-30, pinned, twice over.
-///
-/// The first gate on `lab2x1` ran `cargo test --workspace` with 25 of its 32 cores busy, one poll
-/// took longer than the ten seconds a poll was allowed, and a step that had been running for four
-/// minutes was killed and reported as *the gate could not run* — which blocked the target and
-/// halted both queues. Two facts, and the incident needed both:
-///
-/// * a poll that takes twelve seconds **is an answer**, not a failure — the bound is a question
-///   about the machine, and a busy machine takes seconds to fork a shell;
-/// * a poll that misses is **asked again** — the answer is `tail -c +<offset>`, so nothing is lost,
-///   and only the step's own deadline (or a machine that is not there at all) may end it.
+/// A host busy enough to be slow to answer is not a host that failed the gate, twice over *
+/// a poll that takes twelve seconds is an answer, not a failure - the bound is a question
+/// about the machine, and a busy machine takes seconds to fork a shell * a poll that misses
 #[test]
 fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
     let _only = only_rig();
     let rig = Rig::new("slowpoll", SLOW_POLL_SSH);
-    // **The gate's deadline is far above what these two steps cost**, the 12 s and the 35 s the
+    // The gate's deadline is far above what these two steps cost, the 12 s and the 35 s the
     // fake host spends answering included: what this test measures is the RETRY, and a deadline a
     // loaded box could reach would measure the box instead.
     let run = rig.gate(&["echo the first step", "echo the second step"], 300);
@@ -512,10 +461,9 @@ fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
         "{:#?}",
         run.steps[1]
     );
-    // **The miss was asked again** — the host's own count of the polls it was given. Its second
+    // The miss was asked again - the host's own count of the polls it was given. Its second
     // answer sleeps 35 s, past the 30 s a poll is allowed, so a third ask can only happen if the
-    // miss was retried rather than read as a verdict about the step. (The old form asserted
-    // `elapsed() >= 42 s`, which is the same fact with the box's speed in it.)
+    // miss was retried rather than read as a verdict about the step.
     let asked = std::fs::read_to_string(rig.dir.join("home/polls"))
         .map(|s| s.trim().parse::<u32>().unwrap_or(0))
         .unwrap_or(0);
@@ -527,14 +475,14 @@ fn a_slow_poll_is_asked_again_and_does_not_kill_the_step() {
     );
 }
 
-/// **The gate's log says where a first run's time went** — transport, checkout, and whether the
-/// build cache was this gate's own. A cold cache is a whole dependency tree compiled inside the
-/// steps, and a reader who cannot see that reads a slow build as a slow machine.
+/// The gate's log says where a first run's time went - transport, checkout, and whether the
+/// build cache was this gate's own. A reader who cannot see that reads a slow build as a slow
+/// machine.
 #[test]
 fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold() {
     let _only = only_rig();
     let rig = Rig::new("costnote", FAKE_SSH);
-    // A step that puts something IN the cache, because an empty `target/` is not a cache — the
+    // A step that puts something IN the cache, because an empty `target/` is not a cache - the
     // question `open` asks is whether this gate is the one that makes it.
     let first = rig.gate(
         &["echo one > \"$CARGO_TARGET_DIR/made-by-the-first-gate\"; echo one"],
@@ -550,7 +498,7 @@ fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold(
     assert!(note.contains("the checkout "), "{note}");
     assert!(note.contains("the tree "), "{note}");
     // The transport is said beside the budget it is paid out of, so *two seconds* reads as cheap
-    // and not as *most of the gate* — this rig gives the gate two minutes.
+    // and not as *most of the gate* - this rig gives the gate two minutes.
     assert!(note.contains("out of the gate's 2 min"), "{note}");
     assert!(note.contains("build cache COLD"), "{note}");
     assert!(!note.contains("not reached"), "{note}");
@@ -577,7 +525,7 @@ fn the_first_rows_note_says_what_the_transport_cost_and_that_the_cache_was_cold(
     );
 }
 
-/// **A host that cannot be reached is a verdict with a sentence, at once** — not a hang and not a
+/// A host that cannot be reached is a verdict with a sentence, at once - not a hang and not a
 /// red branch. The fake ssh answers the way a dead machine's does, and the gate must read that
 /// refusal rather than wait out the deadline it was given.
 #[test]
@@ -605,11 +553,9 @@ fn an_unreachable_host_is_unjudged_with_a_sentence() {
     assert_eq!(run.steps[0].outcome, MergeGateOutcome::NotRun);
 }
 
-/// **The second gate of one repository on one host reuses everything the first one made** — the
-/// same directory, the same worktree and the same build cache — and sends only what is new.
-///
-/// The first run's bundle carries the whole history; the second one's is a handful of commits,
-/// which is what makes a warm gate on a host worth having at all.
+/// The second gate of one repository on one host reuses everything the first one made - the
+/// same directory, the same worktree and the same build cache - and sends only what is new.
+/// The first run's bundle carries the whole history
 #[test]
 fn the_second_run_of_one_repository_is_warm() {
     let _only = only_rig();
@@ -631,7 +577,7 @@ fn the_second_run_of_one_repository_is_warm() {
     let second = rig.gate(&["echo second"], 120);
     assert_eq!(second.verdict, GateVerdict::Passed, "{second:#?}");
     assert_eq!(second.steps[0].output.lines().next(), Some("second"));
-    // And one new commit on top is still a warm run. It goes on the BRANCH, because `landing()`
+    // And one new commit on top is still a warm run. It goes on the BRANCH, because `landing`
     // detaches at `agent/thing`'s tip and a commit made on a detached HEAD is not that tip.
     git(&rig.repo, &["checkout", "-q", "agent/thing"]);
     std::fs::write(rig.repo.join("SECOND"), b"another\n").expect("a file");
@@ -643,20 +589,12 @@ fn the_second_run_of_one_repository_is_warm() {
 }
 
 // -------------------------------------------------------------------------------------------
-// The demand a step makes of the MACHINE
-//
-// `LETIBOT_REQUIRE_APPARATUS=1` is the project's, and it is right: a test that skips must not read
-// as a pass. But it is a demand on the machine that runs the step, and the gate chooses that
-// machine. MEASURED 2026-10-30, `main` at `7becd144`, `[queue] gate_host = "lab2x1"`: the prefix
-// went to a host with no writable cgroup v2 subtree and **twenty-one targets went red with one
-// sentence**, halting both queues. These three tests are the three answers a machine can give.
-// -------------------------------------------------------------------------------------------
+// The demand a step makes of the MACHINE `LETIBOT_REQUIRE_APPARATUS=1` is the project's
+// and it is right: a test that skips must not read as a pass.
 
-/// **A machine that cannot meet the demand runs the step without it, and the row says so.**
-///
-/// The prefix comes off that ONE step — the rest of the project's line is byte for byte its own —
-/// and the evidence a person reads leads with the fact, because a skipped apparatus test that
-/// nobody is told about is a pass nobody can see through.
+/// A machine that cannot meet the demand runs the step without it, and the row says so. The
+/// prefix comes off that ONE step and nothing else about it moves, and the evidence a
+/// person reads leads with the fact
 #[test]
 fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() {
     let _only = only_rig();
@@ -670,9 +608,9 @@ fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() 
         120,
     );
     assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
-    // **What the machine was actually asked to run**: the assignment is gone from the step's head
-    // and nothing else about it moved. (Asserted on the launcher rather than on the environment,
-    // because a gate run under `LETIBOT_REQUIRE_APPARATUS=1` would export it to every child anyway.)
+    // What the machine was actually asked to run: the assignment is gone from the step's head
+    // and nothing else about it moved. (Asserted on the launcher rather than on the environment
+    // because a gate run under `LETIBOT_REQUIRE_APPARATUS=1` would export it to every child.)
     let launcher = rig.launcher(1);
     assert!(
         launcher.contains("( sh -c 'echo demand=[$LETIBOT_REQUIRE_APPARATUS]' )"),
@@ -701,8 +639,8 @@ fn a_machine_that_cannot_meet_the_demand_runs_the_step_without_it_and_says_so() 
     );
 }
 
-/// **A machine that HAS the apparatus runs the project's step exactly as it was written, and the
-/// row says nothing** — a gate on a box with everything is byte for byte what it was.
+/// A machine that HAS the apparatus runs the project's step exactly as it was written, and the
+/// row says nothing - a gate on a box with everything is byte for byte what it was.
 #[test]
 fn a_machine_with_the_apparatus_runs_the_demand_as_the_project_wrote_it() {
     let _only = only_rig();
@@ -725,19 +663,17 @@ fn a_machine_with_the_apparatus_runs_the_demand_as_the_project_wrote_it() {
     assert!(!out.contains("delegated scope"), "{out}");
 }
 
-/// **A machine that has no cgroup of its own to give, but can make a delegated scope, gets the
-/// demand MET** — the step is started inside `systemd-run --user --scope -p Delegate=yes`, and the
-/// prefix stays where the project put it. That is option (a): the apparatus is established where
-/// the step runs rather than the demand dropped.
+/// A machine that has no cgroup of its own to give, but can make a delegated scope, gets
+/// the demand MET - the step is started inside `systemd-run --user --scope -p Delegate=yes`
+/// and the prefix stays where the project put it
 #[test]
 fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
     let _only = only_rig();
     let rig = Rig::new("ownscope", FAKE_SSH_ANSWERS);
     rig.answers("cgroup=own-scope\nbwrap=yes\n");
     // A stand-in for `systemd-run`, on the fake host's `PATH`: it records that it was asked and
-    // runs what it was given, which is the contract the launcher depends on (the command's own
-    // words in the log, and its exit status). With no arguments it does nothing, which is what
-    // `write_stub`'s probe requires of every stub.
+    // runs what it was given, which is the contract the launcher depends on. With no arguments it
+    // does nothing, which is what `write_stub`'s probe requires of every stub.
     rig.host_program(
         "systemd-run",
         "#!/bin/sh\n\
@@ -770,9 +706,9 @@ fn a_machine_that_can_make_a_delegated_scope_keeps_the_demand_and_gets_one() {
     assert!(!out.contains("TAKEN OFF"), "{out}");
 }
 
-/// **The net under all of it: a step that refuses to skip is UNJUDGED, not red** — whatever the
-/// probe said. Twenty-one targets failing with one sentence is a fact about the machine, and a
-/// gate that reds for it is a gate whose red is ignored.
+/// The net under all of it: a step that refuses to skip is UNJUDGED, not red, whatever the
+/// probe said. Twenty-one targets failing with one sentence is a fact about the machine, and a gate
+/// that reds for it is a gate whose red is ignored.
 #[test]
 fn a_step_that_refused_to_skip_is_unjudged_and_not_red() {
     let _only = only_rig();

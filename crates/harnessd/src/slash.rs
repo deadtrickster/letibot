@@ -1,27 +1,6 @@
-//! The daemon's slash verbs: `/flowy …` and `/models …`, as the operator typed
-//! them in a head, answered on the session's log.
-//!
-//! # Wizardy, in a terminal
-//!
-//! Each verb does what it can with what it was given and, when something is
-//! missing, says the exact next command — *"paste it with `/flowy login SEAT
-//! --token …`"* — rather than a manual. A step that has a real choice (several
-//! seats on the box) lists them. Nothing is guessed: two seats and no name is a
-//! list, not a pick, for the reason `creds.rs` gives.
-//!
-//! # Where it lands
-//!
-//! `/flowy login` writes the seat's files where the usual path reads them
-//! (`~/.config/flowy/agents/<seat>`, `env-<seat>`), opens the seat, and attaches
-//! every open root session — the `flowy` tool is always a door, so no session
-//! needs reopening. `/models X` switches the provider underneath the session
-//! and records it as the standing choice in `~/.config/letibot/providers.toml`,
-//! so it sticks for the next daemon too; a key the provider needs is stored
-//! there with `--key`, mode 0600.
-//!
-//! Feedback is `SessionEvent::Warning { code: "slash", .. }` — the one event a
-//! head renders at every verbosity, which is right for an answer to something
-//! the operator just typed.
+//! The daemon's slash verbs: `/flowy …` and `/models …`, as the operator typed them in a
+//! head answered on the session's log. Each verb does what it can with what it was given
+//! and, when something is missing, says the exact next command rather than a manual.
 
 use std::path::PathBuf;
 
@@ -42,29 +21,9 @@ impl SlashReply {
     }
 }
 
-/// **The verbs this daemon answers** — the first word of every arm of [`Slash::parse`].
-///
-/// # Why this is a list at all, when the parser is a `match`
-///
-/// A head completes `/`-commands from a table, and **a head that does not recognise a verb
-/// forwards it here**. So the daemon's verb table is the authority for its half of the
-/// namespace, and a head that enumerated its own guess at it would be holding a copy of the
-/// other half's knowledge — the `head-run.tools` mistake exactly.
-///
-/// Measured 2026-09-23, and this is the defect the list exists to end: the head's completion
-/// table offered 27 verbs and **five working daemon verbs were not among them** — `/flowy`,
-/// `/gate`, `/job`, `/login`, `/supervise`. Every one of them runs. The operator's words,
-/// via B's audit of its own tree: *"i want tab completion for /<commands"*, and the cause was
-/// not that completion is missing but that **it completes from a different list than the one
-/// that dispatches**. `docs/evidence/slash-completion-2026-09-23.py` is that measurement.
-///
-/// # The shape, and why not one list
-///
-/// Three registries on one key would be worse than one wrong one, so there are two and they
-/// are joined rather than duplicated: the head completes **its own** verbs from its own
-/// table (tied to its dispatcher by a test that reads the source, see
-/// `crates/tui/src/app.rs`), and completes **these** from a `SettingRow` the daemon
-/// publishes. See [`crate::protocol::DAEMON_VERBS_KEY`].
+/// The verbs this daemon answers - the first word of every arm of [`Slash::parse`]. A head
+/// completes `/`-commands from a table and forwards a verb it does not recognise here, so
+/// this is the authority for the daemon's half of the namespace.
 pub const VERBS: &[&str] = &[
     "auto-compact",
     "clear",
@@ -81,7 +40,7 @@ pub const VERBS: &[&str] = &[
     "tools",
 ];
 
-/// `flowy status`, `flowy login …`, `flowy logout`, `models …` — parsed.
+/// `flowy status`, `flowy login …`, `flowy logout`, `models …` - parsed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Slash {
     FlowyStatus,
@@ -93,12 +52,11 @@ pub enum Slash {
         new_reader: bool,
     },
     FlowyLogout,
-    /// **`/clear [what to do next]` — a fresh conversation for the same session.** The
-    /// operator: *"I need to be able to clear context - fresh reseat without loosing session
-    /// todos and jobs"*. The board, jobs, subagents and settings carry on; the history does
-    /// not, not even as a summary. See `harness/clear.rs`.
+    /// `/clear [what to do next]` - a fresh conversation for the same session. The board, jobs
+    /// subagents and settings carry on; the history does not, not even as a summary. See
+    /// `harness/clear.rs`.
     Clear {
-        /// The rest of the line, quoted in the orientation as the operator's — `None` for a
+        /// The rest of the line, quoted in the orientation as the operator's - `None` for a
         /// bare `/clear`.
         next: Option<String>,
     },
@@ -108,142 +66,99 @@ pub enum Slash {
         job: Option<String>,
         offset: u64,
     },
-    /// `/monitor retire NAME`: end a monitor the model armed — the monitors pane's `x`. The
+    /// `/monitor retire NAME`: end a monitor the model armed - the monitors pane's `x`. The
     /// model is told it was retired, and by whom, on its next turn.
     MonitorRetire(String),
-    /// **What this conversation can call**, and what it only looks like it can.
+    /// What this conversation can call, and what it only looks like it can.
     Tools,
     Models,
-    /// **Switch what answers THIS conversation.** Nothing else: the standing
-    /// choice belongs to [`Slash::DefaultModel`], and it took three goes to get
-    /// here.
-    ///
-    /// `/models X` used to do both at once, which is why — reading its own
-    /// listing — the operator asked *"so how do i switch a model for the
-    /// conversation?"* about a verb that had been doing exactly that all along:
-    /// the sentence it ended on was about `providers.toml`. A `--once` flag was
-    /// added to opt out of the half nobody asked for; then a scripted run wrote a
-    /// broken model name into the operator's box, and the flag turned out to be
-    /// the wrong shape for the problem: *"so /models is sticking to session, if I
-    /// need to set default model i will do it how? give me /default-model"*.
-    ///
-    /// One verb, one effect. `--once` went with the conflation it was patching.
+    /// Switch what answers THIS conversation. The standing choice belongs to
+    /// [`Slash::DefaultModel`]
     ModelsSet {
         provider: String,
         model: Option<String>,
-        /// A key pasted while switching is still stored — a credential is not a
-        /// preference, and making somebody paste it twice is the wrong half to
-        /// forget.
+        /// A key pasted while switching is still stored - a credential is not a preference, and
+        /// making somebody paste it twice is the wrong half to forget.
         key: Option<String>,
     },
-    /// **What a NEW session starts on**, in `providers.toml`. `None` reports it.
+    /// What a new session starts on, in `providers.toml`. `None` reports it.
     DefaultModel(Option<String>),
-    /// **The supervised-labelling verb.** See [`gate`].
+    /// The supervised-labelling verb. See [`gate`].
     Gate(GateVerb),
-    /// **The merge queue's own verb**, for the one act on an entry that is a person's.
-    ///
-    /// `/queue` alone is the HEAD's — it opens the pane, and it never reaches here. What does is
-    /// the sub-verb, because restarting a review is a daemon act: the queue is daemon-level,
-    /// its rows are the daemon's, and the pane may be open in a session that is not the one the
-    /// entry came from.
+    /// The merge queue's own verb, for the one act on an entry that is a person's. `/queue`
+    /// alone is the head's - it opens the pane and never reaches here. What does is the
+    /// sub-verb, because restarting a review is a daemon act
     Queue(QueueVerb),
-    /// **A queue verb with its scope named** (R92 item 5) — `/queue all VERB …` acts across every
-    /// repository, `/queue /PATH VERB …` in that one. A bare [`Slash::Queue`] is
-    /// [`QueueScope::Here`]: the session's own repository, and nothing else.
+    /// A queue verb with its scope named - `/queue all VERB …` acts across every repository
+    /// `/queue /PATH VERB …` in that one. A bare [`Slash::Queue`] is [`QueueScope::Here`].
     QueueIn {
         scope: QueueScope,
         verb: QueueVerb,
     },
-    /// Turn the guard model on or off on the running session. `None` reports.
-    ///
-    /// `at` carries an address the first time somebody names one; it is remembered,
-    /// so the second `/supervise` is one word.
+    /// Turn the guard model on or off on the running session. `None` reports. `at` carries an
+    /// address the first time somebody names one; it is remembered, so the second `/supervise`
+    /// is one word.
     Supervise {
         want: Option<bool>,
         at: Option<String>,
     },
-    /// **The operator's pause of this session's idle plan-check** — `/nag`, `/nag pause
+    /// The operator's pause of this session's idle plan-check - `/nag`, `/nag pause
     /// [DURATION]`, `/nag resume`. See [`crate::nag_pause`].
     Nag(crate::nag_pause::NagVerb),
-    /// **`/auto-compact [on|status]` — the wall controller, by hand.** `on` re-arms the
-    /// compaction before a turn: a `Stuck` controller, and an operator's own
-    /// `--no-auto-compact`. Added 2026-10-11, when an estimate stood pg-noop's
-    /// `s-1789919514688401228` down for the daemon's life and nothing but a restart into
-    /// a fresh session could undo it. `status` (and bare) reports the state.
+    /// `/auto-compact [on|status]` - the wall controller, by hand. `on` re-arms the compaction
+    /// before a turn: a `Stuck` controller, and an operator's own `--no-auto-compact`. `status`
+    /// (and bare) reports the state.
     AutoCompact {
         on: bool,
     },
     Help(String),
 }
 
-/// **What the operator is asking of the merge queue** — see [`Slash::Queue`].
-///
-/// The operator's ask, in their words: *"i want to be able to approve / veto / delete"*, and
-/// *"no way i touch git myself, we build this queue not for that"*. `restart` was the first
-/// person-verb — the operator's *"so merge queue has 4 failed items, we need a way to restart
-/// them"* — and it re-asks the REVIEW. These three are the other half: a person's verdict on what
-/// the review said, and a person's decision to stop holding the entry at all.
-///
-/// **`veto` carries the person's own words**, because the message the child receives is built from
-/// them: a rejection a child cannot read a reason in is a rejection it cannot act on. The reason is
-/// the rest of the line, so it is a sentence and not a word.
-/// **`reset` and `clean` are the two SWEEPS**, and they take an OPTIONAL id: the operator's
-/// ruling is *"as for reset - no reset resets review states. and /queue clean deletes"*, and a
-/// queue parked on one bad afternoon is answered by a verb about the whole thing. No id is the
-/// whole queue, which is why these two carry an `Option` where the four above carry a `String`.
+/// What the operator is asking of the merge queue. A person's verdict on what the review
+/// said, and a person's decision to stop holding the entry at all. `veto` carries the
+/// person's own words because the message the child receives is built from them
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueVerb {
-    /// **Re-attempt one entry's review.** `entry` is the id the pane's row carries.
+    /// Re-attempt one entry's review. `entry` is the id the pane's row carries.
     Restart { entry: String },
-    /// **The person's verdict replaces the review's** — the entry returns to the queue, and the
-    /// queue then does its normal thing: rebase at the tip, gate, land. Never past the gate.
+    /// The person's verdict replaces the review's - the entry returns to the queue, and the queue
+    /// then does its normal thing: rebase at the tip, gate, land. Never past the gate.
     Approve { entry: String },
-    /// **The person's rejection, delivered to the child that did the work.** `why` is the person's
-    /// own words, empty when they gave none.
+    /// The person's rejection, delivered to the child that did the work. `why` is their own words
+    /// empty when they gave none.
     Veto { entry: String, why: String },
-    /// **Drop the entry from the queue.** The branch and its worktree stay.
+    /// Drop the entry from the queue. The branch and its worktree stay.
     Rm { entry: String },
-    /// **Re-ask the review of the parked entries** — the whole queue, or the one entry named.
-    /// The REVIEW STATES only: no branch is moved, no worktree is swept, no row is deleted, and
-    /// the tutor re-reviews what is there.
+    /// Re-ask the review of the parked entries - the whole queue, or the one entry named. The
+    /// review states only: no branch moves, no worktree is swept, no row is deleted.
     Reset { entry: Option<String> },
-    /// **Delete entries from the queue** — the whole queue, or the one entry named. The branch and
-    /// its worktree stay; the row and its verdict go.
+    /// Delete entries from the queue - the whole queue, or the one entry named. The branch and its
+    /// worktree stay; the row and its verdict go.
     Clean { entry: Option<String> },
-    /// **Gate the target's tip again, even when it was already judged** (R76 item 3). `target`
-    /// is the project's `[queue] target` when none is named; `repository` is the session's own
-    /// unless the line names one by its path (`/queue regate /path/to/repo [TARGET]`), because the
-    /// red target the operator is looking at is often another project's.
+    /// Gate the target's tip again, even when it was already judged. `target` is the project's
+    /// `[queue] target` when none is named
     Regate {
         repository: Option<String>,
         target: Option<String>,
     },
 }
 
-/// **Which repositories a `/queue` verb may act in** (R92 item 5). The operator: *"the /queue is
-/// still not project scoped"* — a sweep typed in one project's session withdrew another
-/// project's parked rows. The default is the session's own repository; any other needs the line
-/// to say so.
+/// Which repositories a `/queue` verb may act in. A sweep typed in one project's session used to
+/// withdraw another project's parked rows; the default is the session's own repository, and any
+/// other needs the line to say so.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueueScope {
     /// The repository the session's workspace is a session of.
     Here,
-    /// Every repository the queues hold — `/queue all …`.
+    /// Every repository the queues hold - `/queue all …`.
     All,
-    /// The repository at this path — `/queue /PATH …`.
+    /// The repository at this path - `/queue /PATH …`.
     Repo(String),
 }
 
-/// What the operator is saying about a decision the gate already made.
-///
-/// > *"literally i'm ready to sit and answer each turn after the model"*
-///
-/// That is the loop this exists for, and it is not the same thing as answering a
-/// question the gate asked. A gate question is answered *before* the call runs and
-/// is already recorded as a `human:` verdict. This is the other case: the gate
-/// decided by itself, the call has run or been refused, and the operator is saying
-/// whether it should have. It is the only source of a label on an *automatic*
-/// decision, so it is the only thing that makes auto mode supervisable.
+/// What the operator is saying about a decision the gate already made. Not the same as
+/// answering a question the gate asked: that is answered before the call runs and recorded
+/// as a `human:` verdict.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateVerb {
     /// Recent decisions, newest first, so the operator can see what to rule on.
@@ -258,13 +173,9 @@ pub enum GateVerb {
     },
 }
 
-/// **`PROVIDER[/MODEL]`, split** — the one spelling of a model name in this tree.
-///
-/// Read by the verb's own parser and by `[fallback] models`, and it is a function
-/// rather than two `split_once('/')`s because the two callers must not be able to
-/// disagree about what `deepseek/deepseek-flash` means: the fallback resolves its
-/// names through [`models_choice`], the same door `/models` goes through, and a
-/// second split is a second answer to that question.
+/// `PROVIDER[/MODEL]`, split - the one spelling of a model name in this tree. A function
+/// rather than two `split_once('/')`s because the two callers must not disagree about what
+/// `deepseek/deepseek-flash` means
 pub fn split_model_name(spec: &str) -> (String, Option<String>) {
     match spec.split_once('/') {
         Some((p, m)) => (p.to_string(), Some(m.to_string())),
@@ -341,9 +252,8 @@ impl Slash {
                     .map(str::to_string),
             },
             Some("tools") => Slash::Tools,
-            // **`off` and `on` are kept as the same verbs**, because they are what somebody
-            // reaches for first; the words the replies use are `pause` and `resume`, which is the
-            // operator's correction — *"or rather - pause"*.
+            // `off` and `on` are kept as the same verbs, because they are what somebody reaches
+            // for first; the replies use `pause` and `resume`.
             Some("nag") | Some("nags") => match crate::nag_pause::parse(&words[1..]) {
                 Ok(verb) => Slash::Nag(verb),
                 Err(why) => Slash::Help(why),
@@ -389,11 +299,9 @@ impl Slash {
                  for a cloud model"
                     .into(),
             ),
-            // One word, no arguments, and it lands on the session in front of you.
-            // `/supervise off` and `/supervise on` exist for saying it explicitly;
-            // bare `/supervise` turns it ON, because that is what somebody typing it
-            // wants and asking them to say `on` twice is the kind of ceremony that
-            // makes a feature go unused.
+            // One word, no arguments, and it lands on the session in front of you. Bare
+            // `/supervise` turns it on, because asking somebody to say `on` after a verb with one
+            // obvious direction is the ceremony that makes a feature go unused.
             Some("supervise") | Some("supervised") => match words.get(1).copied() {
                 None | Some("on") | Some("1") | Some("yes") => {
                     Slash::Supervise { want: Some(true), at: None }
@@ -402,10 +310,8 @@ impl Slash {
                     Slash::Supervise { want: Some(false), at: None }
                 }
                 Some("status") | Some("?") => Slash::Supervise { want: None, at: None },
-                // **Anything with a colon is an address**, because that is what a
-                // person means by `/supervise 192.168.1.76:8090` and refusing it in
-                // favour of a separate `--oracle` flag on a daemon they did not start
-                // is exactly the ceremony this verb exists to remove.
+                // Anything with a colon is an address, because that is what a person means by
+                // `/supervise 192.168.1.76:8090`.
                 Some(other) if other.contains(':') => Slash::Supervise {
                     want: Some(true),
                     at: Some(other.to_string()),
@@ -414,14 +320,9 @@ impl Slash {
                     "/supervise [on|off|status|HOST:PORT] — `{other}` is none of those"
                 )),
             },
-            // **`/queue` is two verbs under one word, and only one of them is the daemon's.**
-            // A bare `/queue` never reaches here — the head answers it by opening the pane — so
-            // this arm sees the sub-verb, and an unrecognised one is refused by name with the
-            // grammar rather than forwarded to `Slash::Help`'s *"is not a daemon verb"* about a
-            // verb that is.
+            // `/queue` is two verbs under one word, and only one is the daemon's.
             Some("queue") => match words.get(1).copied() {
-                // **A scope first** (R92 item 5): `all`, or a path — a sub-verb never starts
-                // with `/`. What follows is parsed as a bare `/queue` line would be.
+                // A scope first: `all`, or a path - a sub-verb never starts with `/`.
                 Some(w) if w == "all" || w.starts_with('/') => {
                     let scope = if w == "all" {
                         QueueScope::All
@@ -457,8 +358,8 @@ impl Slash {
                             .into(),
                     ),
                 },
-                // **The reason is the rest of the line**, the shape `/gate` already keeps: a
-                // rejection a child cannot read a reason in is a rejection it cannot act on.
+                // The reason is the rest of the line: a rejection a child cannot read a reason in
+                // is a rejection it cannot act on.
                 Some("veto") => match words.get(2) {
                     Some(id) => Slash::Queue(QueueVerb::Veto {
                         entry: (*id).to_string(),
@@ -481,19 +382,16 @@ impl Slash {
                             .into(),
                     ),
                 },
-                // **`reset` and `clean` take an id or none, and NONE IS THE WHOLE QUEUE.** The
-                // ruling is about the queue as much as about a row (*"no reset resets review
-                // states. and /queue clean deletes"*), and a verb that insisted on an id would
-                // make re-asking twenty parked entries twenty commands — which is the ceremony
-                // these two exist to remove. There is no *missing argument* refusal here for that
-                // reason, and the sentences below say what the bare form is about instead.
+                // `reset` and `clean` take an id or none, and none is the whole queue: a verb
+                // that insisted on an id would make re-asking twenty parked entries twenty
+                // commands, which is the ceremony these two exist to remove.
                 Some("reset") => Slash::Queue(QueueVerb::Reset {
                     entry: words.get(2).map(|id| (*id).to_string()),
                 }),
                 Some("clean") => Slash::Queue(QueueVerb::Clean {
                     entry: words.get(2).map(|id| (*id).to_string()),
                 }),
-                // **A path first is the repository** — a branch name never starts with `/`.
+                // A path first is the repository - a branch name never starts with `/`.
                 Some("regate") => match (words.get(2).copied(), words.get(3).copied()) {
                     (Some(repo), target) if repo.starts_with('/') => {
                         Slash::Queue(QueueVerb::Regate {
@@ -540,9 +438,9 @@ impl Slash {
                         only_unlabelled: true,
                     }),
                     Some("corpus") | Some("counts") => Slash::Gate(GateVerb::Counts),
-                    // Three verbs, not two, because "the gate was right" is a label
-                    // and not a no-op. A corpus holding only the corrections teaches
-                    // that every decision was wrong.
+                    // Three verbs, not two, because "the gate was right" is a label and not a
+                    // no-op: a corpus holding only the corrections teaches that every decision
+                    // was wrong.
                     Some(k @ ("ok" | "upheld" | "grant" | "granted" | "revoke" | "revoked")) => {
                         let Some(id) = words.get(2) else {
                             return Slash::Help(format!(
@@ -718,9 +616,8 @@ pub fn models_listing(current: &str) -> Vec<String> {
     lines.push(
         "  local the llama.cpp server this daemon was started against   /models local".into(),
     );
-    // **This fleet's own models, above the presets**, because they cost nothing and
-    // a listing that buries them under five metered providers is a listing that
-    // reads as "the choices are cloud".
+    // This fleet's own models, above the presets, because they cost nothing and a listing that
+    // buries them under five metered providers reads as "the choices are cloud".
     for m in letibot_provider::keys::local_models(None) {
         let sampling = if m.profile.sampling.is_empty() {
             "the built-in sampling".to_string()
@@ -759,34 +656,22 @@ pub fn models_listing(current: &str) -> Vec<String> {
     lines
 }
 
-/// **What `/models NAME` resolved to.** Three kinds, because there are three,
-/// and an `Option<ProviderConfig>` could only say two.
-///
-/// It was `Option<ProviderConfig>`: `Some` a metered provider, `None` the daemon's
-/// own server. A declared local model is neither — it takes the local path and moves
-/// where that path points — and squeezing it into `None` would have made "back to
-/// this daemon's model" and "over to the 27B on .78" the same value.
-///
-/// **Two of the three are local**, and that is the axis this tree already turns on:
-/// local means the prefix is reusable, the tokens are counted here against this
-/// session's own vocabulary, and nothing is billed. `metered` is the other side of
-/// that line. A box on the LAN is on the local side of it, so it is `Local` rather
-/// than a third category named for the fleet.
+/// What `/models NAME` resolved to. Three kinds, because there are three: a metered
+/// provider, the daemon's own server, and a model this fleet declares. Two of the three are
+/// local, and that is the axis this tree already turns on
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelChoice {
-    /// `/models local` — this daemon's own server, exactly as it was started.
+    /// `/models local` - this daemon's own server, exactly as it was started.
     OwnServer,
-    /// **A local model this fleet declares** — a `[model."…"]` block with a url.
-    /// No key, no meter, tokenized here like any other local model.
+    /// A local model this fleet declares - a `[model."…"]` block with a url. No key, no meter.
     Local(letibot_provider::keys::LocalModel),
     /// A cloud preset, metered.
     Metered(ProviderConfig),
 }
 
-/// Resolve a `/models PROVIDER[/MODEL] [--key K]` into a config for THIS session.
-///
-/// It stores a pasted key and nothing else. The standing choice is
-/// [`default_model`]'s job — see [`Slash::ModelsSet`] for why the two were split.
+/// Resolve a `/models PROVIDER[/MODEL] [--key K]` into a config for THIS session. It stores
+/// a pasted key and nothing else. The standing choice is [`default_model`]'s job - see
+/// [`Slash::ModelsSet`] for why the two were split.
 pub fn models_choice(
     provider: &str,
     model: Option<&str>,
@@ -797,9 +682,8 @@ pub fn models_choice(
     if provider == "local" {
         return Ok((ModelChoice::OwnServer, notes));
     }
-    // **The operator's own names first.** A fleet block is something they wrote in
-    // their own file; a preset is a name this binary ships. If the two ever collide,
-    // the file wins, because the person who typed the name also typed the block.
+    // The operator's own names first: a fleet block is something they wrote in their own file, a
+    // preset is a name this binary ships, and if the two collide the file wins.
     if let Some(m) = letibot_provider::keys::local_models(file)
         .into_iter()
         .find(|m| m.name == provider)
@@ -862,43 +746,18 @@ pub fn models_choice(
     ))
 }
 
-/// **Is this name a model the FLEET declares** — a `[model."…"]` block with an address?
-///
-/// The same list [`models_choice`] looks in, so the two cannot disagree about which
-/// names take the fleet path (they are the operator's own blocks, and a block wins
-/// over a preset of the same name).
+/// Is this name a model the fleet declares - a `[model."…"]` block with an address? The
+/// same list [`models_choice`] looks in, so the two cannot disagree about which names take
+/// the fleet path.
 pub fn fleet_model_named(provider: &str, file: Option<&std::path::Path>) -> bool {
     letibot_provider::keys::local_models(file)
         .iter()
         .any(|m| m.name == provider)
 }
 
-/// **Can a RUNNING TURN take this `/models` line up at all?**
-///
-/// The one question the retry loop's picker asks of a queued line, answered where the
-/// verb's grammar is. Two of the three choices are yes and one is no:
-///
-///   * a **metered** switch is a `MessagesBackend` built and put in place, and nothing about
-///     the conversation, the engine or the ledger moves — so the turn may take the line and
-///     answer it;
-///   * **`local`** is yes only when this session is NOT on another model's weights
-///     (`on_foreign_weights`): the return to the daemon's own server is then an address move,
-///     and otherwise it re-seats — which is the no;
-///   * a **fleet** model (`/models dense78`) is always the no, because the switch decides with a
-///     `/props` probe whether it has to re-render the conversation into a fork, and forking under
-///     a turn that is in flight is not something a retry loop should be doing.
-///
-/// **A "yes" is not "apply it now".** Since 2026-10-26 the switch is RECORDED by the turn that
-/// takes it and applied when the turn ends (`Harness::set_provider`, `Harness::end_turn_clock`):
-/// a model's first request has to follow a user message, so the model cannot change under a turn
-/// that is still running. What this predicate decides is who ANSWERS the operator's line during
-/// the turn, and whether they hear back inside it.
-///
-/// **What "no" means is that nothing happens here.** The line stays in the queue, in
-/// order, and the worker takes it when the turn ends — which is what every `/models`
-/// did before this existed. It is not a refusal: the operator's switch still lands,
-/// one turn later than it would have, and the turn it was typed during is not put at
-/// risk for it.
+/// Can a RUNNING TURN take this `/models` line up at all? A metered switch is a backend
+/// built and put in place, so the turn may take the line. `local` is yes only when the
+/// session is not on another model's weights
 pub fn mid_turn_switch_ok(line: &str, on_foreign_weights: bool) -> bool {
     match Slash::parse(line) {
         Slash::ModelsSet { provider, .. } => {
@@ -911,17 +770,9 @@ pub fn mid_turn_switch_ok(line: &str, on_foreign_weights: bool) -> bool {
     }
 }
 
-/// **`/default-model` — what a NEW session starts on.**
-///
-/// The other half of what `/models` used to do in one breath. Separated because
-/// one verb doing two things is what made the operator ask how to do either:
-/// *"so how do i switch a model for the conversation?"* about the verb that
-/// switched it, and then *"if I need to set default model i will do it how?"*
-/// about the verb that set it.
-///
-/// `None` reports. `local` clears the standing choice, which is the honest way to
-/// say "new sessions use this daemon's own model" — there is no `[default]` that
-/// means local, so the row is removed rather than written with a name.
+/// `/default-model` - what a NEW session starts on, and the other half of what `/models`
+/// used to do in one breath. One verb doing two things is what made the operator ask how to
+/// do either. `None` reports.
 pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> SlashReply {
     let Some(want) = want else {
         let now = letibot_provider::keys::default_choice(file);
@@ -940,9 +791,9 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
                         "no standing choice in {path}, so a new session starts on the \
                          local server its daemon was launched against"
                     ),
-                    // The file is there and could not be read: a fault, not an
-                    // absence, so the absence sentence must not be printed. The
-                    // path and the parser's own message are the fix.
+                    // The file is there and could not be read: a fault, not an absence, so the
+                    // absence sentence must not be printed. The path and the parser's message
+                    // are the fix.
                     Err(u) => format!(
                         "{u} — the standing choice could not be read, so a new \
                          session starts on the local server its daemon was launched \
@@ -986,8 +837,8 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
             };
         }
     };
-    // The key is checked before the choice is written, so a default nothing can
-    // authenticate is never left for the next daemon to discover at its first turn.
+    // The key is checked before the choice is written, so a default nothing can authenticate is
+    // never left for the next daemon to discover at its first turn.
     if let Err(e) = letibot_provider::keys::resolve(preset, None, file) {
         return SlashReply {
             lines: vec![
@@ -1026,8 +877,8 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
 #[cfg(test)]
 mod tests {
 
-    /// **A fleet model is selectable by name**, and it is not a provider: no key is
-    /// looked for and none is needed.
+    /// A fleet model is selectable by name, and it is not a provider: no key is looked for and
+    /// none is needed.
     #[test]
     fn a_fleet_block_is_a_choice_models_can_resolve() {
         let f = fleet_file("a_fleet_block_is_a_choice");
@@ -1056,8 +907,8 @@ mod tests {
         assert!(notes.is_empty(), "{notes:?}");
     }
 
-    /// **The operator's own names come first.** The file is theirs; the preset list is
-    /// this binary's. A collision resolves to the thing the person typed a block for.
+    /// The operator's own names come first: the file is theirs, the preset list is this binary's
+    /// and a collision resolves to the thing the person typed a block for.
     #[test]
     fn a_fleet_name_wins_over_a_preset_of_the_same_name() {
         let f = tmp_file(
@@ -1071,9 +922,8 @@ mod tests {
         );
     }
 
-    /// **A name nobody declared lists what is declared.** The old refusal named the
-    /// five presets and stopped, which on a box whose models are all in that file
-    /// answers a question the operator was not asking.
+    /// A name nobody declared lists what is declared. A refusal that named only the presets would
+    /// answer a question the operator was not asking, on a box whose models are all in that file.
     #[test]
     fn an_unknown_name_names_this_fleets_own_models() {
         let f = fleet_file("an_unknown_name_names");
@@ -1084,8 +934,8 @@ mod tests {
         );
     }
 
-    /// A key the reader does not know is reported when the choice is made, not
-    /// swallowed into a profile that silently lacks it.
+    /// A key the reader does not know is reported when the choice is made, not swallowed into a
+    /// profile that silently lacks it.
     #[test]
     fn a_misspelled_sampling_key_is_reported_on_the_switch() {
         let f = tmp_file(
@@ -1115,14 +965,9 @@ mod tests {
         )
     }
 
-    /// **`/supervise` is one word.**
-    ///
-    /// > *"I want to start leticode, do /supervise, and move on."*
-    ///
-    /// So a bare `/supervise` turns it ON rather than printing usage: asking somebody
-    /// to say `on` after a verb that has one obvious direction is the ceremony that
-    /// makes a feature go unused. `status` reports without changing anything, and it
-    /// is a different word on purpose.
+    /// `/supervise` is one word: a bare `/supervise` turns it on rather than printing usage
+    /// because asking somebody to say `on` after a verb with one obvious direction is the ceremony
+    /// that makes a feature go unused. `status` reports without changing anything.
     #[test]
     fn supervise_takes_no_arguments_in_the_case_that_matters() {
         use super::{GateVerb, Slash};
@@ -1154,8 +999,7 @@ mod tests {
                 at: None
             }
         );
-        // An address is the one-off override, and anything with a colon is one —
-        // refusing it in favour of a daemon flag is the ceremony this verb removes.
+        // An address is the one-off override, and anything with a colon is one.
         assert_eq!(
             Slash::parse("supervise 192.168.1.76:8090"),
             Slash::Supervise {
@@ -1216,9 +1060,8 @@ mod tests {
         assert!(matches!(Slash::parse("flowy dance"), Slash::Help(_)));
     }
 
-    /// `/job` with no argument is the listing, not a refusal, and `--offset`
-    /// is not mistaken for a job id — the operator reaching a second page types
-    /// `/job ID --offset N`, but a flag alone must still list.
+    /// `/job` with no argument is the listing, not a refusal, and `--offset` is not mistaken for
+    /// a job id: a flag alone must still list.
     #[test]
     fn job_parses_bare_with_an_id_and_with_an_offset() {
         assert!(matches!(
@@ -1267,9 +1110,8 @@ mod tests {
         assert!(matches!(Slash::parse("tools"), Slash::Tools));
     }
 
-    /// **One verb, one effect.** `/models` switches this conversation;
-    /// `/default-model` says what a new one starts on. They were the same verb,
-    /// and that is why the operator had to ask how to do each of them.
+    /// One verb, one effect: `/models` switches this conversation, `/default-model` says what a
+    /// new one starts on.
     #[test]
     fn models_switches_the_session_and_default_model_is_its_own_verb() {
         match Slash::parse("models deepseek/deepseek-flash") {
@@ -1284,8 +1126,8 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        // All three spellings reach the standing choice, because all three are
-        // what somebody reaches for.
+        // All three spellings reach the standing choice, because all three are what somebody
+        // reaches for.
         for line in ["default-model", "default_model", "default"] {
             assert!(
                 matches!(Slash::parse(line), Slash::DefaultModel(None)),
@@ -1298,8 +1140,8 @@ mod tests {
         ));
     }
 
-    /// Switching a session writes no standing choice — the bug that put a model
-    /// name deepseek rejects into the operator's box, from a scripted test run.
+    /// Switching a session writes no standing choice - the bug that put a model name deepseek
+    /// rejects into the operator's box, from a scripted test run.
     #[test]
     fn switching_a_session_leaves_providers_toml_alone() {
         let d = std::env::temp_dir().join(format!(
@@ -1350,8 +1192,8 @@ mod tests {
         );
         assert!(std::fs::read_to_string(&f).unwrap().contains("[default]"));
 
-        // And a default nothing can authenticate is refused rather than left for
-        // the next daemon to discover at its first turn.
+        // And a default nothing can authenticate is refused rather than left for the next daemon
+        // to discover at its first turn.
         let bad = default_model(Some("glm"), Some(&f));
         assert!(!bad.ok);
         assert!(
@@ -1362,18 +1204,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    /// **`/default-model` with no argument says a file it could not read.**
-    ///
-    /// The report used to be one sentence for every case — "no standing choice
-    /// in <path>" — which was a lie when the file was there and the parser
-    /// choked: an operator fixing a typo was told they had never written a
-    /// choice at all. The fault arm names the file and the parser's own
-    /// message, because that is the fix; and it never prints the absence
-    /// sentence, because a fault is not an absence.
+    /// `/default-model` with no argument says a file it could not read. One sentence for every
+    /// case - "no standing choice in <path>" - was a lie when the file was there and the parser
+    /// choked: an operator fixing a typo was told they had never written a choice at all.
     #[test]
     fn default_model_reports_a_file_it_could_not_read() {
-        // Malformed, but carrying a valid-looking [default]: the fault must
-        // surface even though the eye finds a choice in the file.
+        // Malformed, but carrying a valid-looking [default]: the fault must surface even though
+        // the eye finds a choice in the file.
         let f = tmp_file(
             "unreadable_default",
             "[default]\nmodel = \"deepseek-flash\"\nprovider = \"deepseek\"\nthis line has no equals sign\n",
@@ -1390,16 +1227,15 @@ mod tests {
             "the absence sentence must not be printed for a fault: {:?}",
             said.lines
         );
-        // The hint line is unchanged: the verb still works the moment the
-        // file is fixed.
+        // The hint line is unchanged: the verb still works the moment the file is fixed.
         assert!(
             said.lines[1].contains("/default-model PROVIDER[/MODEL]"),
             "{:?}",
             said.lines
         );
 
-        // And `provider = "local"` keeps the old sentence: a real choice,
-        // not a fault, so the operator who meant it is not complained at.
+        // And `provider = "local"` keeps the old sentence: a real choice, not a fault, so the
+        // operator who meant it is not complained at.
         let g = tmp_file(
             "local_is_a_choice_report",
             "[default]\nprovider = \"local\"\n",
@@ -1439,9 +1275,9 @@ mod tests {
             notes.iter().any(|n| n.contains("stored the grok key")),
             "{notes:?}"
         );
-        // **And no standing choice.** This used to write one, which is the
-        // conflation `/default-model` was split out of: switching a session is
-        // not a statement about every session this box opens afterwards.
+        // And no standing choice. This used to write one, which is the conflation
+        // `/default-model` was split out of: switching a session is not a statement about every
+        // session this box opens afterwards.
         assert!(
             !notes.iter().any(|n| n.contains("standing choice")),
             "{notes:?}"
@@ -1466,20 +1302,8 @@ mod tests {
     }
 }
 
-/// **The supervised-labelling loop, served from the store.**
-///
-/// Deliberately *not* routed through the live gate, and the reason is the deadlock
-/// `answers` is shaped around: the daemon has one worker, and a slash verb arrives
-/// on the socket reader's thread while the worker may be inside a turn. The ruling
-/// is a row in the store; the store is reachable from here and the gate is not.
-///
-/// **What that costs, stated rather than hidden:** `AdjudicatedGate::record_override`
-/// also resets the consecutive-denial breaker for that direction, because a human
-/// answering is the only thing that closes an open one. A ruling written through
-/// this path records the label and does **not** lift the breaker — so an operator
-/// clearing a run of denials with `/gate grant` will still meet the breaker on the
-/// next call. Lifting it needs the same channel `answers` uses, and that is not
-/// built here.
+/// The supervised-labelling loop, served from the store. Deliberately not routed through
+/// the live gate, for the deadlock `answers` is shaped around
 pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply {
     let Some(path) = store_path else {
         return SlashReply {
@@ -1507,10 +1331,9 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             Ok(c) => SlashReply {
                 lines: vec![
                     format!("{} decisions recorded", c.total),
-                    // Who decided and what it was measured against are independent,
-                    // and reporting one number for both is how a session where the
-                    // operator personally answered four hundred calls read as
-                    // "0 ruled on".
+                    // Who decided and what it was measured against are independent, and one
+                    // number for both is how a session where the operator personally answered
+                    // four hundred calls read as "0 ruled on".
                     format!("  {} you answered yourself", c.decided_by_operator),
                     format!("  {} where an oracle was actually consulted", c.measured),
                     format!(
@@ -1522,12 +1345,9 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                         "  {} decided by a rule or a mode with nobody asked",
                         c.total.saturating_sub(c.decided_by_operator)
                     ),
-                    // **The two columns nothing writes** (R11). Named here rather than
-                    // left for a reader to discover: `p_allow` has no producer because
-                    // the oracle this build ships answers with a hard label and the
-                    // logprob encoding that would give it a number is not built, and
-                    // `oracle_model` is empty because the model is already named in
-                    // full on `verdict_by` (`model oracle \`qwen-3.8-27b\` at …`).
+                    // The two columns nothing writes, named here rather than left for a reader to discover
+                    // `p_allow` has no producer because the oracle answers with a hard label, and
+                    // `oracle_model` is empty because the model is already named in full on `verdict_by`.
                     "  p_allow and oracle_model are NULL on every row: neither has a \
                      producer — see `CorpusRow` in `letibot-tools`. A reader must not \
                      read their NULL as a measurement."
@@ -1545,8 +1365,8 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             limit,
             only_unlabelled,
         } => {
-            // `corpus(only_labelled)` narrows the other way, so the unlabelled queue
-            // is filtered here rather than by asking for a set that excludes itself.
+            // `corpus(only_labelled)` narrows the other way, so the unlabelled queue is filtered
+            // here rather than by asking for a set that excludes itself.
             let rows = match store.corpus(false, if *only_unlabelled { limit * 8 } else { *limit })
             {
                 Ok(r) => r,
@@ -1558,11 +1378,9 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                 }
             };
             let mut lines = Vec::new();
-            // **"unruled" is not "nobody answered it".** A call the operator was put
-            // in front of already carries their judgement in `verdict_by`; listing it
-            // as work would ask the same question twice and get a worse answer the
-            // second time. The queue is the calls a rule or a mode settled with
-            // nobody asked, and which nobody has ruled on since.
+            // "Unruled" is not "nobody answered it": a call the operator was put in front of already
+            // carries their judgement in `verdict_by`, and listing it as work would ask the same
+            // question twice.
             for r in rows
                 .iter()
                 .filter(|r| !*only_unlabelled || (!r.asked && r.operator_kind.is_none()))
@@ -1570,10 +1388,9 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
             {
                 let label = match (&r.operator_kind, r.asked) {
                     (Some(k), _) => format!("[{k}]"),
-                    // An unruled decision the operator was never shown is the one
-                    // auto mode produces, and the one worth ruling on. Marked apart
-                    // from one they answered live, which already carries their
-                    // judgement in the verdict.
+                    // An unruled decision the operator was never shown is the one auto mode
+                    // produces, and the one worth ruling on - marked apart from one they answered
+                    // live, which already carries their judgement.
                     (None, false) => "[UNRULED]".to_string(),
                     (None, true) => "[answered live]".to_string(),
                 };
@@ -1609,8 +1426,8 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
                     lines: vec![format!("{request_id}: {kind}")],
                     ok: true,
                 },
-                // Two reasons this returns false and they are different facts, so
-                // both are named rather than collapsed into "not found".
+                // Two reasons this returns false and they are different facts, so both are named
+                // rather than collapsed into "not found".
                 Ok(false) => SlashReply {
                     lines: vec![format!(
                         "{request_id} was not ruled: either no decision by that id is in \
@@ -1633,16 +1450,7 @@ pub fn gate(store_path: Option<&std::path::Path>, verb: &GateVerb) -> SlashReply
 mod the_verb_table_is_the_parser {
     use super::*;
 
-    /// **The six `/queue` sub-verbs are the daemon's, and the rest of `/queue` is the head's.**
-    ///
-    /// The sub-verbs are daemon acts — the queue is daemon-level and its rows are the daemon's —
-    /// and everything else under the word is the head opening its pane, so the grammar refuses
-    /// by name rather than forwarding a half-typed line into `Help`'s *"is not a daemon verb"*
-    /// about a verb that is one.
-    ///
-    /// **`veto`'s reason is the rest of the line**, which is why it is asserted with a sentence
-    /// rather than a word: the message the child receives is built from it, so a parser that kept
-    /// only the first word would hand the child a rejection it cannot act on.
+    /// The six `/queue` sub-verbs are the daemon's, and the rest of `/queue` is the head's.
     #[test]
     fn the_queue_sub_verbs_are_the_persons_and_nothing_else() {
         assert_eq!(
@@ -1663,7 +1471,7 @@ mod the_verb_table_is_the_parser {
                 entry: "s-1-sub-2".into()
             })
         );
-        // The person's own words, whole — and empty is a real value, not a missing one.
+        // The person's own words, whole - and empty is a real value, not a missing one.
         assert_eq!(
             Slash::parse("queue veto s-1-sub-2 it lands nothing, put the work in a commit"),
             Slash::Queue(QueueVerb::Veto {
@@ -1678,11 +1486,8 @@ mod the_verb_table_is_the_parser {
                 why: String::new()
             })
         );
-        // **`reset` and `clean` take an id or nothing, and nothing is the whole queue.** The
-        // two arms are the only `/queue` verbs whose argument is optional, so both spellings are
-        // asserted: a parser that dropped the bare form would make the sweep unreachable from a
-        // pipe, and one that dropped the id would reset a whole queue where a person named one
-        // row.
+        // `reset` and `clean` take an id or nothing, and nothing is the whole queue. Both
+        // spellings are asserted
         assert_eq!(
             Slash::parse("queue reset"),
             Slash::Queue(QueueVerb::Reset { entry: None })
@@ -1703,8 +1508,8 @@ mod the_verb_table_is_the_parser {
                 entry: Some("s-1-sub-2".into())
             })
         );
-        // **`regate` (R76 item 3)**: nothing is the project's target in the session's repository;
-        // a word is a target; a path first is another repository.
+        // `regate`: nothing is the project's target in the session's repository; a word is a
+        // target; a path first is another repository.
         assert_eq!(
             Slash::parse("queue regate"),
             Slash::Queue(QueueVerb::Regate {
@@ -1726,8 +1531,8 @@ mod the_verb_table_is_the_parser {
                 target: Some("main".into())
             })
         );
-        // **A sub-verb with no id is refused with the grammar**, and so is one that is not a
-        // sub-verb at all — each naming the thing it is about rather than a generic *not a verb*.
+        // A sub-verb with no id is refused with the grammar, and so is one that is not a
+        // sub-verb at all - each naming the thing it is about rather than a generic *not a verb*.
         for line in ["queue restart", "queue approve", "queue veto", "queue rm"] {
             match Slash::parse(line) {
                 Slash::Help(why) => assert!(
@@ -1751,8 +1556,8 @@ mod the_verb_table_is_the_parser {
             ),
             other => panic!("`/queue stop x` is not a daemon act: {other:?}"),
         }
-        // **And the sweeps are named there too** — a person who typed `stop` is one typo from
-        // `reset`, and the sentence that answers a wrong sub-verb is where they find the right one.
+        // And the sweeps are named there too: a person who typed `stop` is one typo from `reset`
+        // and the sentence that answers a wrong sub-verb is where they find the right one.
         match Slash::parse("queue stop x") {
             Slash::Help(why) => {
                 assert!(why.contains("reset [ENTRY-ID]"), "{why}");
@@ -1762,9 +1567,9 @@ mod the_verb_table_is_the_parser {
         }
     }
 
-    /// **A scope names where a `/queue` verb acts** (R92 item 5): nothing is the session's own
-    /// repository, `all` is every one, a path is that one — and a scope with no verb is the
-    /// head's pane, so the daemon refuses it with the grammar.
+    /// A scope names where a `/queue` verb acts: nothing is the session's own repository, `all` is
+    /// every one, a path is that one - and a scope with no verb is the head's pane, so the daemon
+    /// refuses it with the grammar.
     #[test]
     fn a_queue_verb_takes_a_scope_first() {
         assert_eq!(
@@ -1808,18 +1613,13 @@ mod the_verb_table_is_the_parser {
         );
     }
 
-    /// **Every arm's first word is in [`VERBS`], and every name there has an arm.**
-    ///
-    /// The list is what a head offers and the `match` is what runs, so the two drifting
-    /// apart is the whole defect this pair exists against — and the failure mode is not a
-    /// crash: a verb in the table with no arm reaches `Some(other) => Slash::Help`, which
-    /// answers *"is not a daemon verb"* about something the head just completed. A test that
-    /// reads the source is the only mechanism available, because match arms are not
-    /// reflectable and a hand-maintained second list is the thing being fixed.
+    /// Every arm's first word is in [`VERBS`], and every name there has an arm. The list is
+    /// what a head offers and the `match` is what runs, and the failure mode of the two
+    /// drifting apart is not a crash
     #[test]
     fn the_table_and_the_parser_agree() {
         let src = include_str!("slash.rs");
-        // The `match words.first()` block, by brace balance from `pub fn parse`.
+        // The `match words.first` block, by brace balance from `pub fn parse`.
         let start = src
             .find("    pub fn parse(line: &str) -> Slash {")
             .expect("the parser");
@@ -1853,9 +1653,9 @@ mod the_verb_table_is_the_parser {
         }
         assert!(!arms.is_empty(), "no arms found — the parser moved");
 
-        // Aliases collapsed to the spelling [`VERBS`] carries: the table is what a head
-        // OFFERS, and offering `/default` and `/default_model` beside `/default-model`
-        // teaches one verb three times.
+        // Aliases collapsed to the spelling [`VERBS`] carries: the table is what a head OFFERS
+        // and offering `/default` and `/default_model` beside `/default-model` teaches one verb
+        // three times.
         fn canon(v: &str) -> &str {
             match v {
                 "default" | "default_model" => "default-model",

@@ -1,35 +1,35 @@
-//! **The password ask and the operator's own run: who serves whom, and what happens when the
-//! daemon cannot see.**
+//! The password ask and the operator's own run: who serves whom, and what happens when the
+//! daemon cannot see.
 //!
-//! The operator's report: `! sudo apt install mc` — *"after entering the sudo password, the
+//! The operator's report: `! sudo apt install mc` - *"after entering the sudo password, the
 //! command appears queued and the daemon hangs."* Reproduced several times, and the live
 //! daemon's log carried only its startup disclosures, which is why this file exists.
 //!
 //! Two mechanisms were proposed, and the rule both are measured against is the one this tree
-//! already writes down in `letibot_sessionlog`'s `PROTOCOL_VERSION` 33 section:
+//! already writes down in `letibot_sessionlog`'s `PROTOCOL_VERSION` 33 section
 //!
-//! > **A run must not block the door that serves it.**
+//! > A run must not block the door that serves it.
 //!
-//! The daemon has **one worker** for every session (`harnessd/src/daemon.rs`) and the
-//! operator's `!` line runs *on* it — `run_operator_shell` calls `invoke_operator`, which waits
-//! on the job — so for as long as the command runs, everything queued behind it waits.
+//! The daemon has one worker for every session (`harnessd/src/daemon.rs`) and the
+//! operator's `!` line runs *on* it - `run_operator_shell` calls `invoke_operator`, which waits
+//! on the job - so for as long as the command runs, everything queued behind it waits.
 //!
 //! # Mechanism 1, refuted here
 //!
 //! *"`sudo`'s `SUDO_ASKPASS` asks the daemon for the password through the same queue, so the
 //! ask sits queued behind the run that is waiting for it."* It does not: `Askpass` is answered
-//! on the helper's **own connection thread** (`sessionlog/src/server.rs`), the head's `Secret`
+//! on the helper's own connection thread (`sessionlog/src/server.rs`), the head's `Secret`
 //! is answered on the head's, and neither goes near the command queue. The first test below is
-//! the measurement — the run is blocked inside its command on this thread while the password
-//! ask is raised and answered over the socket — and it is the half that decides the question.
+//! the measurement - the run is blocked inside its command on this thread while the password
+//! ask is raised and answered over the socket - and it is the half that decides the question.
 //!
 //! # Mechanism 2, which is the one, in its real shape
 //!
-//! **The run's held input** (`agent/bang-prompt`, protocol 33 — a pipe then, and **the run's own
-//! terminal** since `agent/quiet-shell`) made the operator's run **wait** where `/dev/null` used
-//! to give it EOF. The wait is the feature — it is what makes
-//! `Continue? [Y/n]` answerable — and the defect is that in the case the feature was built for
-//! the daemon **cannot see the wait at all**:
+//! The run's held input (`agent/bang-prompt`, protocol 33 - a pipe then, and the run's own
+//! terminal since `agent/quiet-shell`) made the operator's run wait where `/dev/null` used
+//! to give it EOF. The wait is the feature - it is what makes
+//! `Continue? [Y/n]` answerable - and the defect is that in the case the feature was built for
+//! the daemon cannot see the wait at all
 //!
 //! ```text
 //!   ! sudo apt install mc
@@ -40,26 +40,25 @@
 //! ```
 //!
 //! `letibot_tools::exec::ask` reads `/proc/<pid>/fd/0` and `/proc/<pid>/wchan`, so the two
-//! processes it *can* read (the shell in `wait4`, the helper on a socket) say *not asking*,
-//! and the one that is asking cannot be opened. MEASURED on this box, 2026-10-06:
+//! processes it *can* read (the shell in `wait4`, the helper on a socket) say *not asking*
+//! and the one that is asking cannot be opened. MEASURED on this box, 2026-10-06
 //! `readlink /proc/1/fd/0` is `PermissionDenied`; `wchan` for such a process reads `0`, the
-//! kernel's own *could not look*; and a process of **this** uid that has called
-//! `PR_SET_DUMPABLE 0` — the flag a setuid exec sets — is refused exactly the same way.
+//! kernel's own *could not look*; and a process of this uid that has called
+//! `PR_SET_DUMPABLE 0` - the flag a setuid exec sets - is refused exactly the same way.
 //!
-//! So no card is raised (correctly: a card is a reading of the process, and this is not one),
-//! the run sits on its terminal, the `!` line's echo still says `queued` because no row has landed,
-//! and the daemon's one worker is inside it. **That is the report.**
+//! So no card is raised (correctly: a card is a reading of the process, and this is not one)
+//! the run sits on its terminal, the `!` line's echo still says `queued` because no row has landed
+//! and the daemon's one worker is inside it. That is the report.
 //!
 //! # What these tests therefore assert
 //!
-//! 1. `the_password_ask_is_served_while_the_operators_run_is_blocked` — the ask is answered
+//! 1. `the_password_ask_is_served_while_the_operators_run_is_blocked` - the ask is answered
 //!    while the run waits, and the run's *own* wait raises no card it did not earn. `sudo -A`'s
 //!    process shape (`pw=$(helper)`: a pipe on the child's stdout, blocked reading it, fd 0
-//!    left alone) must not read as a question.
-//! 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` — the
+//!    left alone) must not read as a question. 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` - the
 //!    operator's case, end to end, without a real `sudo`: a run whose process makes itself as
 //!    unreadable as a root `apt` is, waiting on the terminal the daemon holds. The daemon says so, names
-//!    the way in, and **`!send` reaches it** — which is the whole of what a person was owed.
+//!    the way in, and `!send` reaches it - which is the whole of what a person was owed.
 
 // `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
 // `<linux/prctl.h>`: there is no macOS spelling of the same shape.
@@ -86,10 +85,10 @@ const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long the head takes to type the password. Longer than `bash`'s wait loop needs to look
 /// at the run once (500 ms a beat, 250 ms of quiet), which is the window the operator's own
-/// report lives in — nobody types in under half a second.
+/// report lives in - nobody types in under half a second.
 const TYPING: Duration = Duration::from_secs(3);
 
-/// `PR_SET_DUMPABLE`, from `<linux/prctl.h>`. Declared here rather than pulled in with a crate:
+/// `PR_SET_DUMPABLE`, from `<linux/prctl.h>`. Declared here rather than pulled in with a crate
 /// this is the one libc call this file makes, and it is the whole of what stands in for `sudo`.
 const PR_SET_DUMPABLE: i32 = 4;
 
@@ -111,13 +110,12 @@ fn config(session: &str, socket: &Path) -> Config {
     cfg.session_id = session.into();
     cfg.socket = socket.to_path_buf();
     // A seat that can run commands: unconfined (`leticode`), `bash` seated, and a mode that
-    // needs no oracle — the point here is the exec path, not the mode.
+    // needs no oracle - the point here is the exec path, not the mode.
     cfg.seat = Seat::Leticode;
     cfg.allow_bash = true;
-    // `Config::for_this_box` carries no vocabulary default any more (a daemon on
-    // the byte vocabulary needs none), so a harness built here is handed one: the
-    // operator's `LETIBOT_VOCAB_GGUF` if it is set, else the box's own GGUF — the
-    // same path this file's `vocab_gguf` gate consults.
+    // `Config::for_this_box` carries no vocabulary default, so a harness built here is handed
+    // one: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's own GGUF, the same path
+    // this file's `vocab_gguf` gate consults.
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
@@ -142,11 +140,8 @@ fn socket_path(tag: &str) -> PathBuf {
     ))
 }
 
-/// **The shape of `sudo -A`**, as a script: the helper is a child whose stdout is a pipe and
-/// this process blocks reading it, with fd 0 inherited from the run.
-///
-/// `pw=$(helper)` is that shape exactly — `/bin/sh` forks the substitution with a pipe on its
-/// stdout and blocks in `read(2)` on it — and it is the shape that made the daemon raise a card
+/// The shape of `sudo -A`, as a script: the helper's stdout is a pipe this process blocks
+/// reading, with fd 0 inherited from the run. `pw=$(helper)` is that shape, and it raised a card
 /// for a question nobody asked before `ask`'s descriptor check existed.
 fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     let path = dir.join("sudodouble");
@@ -168,21 +163,9 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
     path
 }
 
-/// **The run's own process, when this test binary is re-executed as it.**
-///
-/// The `!` line in the second test is `LETIBOT_SUDO_ASK_CHILD=1 <this binary> --exact
-/// the_run_this_daemon_may_not_read --nocapture`, so what the exec host spawns is this
-/// function — with the daemon's terminal on fd 0, in the run's cgroup, exactly as any `!` command.
-///
-/// What it does is the whole of the stand-in: **`PR_SET_DUMPABLE 0`**, which is the flag a
-/// setuid exec sets and which makes `/proc/<pid>/fd/0` `EACCES` for every reader without
-/// `CAP_SYS_PTRACE` — MEASURED on this box against `sudo`'s rule (`readlink /proc/1/fd/0` is
-/// `PermissionDenied` for a root process, and the same for an undumpable process of this uid).
-/// Then it asks a question and blocks on the terminal, which is `apt` at `Continue? [Y/n]`.
-///
-/// Under a plain `cargo test` the marker is absent and this returns at once; it is a test so
-/// that the binary can be re-entered without a second crate, and its name is the one the `!`
-/// line selects with `--exact`.
+/// The run's own process, when this test binary is re-executed as it: it sets
+/// `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, then asks a question and blocks on the
+/// terminal, which is `apt` at `Continue? [Y/n]`.
 #[test]
 fn the_run_this_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {
@@ -193,7 +176,7 @@ fn the_run_this_daemon_may_not_read() {
     let rc = unsafe { prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) };
     println!("invisible-child: PR_SET_DUMPABLE 0 -> {rc}");
     let _ = std::io::stdout().flush();
-    // `apt`'s question, and then the wait — on fd 0, which is the terminal the daemon holds.
+    // `apt`'s question, and then the wait - on fd 0, which is the terminal the daemon holds.
     println!("Continue? [Y/n] ");
     let _ = std::io::stdout().flush();
     let mut line = String::new();
@@ -242,19 +225,9 @@ fn payloads(hub: &Hub) -> String {
         .join("\n")
 }
 
-/// **Mechanism 1, refuted: the ask is served while the operator's run is blocked inside the
-/// command — and the run's own askpass wait raises no card it did not earn.**
-///
-/// The run happens on this thread's own runner, which is what the daemon's single worker is
-/// (`run_operator_shell` → `invoke_operator` → the job wait); the ask travels the socket, on
-/// the helper's connection thread and the head's. If the ask shared the worker's queue it could
-/// not arrive at all and the password below would never be answered.
-///
-/// The second assertion is `ask`'s descriptor correction: `sudo -A` blocks in a pipe read on a
-/// pipe **it** made, with its own fd 0 left as the daemon's terminal. Read on fd 0 and `wchan`
-/// alone that is a question, and the card it raised took the run's one open slot — MEASURED
-/// 2026-10-06, `PromptRequested question=Some("bash: no job control in this shell")` while the
-/// person was still typing.
+/// Mechanism 1, refuted: the ask is served while the operator's run is blocked inside the
+/// command, and the run's own askpass wait raises no card it did not earn. The run is on this
+/// thread's own runner, as the daemon's single worker is, so a shared queue could never deliver.
 #[test]
 fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -326,7 +299,7 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
         {
             answered = true;
             // A person takes seconds, and that is the window the daemon's own reading of the
-            // run is taken in — see `TYPING`.
+            // run is taken in - see `TYPING`.
             std::thread::sleep(TYPING);
             head.secret(req_id, Some("hunter2".into()))
                 .expect("the password is answered");
@@ -348,14 +321,14 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
         "the password ask never reached the head while the run was blocked — which is what \
          mechanism 1 predicted, and it is false: {told:#?}"
     );
-    // **The password reached the helper**, so the ask travelled the whole path while the
+    // The password reached the helper, so the ask travelled the whole path while the
     // worker was inside the command.
     let rows = payloads(&hub);
     assert!(
         rows.contains("sudodouble: the helper said [hunter2]"),
         "the answer must reach the helper's stdout and come back out of the run: {rows}"
     );
-    // **And the run's askpass wait is not a question.** No card may be raised for it: `sudo`'s
+    // And the run's askpass wait is not a question. No card may be raised for it: `sudo`'s
     // pipe read is on a pipe it made, not on the device this daemon holds.
     assert!(
         !told.iter().any(|l| l.starts_with("PromptRequested")),
@@ -372,25 +345,9 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own case, end to end, without a real `sudo`**: a run the daemon may not
-/// look at, waiting on the terminal the daemon holds — said out loud, and answerable.
-///
-/// The run is this test binary re-executed (see `the_run_this_daemon_may_not_read`), so what
-/// the exec host spawns is a process that has made itself as unreadable as a root `apt` is and
-/// then blocked reading its terminal. That is `! sudo apt install mc` after the password: the shell is
-/// readable and in `wait4`, the process that is asking is not readable at all, and before this
-/// the daemon answered `No` from the half of the list it could open.
-///
-/// Three things are asserted, and they are the whole of what the person was owed:
-///
-/// 1. **The daemon says it cannot tell** — `operator_run_unreadable`, once, naming the command.
-/// 2. **It names the way in** — `!send`, the verb that needs no signal, which is the floor
-///    under every miss the card has.
-/// 3. **The way in works**: the line goes into the run's terminal, the run reads it and finishes,
-///    and the rows land — so the command that "appears queued" is answered rather than hung.
-///
-/// And **no card is raised**, which is the other half of the ruling: a card is a reading of the
-/// process, and this is a failure to read one.
+/// The operator's own case, end to end, without a real `sudo`: a run the daemon may not look at
+/// waiting on the terminal it holds, said out loud and answerable. The run is this binary
+/// re-executed, unreadable as a root `apt`; no card is raised, because a card is a reading.
 #[test]
 fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -423,7 +380,7 @@ fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
     let (tx, rx) = std::sync::mpsc::channel();
     let _pump = std::thread::spawn(move || pump(reader, tx));
 
-    // **The `!` line the operator would type**, with the process it runs standing in for
+    // The `!` line the operator would type, with the process it runs standing in for
     // `apt`: `LETIBOT_SUDO_ASK_CHILD=1` makes the re-executed test binary take the child path.
     let exe = std::env::current_exe().expect("this test binary's own path");
     let line = format!(
@@ -440,11 +397,8 @@ fn a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered() {
         }
     });
 
-    // ---- 1 and 2. The sentence, and what it names.
-    //
-    // **The run is deliberately NOT waited for here**: it cannot end until somebody answers it,
-    // which is the whole point of the case, so this loop ends at the sentence rather than at the
-    // run.
+    // The run is deliberately NOT waited for: it cannot end until somebody answers it, so this
+    // loop ends at the sentence.
     let deadline = Instant::now() + PATIENCE;
     let mut seen: Vec<SessionEvent> = Vec::new();
     let mut the_sentence: Option<String> = None;

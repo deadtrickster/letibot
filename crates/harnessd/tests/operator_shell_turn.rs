@@ -1,74 +1,5 @@
-//! **The turn an operator's `!` line starts** — the end-to-end test of
+//! The turn an operator's `!` line starts - the end-to-end test of
 //! `Harness::run_after_operator_shell`, one of the two call sites that run a turn.
-//!
-//! # The two call sites, and what each is for
-//!
-//! `grep -rn run_rounds` finds exactly two callers in the tree, and they are not
-//! redundant — they differ in what they put in front of the model:
-//!
-//! * **`Harness::submit_item`** — one item in: appended, reconciled, persisted, and
-//!   the session named from its first message. The turn's head is the row it just
-//!   wrote. Every prompt reaches a turn through it (`submit` → `submit_spoken` →
-//!   `submit_item`), and the suite drives that door constantly.
-//! * **`Harness::run_after_operator_shell`** — **nothing appended**, deliberately.
-//!   The rows are already on the log (`settle_operator_shell` wrote them, from the
-//!   run's own thread or from the worker), so all this adds is the turn: the
-//!   operator's ruling, verbatim, *"my commands should start a turn and should be
-//!   printed to me"*. It opens the turn (`trail.begin_turn`) itself, which is why
-//!   its callers do not.
-//!
-//! # The test that was missing
-//!
-//! `run_after_operator_shell` was reached by two tests, and neither drove it:
-//!
-//! * `operator_shell.rs`'s `the_turn_the_line_starts_hands_the_model_the_commands_output`
-//!   pins the model's half of this feature, and says in its own doc what it is not:
-//!   *"A `Harness` cannot run a real turn here — that needs a model — so this test
-//!   takes the rows the deposit left in the store and hands them to the function that
-//!   builds what the model is handed, `letibot_provider::messages::convert` … what it
-//!   does not cover is a live round trip to a provider."* It is a test of the message
-//!   builder over the real deposited rows — valuable, and a different layer: it never
-//!   calls the call site, and it cannot tell a turn that ran from one that never
-//!   started.
-//! * `run_off_worker.rs` reaches the daemon arm that calls this function, but with a
-//!   model that refuses every request — on purpose, because that file measures the rows
-//!   and the worker, not the turn.
-//!
-//! So the one question neither asked is this file's: **does the turn the call site
-//! opens actually hand the model the operator's line and their command's output, over
-//! the wire, and does the answer land?** That needs a model that answers — a stub, not
-//! a real one — and it is the only place the call site itself is executed.
-//!
-//! # What it drives, and through what
-//!
-//! The daemon's own arm rather than a unit on the harness: a real `Sessions`, opened
-//! the way `Sessions::open_first` opens one, a `CommandKind::OperatorShellResult`
-//! submitted to the session's own hub exactly as the worker submits it, and
-//! `Sessions::dispatch` — the function that owns that arm (`sessions.rs`, the
-//! `OperatorShellResult` arm, which is where `run_after_operator_shell` is called).
-//!
-//! The run's half is fabricated — a `ToolOutcome` and a payload — and that is the
-//! honest cut rather than a shortcut: `operator_shell.rs` is where a command really
-//! runs, and what arrives at this arm is the run's pieces off the wire, already
-//! rendered and capped. The turn's half is real: the real round loop, a real
-//! transcript, a real provider request.
-//!
-//! The model is a **recording stub** — the canned frames the turn crate's tests
-//! replay, answered after the request has been read and kept. The prompt is half of
-//! what has to be asserted here (*did the turn hand the model the line and the
-//! output* is a question about the request, not about the transcript), and
-//! `canned::Canned` answers as fast as it can and keeps nothing.
-//!
-//! Both call sites are driven, in one test, because the difference between them IS
-//! the assertion: `submit_item` appends the row its turn is about, and
-//! `run_after_operator_shell` appends nothing — so the `!` line is on the log
-//! exactly once, and the second prompt carries a head the first never had.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not** a
-//! process tree: the seat is one with no `bash`, so no delegated cgroup is needed and
-//! the test runs everywhere rather than in a skip branch.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -89,38 +20,32 @@ use support::canned::Frame;
 use support::qwen::a_plain_answer_turn;
 use support::stub::{read_request, write_frames, write_props};
 
-/// The prompt the first turn is about, the operator's `!` line, and the bytes their
-/// command produced — three markers, so a row and a prompt can each be traced to the
-/// turn that made it.
+/// The prompt the first turn is about, the operator's `!` line, and the bytes their command
+/// produced - three markers, so a row and a prompt can each be traced to the turn that made it.
 const THE_PROMPT: &str = "prompt-marker-what-is-in-the-tree";
 const THE_LINE: &str = "! cat bang-marker-output";
 const THE_OUTPUT: &str = "bang-marker-output-the-command-really-ran";
 
-/// What the model answers each turn — two different sentences, so the test can say
-/// WHICH turn an answer came from.
+/// What the model answers each turn - two different sentences, so the test can say WHICH turn an
+/// answer came from.
 const TO_THE_PROMPT: &str = "answering the prompt";
 const TO_THE_BANG: &str = "answering the command";
 
 fn config(session_id: &str, endpoint: Endpoint, store: &std::path::Path) -> Config {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.dialect = Dialect::Qwen;
-    // **`leticode`, and no `bash`.** This file's turn is answered, not run: the seat is
-    // one with no shell so the fixture needs no exec host, and the run's half arrives
-    // as the pieces the worker dispatches.
-    //
-    // `leticode` and not `coder` — the same tools-minus-bash, and the one of the two that
-    // needs no boundary: `coder` is a confined seat, so on a Mac it refuses to open and this
-    // file measured that refusal instead of the turn after an operator shell.
+    // `leticode`, and no `bash`. This file's turn is answered, not run: the seat is one with
+    // no shell so the fixture needs no exec host, and the run's half arrives as the pieces the
+    // worker dispatches.
     cfg.seat = Seat::Leticode;
     cfg.endpoint = endpoint;
-    // No retry ladder: nothing here should fail, and a failure that retried would
-    // spend the suite's time hiding behind doubling waits.
+    // No retry ladder: nothing here should fail, and a failure that retried would spend the
+    // suite's time hiding behind doubling waits.
     cfg.http_retries = 0;
     cfg.store = Some(store.to_path_buf());
     cfg.session_id = session_id.to_string();
-    // The operator's own `providers.toml` is not this test's business (`wired.rs`'s
-    // rule): without these, a search key on the developer's laptop decides what is
-    // seated.
+    // The operator's own `providers.toml` is not this test's business: without these, a search key
+    // on the developer's laptop decides what is seated.
     cfg.web_search = None;
     cfg.permission = Vec::new();
     cfg.vocab_gguf = support::vocab::gguf();
@@ -147,10 +72,9 @@ fn wiring(cfg: &Config) -> SessionWiring {
 // The stub
 // ---------------------------------------------------------------------------
 
-/// **A model that answers the turn, and keeps the request it was asked.**
-///
-/// One frame list per turn, answered as soon as the request has been read — and the
-/// body recorded first, because the prompt is what this file has to read.
+/// A model that answers the turn, and keeps the request it was asked. One frame list per
+/// turn, answered as soon as the request has been read - and the body recorded first
+/// because the prompt is what this file has to read.
 struct Stub {
     endpoint: Endpoint,
     seen: Arc<Mutex<Vec<String>>>,
@@ -166,16 +90,14 @@ impl Stub {
         let handle = std::thread::spawn(move || {
             let mut turns = 0usize;
             while turns < scripts.len() {
-                // A listener that cannot accept is a listener nobody will be answered
-                // by: there is nothing left to say, and the client's own error is the
-                // report.
+                // A listener that cannot accept is a listener nobody will be answered by: there
+                // is nothing left to say, and the client's own error is the report.
                 let Ok((stream, _)) = listener.accept() else {
                     return;
                 };
                 let (line, body) = read_request(stream.try_clone().expect("clone the socket"));
-                // **`/props` is not a turn.** A session asking its endpoint for the
-                // window sends a `GET`, and counting it as a turn would shift every
-                // script by one.
+                // `/props` is not a turn. A session asking its endpoint for the window sends a
+                // `GET`, and counting it as a turn would shift every script by one.
                 if line.starts_with("GET ") {
                     let _ = write_props(stream);
                     continue;
@@ -192,15 +114,15 @@ impl Stub {
         }
     }
 
-    /// How many turns have been asked for. The two doors this file drives are both
-    /// synchronous — each returns only once its turn is answered — so this needs no
-    /// waiting; it is here so a failure says which turn never arrived.
+    /// How many turns have been asked for. The two doors this file drives are both synchronous -
+    /// each returns only once its turn is answered - so this needs no waiting; it is here so a
+    /// failure says which turn never arrived.
     fn turns(&self) -> usize {
         self.seen.lock().unwrap().len()
     }
 
-    /// **What the model was handed for turn `n`** — the request's token ids,
-    /// detokenized with the vocabulary the session tokenized with.
+    /// What the model was handed for turn `n` - the request's token ids, detokenized with the
+    /// vocabulary the session tokenized with.
     fn prompt_of(&self, n: usize, vocab: &Vocab) -> String {
         let body = self
             .seen
@@ -225,9 +147,8 @@ impl Stub {
 
 impl Drop for Stub {
     fn drop(&mut self) {
-        // Detach rather than join: a test that failed early may have left a turn
-        // unanswered, and blocking here would hang the suite on the case it was
-        // written to check.
+        // Detach rather than join: a test that failed early may have left a turn unanswered, and
+        // blocking here would hang the suite on the case it was written to check.
         if let Some(h) = self.handle.take() {
             drop(h);
         }
@@ -245,8 +166,7 @@ fn rows(hub: &Hub) -> Vec<TranscriptItem> {
         .collect()
 }
 
-/// The `User` rows of one speaker, as their text — the operator's own words, and
-/// the session's.
+/// The `User` rows of one speaker, as their text - the operator's own words, and the session's.
 fn said_by(log: &[TranscriptItem], who: Speaker) -> Vec<String> {
     log.iter()
         .filter_map(|i| match i {
@@ -265,8 +185,7 @@ fn said_by(log: &[TranscriptItem], who: Speaker) -> Vec<String> {
         .collect()
 }
 
-/// The model's own answers, which is how a turn that RAN is told from one that was
-/// merely opened.
+/// The model's own answers, which is how a turn that RAN is told from one that was merely opened.
 fn answers(log: &[TranscriptItem]) -> Vec<String> {
     log.iter()
         .filter_map(|i| match i {
@@ -276,8 +195,8 @@ fn answers(log: &[TranscriptItem]) -> Vec<String> {
         .collect()
 }
 
-/// A directory that removes itself, because a test that leaks a store per run
-/// eventually fills the disk and the run that finds out is not this one.
+/// A directory that removes itself, because a test that leaks a store per run eventually fills the
+/// disk.
 struct TempDir {
     path: std::path::PathBuf,
 }
@@ -315,15 +234,9 @@ impl Drop for TempDir {
 // THE TEST
 // ---------------------------------------------------------------------------
 
-/// **The `!` line's turn reaches the model with the operator's line and their
-/// command's output in it, and the answer lands — and the two call sites differ in
-/// exactly one way, which this asserts.**
-///
-/// The daemon arm is the real one: `Sessions::dispatch` taking an
-/// `OperatorShellResult` off the session's queue, which is the shape the run's own
-/// thread sends back. What is fabricated is the run's *pieces* (an outcome and a
-/// payload), because the run itself is `operator_shell.rs`'s test and this is the
-/// turn its rows are for.
+/// The `!` line's turn reaches the model with the operator's line and their command's
+/// output in it, and the answer lands - and the two call sites differ in exactly one way
+/// which this asserts. The daemon arm is the real one
 #[test]
 fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -333,8 +246,8 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let store = dir.path().join("sessions.db");
     let id = "s-bang-turn";
 
-    // The vocabulary first — the canned frames must speak the ids the session will
-    // send — and one frame list per turn: the prompt's, then the `!` line's.
+    // The vocabulary first - the canned frames must speak the ids the session will send - and one
+    // frame list per turn: the prompt's, then the `!` line's.
     let parts = parts_for(&config(id, Endpoint::new("127.0.0.1", 1), &store));
     let first = a_plain_answer_turn(&parts.vocab, "reading the prompt", TO_THE_PROMPT, 30);
     let second = a_plain_answer_turn(&parts.vocab, "reading the command", TO_THE_BANG, 30);
@@ -348,18 +261,14 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     let mut sessions =
         Sessions::open_first(&parts, cfg, registry.clone()).expect("the daemon opens");
 
-    // ---- The other call site, for the contrast ---------------------------------
-    //
-    // A prompt goes through `submit_item`: the row is appended, and the turn that
-    // follows reads it as its head.
+    // ---- The other call site, for the contrast --------------------------------- A prompt
+    // goes through `submit_item`: the row is appended, and the turn that follows reads it as
+    // its head.
     sessions.submit(id, THE_PROMPT).expect("the prompt answers");
 
-    // ---- The call site this file exists for ------------------------------------
-    //
-    // The operator's run comes back as the command the worker dispatches — the same
-    // frame `start_operator_run`'s settle path sends, through the same door
-    // (`Hub::submit_daemon`, which is how a thread that is not a head hands the
-    // worker a command), carrying the run's rendered pieces rather than the run.
+    // ---- The call site this file exists for ------------------------------------ The
+    // operator's run comes back as the command the worker dispatches - the same frame
+    // `start_operator_run`'s settle path sends, through the same door (`Hub::submit_daemon`
     let hub = registry.get(id).expect("the session's hub");
     let queued = hub.submit_daemon(
         "dead",
@@ -388,12 +297,8 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
         "the arm answered with the turn's own outcome, not a failure"
     );
 
-    // ---- What the model was handed ---------------------------------------------
-    //
-    // **The prompt is the assertion**, and it is why the stub records requests:
-    // "the model reads the operator's line and the output" is a claim about the
-    // bytes on the wire, and a test that only read the transcript would pass on a
-    // build that opened an empty turn.
+    // ---- What the model was handed --------------------------------------------- The prompt
+    // is the assertion, and it is why the stub records requests
     assert_eq!(
         stub.turns(),
         2,
@@ -412,9 +317,9 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
         asked.contains(TO_THE_PROMPT),
         "and it is one conversation — the earlier turn's answer is still in front of it"
     );
-    // **The difference between the two call sites, stated where it can fail.** The
-    // first turn's prompt cannot hold the `!` line — the rows did not exist yet —
-    // and the second carries it without any row having been appended for it.
+    // The difference between the two call sites, stated where it can fail. The first turn's
+    // prompt cannot hold the `!` line - the rows did not exist yet - and the second carries it
+    // without any row having been appended for it.
     let first_asked = stub.prompt_of(0, &parts.vocab);
     assert!(first_asked.contains(THE_PROMPT), "the prompt's own head");
     assert!(

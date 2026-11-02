@@ -1,53 +1,5 @@
-//! **A child is a session, so it gets the idle plan-check** — the proof, with a live child
-//! harness and a store row behind it.
-//!
-//! The operator's ruling, verbatim: *"childs being just a session should get nags"*. What that
-//! rules on is the limitation the previous branch (`agent/child-todos`) left standing: a
-//! parent's rows reach the child's board, its store row and its pane, and are nag-worthy by
-//! construction (`the_check_may_ask_about` filters by status and never by author) — but
-//! `Sessions::rearm_todo_nag` reads `Sessions::open`, a child's harness is not in it, and so
-//! nothing ever armed. The rows sat there, persisted and published, named only if the child
-//! happened to run a turn for some other reason.
-//!
-//! # What is proved here, and through what
-//!
-//! The real chain, not a unit on the text: a child `Harness` opened the way
-//! `HarnessTaskRunner::run_to_completion` opens it (registry-adopted with a parent, board
-//! registered in `ChildBoards`), its first turn run on this thread, then parked in
-//! `serve_child_under` on its own thread — and a parent's write through the REAL resolver
-//! (`ParentTodos::upsert_child`), which persists the row, publishes `TodosUpdated` and wakes
-//! the parked reader. What the test waits for is the child's own log holding the
-//! `[todo check]` item as `Speaker::Agent` — the same item `nag_turn` puts in for a session
-//! the daemon holds.
-//!
-//! # Why the parent writes TWICE, and the measurement that forced it
-//!
-//! **A single write cannot prove the wake.** The fixture spawns the child's serving thread
-//! and the write follows it, so the write may land before that thread reaches its park — and
-//! then `serve_child_under`'s own entry re-arm answers the test, and the wake this branch
-//! adds is never exercised at all. MEASURED 2026-10-09: with `hub.wake_its_own_reader()`
-//! deleted from `ParentTodos::upsert_child`, the one-write version of
-//! `a_row_a_parent_writes_nags_the_parked_child` PASSED. The second write cannot be answered
-//! that way — the entry arm is spent by then and the reader is provably back in
-//! `take_own_work_until` — so the check that names the second row is the one that proves the
-//! wake. See `SECOND_ROW`.
-//!
-//! # The clock is driven, not slept through
-//!
-//! `TODO_NAG_AFTER` is a minute. A test that waited a real minute would not be a test, so
-//! `serve_child_under` takes the clock as its parameter and this file injects a 300ms window
-//! (`TodoNagClock::with_window`) — the schedule is exercised end to end at a deadline the
-//! test can afford. The DECISION the window guards (what may be asked about, the
-//! silence-then-check rule, the postponed row) is pinned separately, as predicates, in
-//! `sessions.rs`'s tests — for the reason that file gives: *silent because the row is
-//! postponed* and *silent because nothing armed the clock* are the same observation from
-//! outside.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not** a model:
-//! every turn is answered by the canned server the turn crate's tests replay, shared by path
-//! rather than copied. No process tree, so no apparatus gate beyond the GGUF.
+//! A child is a session, so it gets the idle plan-check - with a live child harness and a
+//! store row behind it. The chain is the real one
 
 use std::time::{Duration, Instant};
 
@@ -68,28 +20,21 @@ mod support;
 use support::canned;
 use support::qwen::a_plain_answer_turn;
 
-/// The injected window — the one difference between a child this daemon parks and one this
-/// test parks. Small enough that the whole schedule runs in well under a second of the
-/// clock; large enough that a loaded runner's scheduling jitter is not a flake.
+/// The injected window - the one difference between a child this daemon parks and one this test
+/// parks. Small enough that the whole schedule runs in well under a second of the clock; large
+/// enough that a loaded runner's scheduling jitter is not a flake.
 const WINDOW: Duration = Duration::from_millis(300);
 
-/// How long the driver will wait for something that should arrive within one window —
+/// How long the driver will wait for something that should arrive within one window -
 /// generous on purpose: the assertion is the ORDER of events, not their speed.
 const PATIENCE: Duration = Duration::from_secs(20);
 
-/// The row the parent writes — the work the child is to be ASKED FOR, not told about.
+/// The row the parent writes - the work the child is to be ASKED FOR, not told about.
 const PARENTS_ROW: &str = "migrate the ledger rows to the new schema";
 
-/// **The parent's SECOND row, and the one that proves the wake.**
-///
-/// A single write cannot: the fixture spawns the child's serving thread and the write
-/// follows it, so the write may land before the thread reaches its park — and then the
-/// clock's own entry re-arm answers the test and the wake this branch adds is never
-/// exercised. MEASURED 2026-10-09: with `hub.wake_its_own_reader()` removed from
-/// `ParentTodos::upsert_child`, the one-write version of this test PASSED. A second write
-/// issued after the first check has been seen cannot be answered by the entry arm — that
-/// arm is spent and the reader is provably back in its wait — so the check that names this
-/// row can only come from the parent's wake re-arming the clock.
+/// The parent's SECOND row, and the one that proves the wake. A single write cannot: the
+/// write follows the serving thread's spawn, so it may land before that thread reaches its
+/// park - and then the clock's own entry re-arm answers the test.
 const SECOND_ROW: &str = "and then tell me what the old schema did";
 
 fn config(store: &std::path::Path, session_id: &str) -> Config {
@@ -104,9 +49,8 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg
 }
 
-/// The `[todo check]` items on the child's own log, as their text — the harness's
-/// self-addressed prompt, which is what a delivered check IS: a turn, started by nobody
-/// outside the session.
+/// The `[todo check]` items on the child's own log, as their text - the harness's self-addressed
+/// prompt, which is what a delivered check IS: a turn, started by nobody outside the session.
 fn checks_on(hub: &Hub) -> Vec<String> {
     checks_timed(hub)
         .into_iter()
@@ -114,16 +58,8 @@ fn checks_on(hub: &Hub) -> Vec<String> {
         .collect()
 }
 
-/// The same, each with the moment the hub PUBLISHED it — the daemon's own `ts` and not the
-/// driver's reading of the log.
-///
-/// **A schedule has to be timed on these.** [`wait_for`] notices a delivery on its next poll, so an
-/// instant taken there is late by however long the box took to schedule the poll — which is
-/// exactly the quantity a busy machine changes, and it is why this file used to count deliveries
-/// inside a fixed span and went red when the box was loaded: the span was measured from a moment
-/// the test learned about, not from the delivery. A delivery can only ever be LATE against its own
-/// deadline, so the gap between two of these `ts` values is a LOWER bound on the interval the clock
-/// chose: load can widen it and can never make the ladder look shorter than it was.
+/// The same, each with the moment the hub PUBLISHED it - the daemon's own `ts` and not the
+/// driver's reading of the log. A schedule has to be timed on these.
 fn checks_timed(hub: &Hub) -> Vec<(u64, String)> {
     hub.retained()
         .into_iter()
@@ -147,7 +83,7 @@ fn checks_timed(hub: &Hub) -> Vec<(u64, String)> {
         .collect()
 }
 
-/// Wait until `what` is true on the child's hub, or panic with everything the log holds —
+/// Wait until `what` is true on the child's hub, or panic with everything the log holds -
 /// the log IS the diagnosis for a schedule failure, and a bare timeout would hide it.
 fn wait_for<T>(hub: &Hub, what: impl Fn(&Hub) -> Option<T>) -> T {
     let began = Instant::now();
@@ -163,10 +99,9 @@ fn wait_for<T>(hub: &Hub, what: impl Fn(&Hub) -> Option<T>) -> T {
     );
 }
 
-/// **A parked child and the parent that can write to it** — the fixture both tests share,
-/// mirroring `run_to_completion`'s spawn order: hub, harness (which registers the board in
-/// `ChildBoards`), registry adoption naming the parent, first turn, then `serve_child_under`
-/// on the child's own thread.
+/// A parked child and the parent that can write to it - the fixture both tests share, mirroring
+/// `run_to_completion`'s spawn order: hub, harness (which registers the board in `ChildBoards`)
+/// registry adoption naming the parent, first turn, then `serve_child_under` on its own thread.
 struct ParkedChild {
     hub: std::sync::Arc<Hub>,
     registry: std::sync::Arc<Registry>,
@@ -184,9 +119,9 @@ fn park_a_child(
     park_a_child_with(parent, child, canned, path, |_, _| {})
 }
 
-/// [`park_a_child`], with the board written BEFORE the serving thread starts — `before` is handed
-/// the child's harness and the parent's resolver, so a test can put rows of every author on the
-/// board without racing the clock's first window.
+/// [`park_a_child`], with the board written BEFORE the serving thread starts - `before` is handed
+/// the child's harness and the parent's resolver, so rows of every author can go on the board
+/// without racing the clock's first window.
 fn park_a_child_with(
     parent: &str,
     child: &str,
@@ -201,15 +136,13 @@ fn park_a_child_with(
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     let registry = Registry::new();
     let hub = registry.new_hub(child.to_string());
-    // The child's harness, opened the way the runner opens it — this is what registers
-    // its board in `parts.child_boards`, which is the map the parent's write resolves
-    // through.
+    // The child's harness, opened the way the runner opens it - this is what registers its
+    // board in `parts.child_boards`, the map the parent's write resolves through.
     let mut sub =
         Harness::open_with_registry(&parts, cfg, hub.clone(), None, None, registry.clone())
             .expect("the child opens");
-    // Adopted AFTER the open, naming the parent — the one fact `ParentTodos`' predicate
-    // reads (`parent_session_id == caller`), and what makes this a child rather than a
-    // second root.
+    // Adopted AFTER the open, naming the parent - the one fact `ParentTodos`' predicate reads
+    // (`parent_session_id == caller`), and what makes this a child rather than a second root.
     registry
         .adopt(
             hub.clone(),
@@ -223,7 +156,7 @@ fn park_a_child_with(
             Some(parent.to_string()),
         )
         .expect("the child is in the registry");
-    // **The task it was spawned for** — a real turn against the canned server, on this
+    // The task it was spawned for - a real turn against the canned server, on this
     // thread, exactly as `run_to_completion` runs it before parking.
     sub.submit_as_a_normal_session("do the task, then stop and wait")
         .expect("the first turn answers");
@@ -238,7 +171,7 @@ fn park_a_child_with(
     // Parked. The clock's window is the test's; everything else about it is the
     // production schedule.
     let hub_for_the_struct = hub.clone();
-    // The thread outlives this frame, so it cannot borrow the caller's `&str` — the name
+    // The thread outlives this frame, so it cannot borrow the caller's `&str` - the name
     // it serves under is its own.
     let served_as = child.to_string();
     let parked = std::thread::Builder::new()
@@ -261,7 +194,7 @@ fn park_a_child_with(
 }
 
 impl ParkedChild {
-    /// The parent's resolver — the same `ParentTodos` a parent session's `todo_write`
+    /// The parent's resolver - the same `ParentTodos` a parent session's `todo_write`
     /// target=` goes through, bound to the same caller id the registry recorded.
     fn parent(&self, caller: &str) -> ParentTodos {
         ParentTodos::new(
@@ -280,9 +213,9 @@ impl ParkedChild {
     }
 }
 
-/// **THE ONE THIS BRANCH EXISTS FOR**: a parent writes a row on its parked child's board,
-/// and the child is asked for it on the clock — a real turn, on the child's own thread,
-/// with nobody typing into the child.
+/// THE ONE THIS BRANCH EXISTS FOR: a parent writes a row on its parked child's board, and the
+/// child is asked for it on the clock - a real turn, on the child's own thread, with nobody typing
+/// into the child.
 #[test]
 fn a_row_a_parent_writes_nags_the_parked_child() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -293,21 +226,18 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     let parent = "s-parent-of-the-nagged-child";
     let child = "s-child-due-a-check";
 
-    // The vocabulary first — the canned frames must speak the ids the harness will send,
+    // The vocabulary first - the canned frames must speak the ids the harness will send
     // and `Parts::load` is what reads the GGUF the gate above approved of.
     let parts = Parts::load(&config(&path, child)).expect("the vocabulary must load");
     let first = a_plain_answer_turn(&parts.vocab, "planning", "the task is done", 30);
     let check = a_plain_answer_turn(&parts.vocab, "checking", "on it now", 30);
     let check_again = a_plain_answer_turn(&parts.vocab, "checking", "on that one too", 30);
-    // **A repeat is another TURN, so it needs its own frames** — `Frame` is not `Clone`, which is
+    // A repeat is another TURN, so it needs its own frames - `Frame` is not `Clone`, which is
     // the tripwire's other half: the schedule is not allowed to reuse an answer.
     let repeat = a_plain_answer_turn(&parts.vocab, "checking", "still on the first one", 30);
     let repeat_again = a_plain_answer_turn(&parts.vocab, "checking", "and the second", 30);
-    // **A generous pantry, and the RATE is the tripwire.** The child's first turn, then the checks
-    // and their repeats (the operator's ruling — *"hmm, yes obviously it should be a repeated nag"*
-    // — which a child shares because a child is a session). The ladder doubles the gap per
-    // delivery, so the number of turns this test's few seconds can hold is small; the assertions
-    // below bound it, and a metronome would blow past both the bound and the pantry.
+    // A generous pantry, and the RATE is the tripwire. The child's first turn, then the checks
+    // and their repeats (a child shares the repeat, because a child is a session).
     let mut scripts = vec![first, check, check_again, repeat, repeat_again];
     for i in 0..35 {
         scripts.push(a_plain_answer_turn(
@@ -322,7 +252,7 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
 
     let kid = park_a_child(parent, child, canned, &path);
 
-    // **The parent writes, through the real resolver.** Before this branch the row
+    // The parent writes, through the real resolver. Before this branch the row
     // landed and nothing else happened; the assertion below is what changed.
     kid.parent(parent)
         .upsert_child(
@@ -331,7 +261,7 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         )
         .expect("the parent's write is accepted");
 
-    // **The store row first** — the write is durable, authored by the parent, which is
+    // The store row first - the write is durable, authored by the parent, which is
     // the half the previous branch built and must still be true.
     let rows = Store::open(&path)
         .expect("the store")
@@ -348,7 +278,7 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     );
     assert_eq!(row.status, TodoStatus::Pending);
 
-    // **And then the nag** — the check names the parent's row, in the child's own voice
+    // And then the nag - the check names the parent's row, in the child's own voice
     // to itself (`Speaker::Agent`), naming the parent by id.
     let (first_at, found) = wait_for(&kid.hub, |hub| {
         checks_timed(hub)
@@ -360,20 +290,15 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         "the item is a plan-check, not a prompt somebody typed: {found}"
     );
 
-    // **And the repeat, at the interval the schedule owes rather than on a metronome.** The same
-    // notice comes back — the operator's ruling, and a child is a session — but `TodoNagClock`
-    // doubles the gap per delivery, so the repeat is due TWO windows after the first delivery and
-    // the delivery after that is four. The wait is therefore for the EVENT (a busy box may take ten
-    // windows to run a turn, and a test that waited three of them counted one delivery where the
-    // schedule owed two) and the RATE is asserted on the pair's own timestamps: a check per window
-    // puts the two a single window apart. The clock's own unit tests pin the ladder with the times
-    // injected; what is asserted here is that the child's thread runs the same schedule.
+    // And the repeat, at the interval the schedule owes rather than on a metronome.
+    // `TodoNagClock` doubles the gap per delivery, so the repeat is due TWO windows after the
+    // first delivery and the one after that is four.
     let (repeat_at, repeat) = wait_for(&kid.hub, |hub| {
         let said = checks_timed(hub);
         (said.len() >= 2).then(|| said[1].clone())
     });
-    // **The repeat names the same row, in the same words** (R93.B2): it used to say *"you were
-    // asked about this one already"*, which the model answered instead of the row.
+    // The repeat names the same row, in the same words: it used to say *"you were asked about
+    // this one already"*, which the model answered instead of the row.
     assert!(
         found.contains(&format!("{PARENTS_ROW} — Parent {parent}")),
         "the check names the parent's row and its author: {found}"
@@ -382,7 +307,7 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         repeat, found,
         "the repeat is the same notice, because the plan has not moved"
     );
-    // **Half again the window**: more than a metronome's gap, comfortably under the ladder's two,
+    // Half again the window: more than a metronome's gap, comfortably under the ladder's two
     // so the millisecond the two `ts` values are stamped in cannot decide the answer.
     let floor = (WINDOW * 3) / 2;
     assert!(
@@ -394,15 +319,14 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
         WINDOW
     );
 
-    // **THE WAKE ITSELF, which one write cannot prove.** By now the first check has been
-    // delivered, so the clock is disarmed and the child's serving thread is back in
-    // `Hub::take_own_work_until(None)` — the entry re-arm is spent and nothing but this
-    // write's own wake can re-arm it. See `SECOND_ROW`.
+    // THE WAKE ITSELF, which one write cannot prove. By now the first check has been delivered
+    // so the clock is disarmed and the serving thread is back in `take_own_work_until(None)` - the
+    // entry re-arm is spent and nothing but this write's own wake can re-arm it. See `SECOND_ROW`.
     kid.parent(parent)
         .upsert_child(
             child,
-            // The first row done and a second one open: the QUESTION moves (R93.B1 — a row added
-            // beside an unchanged question no longer makes a new notice).
+            // The first row done and a second one open: the QUESTION moves (a row added beside an
+            // unchanged question no longer makes a new notice).
             &[
                 (PARENTS_ROW.into(), TodoStatus::Completed, Vec::new()),
                 (SECOND_ROW.into(), TodoStatus::Pending, Vec::new()),
@@ -426,9 +350,8 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     );
 
     // And the second plan's saying is as repeated-not-metronomic as the first's: its own check and
-    // its own repeat, the ladder restarted by the move — a different notice is one base window
-    // again, not whatever gap the old one had grown to — and the pair timed the same way, on the
-    // hub's own timestamps.
+    // its own repeat, the ladder restarted by the move - a different notice is one base window
+    // again, not whatever gap the old one had grown to - and the pair timed the same way.
     let (second_repeat_at, said_again) = wait_for(&kid.hub, |hub| {
         let mine: Vec<(u64, String)> = checks_timed(hub)
             .into_iter()
@@ -460,14 +383,8 @@ fn a_row_a_parent_writes_nags_the_parked_child() {
     kid.release();
 }
 
-/// **The operator's `[p]` stays theirs, on a child too**: a parent's POSTPONED row
-/// persists on the child's board and is never asked about.
-///
-/// The observational half only — the predicate (`nag_should_arm` on a postponed-only
-/// plan) is pinned in `sessions.rs`'s tests, for the reason that file gives: from outside,
-/// this silence and an unarmed clock are the same thing to look at. What ONLY this test
-/// can say is that the row is on the parked child's board through the whole of it, so the
-/// silence is about the ROW and not about the write never landing.
+/// The operator's `[p]` stays theirs, on a child too: a parent's POSTPONED row persists on
+/// the child's board and is never asked about.
 #[test]
 fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -481,9 +398,9 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     let parts = Parts::load(&config(&path, child)).expect("the vocabulary must load");
     let first = a_plain_answer_turn(&parts.vocab, "planning", "the task is done", 30);
     drop(parts);
-    // One answer: the first turn. Nothing else should ever be asked — the canned server
-    // serving exactly one is itself a tripwire: a nag that fired would be a request
-    // nobody answers, and the test's log dump would say so.
+    // One answer: the first turn. Nothing else should ever be asked - the canned server serving
+    // exactly one is itself a tripwire: a nag that fired would be a request nobody answers, and the
+    // test's log dump would say so.
     let canned = canned::Canned::serve_each(vec![first], 1);
 
     let kid = park_a_child(parent, child, canned, &path);
@@ -494,7 +411,7 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
         )
         .expect("the parent's write is accepted");
 
-    // **Persisted**: the row is real and durable, set aside rather than dropped.
+    // Persisted: the row is real and durable, set aside rather than dropped.
     let rows = Store::open(&path)
         .expect("the store")
         .todos(child)
@@ -506,8 +423,8 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     assert_eq!(row.status, TodoStatus::Postponed);
     assert_eq!(row.by, TodoBy::parent_of(parent));
 
-    // **And never asked**: ten windows pass — an armed clock would have fired in one —
-    // and the child's log holds no check.
+    // And never asked: ten windows pass - an armed clock would have fired in one - and the
+    // child's log holds no check.
     let until = Instant::now() + WINDOW * 10;
     while Instant::now() < until {
         assert!(
@@ -520,8 +437,8 @@ fn a_postponed_row_a_parent_writes_persists_and_never_nags() {
     kid.release();
 }
 
-/// A directory that removes itself, because a test that leaks a store per run
-/// eventually fills the disk and the run that finds out is not this one.
+/// A directory that removes itself, because a test that leaks a store per run eventually fills the
+/// disk and the run that finds out is not this one.
 struct TempDir {
     path: std::path::PathBuf,
 }
@@ -555,12 +472,9 @@ impl Drop for TempDir {
     }
 }
 
-/// **R77, on a child's own clock: the operator's row is named first, and the first check says they
-/// added it.** The child's board holds the parent's row and then the operator's — the operator's
-/// LAST, the way the board's snapshot orders its halves — and the check the child's own thread
-/// delivers names the operator's. The ranking is `unfinished_plan_for`'s, reached through the same
-/// `Harness::nag_notice` the daemon's sessions use, so this is the one predicate seen from the
-/// child's side rather than a copy of it.
+/// The operator's row is named first, and the first check says they added it. The child's
+/// board holds the parent's row and then the operator's - theirs LAST, the way the snapshot
+/// orders its halves - and the check the child's own thread delivers names the operator's.
 #[test]
 fn a_childs_check_names_the_operators_row_first() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -636,9 +550,8 @@ fn warnings_on(hub: &Hub, code: &str) -> Vec<String> {
         .collect()
 }
 
-/// `/nag …` sent to the child as a head sends it — on the child's own queue, where its serving
-/// thread takes it (the worker hands a `/nag` it wins back to that thread; see `Sessions`'
-/// `Slash` arm).
+/// `/nag …` sent to the child as a head sends it - on the child's own queue, where its serving
+/// thread takes it (the worker hands a `/nag` it wins back to that thread).
 fn nag_verb_to(hub: &Hub, line: &str) {
     assert!(
         hub.submit_daemon(
@@ -650,10 +563,9 @@ fn nag_verb_to(hub: &Hub, line: &str) {
     );
 }
 
-/// **`/nag pause` on a CHILD pauses that child** — its clock is on its own thread, and the verb is
+/// `/nag pause` on a CHILD pauses that child - its clock is on its own thread, and the verb is
 /// answered there: a parent's row lands on the paused child's board and is not asked about, and
-/// `/nag resume` brings the check. The operator's pause is per session (`nag_pause.rs`), and a
-/// child is a session — *"childs being just a session should get nags"* reads the other way too.
+/// `/nag resume` brings the check. The pause is per session, and a child is a session.
 #[test]
 fn a_paused_child_is_not_checked_until_it_is_resumed() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -684,7 +596,7 @@ fn a_paused_child_is_not_checked_until_it_is_resumed() {
 
     let kid = park_a_child(parent, child, canned, &path);
     nag_verb_to(&kid.hub, "nag pause");
-    // **Answered on the child's own thread**, and loud: the verb's reply and the hub row.
+    // Answered on the child's own thread, and loud: the verb's reply and the hub row.
     wait_for(&kid.hub, |hub| warnings_on(hub, "nags_paused").pop());
     assert!(
         warnings_on(&kid.hub, "child_door_refused").is_empty(),
@@ -697,7 +609,7 @@ fn a_paused_child_is_not_checked_until_it_is_resumed() {
             &[(PARENTS_ROW.into(), TodoStatus::Pending, Vec::new())],
         )
         .expect("the parent's write is accepted");
-    // Ten windows — an armed clock would have fired in one.
+    // Ten windows - an armed clock would have fired in one.
     let until = Instant::now() + WINDOW * 10;
     while Instant::now() < until {
         assert!(

@@ -1,19 +1,6 @@
-//! **The queues' own threads** — a supervisor per daemon that finds the repositories it may serve
-//! and claims their leases, and one worker per repository it holds, which keeps the review queue
-//! moving, gates the target's tip on every change, and lands approved branches one at a time.
-//!
-//! Never on a session's worker (R63.3): `c12d044`'s review pass on the shared worker pinned every
-//! daemon at 100% and left prompts queued for minutes (2026-10-11). Never ended by a store error
-//! (R67 item 12, kept): a pass that fails waits and tries again, and says so on the hubs.
-//!
-//! # One repository, one worker, one lease
-//!
-//! Decision 1: *"a lease per repository among that repository's session daemons — one holds it,
-//! with a heartbeat; another takes over when it dies"*. Decision 2: *"one queue per repository …
-//! one repository's red main does not stop another's landings"*. So the worker is per repository:
-//! a long gate in one repository does not hold another's, and losing a lease ends exactly one
-//! worker. A daemon serves a repository when the repository is its workspace, under it, or holds
-//! it (a daemon seated inside a checkout) — *that repository's session daemons*.
+//! The queues' own threads - a supervisor per daemon that finds the repositories it may
+//! serve and claims their leases, and one worker per repository it holds: the review queue
+//! the gate on every change to the target's tip, and landings one at a time.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,53 +21,43 @@ use super::git;
 use super::lease::{HEARTBEAT_EVERY, LEASE_TTL_MS};
 use super::settings::{self, QueueSettings};
 
-/// **A reviewer's time** — an hour from the claim. A reviewer still running then is killed and
-/// the attempt counted (R61 defect 10: `Running` was waited on for ever).
+/// A reviewer's time - an hour from the claim. A reviewer still running then is killed and
+/// the attempt counted.
 pub const REVIEW_DEADLINE_MS: u64 = 60 * 60 * 1000;
 
-/// **How long a claimed review may wait for its reviewer to START** before the queue raises it as
-/// a reviewer that cannot start (decision 4) — the review queue's session never picked it up.
+/// How long a claimed review may wait for its reviewer to START before the queue raises it as
+/// a reviewer that cannot start (decision 4) - the review queue's session never picked it up.
 pub const REVIEWER_START_GRACE_MS: u64 = 5 * 60 * 1000;
 
-/// **Attempts before a review is `blocked` and raised** — three, and then a person (the v23
+/// Attempts before a review is `blocked` and raised - three, and then a person (the v23
 /// queue's 3-in-5-minutes then handed the branch to a model to merge without the gate: defect 11).
 pub const MAX_REVIEW_ATTEMPTS: u32 = 3;
 
 /// Reviews a repository runs at once.
 pub const MAX_REVIEWING: usize = 2;
 
-/// **The clause a target's health row leads with when its gate could not run** — nothing was
-/// judged, so nothing is in doubt about the code, and the row stays `gating` until the retry window
-/// is out. Read off the row (`health`), so a restart in the middle of the window waits out what is
-/// left of it rather than starting the gate again.
+/// The clause a target's health row leads with when its gate could not run - nothing was judged
+/// so the row stays `gating` until the retry window is out. Read off the row, so a restart in the
+/// middle of the window waits out what is left of it rather than starting the gate again.
 pub const UNJUDGED_RETRY: &str = "the gate could not run on this pass";
 
-/// **How long a tip whose gate could not run waits before it is gated again** — a minute.
-///
-/// The two bounds it sits between: short enough that a host that was merely busy costs the queue a
-/// minute and not a `/queue regate`, and long enough that a machine which is down or saturated is
-/// not dialled on every pass — the worker's pass loop goes again at once when it worked, so without
-/// a window a broken `gate_host` would be one ssh attempt per second, for ever.
+/// How long a tip whose gate could not run waits before it is gated again - a minute: short
+/// enough that a busy host costs the queue a minute, long enough that a machine which is down is not
+/// dialled on every pass (the loop goes again at once when it worked).
 pub const UNJUDGED_RETRY_MS: u64 = 60 * 1000;
 
-/// **The clause a merge row leads with when the TRAIN it rode in was red** — its own gate has not
-/// run, and it is next in line to be gated alone.
-///
-/// It is what keeps a red train from becoming a loop: the rows that were in it go back to `queued`
-/// with this sentence, and [`RepoQueue::land_train`] will not put a row carrying it into another
-/// train. Its own single gate overwrites the evidence whatever it says, so the sentence lasts
-/// exactly until the branch has been judged on its own — which is the one thing a red train could
-/// not tell anybody.
+/// The clause a merge row leads with when the TRAIN it rode in was red - its own gate has
+/// not run, and it is next in line to be gated alone. It is what keeps a red train from
+/// becoming a loop
 pub const TRAIN_SPLIT: &str = "this branch was in a train whose gate was red";
 
-/// **Where the queues reach sessions** — the review queue's session, a project's main session,
+/// Where the queues reach sessions - the review queue's session, a project's main session
 /// and every hub. A trait so the tests record and the daemon rings.
 pub trait QueueDoor: Send + Sync {
     /// Publish on every session's log.
     fn announce(&self, event: SessionEvent);
-    /// **Publish one repository's alert** — only on the hubs of that repository's sessions (and
-    /// the review queue's board), never on every hub: a daemon's other sessions are about other
-    /// things (`‼ main RED` reached a session about the box's RSS, 2026-10-12).
+    /// Publish one repository's alert - only on the hubs of that repository's sessions, never on
+    /// every hub: a daemon's other sessions are about other things.
     fn announce_to(&self, repository: &str, event: SessionEvent) {
         let _ = repository;
         self.announce(event);
@@ -90,68 +67,57 @@ pub trait QueueDoor: Send + Sync {
     /// Wake the project session that `session_id` belongs to (its root). What it is told is read
     /// from the store by that session (`Harness::queue_notices`).
     fn ring_project(&self, session_id: &str) -> Result<String, String>;
-    /// **Wake the root sessions of the project `repository` is** — a target emergency has no
-    /// branch and so no session of its own (R76 item 1). What each is told is read from the store
-    /// by that session (`Harness::queue_emergency_notices`), once per red tip or parked row.
+    /// Wake the root sessions of the project `repository` is - a target emergency has no branch
+    /// and so no session of its own. What each is told is read from the store by that
+    /// session (`Harness::queue_emergency_notices`).
     fn ring_repository(&self, repository: &str) -> Result<String, String> {
         Err(format!(
             "this door rings no project session of {repository}"
         ))
     }
-    /// **Put the words on a session, not only on its bell** — the operator's complaint of
-    /// 2026-10-30: *"those red states must reach top session agent or a gatekeeper"*, and a ring
-    /// says *that* something happened while this says *what*. A door that cannot deliver answers
-    /// by name rather than claiming a delivery it did not make.
+    /// Put the words on a session, not only on its bell - the operator's *"those red states must
+    /// reach top session agent or a gatekeeper"* : a ring says *that* something happened
+    /// while this says *what*. A door that cannot deliver answers by name, not with a false promise.
     fn deliver_repository(&self, repository: &str, text: &str) -> Result<String, String> {
         let _ = (repository, text);
         Err(format!("this door delivers to no session of {repository}"))
     }
-    /// **Whether this door puts words on sessions at all** — a door with no sessions (a test's, a
-    /// bench's) answers `false` and the queue takes today's path exactly: the card, and nothing
-    /// said about nobody reading it. A door that does deliver answers `true`, and a delivery it
-    /// could not make is raised, because *"told nobody"* must never be silent.
+    /// Whether this door puts words on sessions at all - a door with no sessions answers `false`
+    /// and the queue takes today's path exactly: the card, and nothing said about nobody reading it.
+    /// A door that does deliver answers `true`, and a delivery it could not make is raised.
     fn delivers(&self) -> bool {
         false
     }
-    /// **Whether `session_id` is live in this daemon now** — a branch's tree is not removed from
-    /// under a session still working in it (R92.24), and a reviewed row is not re-seated under a
-    /// reviewer that is still going. **A session this daemon has spawned and not yet opened
-    /// counts**: its handle exists, so it is not gone — see `Registry::announce_spawn`.
+    /// Whether `session_id` is live in this daemon now - a branch's tree is not removed from
+    /// under a session still working in it, and a reviewed row is not re-seated under a
+    /// reviewer that is still going. A session spawned and not yet opened counts: its handle exists.
     fn session_live(&self, session_id: &str) -> bool {
         let _ = session_id;
         false
     }
-    /// **Whether this door has sessions to be asked about at all.** A door that does not — a test
-    /// door that holds nothing, a daemon with no sessions — never reads as *the child is gone*:
-    /// [`Self::session_live`]'s default `false` is the right answer to *is this tree in use* and
-    /// the wrong one to *has the child that was working on this row died*.
+    /// Whether this door has sessions to be asked about at all. A door that does not never reads
+    /// as *the child is gone*: [`Self::session_live`]'s default `false` is the right answer to *is
+    /// this tree in use* and the wrong one to *has the child that was working on this row died*.
     fn sees_sessions(&self) -> bool {
         false
     }
 }
 
-/// How a project's `[queue]` settings are read — the project's `leticode.toml` in production.
+/// How a project's `[queue]` settings are read - the project's `leticode.toml` in production.
 pub type SettingsFor = Arc<dyn Fn(&Path) -> Result<QueueSettings, String> + Send + Sync>;
 
 /// Where a repository's landing worktree is made: the directory [`git::landing_worktree_in`]
 /// puts it under (letibot's data directory in production, a temporary one in the tests).
 pub type LandingRootFor = Arc<dyn Fn(&Path) -> Result<PathBuf, String> + Send + Sync>;
 
-/// **What every worker of one daemon shares.**
+/// What every worker of one daemon shares.
 pub struct QueueEnv {
     pub me: LeaseClaim,
     pub gate: Arc<dyn GateRunner>,
     pub door: Arc<dyn QueueDoor>,
-    /// **The daemon's review desk** — who is reviewing what, and what they have handed in.
-    ///
-    /// The worker needs it for one question only: whether a reviewer whose session is gone has
-    /// already handed its verdict in, because a reviewer's LAST act is the submission and its turn
-    /// ending, and a session whose turn has ended is not live. Without it the worker called that
-    /// child *gone* and re-seated a row that had just been judged — the verdict then reached a pass
-    /// that found the row was no longer its reviewer's, and was discarded (measured 2026-10-29: nine
-    /// reviewers, eighteen `reviewing` transitions, no `approved`). `None` is a queue whose daemon
-    /// has no desk to ask (a fixture that serves rows without reviewers), and it answers as it did
-    /// before: no verdict is waiting that anybody could see.
+    /// The daemon's review desk - who is reviewing what, and what they have handed in. The
+    /// worker asks it one question: whether a reviewer whose session is gone has already handed
+    /// its verdict in, because a reviewer's LAST act is the submission and its turn ending.
     pub desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     pub settings: SettingsFor,
     pub landing_root: LandingRootFor,
@@ -164,7 +130,7 @@ pub struct QueueEnv {
 
 impl QueueEnv {
     /// The daemon's own: this daemon's identity, the local gate, thirty minutes, the project's
-    /// `leticode.toml` — and the desk its review session opens reviews on.
+    /// `leticode.toml` - and the desk its review session opens reviews on.
     pub fn production(
         door: Arc<dyn QueueDoor>,
         landing_root: Option<PathBuf>,
@@ -198,45 +164,38 @@ pub enum Pass {
     Idle,
     /// Something moved; go again at once.
     Worked,
-    /// **The lease is not this daemon's any more** — the worker ends.
+    /// The lease is not this daemon's any more - the worker ends.
     LostLease,
 }
 
-/// **The worker for one repository** — every pass: heartbeat, the review queue's upkeep, the
+/// The worker for one repository - every pass: heartbeat, the review queue's upkeep, the
 /// target's health, one landing.
 pub struct RepoQueue {
     store: Store,
     repo: PathBuf,
     key: String,
     env: Arc<QueueEnv>,
-    /// **What this worker has already rung a project about** (R76 item 1) — a red tip, a gate
-    /// that could not judge, a row parked for a person — so each is rung once per worker, not
-    /// every two seconds. A cache of the store's `queue_told` rows (`rung:<repository>:<key>`),
-    /// which are what keep it once per tip across a restart (R92.7): a restarted daemon that
-    /// re-gates the same red tip neither rings nor resumes anybody about it again.
+    /// What this worker has already rung a project about - a red tip, a gate that
+    /// could not judge, a row parked for a person - so each is rung once, not every two seconds. A
+    /// cache of the store's `queue_told` rows, which are what keep it once per tip across a restart.
     rung: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// **The `[queue]` error last said** (R92.19) — `queue_settings_unreadable` is raised when
+    /// The `[queue]` error last said - `queue_settings_unreadable` is raised when
     /// the error is new or changed, not every pass (it was every two seconds, on every hub).
     settings_said: std::sync::Mutex<Option<String>>,
-    /// **The one gate this repository is running, if any** (R92 item 8). A gate runs on a thread
-    /// of its own and the pass only looks at it — so a thirty-minute gate does not stop the review
-    /// queue: claims, reviewer deadlines and capacity holds go on while it runs. One at a time,
-    /// so landings stay serialized; taken out of the slot exactly once, so a verdict is applied
-    /// exactly once. What a restart needs is in the store already (the `gating` health row and
-    /// merge row): a worker that holds no gate for such a row runs it again.
+    /// The one gate this repository is running, if any. It runs on a thread of its own and the
+    /// pass only looks at it, so a thirty-minute gate does not stop the review queue
     gate: std::sync::Mutex<Option<InFlight>>,
-    /// **Whether the last heartbeat found the lease still this daemon's** — what a running gate's
+    /// Whether the last heartbeat found the lease still this daemon's - what a running gate's
     /// `alive` reads, since the gate's thread has no store of its own. The pass beats; a lost
     /// lease kills the gate within its next poll, as when the gate beat for itself.
     lease_ok: Arc<AtomicBool>,
 }
 
-/// **One terminal row's hold on a worktree and a branch** — the facts the resource sweep needs,
-/// whichever queue the row is in. A review row and the merge row it was approved into name the
-/// same tree, so the tree is examined once and both records get the note.
+/// One terminal row's hold on a worktree and a branch - the facts the resource sweep needs. A
+/// review row and the merge row it was approved into name the same tree, which is examined once.
 struct Held<'a> {
     branch: &'a str,
-    /// `''` when the row names no tree — then the sweep costs no `git` call at all.
+    /// `''` when the row names no tree - then the sweep costs no `git` call at all.
     worktree: &'a str,
     target: &'a str,
     /// The session that works in the tree; `''` when the row names none, which a merge row whose
@@ -246,9 +205,8 @@ struct Held<'a> {
     keeps: String,
 }
 
-/// **What the sweep found at one tree** — what went, and what stayed with the reason it did. Two
-/// rows that name one tree share one of these, so the `git` work is done once and both records say
-/// the same thing happened.
+/// What the sweep found at one tree - what went, and what stayed with the reason it did. Two
+/// rows that name one tree share one of these, so the `git` work is done once.
 #[derive(Clone, Default)]
 struct Settled {
     /// What went, as the note says it: `the worktree /x`, `` the branch `agent/y` ``.
@@ -257,9 +215,8 @@ struct Settled {
     kept: Option<(&'static str, String)>,
 }
 
-/// **What a release says on the row's record** — one sentence, in the row's own terms: what went,
-/// when, and what the record still keeps. `None` when nothing went and nothing is kept, which is
-/// the row whose tree and branch were both already gone.
+/// What a release says on the row's record - what went, when, and what the record still keeps.
+/// `None` when nothing went and nothing is kept: the tree and the branch were both already gone.
 fn release_note(found: &Settled, keeps: &str, now_ms: u64) -> Option<String> {
     let at = letibot_claude::handover::iso_ts(now_ms);
     let kept = found.kept.as_ref().map(|(_, why)| why.as_str());
@@ -277,14 +234,14 @@ fn release_note(found: &Settled, keeps: &str, now_ms: u64) -> Option<String> {
     }
 }
 
-/// **A gate in flight** — what it is for, so its verdict can be applied when it ends, and the
+/// A gate in flight - what it is for, so its verdict can be applied when it ends, and the
 /// thread running it.
 struct InFlight {
     what: GateFor,
     /// The commit under the gate: the target's tip, or the rebased branch.
     sha: String,
     started: Instant,
-    /// Set to kill the gate — the daemon is stopping.
+    /// Set to kill the gate - the daemon is stopping.
     cancel: Arc<AtomicBool>,
     run: Running,
 }
@@ -314,7 +271,7 @@ impl Running {
     }
 }
 
-/// What a running gate judges — and so how its verdict is applied.
+/// What a running gate judges - and so how its verdict is applied.
 enum GateFor {
     /// The target's tip (decision 10): its health.
     Target {
@@ -324,7 +281,7 @@ enum GateFor {
     },
     /// A branch rebased onto the target, before the compare-and-swap.
     Land(Box<Landing>),
-    /// **Several branches rebased one onto the last, gated once** (`[queue] gate_train`).
+    /// Several branches rebased one onto the last, gated once (`[queue] gate_train`).
     Train(Box<Train>),
     /// The install steps, after the landing was pushed (decision 7).
     Install {
@@ -340,7 +297,7 @@ enum GateFor {
     },
 }
 
-/// **One landing between its rebase and its end** — what `land` knew when it started the gate.
+/// One landing between its rebase and its end - what `land` knew when it started the gate.
 struct Landing {
     row: MergeRow,
     tip: String,
@@ -351,19 +308,10 @@ struct Landing {
     install: Vec<String>,
 }
 
-/// **A train** — several approved branches, rebased one onto the last, judged by ONE gate run on
-/// the final tree (`[queue] gate_train`).
-///
-/// The cars are in the order they were rebased and are to be landed: each one's `rebased` is a
-/// commit on top of the previous car's, so `tip → car 1 → car 2 → …` is a chain of single commits
-/// and the target moves once per car. That is what keeps a train bisectable: every row's
-/// `landed_sha` is the tip at its own landing, exactly as a lone landing's is.
-///
-/// It lives in the gate's slot, on this worker, for the length of the gate — so a daemon that dies
-/// mid-train leaves its rows `gating` with no gate, which is what `adopt_orphans` already puts back
-/// in line. Nothing about a train needs the store to remember it.
+/// A train - several approved branches, rebased one onto the last, judged by ONE gate run
+/// on the final tree (`[queue] gate_train`).
 struct Train {
-    /// The target tip the train was built on — the first compare-and-swap expects exactly this.
+    /// The target tip the train was built on - the first compare-and-swap expects exactly this.
     tip: String,
     /// The cars, oldest first.
     cars: Vec<TrainCar>,
@@ -372,7 +320,7 @@ struct Train {
     install: Vec<String>,
 }
 
-/// **One branch in a train** — the row, the head it was approved at, and the commit it became.
+/// One branch in a train - the row, the head it was approved at, and the commit it became.
 struct TrainCar {
     row: MergeRow,
     head: String,
@@ -381,9 +329,8 @@ struct TrainCar {
 }
 
 impl Train {
-    /// **This car's landing, as `landed` wants it** — the tip it was put onto, and the commit it
-    /// became. `landed` writes the row, the target's health at that commit, and retires the
-    /// branch; every one of those is true of a car in a train, one car at a time.
+    /// This car's landing, as `landed` wants it - the tip it was put onto, and the commit it
+    /// became. Every fact `landed` writes is true of a car in a train, one car at a time.
     fn landing(&self, i: usize) -> Landing {
         let car = &self.cars[i];
         let tip = match i {
@@ -401,12 +348,12 @@ impl Train {
         }
     }
 
-    /// The branches in the order they were rebased — `agent/a`, `agent/b` — for a sentence.
+    /// The branches in the order they were rebased - `agent/a`, `agent/b` - for a sentence.
     fn branches(&self) -> Vec<String> {
         self.cars.iter().map(|c| c.row.branch.clone()).collect()
     }
 
-    /// **The order, written out** — `1. `agent/a` (m-a) at 0f2d9550` — what a red train hands the
+    /// The order, written out - `1. `agent/a` (m-a) at 0f2d9550` - what a red train hands the
     /// reviewer and every one of its rows.
     fn order(&self) -> String {
         self.cars
@@ -418,7 +365,7 @@ impl Train {
     }
 }
 
-/// **What a row that landed in a train says about the train** — `, in a train of 3 (car 2)`. `''`
+/// What a row that landed in a train says about the train - `, in a train of 3 (car 2)`. `''`
 /// for a lone landing, whose sentence is the one it has always been.
 fn train_note(n: usize, i: usize) -> String {
     format!(", in a train of {n} (car {})", i + 1)
@@ -461,9 +408,8 @@ impl RepoQueue {
         self.slot().as_ref().is_some_and(|g| g.run.finished())
     }
 
-    /// **A pass, and the passes that apply every gate it started** — what one pass was before
-    /// gates ran on their own thread. For the tests that are about what a gate's verdict does,
-    /// not about the pass going on meanwhile.
+    /// A pass, and the passes that apply every gate it started - for the tests that are about
+    /// what a verdict does, not about the pass going on meanwhile.
     #[cfg(test)]
     pub(crate) fn settle(&self, stop: &AtomicBool) -> Result<Pass, StoreError> {
         loop {
@@ -475,7 +421,7 @@ impl RepoQueue {
         }
     }
 
-    /// **Why the landings wait** — `gate running on <sha> for Nm`, while a gate runs.
+    /// Why the landings wait - `gate running on <sha> for Nm`, while a gate runs.
     pub fn gate_running(&self) -> Option<String> {
         self.slot()
             .as_ref()
@@ -499,7 +445,7 @@ impl RepoQueue {
         });
     }
 
-    /// **A raise** — said on the hubs of THIS repository's sessions (and the queue's board), under
+    /// A raise - said on the hubs of THIS repository's sessions (and the queue's board), under
     /// a code a head can style: `queue_blocked` (high) and `target_red` (emergency).
     fn raise(&self, code: &str, detail: String) {
         eprintln!("  merge queue: {code}: {detail}");
@@ -541,7 +487,7 @@ impl RepoQueue {
         Ok(ok)
     }
 
-    /// **Am I still the owner?** `false` ends the worker. A store error is not an answer either
+    /// Am I still the owner? `false` ends the worker. A store error is not an answer either
     /// way: the caller retries the pass.
     pub fn beat(&self) -> Result<bool, StoreError> {
         let ours = self
@@ -553,7 +499,7 @@ impl RepoQueue {
         Ok(ours)
     }
 
-    /// **One pass.** It never waits for a gate: it starts one, or applies the verdict of one that
+    /// One pass. It never waits for a gate: it starts one, or applies the verdict of one that
     /// ended, and goes on with the review queue either way.
     pub fn pass(&self, stop: &AtomicBool) -> Result<Pass, StoreError> {
         if stop.load(Ordering::Relaxed) {
@@ -568,9 +514,8 @@ impl RepoQueue {
                 s
             }
             Err(why) => {
-                // A `[queue]` that does not parse is said — once per error, not once per pass —
-                // and the queue runs on the defaults rather than on a guess at what the file
-                // meant.
+                // A `[queue]` that does not parse is said once per error, not once per pass - and
+                // the queue runs on the defaults rather than on a guess at what the file meant.
                 let mut said = self.settings_said.lock().unwrap_or_else(|e| e.into_inner());
                 if said.as_deref() != Some(why.as_str()) {
                     *said = Some(why.clone());
@@ -586,9 +531,8 @@ impl RepoQueue {
                 QueueSettings::default()
             }
         };
-        // The verdict of a gate that ended, applied once — before the upkeep, so the review of a
-        // tip that just went red is claimed in this pass (*"taken first, as soon as a reviewer is
-        // free"*).
+        // The verdict of a gate that ended, applied once - before the upkeep, so the review of a
+        // tip that just went red is claimed in this pass (*"taken first, as soon as a reviewer is free"*).
         let mut worked = self.reap_gate()?;
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
@@ -640,13 +584,9 @@ impl RepoQueue {
         Ok(if worked { Pass::Worked } else { Pass::Idle })
     }
 
-    /// **A target emergency reaches a MODEL, not only the heads** (R76 item 1). `raise` is a
-    /// warning on every hub, which heads draw and no model reads: pg-noop's agent never heard its
-    /// `main` was red. So every pass rings the project that has to act — the repository's root
-    /// sessions for the target's own trouble (red, unjudged, timed out; a red tip's review blocked
-    /// or undecided), the branch's root for its review parked for a person — once per tip or per
-    /// parked row. The words are the session's to read off the store
-    /// (`Harness::queue_emergency_notices`), so a ring that arrives twice says nothing twice.
+    /// A target emergency reaches a MODEL, not only the heads: `raise` is a warning on every
+    /// hub, which heads draw and no model reads (pg-noop's agent never heard its `main` was
+    /// red).
     fn ring_the_projects(&self) -> Result<(), StoreError> {
         let mut due: Vec<(String, Option<String>)> = Vec::new();
         for h in self.store.target_healths()? {
@@ -687,8 +627,8 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **Said before?** `true` the first time `key` is asked about — by this worker or any
-    /// daemon's before it (the store's `queue_told`, R92.7) — and records it.
+    /// Said before? `true` the first time `key` is asked about - by this worker or any
+    /// daemon's before it - and records it.
     fn first_time(&self, key: &str) -> Result<bool, StoreError> {
         if !self
             .rung
@@ -701,9 +641,8 @@ impl RepoQueue {
         self.store.tell_once(key, gate::now_ms())
     }
 
-    /// **Said before, in this worker?** — the in-memory half of [`Self::first_time`], for a
-    /// question asked once per row per pass: a settled row must cost a hash lookup, not a store
-    /// query and two `git` calls.
+    /// Said before, in this worker? - the in-memory half of [`Self::first_time`], for a question
+    /// asked once per row per pass: a settled row must cost a hash lookup, not a store query.
     fn said(&self, key: &str) -> bool {
         self.rung
             .lock()
@@ -711,7 +650,7 @@ impl RepoQueue {
             .contains(key)
     }
 
-    /// **Forget what was said under `prefix`** — the state it was about is over. Answers how many
+    /// Forget what was said under `prefix` - the state it was about is over. Answers how many
     /// keys the store held: more than none means it had been said.
     fn forget(&self, prefix: &str) -> Result<usize, StoreError> {
         self.rung
@@ -721,9 +660,8 @@ impl RepoQueue {
         self.store.untell_prefix(prefix)
     }
 
-    /// **A target alarm, raised once per tip and cause** — not again when a restarted daemon
-    /// re-gates the same tip to the same verdict (R92.7), and again once the target has been
-    /// green in between (R92.31: [`Self::target_is_green`] forgets them).
+    /// A target alarm, raised once per tip and cause - not again when a restarted daemon re-gates
+    /// the same tip to the same verdict, and again once the target has been green in between.
     fn alarm(&self, h: &TargetHealth, code: &str, detail: String) -> Result<bool, StoreError> {
         let key = format!("alarm:{}:{}:{}:{code}", self.key, h.target, h.sha);
         if self.first_time(&key)? {
@@ -733,8 +671,7 @@ impl RepoQueue {
         Ok(false)
     }
 
-    /// **The targets of this repository that are RED now** — the ones whose queues are halted
-    /// (R92.18).
+    /// The targets of this repository that are RED now - the ones whose queues are halted.
     fn red_targets(&self) -> Result<std::collections::HashSet<String>, StoreError> {
         Ok(self
             .store
@@ -747,7 +684,7 @@ impl RepoQueue {
 
     // ===== The gate in flight =====
 
-    /// **Start a gate on its own thread** — under the same controls as ever: the deadline from
+    /// Start a gate on its own thread - under the same controls as ever: the deadline from
     /// now, the daemon's stop (through `cancel`), and the lease (through [`Self::lease_ok`]).
     fn start_gate(&self, what: GateFor, wt: PathBuf, steps: Vec<String>, sha: &str) {
         gate::watch(&wt, &self.key);
@@ -802,9 +739,8 @@ impl RepoQueue {
         }
     }
 
-    /// **Apply the verdict of a gate that ended** — taken out of the slot first, so it is applied
-    /// once whatever the application does (including start the install's gate). Returns whether
-    /// there was one.
+    /// Apply the verdict of a gate that ended - taken out of the slot first, so it is applied
+    /// once whatever the application does (including start the install's gate).
     fn reap_gate(&self) -> Result<bool, StoreError> {
         let done = {
             let mut slot = self.slot();
@@ -844,10 +780,8 @@ impl RepoQueue {
         }
     }
 
-    /// **A `gating` landing this worker runs no gate for** — its worker ended mid-gate (or a store
-    /// error cut the application short), so it goes back in line and is gated again, as
-    /// `recover_queue` does for another daemon's. Never while a gate is in flight: that row is
-    /// the gate's.
+    /// A `gating` landing this worker runs no gate for - its worker ended mid-gate, so it goes
+    /// back in line and is gated again. Never while a gate is in flight: that row is the gate's.
     fn adopt_orphans(&self) -> Result<bool, StoreError> {
         if self.gate_in_flight() {
             return Ok(false);
@@ -870,7 +804,7 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **The worker is ending** — the running gate is killed, waited for, and its verdict
+    /// The worker is ending - the running gate is killed, waited for, and its verdict
     /// applied (a stopped gate puts its row back in line), so nothing is left `gating` behind.
     pub fn wind_down(&self) {
         self.cancel_gate();
@@ -905,12 +839,8 @@ impl RepoQueue {
         let now = gate::now_ms();
         let me = self.me().to_string();
         let mut moved = false;
-        // **A target review is about ONE tip** (the operator, 2026-10-26) — before anything else
-        // reads them, so a stale one is neither claimed nor raised again. Every move of the tip
-        // supersedes, not only a rewrite: R76 item 4 kept a review whose tip had merely moved
-        // FORWARD, and four `red-main-<sha>` rows were open at once by lunchtime for tips `main`
-        // had already left — each with a reviewer child, each rejected, each opening a fix branch
-        // for a red that was no longer there.
+        // A target review is about ONE tip - before anything else reads them. Every move of the
+        // tip supersedes, not only a rewrite
         for r in self.store.review_rows(Some(&self.key))? {
             if r.kind == ReviewKind::Target
                 && matches!(
@@ -932,43 +862,21 @@ impl RepoQueue {
 
         for r in &rows {
             match r.state {
-                // **A reviewer past its deadline, or one that never started** — the attempt is
+                // A reviewer past its deadline, or one that never started - the attempt is
                 // counted, and the third is a raise rather than a fourth (defect 10).
                 ReviewState::Reviewing if r.owner == me => {
                     let never_started = r.reviewer.is_none()
                         && now.saturating_sub(r.state_ms) > self.env.reviewer_start_grace_ms;
-                    // **A reviewer child that is not alive in this daemon** — the operator's
-                    // half of the report: *"after a daemon restart two rows stayed reviewing
-                    // with reviewer children that no longer existed until their deadline"*.
-                    // Liveness is the session registry's (`QueueDoor::session_live`: a subagent
-                    // is a real registered session, so a handle the registry does not hold is a
-                    // child that finished, died, or never came back through a restart — **or one
-                    // that is still OPENING**, which is why that door counts a spawn this daemon
-                    // has announced as alive; a reviewer is placed in a VM and its open is a
-                    // clone and a boot). The reviewers' host collects a child that ends while
-                    // the daemon is up; this is the door for one whose host will never look
-                    // again.
+                    // A reviewer child that is not alive in this daemon - the operator's *"after a restart two
+                    // rows stayed reviewing with reviewer children that no longer existed"*.
                     let gone = self.env.door.sees_sessions()
                         && r.reviewer
                             .as_deref()
                             .is_some_and(|c| !self.env.door.session_live(c));
                     let late = r.deadline_ms.is_some_and(|d| now > d);
-                    // **A reviewer that has handed its verdict in is not gone, whatever its
-                    // session says** — and the two questions are asked of the same two seconds.
-                    // A reviewer's last act is the submission (`review_verdict`, the daemon's
-                    // desk) and its turn ending; a session whose turn has ended is not live. So
-                    // `gone` alone called a reviewer that had just judged *"not alive … it
-                    // finished without handing a verdict in"* and re-seated the row — and the
-                    // verdict then reached the pass below (`review::serve`), which found the row
-                    // was no longer its reviewer's and threw the judgement away (measured
-                    // 2026-10-29: nine reviewers, eighteen `reviewing` transitions, not one
-                    // `approved`). The desk is PEEKED here, never taken: taking belongs to the
-                    // pass that can write it, and that pass is the one that decides a reviewer's
-                    // fate next. Nothing is deferred that has not judged — a reviewer that died
-                    // with nothing at the desk keeps its attempt, its re-seat and its honest
-                    // sentence — and a deferral cannot last: the daemon's own clock serves the
-                    // reviews this daemon holds (`sessions::REVIEW_PASS_EVERY`), so a verdict
-                    // waiting here is written by the next review pass whatever the row says.
+                    // A reviewer that has handed its verdict in is not gone, whatever its session says: its
+                    // last act is the submission and its turn ending, so `gone` alone would re-seat a row that
+                    // has just judged and throw the verdict away. The desk is PEEKED, never taken.
                     let handed_in = r.reviewer.as_deref().is_some_and(|c| {
                         self.env.desk.as_ref().is_some_and(|d| d.verdict_waiting(c))
                     });
@@ -1014,9 +922,8 @@ impl RepoQueue {
                         }
                     }
                 }
-                // **A verdict that answered a head the branch has since moved past is no verdict
-                // on the branch** (decision 6, and defect 5's other half: `queue-spin`'s reject
-                // outlived the commits that answered it).
+                // A verdict that answered a head the branch has since moved past is no verdict on
+                // the branch (decision 6, and defect 5's other half).
                 ReviewState::Rejected | ReviewState::CannotDecide
                     if r.kind == ReviewKind::Branch =>
                 {
@@ -1052,8 +959,8 @@ impl RepoQueue {
             }
         }
 
-        // **Decision 4's option**: a blocked review of a project that opted in is handed to the
-        // project's main session to gate and merge itself — once, read off the row.
+        // Decision 4's option: a blocked review of a project that opted in is handed to the
+        // project's main session to gate and merge itself - once, read off the row.
         if settings.merge_via_session {
             for r in self.store.review_rows(Some(&self.key))? {
                 if r.state == ReviewState::Blocked
@@ -1078,11 +985,9 @@ impl RepoQueue {
             }
         }
 
-        // **The claims** — the target's red tip first (*"main itself goes to review … taken
-        // first, as soon as a reviewer is free"*), then priority, then age. **A red target halts
-        // its review queue** (the operator, R92.18): while it is red only its red tip and a
-        // branch opened to fix it are claimed; every other branch for it waits, and one claimed
-        // but not yet started goes back to waiting.
+        // The claims - the target's red tip first (*"main itself goes to review … taken first as
+        // soon as a reviewer is free"*), then priority, then age. A red target halts its review
+        // queue
         let red = self.red_targets()?;
         let target_of = |r: &ReviewRow| {
             if r.target.is_empty() {
@@ -1169,7 +1074,7 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **A review nobody needs to run** — the branch is gone, carries nothing, or is already on
+    /// A review nobody needs to run - the branch is gone, carries nothing, or is already on
     /// the target (decision 13's *"checked and re-enqueued if its branch is unmerged"*, and a
     /// project that landed a blocked branch by hand).
     fn settle_if_needless(&self, r: &ReviewRow) -> Result<bool, StoreError> {
@@ -1226,13 +1131,8 @@ impl RepoQueue {
         Ok(false)
     }
 
-    /// **A merge row whose branch is already on its target settles** (R92.28) — landed by hand,
-    /// or by the project's main session after a handover. `land_next` notices this only when it
-    /// TAKES the row, which it never does while the target is red, unjudged or blocked, and never
-    /// for a `blocked` row at all: such a row stayed parked for ever. A row being gated is left to
-    /// its gate. The approved head is what is looked for (the branch may be gone by now), and the
-    /// row is withdrawn saying where it was found — the queue did not land it, so `landed` would
-    /// claim a push and a cleanup that never ran.
+    /// A merge row whose branch is already on its target settles - landed by hand, or by the
+    /// project's main session after a handover.
     fn settle_landed_by_hand(&self) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let mut moved = false;
@@ -1270,73 +1170,14 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **A terminal row keeps its record and gives back its resources** — the sweep.
-    ///
-    /// MEASURED 2026-10-29 on this box, and it is why this exists: `review_queue` held **5
-    /// `approved`** and **52 `withdrawn`** rows that name a `worktree`, and **nine of those
-    /// directories were still there**; `~/Projects/letibot/worktrees` was **36 GB — 32 GB of it
-    /// ONE review's tree** (a checkout, and whatever a build had left inside it);
-    /// `~/Projects/stroppy-io/worktrees` was another **5.9 GB**. The only retirement was
-    /// [`Self::landed`]'s, and it fires only when the branch's head is still the head the row was
-    /// cut at and no live session holds the tree — so every `rejected`, `cannot_decide` and
-    /// superseded `withdrawn` row kept its tree for ever, a landing done by hand (`git merge
-    /// --ff-only`, which the operator does when the queue is slow) never entered that path at all,
-    /// and a branch that had moved since the row was cut was left in silence. A person cleared
-    /// eight of them by hand and took that directory from 36 GB to 95 MB: that is a sweep's job.
-    ///
-    /// **Terminal is the store's own answer** ([`ReviewState::is_open`], [`MergeState::is_open`]),
-    /// not a list of names: a `blocked` review is a row a person's `restart` moves, so its tree is
-    /// still the queue's business — and a blocked or rejected branch carries work the target does
-    /// not have, which keeps it in any case (below). And **an `approved` review whose landing is
-    /// still open is not terminal for the sweep**: `approved` is the REVIEW queue's terminal, the
-    /// merge queue has not started with it, and a landing with no branch cannot rebase. So the
-    /// work is released when the work is over, not when the first of the two queues is.
-    ///
-    /// **The record stays.** The row keeps its branch, its `base_sha`/`head_sha`/`reviewed_sha`/
-    /// `landed_sha`, its verdict and its reasons, and the release is written where a reader of the
-    /// row finds it — a move of the row's RECORD (`from == to`, [`Store::record_transition`]) that
-    /// says what went, when, and which sha the row still keeps. It is deliberately not a move of
-    /// the ROW: that rewrites `state_ms`, and a finished row's `state_ms` is what the pane's done
-    /// list is keyed on (`ui::panes::queue::RECENT_MS` is a day, so a two-day-old `withdrawn` row
-    /// would come back as just-finished) and what a project's ring is keyed on
-    /// ([`Self::ring_the_projects`], so a `cannot_decide` row would wake its project again).
-    ///
-    /// **What goes, and what stays**, in three rules:
-    ///
-    /// * a tree a live session works in is kept whatever else is true (R92.24) — and released by a
-    ///   later pass once that session has ended, which is the part a person used to do by hand;
-    /// * **the COMMITS decide, and never the row's state** — see the invariant below. A branch goes
-    ///   only when its tip is provably on the target (`git merge-base --is-ancestor`), which is what
-    ///   a landing is whether the queue made it or a person did, and a tree goes only under the same
-    ///   proof about the commit its own `HEAD` names;
-    /// * anything else is kept — a branch that carries work, a tree whose `HEAD` carries work, a tree
-    ///   with uncommitted changes, a tree that is not this repository's, and anything whose proof
-    ///   could not be taken — said on the row's record and raised where a person reads it, because
-    ///   it may be the only copy of that work.
-    ///
-    /// # The invariant
-    ///
-    /// **Nothing in the queue may delete a ref, or a worktree, whose commits are not provably on the
-    /// target.** Not a terminal review row, not a `blocked` landing, not a person's withdrawal: a row
-    /// is terminal in TWO queues for different reasons (`approved` is the REVIEW queue's end and says
-    /// nothing about the target), so a row's state can say *the queue is done with this* and never
-    /// *this work is safe*. The proof is [`git::ref_proof`] for a branch and [`git::commit_proof`] for
-    /// a worktree's `HEAD`, and it is three-valued: `On` and `Gone` permit the removal, `Unproven`
-    /// does not. A proof that could not be taken — a repository or a ref git will not read, a target
-    /// that cannot be named — is `Unproven`, and the safe side of *I could not tell* is keeping.
-    ///
-    /// MEASURED 2026-10-29: this used to be `branch_head(..).is_none() => may go`, which folded
-    /// *the ref is not there* together with *git could not tell*, and the worktree went with it —
-    /// `git worktree remove --force` is unrecoverable for a commit no ref holds.
-    ///
-    /// Cheap: a row that names no worktree costs no `git` call at all, a tree that two rows name
-    /// is examined once, and a row the sweep has settled is not looked at again — `first_time`, so
-    /// not after a restart either.
+    /// A terminal row keeps its record and gives back its resources - the sweep. Terminal is
+    /// the store's own answer ([`ReviewState::is_open`]), and an `approved` review whose
+    /// landing is still open is NOT terminal for the sweep
     fn release_terminal_resources(&self) -> Result<(), StoreError> {
         let reviews = self.store.review_rows(Some(&self.key))?;
         let merges = self.store.merge_rows(Some(&self.key))?;
         // A merge row names no session of its own; the review row that opened it does, and a row
-        // whose review row is gone names none — nothing can be asked about it, and nothing is.
+        // whose review row is gone names none - nothing can be asked about it, and nothing is.
         let session_of = |review_id: &str| {
             reviews
                 .iter()
@@ -1349,11 +1190,9 @@ impl RepoQueue {
                 .iter()
                 .any(|m| m.review_id == review_id && m.state.is_open())
         };
-        // One examination per (tree, target) per pass: a review row and the merge row it was
-        // approved into name the same worktree, branch AND target, and the tree is one thing. The
-        // TARGET is in the key because the decision is about a branch's commits *on a target* —
-        // two rows naming one tree but different targets are two questions, and a cached verdict
-        // must never answer a question it was not asked.
+        // One examination per (tree, target) per pass: a review row and the merge row it became name
+        // the same worktree and branch, but the decision is about commits *on a target*, so two rows
+        // naming one tree and different targets are two questions.
         let mut decided: HashMap<(String, String, String), Settled> = HashMap::new();
         for m in &merges {
             if m.state.is_open() || m.worktree.is_none() {
@@ -1395,16 +1234,9 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **What the sweep did with one row's tree**, and where it says so.
-    ///
-    /// Three keys, and they answer three questions. `released:<row>` is *there is nothing more to
-    /// do here* — written once the tree and the branch are both gone (or were never there), so a
-    /// settled row costs a hash lookup and no `git` call for the rest of the daemon's life. A row
-    /// whose BRANCH is kept is not settled — the target may move and take it — so it is looked at
-    /// again on the next pass, and `noted:<row>:<kind>` is what keeps its note to once. And
-    /// `kept:<tree>` is *a person has been told about this tree*, which is shared with the two
-    /// paths that keep a tree themselves ([`Self::landed`], [`Self::supersede_fix_branches`]): one
-    /// tree is one piece of news, however many rows name it and whoever says it first.
+    /// What the sweep did with one row's tree, and where it says so. Three keys.
+    /// `released:<row>` is *there is nothing more to do here*, so a settled row costs a hash
+    /// lookup for the rest of the daemon's life
     fn release_one(
         &self,
         queue: &str,
@@ -1449,7 +1281,7 @@ impl RepoQueue {
         if let Some((_, why)) = &found.kept
             && self.first_time(&format!("kept:{}:{}", self.key, held.worktree))?
         {
-            // Said where a person reads it (R92.4), not only in the daemon's log — once per tree.
+            // Said where a person reads it, not only in the daemon's log - once per tree.
             self.raise(
                 "queue_branch_kept",
                 format!("the queue's sweep of `{}`'s resources: {why}", held.branch),
@@ -1458,25 +1290,9 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **The decision about one tree** — what may go, and what stays with the reason it does.
-    ///
-    /// **The commits decide, and the tree follows them.** That is the rule this queue already
-    /// applies to a superseded fix (`git::retire_if_empty`: *a branch that carries nothing may go,
-    /// a branch that carries the fixer's work and its tree are kept*), and one queue may not hold
-    /// two rules for one tree: a sweep that removed the tree of a branch the mover had just said it
-    /// was keeping would leave two notes on one row saying opposite things. So a branch the target
-    /// already has carries nothing and takes its tree with it, and a branch that carries work keeps
-    /// both — the tree is where that work is continued, and it is the only copy of anything the
-    /// branch does not hold.
-    ///
-    /// **Two proofs, and the second one is the tree's own.** The branch's tip is proved on the
-    /// target ([`git::ref_proof`]) *and* the commit the worktree's `HEAD` names is proved on it
-    /// ([`git::commit_proof`]), because a tree can hold a commit no ref of the row names — a
-    /// detached head, a branch the row does not name — and `git worktree remove --force` is
-    /// unrecoverable for it. Either proof failing (or not being takeable) keeps both.
-    ///
-    /// A tree a live session works in is kept whatever the proofs say (R92.24), and released by a
-    /// later pass once that session has ended.
+    /// The decision about one tree - what may go, and what stays with the reason it does. The
+    /// commits decide, and the tree follows them - the rule `git::retire_if_empty` already
+    /// applies to a superseded fix, because one queue may not hold two rules for one tree
     fn settle_tree(&self, held: &Held<'_>) -> Settled {
         let mut found = Settled::default();
         let wt = Path::new(held.worktree);
@@ -1503,9 +1319,8 @@ impl RepoQueue {
             found.kept = Some((kind, format!("{why}{with_tree}")));
             return found;
         }
-        // **The tree's own commits, under the same proof.** A tree is removed whole, so a commit
-        // it holds and no ref does (a detached head, a branch the row does not name) is gone with
-        // it — kept here unless it is provably on the target.
+        // The tree's own commits, under the same proof. A tree is removed whole, so a commit it
+        // holds and no ref does is gone with it - kept here unless it is provably on the target.
         if there {
             match git::head_of(wt) {
                 Ok(head) => {
@@ -1555,42 +1370,17 @@ impl RepoQueue {
         found
     }
 
-    /// **Whether a terminal row's branch may go** — `None` when the proof says its commits are on
-    /// the target (or the ref is not there at all), else the kind of reason it stays and the
-    /// sentence for a person.
-    ///
-    /// The test is the one a landing makes: *does the target already have everything on this
-    /// branch?* (`git merge-base --is-ancestor`). That is a landing by the queue and a landing by
-    /// hand alike, and it is what the operator's own `git merge --ff-only` mornings were.
-    ///
-    /// **`None` means one of two things and never a third.** Either the tip is provably on the
-    /// target, or git says there is no such ref — permission to delete what is left, because a ref
-    /// that is not there holds no commit. *Git could not tell* is [`git::Proof::Unproven`], and it
-    /// keeps.
+    /// Whether a terminal row's branch may go - `None` when the proof says its commits are on
+    /// the target, else the kind of reason it stays and the sentence for a person. `None` means
+    /// one of two things and never a third
     fn branch_may_go(&self, held: &Held<'_>) -> Option<(&'static str, String)> {
         let what = format!("the branch `{}`", held.branch);
         git::ref_proof(&self.repo, held.branch, held.target, &what).unproven()
     }
 
-    /// **The review of a tip the target no longer has** (R76 item 4, and the operator's ruling of
-    /// 2026-10-26: *"a target review row is about ONE tip"*). Yesterday's four `red-main-<sha>`
-    /// rows for `e51847ed`, `f35d19c0`, `54e5a372` and `0158b957` were one morning's tips of one
-    /// branch: a newer tip never closed the older rows, so each got its own reviewer, each was
-    /// rejected, and each opened a fix branch for a red `main` had already left.
-    ///
-    /// So **every move of the tip withdraws the reviews of the tips before it**, whatever the new
-    /// tip's verdict: the health pass gates it, and if it is red its own row is the one review
-    /// anybody acts on. That is wider than R76 item 4, which withdrew only a tip the target had
-    /// been REWRITTEN past (an amend, a force-push, a reset — a tip whose history nobody has) and
-    /// kept a review whose tip had merely moved forward, on the argument that *the red may still be
-    /// in it*. It usually is — and the fix for it is the reviewer of the tip that is red NOW.
-    ///
-    /// **The row is moved; its reviewer is stopped by the host that started it.**
-    /// [`super::review::serve`] kills a reviewer whose row is no longer `reviewing` under it, which
-    /// is exactly how the deadline path stops one — so a withdrawal is all this side has to do.
-    ///
-    /// Nothing is deleted: the row keeps its state, its verdict and its history, with the sha it
-    /// judged and the sha that superseded it in that history.
+    /// The review of a tip the target no longer has. A newer tip never closed the older rows
+    /// so each got its own reviewer, each was rejected, and each opened a fix branch for a red
+    /// `main` had already left.
     fn supersede_older_tip(&self, r: &ReviewRow) -> Result<bool, StoreError> {
         if r.target.is_empty() || r.head_sha.is_empty() {
             return Ok(false);
@@ -1616,17 +1406,9 @@ impl RepoQueue {
         self.review_to(r, ReviewState::Withdrawn, mv)
     }
 
-    /// **A branch opened to fix a red tip the target has moved past.** Decision 11 has the red
-    /// tip's reviewer open one, and it is the only branch a red target lands — so a fix cut from a
-    /// tip that is no longer the target's is a branch that can never land. This box opened four of
-    /// them in one morning, each with its own worktree and its own fixer child, and every one ended
-    /// empty: `main` had moved past the tip whose reviewer asked for it.
-    ///
-    /// It is withdrawn like the review that opened it — *superseded by* the tip that replaced it —
-    /// together with any landing it had queued. Its worktree and branch go **only when there is
-    /// nothing in them to lose** ([`git::retire_if_empty`]), and a tree still held by a live
-    /// session is never removed from under it (R92.24). Either way a person is told where the tree
-    /// is, because a fixer's tree is the only copy of whatever it had not committed.
+    /// A branch opened to fix a red tip the target has moved past. Decision 11 has the red
+    /// tip's reviewer open one, and it is the only branch a red target lands - so a fix cut
+    /// from a tip that is no longer the target's can never land.
     fn supersede_fix_branches(&self) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let mut moved = false;
@@ -1638,10 +1420,9 @@ impl RepoQueue {
             let Some(red) = r.fixes.clone() else {
                 continue;
             };
-            // **A fix is a row in either queue** — the review of the fixer's branch, or the
-            // landing an approval put behind it — and it is superseded if either is still open. A
-            // row being GATED is left to its gate: `land` rebases onto the tip as it is then and
-            // gates the result, so it judges a tree the target really has.
+            // A fix is a row in either queue - the review of the fixer's branch, or the landing an
+            // approval put behind it. A row being GATED is left to its gate: `land` rebases onto the
+            // tip as it is then, so it judges a tree the target really has.
             let open_landing: Vec<&MergeRow> = landings
                 .iter()
                 .filter(|m| {
@@ -1695,7 +1476,7 @@ impl RepoQueue {
                 git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt))
             };
             if let Err(kept) = kept {
-                // Said where a person reads it (R92.4), not only in the daemon's log — and once
+                // Said where a person reads it, not only in the daemon's log - and once
                 // per tree, which is the key the resource sweep reads too ([`Self::release_one`]).
                 let key = format!("kept:{}:{wt}", self.key);
                 if self.first_time(&key)? {
@@ -1709,7 +1490,7 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **Raise a review that cannot run** (decision 4) — `blocked`, at high severity.
+    /// Raise a review that cannot run (decision 4) - `blocked`, at high severity.
     fn block(
         &self,
         r: &ReviewRow,
@@ -1737,9 +1518,8 @@ impl RepoQueue {
 
     // ===== The target's health =====
 
-    /// **Gate the target's tip if it changed** (decision 10) — coalesced: whatever the tip is
-    /// NOW is what is gated, so a burst of commits is one run. Returns the health, or that a gate
-    /// of the tip was started (its verdict is [`Self::finish_health`]'s).
+    /// Gate the target's tip if it changed (decision 10) - coalesced: whatever the tip is NOW is
+    /// what is gated, so a burst of commits is one run. Returns the health, or that a gate started.
     fn health(&self, target: &str) -> Result<Health, StoreError> {
         let me = self.me().to_string();
         let now = gate::now_ms();
@@ -1768,11 +1548,9 @@ impl RepoQueue {
         {
             return Ok(Health::Known(h, false));
         }
-        // **A gate that could not run waits out its retry window.** The row is `gating` and carries
-        // the sentence that stopped it, so the tip is neither judged nor blocked — but the host is
-        // not dialled on every pass either: the window is what keeps a machine that is down or busy
-        // from being asked once a second. `Gating` with a plain *gating* evidence is a gate that is
-        // on its thread right now and has nothing to wait for.
+        // A gate that could not run waits out its retry window: the row is `gating` and carries the
+        // sentence that stopped it, so the tip is neither judged nor blocked and a host that is down is
+        // not dialled once a second. `Gating` with plain *gating* evidence is a gate on its thread now.
         if let Some(h) = self.store.target_health(&self.key, target)?
             && h.sha == tip
             && h.state == HealthState::Gating
@@ -1834,7 +1612,7 @@ impl RepoQueue {
         Ok(Health::Known(h, true))
     }
 
-    /// **The verdict of the target's gate.**
+    /// The verdict of the target's gate.
     fn finish_health(
         &self,
         mut h: TargetHealth,
@@ -1853,9 +1631,8 @@ impl RepoQueue {
                 ),
                 run.steps,
             ),
-            // **R76 item 5**: a gate that failed AFTER its build and tests passed could not judge
-            // the code — its own setup failed. The tip stays unjudged (`blocked`: nothing lands),
-            // and nobody is sent to find what in the code broke it.
+            // A gate that failed AFTER its build and tests passed could not judge the
+            // code: its own setup failed. The tip stays unjudged and nobody is sent to the code.
             GateVerdict::Failed(w) => {
                 let w = self.with_carry_hint(w, wt, carried);
                 match super::setup::setup_failure(&run.steps) {
@@ -1864,14 +1641,9 @@ impl RepoQueue {
                 }
             }
             GateVerdict::TimedOut(w) => (HealthState::TimedOut, w, run.steps),
-            // **A gate that could not run is not a verdict about the code, and it is not a halt.**
-            // The tip goes back to `gating` with the sentence that stopped it, and the next pass
-            // after the retry window gates it again: a machine that was slow, busy or briefly gone
-            // must not stop the queue landing anything, which is what `blocked` does.
-            //
-            // A step KILLED at the gate's memory cap is the exception, and stays `blocked`: that
-            // one ran, so re-running it with the same cap kills it the same way, and the backoff in
-            // `verbs::regate_at_start` is what keeps it from being a loop.
+            // A gate that could not run is not a verdict about the code, and it is not a halt: the tip
+            // goes back to `gating` and is gated again after the window, because a machine that was
+            // slow or briefly gone must not stop the queue landing anything.
             GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
                 return self.unjudged(h, w, run.steps);
             }
@@ -1885,10 +1657,9 @@ impl RepoQueue {
         self.judged(&mut h, state, evidence, steps)
     }
 
-    /// **A gate that could not run** — the tip stays UNJUDGED, the queue keeps moving, and the row
-    /// says both. `HealthState::Blocked` is for a tip nobody can judge at all (no declared gate, a
-    /// landing tree that cannot be made); a host that did not answer in time is not that, and
-    /// treating it as that is what halted both queues on 2026-10-30.
+    /// A gate that could not run - the tip stays UNJUDGED, the queue keeps moving, and the row says
+    /// both. `HealthState::Blocked` is for a tip nobody can judge at all; a host that did not answer in
+    /// time is not that, and treating it as that would halt both queues.
     fn unjudged(
         &self,
         mut h: TargetHealth,
@@ -1917,7 +1688,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **Write a target's verdict** and say what it means.
+    /// Write a target's verdict and say what it means.
     fn judged(
         &self,
         h: &mut TargetHealth,
@@ -1946,16 +1717,14 @@ impl RepoQueue {
                 )?;
             }
             HealthState::Blocked if h.evidence.starts_with(gate::GATE_KILLED) => {
-                // High, not emergency, for the same reason: the step was killed before it
-                // judged the code — at the gate's memory cap, or by a signal — and the words
-                // say which and how to give it room. Counted, so a daemon taking the queue
-                // retries it less often each time (`verbs::regate_at_start`, R92.25).
+                // High, not emergency: the step was killed before it judged the code, and the words
+                // say which and how to give it room. Counted, so each retry comes less often.
                 self.store
                     .tell_again(&killed_key(&self.key, &h.target, &h.sha), gate::now_ms())?;
                 self.alarm(h, "gate_killed", super::notices::gate_killed(h, &self.key))?;
             }
             HealthState::TimedOut => {
-                // R92.27: nothing lands until it is gated again, so it is said.
+                // : nothing lands until it is gated again, so it is said.
                 self.alarm(
                     h,
                     "target_timed_out",
@@ -1963,9 +1732,8 @@ impl RepoQueue {
                 )?;
             }
             HealthState::Blocked if !h.evidence.starts_with(super::WAITING_FOR_GATE) => {
-                // R92.27: the gate could not be read, the landing tree could not be made ready,
-                // a step could not be spawned — the tip is unjudged and nothing lands. (A target
-                // with no declared gate has its own notice, `Harness::queue_notices`.)
+                // : the gate could not be read, the landing tree could not be made ready, a
+                // step could not be spawned - the tip is unjudged and nothing lands.
                 self.alarm(
                     h,
                     "target_unjudged",
@@ -1977,7 +1745,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **The landing worktree at `at`, with the project's `gate_carry` copied in** — the tree and
+    /// The landing worktree at `at`, with the project's `gate_carry` copied in - the tree and
     /// what was carried.
     fn landing_at(&self, at: &str) -> Result<(PathBuf, Vec<String>), String> {
         let root = (self.env.landing_root)(&self.repo)?;
@@ -2004,8 +1772,8 @@ impl RepoQueue {
         }
     }
 
-    /// **Red target: an emergency, the red tip first in review, and the operator told**
-    /// (decisions 10, 11; R61 item 4). Enqueue is never refused and other reviews go on; the
+    /// Red target: an emergency, the red tip first in review, and the operator told
+    /// . Enqueue is never refused and other reviews go on; the
     /// merge queue lands nothing but a fix.
     fn target_went_red(&self, h: &TargetHealth) -> Result<(), StoreError> {
         let short: String = h.sha.chars().take(12).collect();
@@ -2066,9 +1834,8 @@ impl RepoQueue {
             self.key, h.target, h.sha
         ))?;
         if news && !fresh {
-            // **The same sha red a second time** (R92.31) — it was green in between (a gate that
-            // reads the machine, a re-gate): its review row was withdrawn then, and the
-            // `INSERT OR IGNORE` above left it so. It goes back to review, and it is said.
+            // The same sha red a second time - it was green in between, its review row
+            // was withdrawn then, and the `INSERT OR IGNORE` above left it so. It goes back to review.
             if let Some(r) = self.store.review_row(&id)?
                 && r.state == ReviewState::Withdrawn
             {
@@ -2097,11 +1864,9 @@ impl RepoQueue {
         if news {
             let words = super::notices::target_red_warning(h, &self.key, !fresh);
             self.raise("target_red", words.clone());
-            // **And on a session, in the same words.** A ring wakes the repository's roots and
-            // leaves what happened to the store; the operator's report of 2026-10-30 — *"those red
-            // states must reach top session agent or a gatekeeper"* — is that the sentence itself
-            // has to reach a session, because a session that is merely woken cannot act on what it
-            // was not told. The card stays the record; this is the copy somebody can act on.
+            // And on a session, in the same words - a ring wakes the repository's roots and leaves
+            // what happened to the store, and a session that is merely woken cannot act on what it was
+            // not told. The card stays the record; this is the copy somebody can act on.
             if self.env.door.delivers()
                 && let Err(why) = self.env.door.deliver_repository(&self.key, &words)
             {
@@ -2115,16 +1880,15 @@ impl RepoQueue {
                 );
             }
         }
-        // **A red target halts BOTH queues** (R92.18): what was approved and waits to land goes
+        // A red target halts BOTH queues : what was approved and waits to land goes
         // back to review now, not when it would have landed.
         self.halt_landings(&h.target)?;
         Ok(())
     }
 
-    /// **Every branch approved for `target` and waiting to land goes back to review** — its
-    /// approval was of a change onto a tip that is now red, so it is spent (the operator, R92.18:
-    /// *red main halts both queues*). A branch opened to fix the red tip keeps its place: it is
-    /// the one thing that may move.
+    /// Every branch approved for `target` and waiting to land goes back to review - its approval
+    /// was of a change onto a tip that is now red, so it is spent
+    /// . A branch opened to fix the red tip keeps its place: it is the one thing that may move.
     fn halt_landings(&self, target: &str) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let mut moved = false;
@@ -2168,10 +1932,9 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// **Green again**: the reviews of earlier red tips are withdrawn — open ones, and the ones
-    /// parked as `cannot_decide` or ended `rejected`, which a later verdict could otherwise turn
-    /// into an EMERGENCY on a green target (R92.29) — and, when an alarm about the target had been
-    /// raised, that it is over is said once, where the alarm was (R92.6).
+    /// Green again: the reviews of earlier red tips are withdrawn - open ones, and the ones
+    /// parked as `cannot_decide` or ended `rejected`, which a later verdict could otherwise turn into
+    /// an EMERGENCY on a green target - and a raised alarm is closed where it was raised.
     fn target_is_green(&self, h: &TargetHealth) -> Result<(), StoreError> {
         for r in self.store.review_rows(Some(&self.key))? {
             if r.kind == ReviewKind::Target
@@ -2201,13 +1964,8 @@ impl RepoQueue {
 
     // ===== The landing =====
 
-    /// **Take the next approved branch for `target` and land it** — only while the target is
-    /// green at its current tip, or, while it is red, only a branch opened to fix it.
-    ///
-    /// `[queue] gate_train` above 1 makes the taking a TRAIN ([`Self::land_train`]): up to that
-    /// many approved rows, rebased one onto the last, judged by ONE gate run. At the default `1`
-    /// nothing here differs from the queue that never had a train — not the order, not the
-    /// sentences, not the number of gates.
+    /// Take the next approved branch for `target` and land it - only while the target is green
+    /// at its current tip, or, while it is red, only a branch opened to fix it.
     fn land_next(
         &self,
         target: &str,
@@ -2219,10 +1977,9 @@ impl RepoQueue {
             .merge_rows(Some(&self.key))?
             .into_iter()
             .filter(|m| m.state == MergeState::Queued && m.target == target)
-            // **A row whose own gate could not run waits out its window.** It went back in line
-            // with the sentence that stopped it (`land`'s Infra arm), and without this it would be
-            // taken again on the very next pass — one ssh attempt per second at a host that is
-            // down, and a queue that never settles.
+            // A row whose own gate could not run waits out its window - it went back in line with
+            // the sentence that stopped it, and without this it would be taken on the next pass: one
+            // ssh attempt per second at a host that is down, and a queue that never settles.
             .filter(|m| {
                 !(m.evidence.starts_with(UNJUDGED_RETRY)
                     && gate::now_ms().saturating_sub(m.state_ms) < UNJUDGED_RETRY_MS)
@@ -2239,7 +1996,7 @@ impl RepoQueue {
         let current = tip_now.as_deref() == Some(h.sha.as_str());
         let allowed = |m: &MergeRow| match h.state {
             HealthState::Green => current,
-            // *"while main is red the merge queue lands nothing"* — but the fix itself has to.
+            // *"while main is red the merge queue lands nothing"* - but the fix itself has to.
             HealthState::Red => m.fixes.is_some(),
             _ => false,
         };
@@ -2252,10 +2009,9 @@ impl RepoQueue {
             )
         });
         let eligible: Vec<MergeRow> = queued.into_iter().filter(|m| allowed(m)).collect();
-        // **The train** — and only when every branch at the front of the line is a plain one: a
-        // fix lands alone (it is the one thing that may move a red target), and a row that has
-        // just come out of a red train is gated on its own first (see [`TRAIN_SPLIT`]). So the
-        // train is always exactly the front of the line, never a re-ordering of it.
+        // The train - and only when every branch at the front of the line is a plain one: a fix
+        // lands alone (it is the one thing that may move a red target), and a row just out of a red
+        // train is gated on its own first ([`TRAIN_SPLIT`]). So the train is the front of the line.
         if settings.gate_train > 1
             && h.state == HealthState::Green
             && current
@@ -2294,7 +2050,7 @@ impl RepoQueue {
         )
     }
 
-    /// **The landing, in the dedicated worktree, with a compare-and-swap on the target.**
+    /// The landing, in the dedicated worktree, with a compare-and-swap on the target.
     fn land(&self, row: &MergeRow) -> Result<(), StoreError> {
         let me = self.me().to_string();
         let repo = self.repo.clone();
@@ -2321,7 +2077,7 @@ impl RepoQueue {
             )?;
             return Ok(());
         };
-        // **Decision 6**: the verdict is bound to the head it judged. A different head carrying
+        // Decision 6: the verdict is bound to the head it judged. A different head carrying
         // the same change (a rebase) is not a move; any other difference is.
         if head != row.approved_sha {
             let same = match (
@@ -2384,10 +2140,9 @@ impl RepoQueue {
                 return Ok(());
             }
         };
-        // **The base the branch was cut from**, as the store remembers it: the tip this row was last
-        // rebased onto, and the base its review recorded. Both survive the target being rewritten —
-        // which is what tells the branch's own commits from the old target's, and what a plain
-        // `git rebase` gets wrong once the merge base is a commit on the old target.
+        // The base the branch was cut from, as the store remembers it - the tip this row was last
+        // rebased onto, and the base its review recorded. Both survive the target being rewritten
+        // which is what a plain `git rebase` gets wrong once the merge base is on the old target.
         let cut_from = self
             .store
             .review_row(&row.review_id)
@@ -2400,7 +2155,7 @@ impl RepoQueue {
             Ok(sha) => sha,
             Err(e) => {
                 let why = e.sentence(&row.branch, &target, &tip);
-                // R92.28: said, where the repository's sessions hear it — a parked row nobody is
+                // : said, where the repository's sessions hear it - a parked row nobody is
                 // told about is a branch that never lands.
                 self.raise("merge_conflict", super::notices::merge_conflict(row, &why));
                 self.gating_to(
@@ -2486,16 +2241,9 @@ impl RepoQueue {
 
     // ===== The train =====
 
-    /// **One gate for several branches** — `[queue] gate_train` (`N > 1`).
-    ///
-    /// The order is DERIVED, not guessed: the queue's own order (priority, then the time the
-    /// approval made the row — FIFO within a priority), lifted so that a branch cut from another
-    /// branch in the train comes after it ([`Self::train_order`]). The cars are rebased one onto
-    /// the last in the landing worktree, and the target's gate runs ONCE on the final tree.
-    ///
-    /// `false` means *no train was taken, and no row was written*: fewer than two branches can be
-    /// in one, so the caller's single path takes the first row exactly as it always did. A train
-    /// of one is not a train.
+    /// One gate for several branches - `[queue] gate_train` (`N > 1`). The order is DERIVED
+    /// not guessed: the queue's own (priority, then FIFO), lifted so a branch cut from another
+    /// branch in the train comes after it ([`Self::train_order`]).
     fn land_train(
         &self,
         target: &str,
@@ -2506,9 +2254,8 @@ impl RepoQueue {
         let Some(tip) = git::branch_head(&self.repo, target) else {
             return Ok(false);
         };
-        // What can be a car, asked before anything is written: the branch is still where its
-        // approval left it (a branch that moved goes back to review, by the single path), and it
-        // carries something the target has not got (a branch already on the target settles).
+        // What can be a car, asked before anything is written: the branch is still where its approval
+        // left it, and it carries something the target has not got (a branch already there settles).
         let mut could: Vec<MergeRow> = Vec::new();
         for row in self.train_order(candidates) {
             let Some(head) = git::branch_head(&self.repo, &row.branch) else {
@@ -2583,9 +2330,8 @@ impl RepoQueue {
                 return Ok(true);
             }
         };
-        // **The rebases, in order** — each car onto the last, in ONE worktree, so the final HEAD
-        // is the tree the gate will judge. A car that will not rebase is parked `conflict` and
-        // left out; the train is what is left.
+        // The rebases, in order - each car onto the last, in ONE worktree, so the final HEAD is the
+        // tree the gate judges. A car that will not rebase is parked `conflict` and the train is the rest.
         let mut at = tip.clone();
         let mut kept: Vec<TrainCar> = Vec::new();
         let mut lost = 0usize;
@@ -2697,13 +2443,9 @@ impl RepoQueue {
         Ok(true)
     }
 
-    /// **The order a train's cars go in** — the queue's own order, and a branch cut from another
-    /// branch in the train after it.
-    ///
-    /// The first half is [`Self::land_next`]'s comparator (priority, then the time the approval
-    /// made the row, then its id), so a train lands its branches in the order they would have
-    /// landed one by one. The second half is the one fact a row records and a clock cannot:
-    /// [`Self::stacks_on`]. The sort is stable, so unrelated rows keep their FIFO.
+    /// The order a train's cars go in - the queue's own order, and a branch cut from another
+    /// branch in the train after it. The first half is [`Self::land_next`]'s comparator, so a
+    /// train lands in the order its branches would have landed one by one
     fn train_order(&self, rows: &[MergeRow]) -> Vec<MergeRow> {
         let mut rows: Vec<MergeRow> = rows.to_vec();
         rows.sort_by_key(|m| (m.priority.rank(), m.created_ms, m.id.clone()));
@@ -2721,9 +2463,8 @@ impl RepoQueue {
         let mut order: Vec<usize> = Vec::with_capacity(n);
         let mut left: Vec<usize> = (0..n).collect();
         while !left.is_empty() {
-            // The first row whose parents are all placed. A cycle — two branches each cut from the
-            // other's work, which only a rewritten branch can produce — keeps the first of them,
-            // because the queue's order is a better guess than no order at all.
+            // The first row whose parents are all placed. A cycle - two branches each cut from the
+            // other's work - keeps the first of them: the queue's order beats no order at all.
             let pick = left
                 .iter()
                 .position(|&c| !left.iter().any(|&p| p != c && stacks[c][p]))
@@ -2733,13 +2474,9 @@ impl RepoQueue {
         order.into_iter().map(|i| rows[i].clone()).collect()
     }
 
-    /// **Was `child` cut from `parent`'s own work?** — the child's recorded base against the
-    /// parent's head and the base the parent itself was cut from.
-    ///
-    /// The child's base is on the parent's head and NOT on the parent's base: the commits between
-    /// them are the parent's own, so the child is a branch of that branch and rebasing the child
-    /// first would replay it without its parent. Two branches cut from one tip are not stacked
-    /// (their bases are equal), which is what keeps a queue of unrelated branches in FIFO order.
+    /// Was `child` cut from `parent`'s own work? - the child's recorded base against the
+    /// parent's head and the base the parent itself was cut from. The child's base is on the
+    /// parent's head and NOT on the parent's base
     fn stacks_on(&self, child_base: &str, parent: &MergeRow, parent_base: &str) -> bool {
         if child_base.is_empty() || parent.approved_sha.is_empty() {
             return false;
@@ -2755,7 +2492,7 @@ impl RepoQueue {
             || !git::is_ancestor(&self.repo, child_base, parent_base).unwrap_or(false)
     }
 
-    /// **The base the row's branch was cut from**, as the store remembers it — the base its review
+    /// The base the row's branch was cut from, as the store remembers it - the base its review
     /// recorded, and failing that the tip it was last rebased onto.
     fn base_of(&self, m: &MergeRow) -> String {
         self.store
@@ -2768,7 +2505,7 @@ impl RepoQueue {
             .unwrap_or_default()
     }
 
-    /// **Put every car still this gate's back in `Queued`**, with one sentence and the gate's steps.
+    /// Put every car still this gate's back in `Queued`, with one sentence and the gate's steps.
     fn train_back(
         &self,
         cars: &[TrainCar],
@@ -2778,7 +2515,7 @@ impl RepoQueue {
         self.train_move(cars, MergeState::Queued, why, steps)
     }
 
-    /// **Park every car still this gate's in `to`** — `blocked`, `timed_out`.
+    /// Park every car still this gate's in `to` - `blocked`, `timed_out`.
     fn train_park(
         &self,
         cars: &[TrainCar],
@@ -2789,7 +2526,7 @@ impl RepoQueue {
         self.train_move(cars, to, why, steps)
     }
 
-    /// The one move [`Self::train_back`] and [`Self::train_park`] are — a car a person has already
+    /// The one move [`Self::train_back`] and [`Self::train_park`] are - a car a person has already
     /// taken out of the train is not moved, whatever this gate said.
     fn train_move(
         &self,
@@ -2817,7 +2554,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **The verdict of a landing's gate** — and, when it passed, the compare-and-swap, the push
+    /// The verdict of a landing's gate - and, when it passed, the compare-and-swap, the push
     /// and the install.
     fn finish_land(&self, landing: Box<Landing>, run: GateRun) -> Result<(), StoreError> {
         let me = self.me().to_string();
@@ -2833,9 +2570,8 @@ impl RepoQueue {
         let rows_json = |steps: &[letibot_tokencore::store::MergeGateStep]| {
             serde_json::to_string(steps).unwrap_or_else(|_| "[]".into())
         };
-        // **The person may have taken the row out while its gate ran** (`/queue rm` on a `gating`
-        // row, `verbs::withdraw_merge`). A landing whose row is no longer `gating` does not land,
-        // whatever its gate said — and its verdict is not news about a row nobody wants. The row
+        // The person may have taken the row out while its gate ran (`/queue rm` on a `gating`
+        // row). Such a row does not land, whatever its gate said, and its verdict is not news. The row
         // is read once, here, because everything below writes to the repository.
         if !self
             .store
@@ -2847,9 +2583,8 @@ impl RepoQueue {
         match run.verdict.clone() {
             GateVerdict::Passed => {}
             GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {
-                // The branch was never judged: its gate's own setup failed after the build and
-                // the tests passed (R76 item 5). Parked as `blocked` — `/queue restart` once the
-                // gate is fixed — never `failed`, which says the branch is bad.
+                // The branch was never judged: the gate's own setup failed after the build and tests
+                // passed. `blocked`, never `failed` - which says the branch is bad.
                 let setup = super::setup::setup_failure(&run.steps).unwrap_or_default();
                 self.raise(
                     "queue_blocked",
@@ -2895,12 +2630,9 @@ impl RepoQueue {
                 return Ok(());
             }
             GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
-                // **The branch was not judged, and nothing about it is in doubt** — so it goes back
-                // in line rather than being parked `blocked` behind a host that was slow to
-                // answer. `land_next` keeps it out of the next passes until its window is out.
-                //
-                // Said ONCE per row and tip, not once per attempt: the window re-gates the row
-                // every minute, and a host down for an hour must not be sixty identical warnings.
+                // The branch was not judged, and nothing about it is in doubt - so it goes back in line
+                // rather than being parked behind a host that was slow to answer, and `land_next` keeps it
+                // out of the next passes until its window is out.
                 let once = self.first_time(&format!(
                     "unjudged:{}:{}:{}",
                     self.key, row.id, row.approved_sha
@@ -2930,9 +2662,8 @@ impl RepoQueue {
                 return Ok(());
             }
             GateVerdict::Infra(w) => {
-                // A step killed at the gate's memory cap RAN and was killed — "could not run" was
-                // the wrong sentence, and the verb that gates a branch row again is `restart`
-                // (R92.25).
+                // A step killed at the gate's memory cap RAN and was killed - "could not run" is the
+                // wrong sentence, and the verb that gates a branch row again is `restart`.
                 let said = if w.starts_with(gate::GATE_KILLED) {
                     super::notices::merge_gate_killed(row, &w)
                 } else {
@@ -2948,7 +2679,7 @@ impl RepoQueue {
             }
         }
         // The gate ran on its own thread while the pass went on: the lease is asked again
-        // before anything is written into the repository — a daemon that no longer holds it must
+        // before anything is written into the repository - a daemon that no longer holds it must
         // not land into it.
         if !self.beat().unwrap_or(true) {
             self.gating_to(
@@ -2963,7 +2694,7 @@ impl RepoQueue {
             )?;
             return Ok(());
         }
-        // **The compare-and-swap.** The target moved during the gate → rebase and gate again,
+        // The compare-and-swap. The target moved during the gate → rebase and gate again
         // not fail (requirement 3).
         if let Err(e) = git::update_ref_cas(&repo, &target, &rebased, &tip) {
             self.gating_to(
@@ -3001,7 +2732,7 @@ impl RepoQueue {
             )?;
             return Ok(());
         }
-        // **Push, then install** (decision 7).
+        // Push, then install (decision 7).
         let pushed = git::push(&repo, &target, &rebased);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
@@ -3030,7 +2761,7 @@ impl RepoQueue {
             }
         }
         if !may_install {
-            // R92.33: a failed push is said whether or not the project has an install step.
+            // : a failed push is said whether or not the project has an install step.
             self.raise(
                 "queue_push_failed",
                 format!(
@@ -3043,12 +2774,9 @@ impl RepoQueue {
         self.landed(&landing, run, steps, pushed_text, install_note, "")
     }
 
-    /// **The verdict of a train's gate** — every car lands when it passed, and the whole train
-    /// dissolves when it did not.
-    ///
-    /// A train is ONE tree, so it is judged as one: a car a person took out of line while the gate
-    /// ran takes the whole train with it, and the cars that are still this gate's go back in line.
-    /// Nothing has moved at that point — a train is judged before its first compare-and-swap.
+    /// The verdict of a train's gate - every car lands when it passed, and the whole train
+    /// dissolves when it did not. A train is ONE tree, so it is judged as one: a car a person
+    /// took out of line while the gate ran takes the whole train with it.
     fn finish_train(&self, train: Box<Train>, run: GateRun) -> Result<(), StoreError> {
         let n = train.cars.len();
         let mut taken_out: Option<String> = None;
@@ -3074,9 +2802,8 @@ impl RepoQueue {
         match run.verdict.clone() {
             GateVerdict::Passed => self.land_the_train(train, run),
             GateVerdict::Failed(w) if super::setup::setup_failure(&run.steps).is_some() => {
-                // The branches were never judged: their gate's own setup failed after the build
-                // and the tests passed. Parked as `blocked` — `/queue restart` once the gate is
-                // fixed — never `failed`, which says a branch is bad.
+                // The branches were never judged: the gate's own setup failed after the build and the
+                // tests passed. `blocked`, never `failed` - which says a branch is bad.
                 let setup = super::setup::setup_failure(&run.steps).unwrap_or_default();
                 self.raise(
                     "queue_blocked",
@@ -3108,10 +2835,9 @@ impl RepoQueue {
                 Ok(())
             }
             GateVerdict::Infra(w) if !w.starts_with(gate::GATE_KILLED) => {
-                // **Not judged, and nothing about the branches is in doubt** — so they go back in
-                // line rather than being parked `blocked` behind a host that was slow to answer.
-                // Said once per train's tip, not once per attempt: the window re-gates it every
-                // minute, and a host down for an hour must not be sixty identical warnings.
+                // Not judged, and nothing about the branches is in doubt - so they go back in line
+                // rather than being parked behind a host that was slow to answer. Said once per train's
+                // tip, not once per attempt: a host down for an hour must not be sixty warnings.
                 if self.first_time(&format!("train-unjudged:{}:{}", self.key, train.tip))? {
                     self.raise(
                         "queue_blocked",
@@ -3141,12 +2867,9 @@ impl RepoQueue {
         }
     }
 
-    /// **Every car lands** — one commit each, in the order it was rebased.
-    ///
-    /// The target moves once per car (`tip → car 1 → car 2 → …`), each move a real
-    /// compare-and-swap, so the history a person's bisect walks is the tree the gate judged and
-    /// every row's `landed_sha` is the tip at its own landing. The push is once, at the end: the
-    /// target is one branch, and a push of its last tip carries every commit before it.
+    /// Every car lands - one commit each, in the order it was rebased. The target moves once
+    /// per car, each move a real compare-and-swap, so the history a bisect walks is the tree
+    /// the gate judged and every row's `landed_sha` is the tip at its own landing.
     fn land_the_train(&self, train: Box<Train>, run: GateRun) -> Result<(), StoreError> {
         let me = self.me().to_string();
         let target = train.cars[0].row.target.clone();
@@ -3193,9 +2916,9 @@ impl RepoQueue {
             landed = i + 1;
         }
         if let Some(why) = stopped {
-            // **A ref moved is a landing**, so the cars that are on the target say so — a row left
-            // `gating` about a commit the target holds would be a lie. The rest go back in line.
-            // Nothing is pushed: the train never reached its last car.
+            // A ref moved is a landing, so the cars that are on the target say so - a row left
+            // `gating` about a commit the target holds would be a lie. Nothing is pushed: the train
+            // never reached its last car.
             let pushed = format!("nothing was pushed: the train stopped after car {landed} of {n}");
             self.raise(
                 "queue_blocked",
@@ -3226,7 +2949,7 @@ impl RepoQueue {
             }
             return Ok(());
         }
-        // **Push, then install** (decision 7) — once, on the last car's tip.
+        // Push, then install (decision 7) - once, on the last car's tip.
         let pushed = git::push(&self.repo, &target, &prev);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
@@ -3250,7 +2973,7 @@ impl RepoQueue {
         }
         let mut install_note = String::new();
         if !may_install {
-            // R92.33: a failed push is said whether or not the project has an install step.
+            // : a failed push is said whether or not the project has an install step.
             install_note = " Not installed: the push failed, and nothing is installed that is not \
                             where it was pushed (decision 7)."
                 .into();
@@ -3274,7 +2997,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **The verdict of a train's install**, after its last car was pushed (decision 7) — the same
+    /// The verdict of a train's install, after its last car was pushed (decision 7) - the same
     /// arm as a lone landing's, written on every car's row.
     fn finish_install_train(
         &self,
@@ -3290,7 +3013,7 @@ impl RepoQueue {
             GateVerdict::Passed => " Installed after the push.".into(),
             other => {
                 let w = format!("{other:?}");
-                // Landed, so nothing is blocked: its own code (R92.33).
+                // Landed, so nothing is blocked: its own code.
                 self.raise(
                     "queue_install_failed",
                     format!("a train of {n} landed but its install did not: {w}"),
@@ -3311,23 +3034,9 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **A train's gate was red** — the train dissolves, and the gatekeeper is asked which branch
-    /// to fix or drop.
-    ///
-    /// Nothing was landed and the target never moved: a train is judged BEFORE its first
-    /// compare-and-swap, so the tip is still the one the train was built on. What is left behind,
-    /// row by row:
-    ///
-    /// * **one review row** (`train-<target>-<sha>`) — the train's own. It names every branch in
-    ///   the order it was rebased, the failing step and the end of its output, and it is a
-    ///   `Branch` row about a branch the queue CREATED at the train's final commit
-    ///   (`agent/train-…`), so a reviewer started on it works in the exact tree the gate judged —
-    ///   the only tree in which the failure can be reproduced — and `git log` reaches every car's
-    ///   own commits from there.
-    /// * **every merge row back to `queued`**, its evidence leading with [`TRAIN_SPLIT`] and
-    ///   carrying the gate's steps. Each is gated ON ITS OWN next: a row carrying that sentence is
-    ///   not put into another train, so the queue cannot re-form this train and fail it again.
-    /// * **the review rows untouched** — each is still `approved`, bound to the head it judged.
+    /// A train's gate was red - the train dissolves, and the gatekeeper is asked which branch
+    /// to fix or drop. Nothing was landed and the target never moved: a train is judged BEFORE
+    /// its first compare-and-swap. Left behind, row by row
     fn red_train(
         &self,
         train: &Train,
@@ -3340,7 +3049,7 @@ impl RepoQueue {
         let short: String = at.chars().take(8).collect();
         let branches = train.branches();
         let order = train.order();
-        // **The train's own tree, as a branch** — the tree the gate judged, at a ref a reviewer can
+        // The train's own tree, as a branch - the tree the gate judged, at a ref a reviewer can
         // be given. It is the queue's, it is disposable, and it is named for the commit it is at.
         let branch = format!("agent/train-{}-{short}", target.replace('/', "-"));
         if let Err(e) = git::git(&self.repo, &["branch", "-f", &branch, &at]) {
@@ -3398,7 +3107,7 @@ impl RepoQueue {
                 "the train's red gate goes to review: which branch to fix or drop",
             );
         }
-        // **The rows go back in line, one at a time** — and the sentence is what keeps them out of
+        // The rows go back in line, one at a time - and the sentence is what keeps them out of
         // the next train, so the queue cannot re-form this one and fail it again.
         let why = format!(
             "{TRAIN_SPLIT}: the train of {n} ({}) onto `{target}` at {tip} failed its gate, so this \
@@ -3421,7 +3130,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// **The verdict of the install** that followed a pushed landing (decision 7).
+    /// The verdict of the install that followed a pushed landing (decision 7).
     fn finish_install(
         &self,
         landing: Box<Landing>,
@@ -3435,7 +3144,7 @@ impl RepoQueue {
             GateVerdict::Passed => " Installed after the push.".into(),
             other => {
                 let w = format!("{other:?}");
-                // Landed, so nothing is blocked: its own code (R92.33).
+                // Landed, so nothing is blocked: its own code.
                 self.raise(
                     "queue_install_failed",
                     format!(
@@ -3449,11 +3158,9 @@ impl RepoQueue {
         self.landed(&landing, gate, all_steps, pushed, install_note, "")
     }
 
-    /// **Landed** — the row, the target's health at the landed tree, the branch retired.
-    ///
-    /// `train_note` is what a row that rode in a train adds to its own sentence (`, in a train of
-    /// 3 (car 2)`, [`train_note`]); it is `""` for a lone landing, whose sentence is the one it has
-    /// always been.
+    /// Landed - the row, the target's health at the landed tree, the branch retired.
+    /// `train_note` is what a row that rode in a train adds (`, in a train of 3 (car 2)`); `""`
+    /// for a lone landing, whose sentence is the one it has always been.
     fn landed(
         &self,
         landing: &Landing,
@@ -3482,9 +3189,9 @@ impl RepoQueue {
                 .set("pushed", pushed_text)
                 .set("gate_steps_json", rows_json(&all_steps)),
         )?;
-        // The gate passed on exactly this tree, so the target is green at it — not gated again.
-        // Through `target_is_green`, like any green (R92.29): a red tip's review still pending
-        // is withdrawn, and an alarm that stood is said to be over.
+        // The gate passed on exactly this tree, so the target is green at it - not gated again. Through
+        // `target_is_green`, like any green : a pending review of a red tip is withdrawn and an
+        // alarm that stood is said to be over.
         let green = TargetHealth {
             repository: self.key.clone(),
             target: target.clone(),
@@ -3500,20 +3207,16 @@ impl RepoQueue {
         self.store.set_target_health(&green, &me)?;
         self.target_is_green(&green)?;
         if git::branch_head(repo, &row.branch).as_deref() == Some(head.as_str()) {
-            // **A child still running in that tree keeps it** (R92.24): its session is held by
+            // A child still running in that tree keeps it : its session is held by
             // this daemon, and removing its cwd under it leaves every later call failing ENOENT.
             let live = self
                 .store
                 .review_row(&row.review_id)?
                 .map(|r| r.session_id)
                 .filter(|s| !s.is_empty() && self.env.door.session_live(s));
-            // **The queue's own landing is the proof, and it is taken here too** — the branch goes
-            // only when the sha the compare-and-swap put on the target is still on it. A landing
-            // is often a REBASE, so the branch's own commits are not ancestors of the target; the
-            // commit they became is (`landed_sha`, `rebased`, on the target by the CAS above), and
-            // that is what makes this the same fact the sweep proves. A target rewritten past the
-            // landing — a force-push, a reset — makes the branch the only copy of the work again,
-            // and it is kept and said.
+            // The queue's own landing is the proof, and it is taken here too - the branch goes only
+            // when the sha the compare-and-swap put on the target is still on it. A landing is often a
+            // REBASE, so the branch's own commits are not ancestors of the target
             let proved = git::commit_proof(
                 repo,
                 rebased,
@@ -3538,9 +3241,8 @@ impl RepoQueue {
                 },
             };
             if let Err(kept) = kept {
-                // Said where a person reads it (R92.4), not only in the daemon's log — and once
-                // per tree, which is the key the resource sweep reads too ([`Self::release_one`]):
-                // one tree is one piece of news, whoever says it.
+                // Said where a person reads it, and once per tree - the key the resource sweep
+                // reads too ([`Self::release_one`]): one tree is one piece of news, whoever says it.
                 let key = format!(
                     "kept:{}:{}",
                     self.key,
@@ -3565,7 +3267,7 @@ impl Drop for RepoQueue {
     }
 }
 
-/// **Why a repository's landings wait while its gate runs** — `gate running on <sha> for Nm`.
+/// Why a repository's landings wait while its gate runs - `gate running on <sha> for Nm`.
 pub fn gate_running_words(sha: &str, for_ms: u64) -> String {
     let short: String = sha.chars().take(10).collect();
     format!("gate running on {short} for {}m", for_ms / 60_000)
@@ -3576,10 +3278,9 @@ pub fn killed_key(repository: &str, target: &str, sha: &str) -> String {
     format!("killed:{repository}:{target}:{sha}")
 }
 
-/// **A target's health a project has to hear about** (R76 item 1): red, timed out, or unjudged
-/// because the gate's own setup failed. `blocked` for want of a declared gate has its own notice
-/// (`Harness::queue_notices`), and the other blocked causes are the queue's own (a worktree that
-/// could not be made) and are raised on the hubs.
+/// A target's health a project has to hear about : red, timed out, or unjudged because
+/// the gate's own setup failed. `blocked` for want of a declared gate has its own notice, and the other
+/// blocked causes are the queue's own and are raised on the hubs.
 pub fn emergency_health(h: &TargetHealth) -> bool {
     match h.state {
         HealthState::Red | HealthState::TimedOut => true,
@@ -3590,17 +3291,14 @@ pub fn emergency_health(h: &TargetHealth) -> bool {
 
 // ===== The supervisor =====
 
-/// **The daemon's queue service** — finds the repositories this daemon may serve, claims their
-/// leases, runs a worker per lease held, and on stop joins them (their gates killed, their leases
-/// released).
+/// The daemon's queue service - finds the repositories this daemon may serve, claims their leases
+/// runs a worker per lease held, and on stop joins them (their gates killed, their leases released).
 pub struct QueueService {
     store_path: PathBuf,
     workspace: PathBuf,
     env: Arc<QueueEnv>,
-    /// **The repositories last said not to be queue targets** (2026-10-26) — the SET, sorted, and
-    /// not one entry per repository as each was met: the line the log carries is one sentence
-    /// about the folder, and it is written again only when this set has changed since it was
-    /// written ([`not_targets_to_say`]).
+    /// The repositories last said not to be queue targets - the SET, sorted: the line
+    /// the log carries is one sentence about the folder, written again only when the set has changed.
     not_target_said: std::sync::Mutex<Vec<String>>,
 }
 
@@ -3614,9 +3312,8 @@ impl QueueService {
         }
     }
 
-    /// **Whether this daemon is one of `repo`'s session daemons** — its workspace is a session of
-    /// that repository ([`super::serves`]): the checkout, under it, or one of its worktrees. A
-    /// workspace that merely contains the repository (`/home/dead`) is not.
+    /// Whether this daemon is one of `repo`'s session daemons - its workspace is the checkout, under
+    /// it, or one of its worktrees ([`super::serves`]). A workspace that merely contains it is not.
     pub fn serves(&self, repo: &Path) -> bool {
         super::serves(&self.workspace, repo)
     }
@@ -3670,10 +3367,9 @@ impl QueueService {
         stop_all: &Arc<AtomicBool>,
         said_schema: &mut bool,
     ) -> Result<(), StoreError> {
-        // **A lease whose holder is gone is given up by whoever passes** (2026-10-26), and it is
-        // done before anything is served: the rows the operator's pane drew as *served by* were
-        // daemons dead for weeks, on repositories no running daemon claims — so `acquire`'s
-        // takeover, which needs a claimant, never reached them.
+        // A lease whose holder is gone is given up by whoever passes, before anything
+        // is served: the rows the pane drew as *served by* were daemons dead for weeks, on repositories
+        // no daemon claims - so `acquire`'s takeover, which needs a claimant, never reached them.
         self.sweep_leases(store)?;
         self.resolve_carried(store)?;
         let mut not_targets: Vec<(String, String)> = Vec::new();
@@ -3682,11 +3378,9 @@ impl QueueService {
             if workers.contains_key(&key) {
                 continue;
             }
-            // **A repository whose target declares no `Merge gate` is not a queue target**
-            // (2026-10-26): it takes no lease and gets no health row, so no head counts it
-            // unjudged and no hub is warned about it. It is asked every pass, so the repository
-            // that gains the section starts being served on the next one. What is said about
-            // them is ONE line, at the end of the pass — see [`Self::say_not_a_targets`].
+            // A repository whose target declares no `Merge gate` is not a queue target
+            // : no lease, no health row, so no head counts it unjudged. It is asked every
+            // pass, and what is said about them is ONE line at the end of it ([`Self::say_not_a_targets`]).
             if let Some(target) = self.refusal(&repo) {
                 not_targets.push((key, target));
                 continue;
@@ -3695,8 +3389,8 @@ impl QueueService {
                 LeaseOutcome::Held { previous } => {
                     let recovered =
                         store.recover_queue(&key, &self.env.me.owner, gate::now_ms())?;
-                    // **R76 item 3**: a tip whose last verdict was red, blocked or timed out is
-                    // gated again by the daemon that takes the queue — a restart is a re-gate.
+                    // : a tip whose last verdict was red, blocked or timed out is
+                    // gated again by the daemon that takes the queue - a restart is a re-gate.
                     match super::verbs::regate_at_start(store, &key, &self.env.me.owner) {
                         Ok(t) if !t.is_empty() => {
                             eprintln!("  merge queue: {key}: re-gating {}", t.join(", "))
@@ -3764,18 +3458,9 @@ impl QueueService {
         Ok(())
     }
 
-    /// **Every lease whose holder is gone is released, with the history saying why** — see
-    /// [`super::lease::gone`] for the two facts (an expired heartbeat, and a pid that is not
-    /// running on this host) and why neither alone would do. Returns how many were released.
-    ///
-    /// Every pass, over the whole store rather than over this daemon's repositories: a lease the
-    /// supervisor would never pass on is exactly the one that stays stale for ever.
-    ///
-    /// The HISTORY keeps each lease's own reason — that is the row the queue pane draws, one per
-    /// repository, where a repository each is what a reader wants. The terminal gets ONE line for
-    /// the set ([`stale_leases_line`]): on 2026-10-26 a one-shot that had died holding six
-    /// repositories under one project folder left six *"gave up the lease of …"* lines in the
-    /// operator's next daemon, which is the same per-repository noise as the not-a-target sweep.
+    /// Every lease whose holder is gone is released, with the history saying why - see
+    /// [`super::lease::gone`] for the two facts and why neither alone would do. Every pass
+    /// over the WHOLE store rather than over this daemon's repositories
     fn sweep_leases(&self, store: &Store) -> Result<usize, StoreError> {
         let now = gate::now_ms();
         let expired_before = now.saturating_sub(LEASE_TTL_MS);
@@ -3815,14 +3500,8 @@ impl QueueService {
         Ok(released.len())
     }
 
-    /// **Why `repo` is not a queue target, if it is not one** — the target branch it lands on,
-    /// when that branch's `AGENTS.md` has no `Merge gate` section (2026-10-26: *the queue is the
-    /// repositories that asked for it*). `None` means *serve it* — either the gate is there, or it
-    /// could not be read (a git that failed is the queue's own trouble, and the health row says so
-    /// at `unjudged`, where it belongs).
-    ///
-    /// The question is asked of the target's TIP, exactly as [`RepoQueue::health`] asks it, so the
-    /// repository that commits a gate is served without anything else being said twice.
+    /// Why `repo` is not a queue target, if it is not one - the target branch it lands on, when
+    /// that branch's `AGENTS.md` has no `Merge gate` section. `None` means *serve it*
     fn refusal(&self, repo: &Path) -> Option<String> {
         // A `[queue]` that does not parse falls back to the defaults here as it does in the
         // worker, which raises `queue_settings_unreadable` itself once it serves the repository.
@@ -3835,15 +3514,8 @@ impl QueueService {
         }
     }
 
-    /// **One line — in the daemon's own log, never on a hub — for the repositories this pass found
-    /// not to be queue targets**, and nothing at all when the set is the one already said.
-    ///
-    /// The daemon started in the foreground writes its log to the operator's terminal, so a line
-    /// per repository arrived interleaved with the banner: fifteen of them, twice, around the
-    /// `harnessd: session` header (2026-10-26). A folder whose repositories never asked for a
-    /// queue is the ordinary case of one project folder, not fifteen pieces of news, and the
-    /// question a person asks it is *why is nothing landing here* — so the line accounts for the
-    /// folder and is repeated only when the set changes.
+    /// One line - in the daemon's own log, never on a hub - for the repositories this pass
+    /// found not to be queue targets, and nothing when the set is the one already said.
     fn say_not_a_targets(&self, not_targets: &[(String, String)]) {
         let mut said = self
             .not_target_said
@@ -3856,17 +3528,11 @@ impl QueueService {
         eprintln!("{line}");
     }
 
-    /// **The repositories this daemon may serve** — every one its workspace is a session of
+    /// The repositories this daemon may serve - every one its workspace is a session of
     /// ([`super::repositories_of_workspace`]): the checkout it is in, or each repository of a
-    /// one-project folder of them. A repository with open rows and no session daemon of its own is
-    /// NOT taken by a daemon that happens to sit above it: its queue waits, rows and all, for a
-    /// daemon seated in it, and the first one that starts there takes the lease and re-gates what
-    /// was judged (`regate_at_start`).
-    ///
-    /// The singular form of this rule is what the startup line used to read while this pass read
-    /// the plural one — see [`super::serving_line`], which is now the same call.
+    /// one-project folder of them.
     fn repositories(&self, _store: &Store) -> Result<Vec<PathBuf>, StoreError> {
-        // **Every repository of the workspace** — one, or each of a one-org project folder's.
+        // Every repository of the workspace - one, or each of a one-org project folder's.
         Ok(super::repositories_of_workspace(&self.workspace)
             .into_iter()
             .map(PathBuf::from)
@@ -3874,7 +3540,7 @@ impl QueueService {
             .collect())
     }
 
-    /// **Rows carried over from v23 name no repository yet** — the daemon that serves where the
+    /// Rows carried over from v23 name no repository yet - the daemon that serves where the
     /// row's worktree (or its project's workspace) is fills it in, once, conditionally.
     fn resolve_carried(&self, store: &Store) -> Result<(), StoreError> {
         for r in store.review_rows(None)? {
@@ -3922,11 +3588,9 @@ impl QueueService {
     }
 }
 
-/// **What the daemon's log owes the operator about the repositories it will not serve** — either
-/// the one line and the set to remember, or `None` when this set is the one already said.
-///
-/// The state transition is its own function so the *said once* half is a test rather than a claim
-/// about `eprintln!`: the daemon started in the foreground writes into the operator's terminal.
+/// What the daemon's log owes the operator about the repositories it will not serve -
+/// either the one line and the set to remember, or `None` when this set is the one already
+/// said.
 pub(crate) fn not_targets_to_say(
     said: &[String],
     workspace: &Path,
@@ -3941,20 +3605,16 @@ pub(crate) fn not_targets_to_say(
     Some((keys, not_a_target_line(workspace, not_targets)))
 }
 
-/// **The one line** — the folder, how many of its repositories never asked for a queue, and which
+/// The one line - the folder, how many of its repositories never asked for a queue, and which
 /// ones, because the question it answers is *why is nothing landing here* and the answer is a set.
-///
-/// One line for the whole folder and not one per repository (2026-10-26): fifteen of these, said
-/// twice each around the `harnessd: session` header, buried the banner they were interleaved with.
-/// A *nobody asked* line per repository is the ordinary case of a project folder, not news.
+/// One line for the folder, not one per repository : fifteen of those buried the banner.
 pub(crate) fn not_a_target_line(workspace: &Path, not_targets: &[(String, String)]) -> String {
     let mut pairs: Vec<&(String, String)> = not_targets.iter().collect();
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     let names: Vec<String> = pairs.iter().map(|(k, _)| repo_name(k)).collect();
     match pairs.as_slice() {
-        // Nothing is refused any more: the section is the whole of the opt-in, so this is what a
-        // folder looks like after the repositories that wanted a queue committed one, and it is
-        // worth the one line because the previous line is still in the log above it.
+        // Nothing is refused any more: the section is the whole of the opt-in, so this is what a folder
+        // looks like after the repositories that wanted a queue committed one, and it is worth the line.
         [] => format!(
             "  queues: every repository under {} declares a `Merge gate` now — each of them is \
              served when this daemon can take its lease",
@@ -3978,9 +3638,8 @@ pub(crate) fn not_a_target_line(workspace: &Path, not_targets: &[(String, String
     }
 }
 
-/// **One line for the leases a pass gave up** — the same fold as [`not_a_target_line`] and for the
-/// same reason: the terminal is the daemon's log when it is started in the foreground, and a
-/// project folder's repositories come in sets. The rows keep each lease's own reason.
+/// One line for the leases a pass gave up - the same fold as [`not_a_target_line`] and for the same
+/// reason: the terminal is the daemon's log when it runs in the foreground. The rows keep each reason.
 pub(crate) fn stale_leases_line(stale: &[(String, String)]) -> String {
     let names: Vec<String> = stale.iter().map(|(repo, _)| repo_name(repo)).collect();
     let mut holders: Vec<&str> = stale.iter().map(|(_, h)| h.as_str()).collect();
@@ -4013,7 +3672,7 @@ fn repo_name(key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-/// **One repository's worker** — passes until the lease is lost or the daemon stops; a store
+/// One repository's worker - passes until the lease is lost or the daemon stops; a store
 /// error waits and retries; on stop the lease is released so a successor need not wait it out.
 fn work(store_path: PathBuf, repo: PathBuf, env: Arc<QueueEnv>, stop: &AtomicBool) {
     let key = repo.display().to_string();

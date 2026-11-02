@@ -1,43 +1,6 @@
-//! **Review and merge are two queues** (R61).
-//!
-//! The operator: *"review is review and merge is merge. separate steps. separate queues."*,
-//! *"model reviews stay, yes"*, and *"the merge/review queue is a center-piece and it was never
-//! reliable so far."* The v23 queue was one table in which the verdict was a state of the merge
-//! row; the review of 2026-10-11 (TODO.md R61) ranked twelve defects in it, and the modules here
-//! are written against them:
-//!
-//! * **[`settings`]** — the per-project `[queue]` table: the target branch (decision 12), the
-//!   option to merge via the project's main session when a review cannot run (decision 4), and
-//!   what a red target sets in motion (decision 11).
-//! * **[`lease`]** — this daemon's identity on the queues; the lease itself is a store row claimed
-//!   by compare-and-swap (`Store::acquire_queue_lease`), one per repository (decisions 1, 2).
-//! * **[`gate`]** — the target's own `## Merge gate`, run by a [`gate::GateRunner`] (R62's seam)
-//!   with a thirty-minute deadline in a killable process group (decision 9).
-//! * **[`gate_host`]** — the same steps on a machine the operator declared in `hosts.toml`
-//!   (`[queue] gate_host`, `--gate-host`): the tree goes over `rsync` and a git bundle, the merge
-//!   stays here.
-//! * **[`git`]** — the landing in a DEDICATED worktree (in letibot's data directory, never in
-//!   the repository's `.git`), a compare-and-swap on the target's ref, the push, and the fresh
-//!   clone a VM reviewer is booted on.
-//! * **[`carry`]** — the gitignored inputs a project's gate needs (`[queue] gate_carry`), copied
-//!   into the landing tree, and the sentence a failed gate's notice adds when they are missing.
-//! * **[`capacity`]** — a reviewer firecode could not place for want of a free VM slot: a wait,
-//!   not an attempt; and the words a review that stops for a person says about why.
-//! * **[`serve`]** — the queues' own threads: a supervisor per daemon and a worker per
-//!   repository whose lease it holds. The review queue's upkeep (deadlines, claims, raises), the
-//!   target's health (gated on every change, coalesced — decision 10), and the landings.
-//! * **[`review`]** — the reviewers, which run on the review queue's SESSION as `task` children,
-//!   their verdicts bound to the head they judged (decision 6), and the enqueue.
-//! * **[`verbs`]** — the operator's `/queue` verbs, approve-over among them (decision 5).
-//! * **[`desk`]** — the `queue` tool's daemon half: what a session's model can do about its
-//!   project's queues, and the target it may only propose (R76 item 2).
-//! * **[`notices`]** — what a project's model is told when its target is red, unjudged or timed
-//!   out, or a row is parked for a person (R76 item 1).
-//! * **[`setup`]** — a gate that could not judge (its own setup failed after the build and the
-//!   tests passed) told apart from a target that is red (R76 item 5).
-//!
-//! The store's half — the tables, the conditional moves, the history, the lease rows, the
-//! target's health and the v24 migration — is `letibot_tokencore::store::queues`.
+//! Review and merge are two separate queues, each with its own state and its own thread.
+//! `settings` is a project's `[queue]` table; `lease` this daemon's claim on a repository's
+//! queues
 
 use std::path::Path;
 use std::sync::Arc;
@@ -68,16 +31,16 @@ mod tests;
 
 pub use git::{repo_of_workspace, repo_of_worktree, repo_root};
 
-/// **The clause a row waiting for its target to declare a gate leads with** — the project's
-/// session is told to propose one (`Harness::queue_notices`).
+/// The clause a row waiting for its target to declare a gate leads with; the project's session
+/// is told to propose one (`Harness::queue_notices`).
 pub const WAITING_FOR_GATE: &str = "waiting for a merge gate";
 
-/// **The clause a blocked review leads with once it has been handed to its project's main
-/// session** (decision 4's per-project option) — read off the row so the project is told once.
+/// The clause a blocked review leads with once it has been handed to its project's main
+/// session; read off the row so the project is told once.
 pub const HANDED_TO_PROJECT: &str = "handed to the project's main session";
 
-/// **The root of the session tree `session` is in** — the project's main session, which a
-/// refusal falls back to and which decision 4's option hands a blocked review to.
+/// The root of the session tree `session` is in: the project's main session, which a refusal
+/// falls back to and a blocked review is handed to.
 pub fn root_session(store: &Store, session: &str) -> String {
     let mut cur = session.to_string();
     for _ in 0..32 {
@@ -96,7 +59,7 @@ fn job_name(what: &str, about: &str, id: &str) -> String {
         .unwrap_or_else(|| what.to_string())
 }
 
-/// The daemon's name for a review run — the board row's words and the log's.
+/// The daemon's name for a review run - the board row's words and the log's.
 pub fn review_job_name(r: &ReviewRow) -> String {
     job_name("review", &r.branch, &r.id)
 }
@@ -106,14 +69,14 @@ pub fn gate_job_name(m: &MergeRow) -> String {
     job_name("gate", &m.branch, &m.id)
 }
 
-// ===== A store error is weather, not the end (R67 item 12, kept) =====
+// ===== A store error is weather, not the end =====
 
 /// The first wait after a store error, doubled per consecutive failure up to [`STORE_RETRY_CAP`].
 pub const STORE_RETRY_FIRST: std::time::Duration = std::time::Duration::from_secs(1);
 /// The longest wait between two attempts.
 pub const STORE_RETRY_CAP: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// **A run of store errors** — counted, said on the hubs once per reason, and ended out loud.
+/// A run of store errors: counted, said on the hubs once per reason, and ended out loud.
 #[derive(Default)]
 pub(crate) struct StoreTrouble {
     failures: u32,
@@ -190,9 +153,9 @@ pub(crate) fn sleep_unless_stopped(wait: std::time::Duration, stop: &AtomicBool)
 /// How many moves the snapshot carries.
 pub const RECENT_MOVES: usize = 60;
 
-/// **Both queues, as the wire carries them** — every row, the leases, the targets' health and
-/// the last moves. A table that could not be read is said in `unreadable` and is never an empty
-/// list (R61 defect 12).
+/// Both queues as the wire carries them: every row, the leases, the targets' health and the last
+/// moves. A table that could not be read is named in `unreadable` and never becomes an empty
+/// list.
 pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     use letibot_sessionlog::event as w;
     let mut out = w::QueueSnapshot {
@@ -252,8 +215,8 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     evidence: m.evidence,
                     gate_steps: m.gate_steps.iter().map(wire_gate_step).collect(),
                     fixes: m.fixes,
-                    // **The step its gate is running, while it is running it** — the pane's answer
-                    // to *is it stuck?* without opening a file on this box (see `gate::running`).
+                    // The step its gate is running, while it is running it: the pane's answer to
+                    // *is it stuck?* without opening a file on this box (see `gate::running`).
                     running_gate: (m.state == letibot_tokencore::store::MergeState::Gating)
                         .then(|| gate::running(&m.repository))
                         .flatten()
@@ -284,10 +247,9 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
     }
     match store.target_healths() {
         Ok(hs) => {
-            // **A repository that declares no `Merge gate` is not a queue target** (2026-10-26),
-            // so its row is neither a count nor an alarm: it is read out of `targets` here and
-            // named once in `not_queued`, where the pane draws one muted line. The store keeps
-            // every row — nothing here deletes one.
+            // A repository that declares no `Merge gate` is not a queue target, so its row is
+            // neither a count nor an alarm: it is named once in `not_queued` instead, where the
+            // pane draws one muted line. The store keeps every row; nothing here deletes one.
             let mut not_queued: Vec<String> = Vec::new();
             for h in hs {
                 if setup::not_a_queue_target(&h) {
@@ -304,9 +266,9 @@ pub fn snapshot(store: &Store) -> letibot_sessionlog::event::QueueSnapshot {
                     checked_ms: h.checked_ms,
                     evidence: h.evidence,
                     gate_steps: h.gate_steps.iter().map(wire_gate_step).collect(),
-                    // **A `gating` target's step, the same read** — a merge row that is `queued`
-                    // is waiting on exactly this, and *which step of the target's gate, and how
-                    // long* is the answer to *why is nothing landing?*
+                    // A `gating` target's step, read the same way: a `queued` merge row is
+                    // waiting on exactly this, and *which step, and how long* is the answer to
+                    // *why is nothing landing?*
                     running_gate: (h.state == letibot_tokencore::store::HealthState::Gating)
                         .then(|| gate::running(&h.repository))
                         .flatten()
@@ -386,21 +348,16 @@ pub fn wire_gate_step(
 
 // ===== The production door, and the startup =====
 
-/// **The daemon's door**: every hub for announcements, the bell for the review queue's session
-/// and a project's main session.
+/// The daemon's door: every hub for announcements, the bell for the review queue's session and a
+/// project's main session.
 pub struct RegistryDoor {
     pub registry: Arc<letibot_sessionlog::registry::Registry>,
     pub store_path: std::path::PathBuf,
 }
 
-/// **Whether a session is live in this daemon now** — one answer, two readers:
-/// [`serve::QueueDoor::session_live`], and the review queue's own fallback for a refusal whose
-/// author and root are both dead (`review::deliver_refusal`). One function rather than two
-/// copies, because the second reader would have been written from memory of the first.
-///
-/// A session counts while this daemon holds it, **or** while it has spawned it and not yet opened
-/// it (`Registry::opening`): a spawned child is handed its handle before its own thread has
-/// opened its session, and the open of a reviewer placed in a firecode VM is a clone and a boot.
+/// Whether a session is live in this daemon now: held, or spawned and not yet opened
+/// (`Registry::opening`). A spawned child gets its handle before its own thread has opened the
+/// session, and a reviewer's open is a clone and a VM boot, so "held" alone answers no too early.
 pub fn session_is_live(
     registry: &letibot_sessionlog::registry::Registry,
     session_id: &str,
@@ -418,11 +375,9 @@ impl serve::QueueDoor for RegistryDoor {
     }
 
     fn ring_reviewers(&self) {
-        // **The review queue's session THIS daemon holds** — `s-gatekeeper-<key>`, one per
-        // workspace, so it is found by SHAPE ([`letibot_sessionlog::is_gatekeeper_session`])
-        // rather than by a constant every daemon on the box once spelled the same. A daemon
-        // that holds none (its review session has not been opened yet) rings nobody, and the
-        // store-backed pass in `Sessions::serve_reviews` is what serves the row.
+        // The review queue's session this daemon holds, found by shape
+        // ([`letibot_sessionlog::is_gatekeeper_session`]) because each workspace has its own id.
+        // Holding none (not opened yet) rings nobody; `Sessions::serve_reviews` serves the row.
         if self.registry.bell().is_closed() {
             return;
         }
@@ -490,13 +445,9 @@ impl serve::QueueDoor for RegistryDoor {
         Ok(format!("rang {}", roots.join(", ")))
     }
 
-    /// **The same recipients, told in words.** [`ring_repository`] wakes a project's roots and
-    /// leaves what happened to the store; a target that went red has a sentence a person needs and
-    /// a session must act on, so this puts it on each root's own queue — which is a turn for a
-    /// parked one and a message at the next round boundary for a running one.
-    ///
-    /// It answers with who was told and who was not, because *"told nobody"* is the failure this
-    /// exists to make impossible to claim falsely.
+    /// The same recipients, told in words: [`ring_repository`] only wakes them, and a red target
+    /// has a sentence a person needs and a session must act on. It answers with who was told and
+    /// who was not, because "told nobody" must not be claimable.
     fn delivers(&self) -> bool {
         true
     }
@@ -526,9 +477,9 @@ impl serve::QueueDoor for RegistryDoor {
 }
 
 impl RegistryDoor {
-    /// **A message on one session's own queue, from the queue** — [`RegistryDoor::deliver_repository`]'s
-    /// unit. `Hub::submit` does not refuse a command on a closed hub (it queues it into a queue
-    /// nothing will drain), so `wake_its_own_reader` is the only liveness answer this door has.
+    /// A message on one session's own queue, from the queue: `deliver_repository`'s unit.
+    /// `Hub::submit` does not refuse a command on a closed hub (it queues it where nothing will
+    /// drain it), so `wake_its_own_reader` is the only liveness answer this door has.
     fn deliver(&self, session_id: &str, text: &str) -> Result<String, String> {
         let Some(hub) = self.registry.get(session_id) else {
             return Err(format!(
@@ -567,8 +518,8 @@ impl RegistryDoor {
             other => Err(format!("`{session_id}` refused the message: {other:?}")),
         }
     }
-    /// **The root sessions this daemon holds whose workspace is `repository`** — not a review
-    /// queue's own session, and not a subagent (its root is the one that hears).
+    /// The root sessions this daemon holds whose workspace is `repository`: not the review queue's
+    /// own session, and not a subagent (its root is the one that hears).
     fn roots_of(&self, store: &Store, repository: &str) -> Vec<String> {
         self.registry
             .held_ids()
@@ -587,18 +538,9 @@ impl RegistryDoor {
     }
 }
 
-/// **What the daemon's log says its queues will serve** — read from the SAME list the supervisor's
-/// pass reads ([`repositories_of_workspace`]), so the line and the work cannot disagree.
-///
-/// They did, and that is the whole of this function (2026-10-26): a daemon seated in
-/// `~/Projects/stroppy-io` — a folder of fifteen repositories of one org — printed *"serving
-/// nothing — … is a session of no repository (it may contain some; their queues are served by
-/// daemons seated in them)"* and then walked all fifteen, and had held all fifteen leases earlier
-/// that day. The line read the SINGULAR rule ([`repository_of_workspace`]: one checkout, or its
-/// own child) while the supervisor read the plural one; the plural one is the rule `serve`'s
-/// module doc states and [`serves`] implements — *a daemon serves a repository when its workspace
-/// is a session of that repository* — and a folder that merely CONTAINS unrelated checkouts is
-/// still nobody's session, which is the guard of 2026-10-12 that both forms keep.
+/// What the daemon's log says its queues will serve, read from the SAME list the
+/// supervisor's pass reads ([`repositories_of_workspace`]), so the line and the work cannot
+/// disagree.
 pub fn serving_line(workspace: &Path) -> String {
     let repos = repositories_of_workspace(workspace);
     let names = |rs: &[String]| {
@@ -631,21 +573,8 @@ pub fn serving_line(workspace: &Path) -> String {
     }
 }
 
-/// **Start the queues for a daemon** — `None` with no `--store` (the queues live in the store),
-/// and `None` under `--no-queue` ([`crate::config::Config::serve_queues`]).
-///
-/// The watcher is spawned in both cases and the supervisor only without the flag: a daemon that
-/// serves no queue still has heads that must redraw when another daemon moves a row (`watch`),
-/// and it is the claiming of a lease, the gating of a target and the landing of a branch that
-/// `--no-queue` takes away. A package worker's daemon is one of the repository's session daemons
-/// by the queue's own rule, so it would take the lease and tell its model to fix `main`
-/// (2026-10-26); it must not.
-///
-/// `desk` is the daemon's review desk — the one its review session opens reviews on and its
-/// gatekeeper children hand verdicts to. It is a parameter rather than something made here
-/// because **the same desk has to be on both sides of one judgement**: this thread's workers ask
-/// it whether a reviewer that is no longer alive has already handed its verdict in
-/// ([`serve::QueueEnv::desk`]), and the review pass is what writes that verdict onto the row.
+/// Start the queues for a daemon: `None` with no `--store` (the queues live in the store)
+/// and `None` under `--no-queue`.
 pub fn spawn_for(
     cfg: &crate::config::Config,
     stop: Arc<AtomicBool>,
@@ -661,9 +590,9 @@ pub fn spawn_for(
         cfg.landing_root.clone(),
         desk,
     );
-    // **Every daemon hears every repository's moves** (R92 item 5): the worker below announces
-    // only what THIS daemon moves, so a head attached here would never re-read a queue another
-    // daemon serves. The watcher reads the shared store's history and says the rest.
+    // Every daemon hears every repository's moves: the worker below announces only what THIS
+    // daemon moves, so a head attached here would never re-read a queue another daemon serves.
+    // The watcher reads the shared store's history and says the rest.
     {
         let registry = registry.clone();
         if let Err(e) = watch::spawn(
@@ -679,8 +608,8 @@ pub fn spawn_for(
     }
     if !cfg.serve_queues {
         // The line the daemon's log carries, which is where an operator asks why nothing lands
-        // from this daemon: the cause, why it exists, and what still works here. **Two causes**
-        // (2026-10-26): the flag, and a one-shot, which implies it.
+        // from this daemon: the cause, why it exists, and what still works here. Two causes -
+        // the flag, and a one-shot, which implies it.
         if cfg.one_shot {
             eprintln!(
                 "  queues: this daemon serves NO queue (a one-shot run) — it runs its steps and \
@@ -713,13 +642,9 @@ pub fn spawn_for(
     }
 }
 
-/// **Why this daemon's queues still need it, if they do** — the merge queue's half of the idle
-/// exit (`Sessions::idle_exit_due`). A repository whose lease this daemon holds and that has a row
-/// in line (queued or gating to land, waiting or under review) is work this daemon is serving, and
-/// exiting would leave it until some other daemon took the lease. A BLOCKED row does not hold it:
-/// that row waits on a person, and the lease's next holder re-gates it at start (R76 item 3), which
-/// is what a restart already is. `None` when the store cannot be read either — an unreadable store
-/// is not work, and the worker loop says so on its own.
+/// Why this daemon's queues still need it, if they do: the merge queue's half of the idle
+/// exit. A repository whose lease this daemon holds and that has a row in line (queued or
+/// gating waiting or under review) is work it is serving.
 pub fn busy_here(store_path: &Path) -> Option<String> {
     use letibot_tokencore::store::{MergeState, ReviewState};
     let store = Store::open(store_path).ok()?;
@@ -746,20 +671,16 @@ pub fn busy_here(store_path: &Path) -> Option<String> {
     None
 }
 
-/// **The repository a workspace is a session OF** — the queues' key (the canonical main
-/// checkout) of the repository [`repo_of_workspace`] reads the workspace as: the checkout it is
-/// in (a worktree counts as its repository), a same-named child (`~/Projects/letibot` means
-/// `~/Projects/letibot/letibot`), or its only repository child. `None` for a directory that merely
-/// CONTAINS repositories — the operator's home, with five checkouts under it, is a session of none
-/// of them.
+/// The repository a workspace is a session OF - the queues' key, the canonical main checkout
+/// the checkout the workspace is in (a worktree counts as its repository), a same-named child, or
+/// its only repository child. `None` for a directory that merely CONTAINS repositories.
 pub fn repository_of_workspace(workspace: &Path) -> Option<String> {
     repo_of_workspace(workspace).and_then(|r| git::repository_key(&r))
 }
 
-/// **Every repository a workspace is a session of**, as the queues key them — the one
+/// Every repository a workspace is a session of, as the queues key them: the one
 /// [`repository_of_workspace`] names, or each repository of a folder that is one project of
-/// several (`git::repos_of_workspace`: children sharing an `origin` owner). What a daemon serves,
-/// whose alarms a session hears, and which sessions are a repository's roots.
+/// several (`git::repos_of_workspace`: children sharing an `origin` owner).
 pub fn repositories_of_workspace(workspace: &Path) -> Vec<String> {
     git::repos_of_workspace(workspace)
         .iter()
@@ -767,9 +688,9 @@ pub fn repositories_of_workspace(workspace: &Path) -> Vec<String> {
         .collect()
 }
 
-/// **[`repository_of_workspace`], remembered for a minute** — a head asks for the queues on
-/// every move (R92 item 5), and each answer names the asking session's repository; the answer
-/// for one workspace does not change between two moves, and git need not be asked each time.
+/// [`repository_of_workspace`], remembered for a minute: a head asks for the queues on every move
+/// and each answer names the asking session's repository, which does not change between two
+/// moves - so git need not be asked each time.
 pub fn repository_of_workspace_cached(workspace: &Path) -> Option<String> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -793,9 +714,7 @@ pub fn repository_of_workspace_cached(workspace: &Path) -> Option<String> {
     r
 }
 
-/// **[`repositories_of_workspace`], remembered for a minute** — see the single form below. — a head asks for the queues on
-/// every move (R92 item 5), and each answer names the asking session's repository; the answer
-/// for one workspace does not change between two moves, and git need not be asked each time.
+/// [`repositories_of_workspace`], remembered for a minute - see the single form above.
 pub fn repositories_of_workspace_cached(workspace: &Path) -> Vec<String> {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
@@ -819,11 +738,9 @@ pub fn repositories_of_workspace_cached(workspace: &Path) -> Vec<String> {
     r
 }
 
-/// **Whether a daemon seated at `workspace` is one of `repo`'s session daemons** — its workspace
-/// is that repository (or under it, or one of its worktrees). An ancestor directory that merely
-/// contains the repository is NOT: on 2026-10-12 a daemon seated at `/home/dead` took letibot's
-/// lease, gated its `main`, and showed `‼ main RED` to a session about the box's RSS, because
-/// the old rule was *the repository is under the workspace, or holds it*.
+/// Whether a daemon seated at `workspace` is one of `repo`'s session daemons: its workspace is
+/// that repository, or under it, or one of its worktrees. An ancestor directory that merely
+/// contains the repository is NOT - it once took letibot's lease and reported its red `main`.
 pub fn serves(workspace: &Path, repo: &Path) -> bool {
     let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
     repositories_of_workspace(workspace)
@@ -831,14 +748,9 @@ pub fn serves(workspace: &Path, repo: &Path) -> bool {
         .any(|mine| Path::new(mine) == key)
 }
 
-/// **The hubs a repository's queue alert goes to** — the sessions this registry holds whose
-/// workspace is a session of `repository` ([`repository_of_workspace`]), and the review queue's
-/// own session, whose board IS the queue. Never every hub: a red `main` is news to the project's
-/// sessions and the queue's board, and noise everywhere else.
-///
-/// **The queue's session is found by SHAPE and not by an id** — every daemon owns one
-/// ([`letibot_sessionlog::is_gatekeeper_session`]), each with the id of its own workspace, so
-/// "the queue's board" is a class of session rather than one string the whole box shares.
+/// The hubs a repository's queue alert goes to: the sessions this registry holds whose
+/// workspace is a session of `repository`, and the review queue's own session, whose board
+/// IS the queue. Never every hub - a red `main` is news to those and noise everywhere else.
 pub fn hubs_of_repository(
     registry: &letibot_sessionlog::registry::Registry,
     store: Option<&Store>,

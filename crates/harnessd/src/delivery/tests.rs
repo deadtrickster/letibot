@@ -35,9 +35,9 @@ fn row(content: &str, when: Option<TodoCondition>, needs: Vec<TodoNeed>) -> Todo
     }
 }
 
-/// **The operator's table, row by row.** A routine result is held; everything the work waits on,
-/// a monitor and an emergency are immediate; a failure is immediate only when something depends
-/// on it.
+/// The table, row by row: a routine result is held, everything the work waits on
+/// (a monitor, an emergency) is immediate, and a failure is immediate only when
+/// something depends on it.
 #[test]
 fn the_decision_holds_routine_results_and_delivers_what_the_work_waits_on() {
     let routine = Facts::routine(ResultKind::Job);
@@ -128,8 +128,9 @@ fn the_decision_holds_routine_results_and_delivers_what_the_work_waits_on() {
     );
 }
 
-/// **The facts are read off the board as it is**: an open row's `when` and `needs` name a job by
-/// its id or its name and a child by its handle; a finished row depends on nothing.
+/// The facts are read off the board as it is: an open row's `when` and `needs`
+/// name a job by its id or its name and a child by its handle; a finished row
+/// depends on nothing.
 #[test]
 fn the_facts_are_the_open_rows_that_name_the_handle() {
     let mut job = done("j12", BackgroundKind::Job, "exited 0");
@@ -201,8 +202,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// **A monitor firing is immediate and recorded as one**, with when it fired and when it was
-/// told.
+/// A monitor firing is immediate and recorded as one, with when it fired and when
+/// it was told.
 #[test]
 fn a_monitor_firing_is_recorded_as_immediate() {
     let dir = scratch("delivery-monitor");
@@ -233,17 +234,12 @@ fn a_monitor_firing_is_recorded_as_immediate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The turn-end heading says what is true, and the rules are told apart in the record.**
-///
-/// pg-noop, 2026-10-11: *"[meanwhile] 1 result arrived while you were busy"* reached a model that
-/// had been idle for an hour, the moment the operator spoke. The operator's ruling: *"jobs were
-/// ran for a reason and held for a reason. once turn ends no reason to hold"* — so a batch is
-/// delivered the moment the turn it was held through ends, and its heading says the model was
-/// WORKING and the results were held until its turn ended. The batch and starvation wording is
-/// unchanged; a result that arrives while idle has no heading at all (asserted on the session).
+/// The turn-end heading says what is true, and the rules are told apart in the record. A
+/// result held through a turn is delivered the moment that turn ends and the heading says
+/// the model was working
 #[test]
 fn the_turn_end_heading_and_the_rule_words() {
-    // R93.C7: one heading whatever the rule and the count — no holding policy, no cap, no
+    // One heading whatever the rule and the count: no holding policy, no cap, no
     // "them/they" for one. Which rule delivered a batch is the record's.
     for (n, rule) in [
         (1, Rule::TurnEnd),

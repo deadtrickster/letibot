@@ -1,51 +1,6 @@
-//! **The daemon's half of a plugin condition** — `condition`, `docs/plugins-plan.md` §4.4.
-//!
-//! `crates/tools` owns the condition's shape: the interval, the state, the poll bookkeeping, and
-//! the rule that one tick is at most one plugin call. What it cannot own is the two things that
-//! are the daemon's — **the stack** (which layer answers a hook, and what it declared) and **the
-//! workspace** (a `read` look resolves against it) — so it asks through [`PluginStack`] and this
-//! is the implementation.
-//!
-//! # Where the seam is installed, and why there
-//!
-//! [`Monitors`] belongs to the session's process host, which the harness builds when it opens; the
-//! plugin stack is built later, when the DAEMON opens the session (`Sessions::open_plugins`). So
-//! this holds the same slot the `plugin` tool and `on_tool_call` hold, and `Harness::open` installs
-//! it once — a session nobody fills the slot for refuses a `plugin` monitor by name rather than
-//! accepting one that will never be polled.
-//!
-//! # The look, and the gate it goes through
-//!
-//! A `read` look runs under the answering layer's `read` capability, confined to the workspace,
-//! through the same [`crate::plugins::look`] a pane's does. An `exec` look runs the declared argv
-//! under that layer's `exec:<program>` capability — no shell, so nothing a plugin wrote can be
-//! re-split into more commands — with its output redirected to files so the poller never waits on
-//! a pipe.
-//!
-//! **And it goes through the same gate the model's calls meet** (`docs/plugins-plan.md` §1,
-//! principle 2): *a plugin can do nothing the model could not.* The call the gate judges is the
-//! one a `bash` of that argv would be — the argv rendered as a command line whose every word is
-//! quoted, so the gate reads the words the layer declared and no shell could have made them into
-//! anything else. What it may not do is **ask**: a look runs on the session's monitor thread, and
-//! a card would park that thread — and the watch with it — until a person answered. So
-//! [`letibot_tools::Gate::admit_unasked`] is the entry, and it is the same ladder stopped at the
-//! card:
-//!
-//! * **admitted** (a `permission` rule, a standing grant, a point that admits the class, a D16
-//!   measured boundary) → the look runs, exactly as it did before there was a gate here;
-//! * **the gate is busy** → nothing runs and nothing is owed: the look is *deferred*, the watch
-//!   keeps it and asks again on the poller's next tick. The gate's mutex is held across the model's
-//!   own decision and for as long as a person takes to answer, so waiting on it here would park the
-//!   session's one monitor thread — and every watch on it — behind somebody's card;
-//! * **would have been put to somebody** → it does not run, the layer is handed a look result that
-//!   says *would need your approval* and why, and the session is told **once** per (layer,
-//!   program, reason) — a watch polling every ninety seconds is not ninety seconds of the same
-//!   warning;
-//! * **denied by a rule the operator wrote** → it does not run, and the layer is told that instead,
-//!   because *somebody said no* and *nobody could be asked* are different sentences.
-//!
-//! The capability is checked **first**, before the gate: a program the layer did not declare is
-//! not a call to adjudicate at all.
+//! The daemon's half of a plugin condition: the two things `crates/tools` cannot own are
+//! the stack (which layer answers a hook, and what it declared) and the workspace a look
+//! resolves against, so it asks through [`PluginStack`] and this is the implementation.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -67,26 +22,18 @@ use serde_json::Value;
 
 use crate::plugins::{PluginHost, look};
 
-/// **The gate, as a look asks it**: one question, it may not raise a card, and it may not wait.
-///
-/// A trait rather than the runtime itself so the daemon can hand over its own gate and a test can
-/// answer without building one — the same seam [`PluginStack`] is, one layer down. The single
-/// implementation that matters is [`ToolRuntime`]'s, because *the* gate is the session's.
+/// The gate as a look asks it: one question, it may not raise a card, and it may not wait. A trait
+/// so the daemon hands over its own gate and a test answers without building one.
 pub trait Unasked: Send + Sync {
-    /// What the gate would do with this call if nobody could be asked — or **`None` when the gate is
-    /// busy**, which is not an answer at all. See [`letibot_tools::Gate::admit_unasked`].
+    /// What the gate would do with this call if nobody could be asked - or `None` when the gate is
+    /// busy, which is not an answer at all.
     fn admit_unasked(&self, call: &GateCall<'_>) -> Option<GateDecision>;
 }
 
 impl Unasked for ToolRuntime {
-    /// **`try_lock`, and the difference is the whole point.** `ToolRuntime::run` holds this mutex
-    /// across the model's own decision on purpose, card and all — for as long as a person takes to
-    /// answer — so a look that *waited* for it would park the session's monitor thread behind that
-    /// card, and every other watch with it. A gate that is busy is *not now*: `None`, the look is
-    /// deferred, and the poller asks again next tick.
-    ///
-    /// A poisoned lock is the same as it ever was — `into_inner`, because a panic on another thread
-    /// is not a reason to stop looking.
+    /// `try_lock`, and the difference is the whole point: `ToolRuntime::run` holds this mutex across
+    /// the model's decision, card and all, so a look that waited would park the session's monitor
+    /// thread behind that card. A busy gate is *not now*. A poisoned lock is `into_inner`.
     fn admit_unasked(&self, call: &GateCall<'_>) -> Option<GateDecision> {
         let mut gate = match self.gate.try_lock() {
             Ok(gate) => gate,
@@ -97,7 +44,7 @@ impl Unasked for ToolRuntime {
     }
 }
 
-/// **One session's conditions, over its plugin stack.** The `PluginConditions` the monitors hold.
+/// One session's conditions, over its plugin stack. The `PluginConditions` the monitors hold.
 pub struct HostConditions {
     slot: Arc<Mutex<Option<Arc<PluginHost>>>>,
     hub: Arc<Hub>,
@@ -153,13 +100,9 @@ struct StackOver {
     host: Arc<PluginHost>,
     hub: Arc<Hub>,
     gate: Option<Arc<dyn Unasked>>,
-    /// **Which layer ANSWERED each hook, by id** — the last `ask`'s `Resolved::by`.
-    ///
-    /// The look that comes back belongs to the answer that asked for it, and that is not always the
-    /// layer that DECLARES the hook: a pinned layer may pass or trap, and the answer then comes
-    /// from an unpinned one below it. Judging the look by the topmost declarer would let the layer
-    /// below run a program the top one declared, and run it unadjudicated — so the answering layer
-    /// is kept here, and both the capability check and D17's trust decision read it.
+    /// Which layer ANSWERED each hook, by id - the last `ask`'s `Resolved::by`. The look belongs to
+    /// the answer that asked for it, which is not always the layer that declares the hook, so the
+    /// answering layer is what the capability check and the trust decision read.
     answered: Mutex<BTreeMap<String, String>>,
 }
 
@@ -176,9 +119,8 @@ impl PluginStack for StackOver {
     }
 
     fn look(&self, hook: &str, ask: &letibot_plugin::condition::LookAsk) -> Look {
-        // **The layer whose answer asked**, or — for an answer nobody attributed — the topmost
-        // declarer, which is what every look before this used and is still right for the ordinary
-        // case of one layer per hook.
+        // The layer whose answer asked, or - for an answer nobody attributed - the topmost
+        // declarer, which is right for the ordinary case of one layer per hook.
         let by = self
             .answered
             .lock()
@@ -204,9 +146,8 @@ impl PluginStack for StackOver {
                         "an `exec` look needs a program to run",
                     ));
                 };
-                // **The capability first**, because it is not the gate's question: a program this
-                // layer never declared is not a call anybody adjudicates, it is a layer reaching
-                // past what its `plugin.toml` says.
+                // The capability first, because it is not the gate's question: a program this
+                // layer never declared is a layer reaching past what its `plugin.toml` says.
                 if !caps
                     .iter()
                     .any(|c| matches!(c, Capability::Exec(p) if p == program))
@@ -231,20 +172,9 @@ impl PluginStack for StackOver {
 }
 
 impl StackOver {
-    /// **The gate's half of an `exec` look**, or `None` when it may run.
-    ///
-    /// The call is the one a `bash` of this argv would be: the same tool name, the same declared
-    /// access, and a `command` built from the argv with every word quoted — so a `permission` rule
-    /// written for the model's `gh pr view` covers the plugin's identical look, and one written
-    /// against a *different* command does not. `turn_id` and `call_id` are empty because no turn
-    /// and no call own a watch's look; the audit row says so rather than borrowing an id.
-    ///
-    /// **A layer that runs freely never reaches this function** (D17): a built-in and a pinned
-    /// layer's `exec` look runs without the ladder, and the check is the first line of it.
-    ///
-    /// `None` is *run it*. Anything else is what the caller returns: a refusal to hand the layer, or
-    /// [`Look::Deferred`] — the gate was busy, so nothing was decided, nothing is run, and nothing is
-    /// said to anybody.
+    /// The gate's half of an `exec` look, or `None` when it may run. The call is the one a `bash` of
+    /// this argv would be - same tool name, same access, every word quoted - so a rule written for
+    /// the model's `gh pr view` covers the plugin's identical look. `None` is *run it*.
     fn adjudicate(
         &self,
         hook: &str,
@@ -253,15 +183,9 @@ impl StackOver {
         workspace: &std::path::Path,
         answered: Option<&letibot_plugins::Layer>,
     ) -> Option<Look> {
-        // **D17's first two arms: a built-in, or a layer whose bytes a person pinned, runs
-        // freely** — `exec` included. That is the operator's own rule (*"Only the builtins run
-        // freely; anything I place later needs a pin"*), and the pin is what stands in for the
-        // judgement a card would otherwise be: a person read these bytes and said they are theirs.
-        //
-        // **The layer that ANSWERED, not the one that declares the hook** — the reviewer's hole:
-        // a pinned layer that passes or traps hands the answer to an unpinned layer below it, and
-        // that layer's look must be adjudicated. A look nobody attributed is adjudicated too: the
-        // fail-closed direction, and the one a `None` here has to take.
+        // A built-in, or a layer whose bytes a person pinned, runs freely - `exec` included: the
+        // pin stands in for the judgement a card would otherwise be. The layer that ANSWERED and
+        // not the one that declares the hook, and a look nobody attributed is adjudicated too.
         if answered.is_some_and(|layer| layer.trusted) {
             return None;
         }
@@ -276,9 +200,8 @@ impl StackOver {
             )));
         };
         let args = serde_json::json!({ "command": command_of_argv(argv) });
-        // The scripts a look would run are not read: a `read`/`exec` look is a program the layer
-        // declared, and the reader for the gate's brief is the runtime's, which this is not. A
-        // look that names a script is judged on the words, and the capability says which program.
+        // The scripts a look would run are not read: the layer declared a program, not a file, and
+        // the reader for the gate's brief belongs to the runtime.
         let scripts: [letibot_tools::runtime::ScriptSource; 0] = [];
         let workspace = workspace.display().to_string();
         let call = GateCall {
@@ -292,11 +215,9 @@ impl StackOver {
             scripts: &scripts,
         };
         let Some(decision) = gate.admit_unasked(&call) else {
-            // **The gate is busy with somebody else's call.** Its mutex is held across the model's
-            // own decision (card and all), so this is *not now* rather than *no*: nothing runs,
-            // nothing is said to the layer as a result, and — deliberately — no notice is
-            // published, because a card that a person is looking at is not news about the plugin.
-            // The watch keeps its look and the poller asks again next tick.
+            // The gate is busy with somebody else's call, so this is *not now* rather than *no*
+            // nothing runs, the layer is handed nothing, and no notice is published, because a card
+            // somebody is looking at is not news about the plugin.
             return Some(Look::Deferred);
         };
         let GateDecision::Refuse { outcome, tell } = decision else {
@@ -309,8 +230,8 @@ impl StackOver {
         )))
     }
 
-    /// **Said once per (layer, program, reason)** — the layer is told through its look result, and
-    /// the session is told through the host's once-only channel.
+    /// Said once per (layer, program, reason): the layer is told through its look result, and the
+    /// session through the host's once-only channel.
     fn say(&self, hook: &str, why: &str) {
         let layer = self
             .host
@@ -327,12 +248,9 @@ impl StackOver {
     }
 }
 
-/// **What the gate's refusal means, in the sentence the layer is handed.**
-///
-/// The two classes are two different facts and a plugin acts differently on each: `NotRun` is
-/// *this needed a person and a look cannot reach one* — the program may be fine, and the operator
-/// could grant it — while `Denied` is *a rule says no*, and no grant taken from here would be
-/// honoured.
+/// What the gate's refusal means, in the sentence the layer is handed. `NotRun` is *this needed a
+/// person and a look cannot reach one* - the program may be fine and the operator could grant it -
+/// while `Denied` is *a rule says no*, which no grant taken from here would change.
 fn said(outcome: &ToolOutcome, tell: &str) -> String {
     match outcome {
         ToolOutcome::NotRun { why } => why.clone(),
@@ -359,9 +277,8 @@ fn result_of(value: &Value) -> letibot_plugin::condition::LookResult {
     }
 }
 
-/// **A look that is a running program.** Its output goes to files rather than to pipes: a child
-/// that writes more than a pipe's buffer would block, and this is polled by the session's one
-/// monitor thread — the whole reason it is not run synchronously.
+/// A look that is a running program. Its output goes to files rather than pipes: a child writing
+/// more than a buffer would block, and this is polled by the session's one monitor thread.
 struct ChildLook {
     child: Child,
     out: PathBuf,
@@ -420,9 +337,8 @@ impl LookChild for ChildLook {
 }
 
 impl Drop for ChildLook {
-    /// **A watch that ends takes its output with it**: `retire`, a ttl, a session closing. The
-    /// child is left to the scope tree, which owns processes — killing it here would be this
-    /// struct second-guessing the reaper.
+    /// A watch that ends takes its output with it: `retire`, a ttl, a session closing. The child is
+    /// left to the scope tree, which owns processes - killing it here would second-guess the reaper.
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.out);
         let _ = std::fs::remove_file(&self.err);

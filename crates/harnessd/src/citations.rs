@@ -1,37 +1,30 @@
-//! **A reply that cites code gets the code** — the model writes an empty fence labelled
-//! `path:start-end` and the daemon fills it from the file when the reply lands.
-//!
-//! The operator, 2026-10-15: *"model wants to cite me a file with line range e.g.
-//! flow/connectors/postgres/pgdump_schema.go:242-248 and it is manually extracting the code and
-//! line numbers lost"*. Copying lines by hand loses exactly what a citation is for — where they
-//! are — and costs the model the tokens of copying them. So the model names the range and the
-//! harness reads it:
+//! A reply that cites code gets the code: the model writes an empty fence
+//! labelled `path:start-end` and the daemon fills it from the file when the reply
+//! lands. Copying lines by hand loses what a citation is for and costs the model
+//! the tokens of copying them.
 //!
 //! ````text
 //! ```flow/connectors/postgres/pgdump_schema.go:242-248
 //! ```
 //! ````
 //!
-//! — or the same fence as a one-liner, its opening and closing runs on one line, which is the
-//! spelling a model uses most and the one that was read as an *opening* fence with the closer
-//! glued onto its label, and so was never filled. Both spellings, and the rule for a block that
-//! is never closed, are [`letibot_transcript::citation`]'s: the head fills these fences, and the
-//! two halves must not disagree about which fences there are.
+//! The same fence may be a one-liner, its opening and closing runs on one line
+//! which is the spelling a model uses most. Both spellings, and the rule for a
+//! block that is never closed, are `letibot_transcript::citation`'s: the head
+//! fills these fences too, and the two halves must agree about which fences there
+//! are.
 //!
-//! # A snapshot, kept beside the reply
-//!
-//! The lines are read once, when the reply lands, through the session's own backend (so a session
-//! in a VM reads the VM's tree), and stored ([`letibot_tokencore::store::Store::put_citations`]),
-//! keyed by the reply's text so a fork that carries the reply under a new row id finds them. The
-//! reply's text is never rewritten: the next request renders the conversation the model wrote,
-//! and the prompt cache is keyed on exactly that. A head shows the snapshot in the fence, with the
-//! file's own line numbers, and marks it when the file on its disk no longer says the same.
+//! The lines are read once, when the reply lands, through the session's own
+//! backend (so a session in a VM reads the VM's tree), and stored
+//! ([`letibot_tokencore::store::Store::put_citations`]) keyed by the reply's text
+//! so a fork carrying the reply under a new row id still finds them. The reply is
+//! never rewritten, since the prompt cache is keyed on exactly it.
 
 use letibot_sessionlog::event::Citation;
 use letibot_transcript::citation;
 
-/// **The most lines one citation reads.** A citation is a passage, and a fence naming a whole
-/// file is read up to here and says so, rather than pouring the file into the reply.
+/// The most lines one citation reads. A citation is a passage, and a fence naming
+/// a whole file is read up to here and says so, rather than pouring the file in.
 pub const MAX_CITED_LINES: u32 = 400;
 
 /// One empty fence a reply cites by: its label and the range it names.
@@ -43,12 +36,9 @@ pub struct Cited {
     pub end: u32,
 }
 
-/// **The range a fence label names**, or `None` for an ordinary fence (`rust`, `sql`, empty).
-///
-/// `path:N` or `path:N-M`, the label's first word; the path must look like one — it has a `/` or
-/// a `.` in it — so a label like `rust:2` is not read as a file. `M < N` is not a range. The rule
-/// itself is [`letibot_transcript::citation::range`]'s, so the head that fills the fence reads a
-/// label exactly as this does.
+/// The range a fence label names, or `None` for an ordinary fence (`rust`, `sql` empty).
+/// `path:N` or `path:N-M`, the label's first word, and the path must look like one (it has
+/// a `/` or a `.`) so `rust:2` is not read as a file.
 pub fn parse_label(label: &str) -> Option<Cited> {
     let r = citation::range(label)?;
     Some(Cited {
@@ -59,9 +49,9 @@ pub fn parse_label(label: &str) -> Option<Cited> {
     })
 }
 
-/// **Every empty fence in `text` whose label names a range**, in order — whether it was written
-/// as a block or on one line. A fence with anything in it is the model's own code, quoted, and is
-/// left alone; an unclosed one is not a citation.
+/// Every empty fence in `text` whose label names a range, in order, whether it was
+/// written as a block or on one line. A fence with anything in it is the model's
+/// own code, quoted, and is left alone; an unclosed one is not a citation.
 pub fn cited_fences(text: &str) -> Vec<Cited> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
@@ -71,8 +61,8 @@ pub fn cited_fences(text: &str) -> Vec<Cited> {
             i += 1;
             continue;
         };
-        // Past the whole block, so a fence inside quoted code is not read as one of these — and
-        // so an unclosed fence cannot lend its own body to the scanner.
+        // Past the whole block, so a fence inside quoted code is not read as one of
+        // these, and an unclosed fence cannot lend its own body to the scanner.
         i = fence.end + 1;
         if fence.cites()
             && let Some(c) = parse_label(fence.label)
@@ -83,9 +73,9 @@ pub fn cited_fences(text: &str) -> Vec<Cited> {
     out
 }
 
-/// **Read one citation**, through `read` (the session backend's own read, relative to the
-/// session's root). A file that cannot be read, a range past its end and a range longer than
-/// [`MAX_CITED_LINES`] all say so in `error` — with whatever lines there are.
+/// Read one citation through `read` (the session backend's own read, relative to the
+/// session's root). A file that cannot be read, a range past its end and a range longer
+/// than [`MAX_CITED_LINES`] all say so in `error`, with whatever lines there are.
 pub fn snapshot(c: &Cited, read: impl Fn(&str) -> Result<Vec<u8>, String>) -> Citation {
     let mut out = Citation {
         label: c.label.clone(),
@@ -163,9 +153,9 @@ mod tests {
         assert_eq!(got, vec!["a/b.go:2-3", "c.py:5"]);
     }
 
-    /// **The reply that found the defect**: prose, the one-liner alone on its line, prose. It was
-    /// read as an opening fence with the closing run glued onto its label, so nothing was cited
-    /// and the operator's screen showed an empty box with a path in it.
+    /// A reply that puts the one-liner alone on its line, between prose: the
+    /// spelling a model uses most, and the one that must not be read as an opening
+    /// fence with the closing run glued onto its label.
     const ONE_LINER: &str = "The poll loop:\n\n\
         ```/Users/dead/Projects/firecode/firecode/scripts/vsock-exec.py:60-97```\n\n\
         It waits on the socket.\n";
@@ -198,8 +188,9 @@ mod tests {
         assert_eq!(s.error, None);
     }
 
-    /// **A fence with no closing line must not swallow the reply** — and must not take a later
-    /// block's closer for its own: it ends on the line before the next fence begins.
+    /// A fence with no closing line must not swallow the reply, and must not take a
+    /// later block's closer for its own: it ends on the line before the next fence
+    /// begins.
     #[test]
     fn an_unclosed_fence_does_not_eat_the_block_below_it() {
         let text = "```a/b.go:1-2\nnever closed\n\n```c/d.go:3-4\n```\n";

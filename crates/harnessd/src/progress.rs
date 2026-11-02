@@ -1,72 +1,72 @@
-//! **A progress detector, because a round counter measures effort and not progress.**
+//! A progress detector, because a round counter measures effort and not progress.
 //!
 //! `max_tool_rounds` was the only thing that could stop a runaway turn, and it cut
 //! two legitimate sessions: one asked to *"look at the project and suggest
 //! improvements"* and was cut at 12 rounds mid-investigation, another was two rounds
 //! from finishing with every round doing new work. A count of rounds is an
-//! **open-loop guard** in `docs/closed-loop.md`'s terms — it never looks at the
+//! open-loop guard in `docs/closed-loop.md`'s terms - it never looks at the
 //! effect, only at the command. A model that is working hard and a model that is
 //! stuck are indistinguishable to it, and it stopped the first one.
 //!
-//! The message was worse than the cut:
+//! The message was worse than the cut
 //!
 //! ```text
 //! the model called tools 12 times without answering
 //! ```
 //!
 //! It *was* answering; it had not finished. That sentence teaches an operator to
-//! distrust the model when the harness was at fault — the same defect as `grep`
+//! distrust the model when the harness was at fault - the same defect as `grep`
 //! reporting absence when it had opened no files.
 //!
 //! # The encoder
 //!
-//! What should stop a turn is a model that is **not getting anywhere**. This module
+//! What should stop a turn is a model that is not getting anywhere. This module
 //! is the sensor for that, and it is a sensor rather than a heuristic because every
-//! signal it reads is a fact the harness already computes:
+//! signal it reads is a fact the harness already computes
 //!
 //! | signal | where it comes from |
 //! |---|---|
 //! | the same `(tool, arguments)` called again | [`letibot_turn::events::args_digest`], already computed for `ToolCallProposed` |
 //! | a result byte-identical to one already seen this turn | [`letibot_tools::payload_digest`], already computed for `ToolEvent::Finished` |
-//! | a run of abstentions, denials or `not_run`s | [`letibot_tools::builtins::intent::ledger::is_effect`] — **the ledger's own predicate**, not a second one beside it |
+//! | a run of abstentions, denials or `not_run`s | [`letibot_tools::builtins::intent::ledger::is_effect`] - the ledger's own predicate, not a second one beside it |
 //!
 //! That last row is the load-bearing one. `intent::close_the_turn` already draws the
-//! line this needs: an `Ok` is an **effect**, and an abstention, a failure, a denial
-//! and a `not_run` are **attempts**. Rather than restate it here, `is_effect` was
+//! line this needs: an `Ok` is an effect, and an abstention, a failure, a denial
+//! and a `not_run` are attempts. Rather than restate it here, `is_effect` was
 //! lifted out of `IntentLedger::record_effect` so there is one definition with two
 //! readers. A second, subtly different notion of "did that work" is how two
 //! instruments end up disagreeing about the same turn.
 //!
 //! # The rule, and why it is payload novelty rather than argument novelty
 //!
-//! > A round **made progress** when at least one of its calls returned `Ok` with a
+//! > A round made progress when at least one of its calls returned `Ok` with a
 //! > result this turn had not already seen.
 //!
 //! The strongest single signal is the repeated `(tool, arguments)` pair, and it is
-//! still not the one the stop is built on — because the case that matters most is
+//! still not the one the stop is built on - because the case that matters most is
 //! the legitimate one. A model that edits a file and reads it back issues a
 //! *byte-identical call* and gets a *different answer*, and that is progress. A model
 //! that reads the same unchanged file three times issues the same call and gets the
 //! same bytes, and that is not. Only the payload separates them, so the payload is
-//! what decides, and the repeated call is kept for the **evidence** — which is what
+//! what decides, and the repeated call is kept for the evidence - which is what
 //! an operator needs to argue with the stop.
 //!
 //! # The tolerance band
 //!
 //! `docs/closed-loop.md` §4: a closed loop corrects inside the band and faults
-//! outside it. So the stop is two-stage — at `stall_rounds - 1` consecutive stalled
-//! rounds the model is **told what the harness sees**, once, through the same
+//! outside it. So the stop is two-stage - at `stall_rounds - 1` consecutive stalled
+//! rounds the model is told what the harness sees, once, through the same
 //! steering path T21.3 uses; only if the next round is also stalled does the turn
 //! stop. A turn that was working gets a sentence and carries on; a turn that is
 //! looping gets stopped one round later than it would have been. That asymmetry is
-//! deliberate: **the measured cost of cutting a working turn is now two wasted
-//! sessions**, and the cost of one extra round of a stuck one is one round.
+//! deliberate: the measured cost of cutting a working turn is now two wasted
+//! sessions, and the cost of one extra round of a stuck one is one round.
 //!
 //! # What it says when it fires
 //!
 //! Never a count of rounds. It names what it saw, with the denominator
-//! (`docs/tool-design-brief.md` §2.2) — *"the last 5 rounds ran 7 calls and 0 of 7
-//! returned a result this turn had not already seen"* — because a stop that cites
+//! (`docs/tool-design-brief.md` §2.2) - *"the last 5 rounds ran 7 calls and 0 of 7
+//! returned a result this turn had not already seen"* - because a stop that cites
 //! evidence is one an operator can contradict, and `rounds: 12` is not.
 
 use std::collections::{HashMap, HashSet};
@@ -89,9 +89,9 @@ pub enum Round {
 /// the stop can name the evidence rather than the count.
 #[derive(Debug, Clone)]
 struct Observation {
-    /// `args_digest(name\0arguments)` — what "the same call" means.
+    /// `args_digest(name\0arguments)` - what "the same call" means.
     key: String,
-    /// `read path=src/main.rs` — the call, rendered for a human.
+    /// `read path=src/main.rs` - the call, rendered for a human.
     label: String,
     /// `ok`, `abstained`, `failed`, … The tally the evidence prints.
     outcome: &'static str,
@@ -99,7 +99,7 @@ struct Observation {
     repeat_call: bool,
     /// This turn had already seen these exact result bytes.
     repeat_payload: bool,
-    /// The call was BACKGROUNDED — handed to the job watcher and still running. See
+    /// The call was BACKGROUNDED - handed to the job watcher and still running. See
     /// `end_round` for why this is its own field rather than a third reading of
     /// `effect`.
     backgrounded: bool,
@@ -113,7 +113,7 @@ struct Observation {
 #[derive(Debug)]
 pub struct ProgressDetector {
     /// Consecutive stalled rounds that stop the turn. `0` disables the check and
-    /// leaves only the round backstop — a declared state, not a silent default.
+    /// leaves only the round backstop - a declared state, not a silent default.
     stall_rounds: usize,
     /// `args_digest(name\0arguments)` → the rendered label, and how many times this
     /// turn has made the call.
@@ -151,10 +151,6 @@ impl ProgressDetector {
     }
 
     /// One tool result, as it came back. Call order, in call order.
-    ///
-    /// `payload` is the **rendered** result — the same string the transcript row
-    /// carries and the same one `ToolEvent::Finished` digests, so novelty here means
-    /// novelty in what the model actually got to read.
     pub fn observe(&mut self, call: &ToolCall, outcome: &ToolOutcome, payload: &str) {
         let key =
             letibot_turn::events::args_digest(&format!("{}\u{0}{}", call.name, call.arguments));
@@ -182,32 +178,8 @@ impl ProgressDetector {
     /// Close the round and score it. Call once per round that ran tools.
     pub fn end_round(&mut self) -> Round {
         let pending = std::mem::take(&mut self.pending);
-        // The rule, in one line: an `Ok` carrying bytes this turn has not seen — **or a
-        // round that STARTED A BACKGROUND JOB**.
-        //
-        // **`is_effect` cannot answer that, and asking it was a false positive.** The
-        // predicate is the intent ledger's, and from the ledger's side a `backgrounded`
-        // outcome is not an effect at all: the job was handed off and has not produced
-        // anything yet, so nothing can be recorded as done. That is right for a ledger
-        // about declared intentions and wrong here, where the question is *did this round
-        // tell the model something it did not know* — and a backgrounded call does, in the
-        // strongest sense: it says a job exists, names its handle, and the model can go and
-        // read it.
-        //
-        // MEASURED on the operator's own session, and it is what the nudge was complaining
-        // about: four rounds in a row, each backgrounding one job:
-        //
-        //     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
-        //     not already seen (4 backgrounded)
-        //
-        // Four jobs started, four rounds scored STALLED, and the turn was one round from
-        // being stopped for looping. **`backgrounded` was printed in the evidence while
-        // failing to be the thing that counted**, which is the shape of the bug: the
-        // instrument knew and the rule did not ask.
-        //
-        // `repeat_payload` still applies: backgrounding the same command twice with no
-        // other tool call in between is quiet, and the handle in the notice (which is what
-        // makes two of them differ) is not an excuse to call every round progress.
+        // The rule, in one line: an `Ok` carrying bytes this turn has not seen - or a round that
+        // STARTED A BACKGROUND JOB.
         if pending
             .iter()
             .any(|o| (o.effect || o.backgrounded) && !o.repeat_payload)
@@ -232,12 +204,9 @@ impl ProgressDetector {
         self.armed() && self.run >= self.stall_rounds
     }
 
-    /// The one mid-run correction, or `None`.
-    ///
-    /// Fires one round before [`ProgressDetector::exhausted`] would, so a turn that
-    /// is in fact working gets told what the harness sees and can say so, and a turn
-    /// that is looping is stopped one round later. See the module header on the
-    /// tolerance band.
+    /// The one mid-run correction, or `None`. Fires one round before
+    /// [`ProgressDetector::exhausted`] would, so a turn that is in fact working gets told what
+    /// the harness sees and can say so, and a turn that is looping is stopped one round later.
     pub fn nudge(&mut self) -> Option<String> {
         if !self.armed() || self.nudged || self.run + 1 < self.stall_rounds || self.run == 0 {
             return None;
@@ -255,11 +224,9 @@ impl ProgressDetector {
                  answer them.",
             ),
         }
-        // **Say what happens next.** The version before this one invited the model
-        // to "say so and carry on", which promised latitude the harness does not
-        // grant: one more stalled round and the turn stops regardless. A steer that
-        // offers a choice it cannot honour is the same defect one layer up as a gate
-        // returning *allowed* because nothing is wired.
+        // Say what happens next. The version before this one invited the model to "say so and
+        // carry on", which promised latitude the harness does not grant: one more stalled round
+        // and the turn stops regardless.
         msg.push_str(
             "\n\nIf you already have what you need, answer now. If you do not, ask a \
              *different* question \u{2014} the same one returns the same bytes. If the \
@@ -271,11 +238,8 @@ impl ProgressDetector {
         Some(msg)
     }
 
-    /// What the stalled window contained, with its denominator.
-    ///
-    /// `docs/tool-design-brief.md` §2.2: the size of what was examined travels with
-    /// the number. *"0"* on its own is indistinguishable from a window with no calls
-    /// in it, which is a different fact and would be a different bug.
+    /// What the stalled window contained, with its denominator. `docs/tool-design-brief.md`
+    /// §2.2: the size of what was examined travels with the number.
     pub fn window_summary(&self) -> String {
         let calls = self.window.len();
         let mut tally: Vec<(&'static str, usize)> = Vec::new();
@@ -299,13 +263,9 @@ impl ProgressDetector {
         )
     }
 
-    /// `` `read path=src/main.rs` ×3, `grep pattern=foo` ×2 ``, or `None` when no
-    /// call in the window had been made before — a real and different state, and the
-    /// one where the model was asking new questions that nothing could answer.
-    ///
-    /// The count is **calls this turn**, not calls in the window, and it is worded
-    /// that way where it is printed. The window is the last few rounds; the third
-    /// `read` of a file is evidence whether or not the first two are still inside it.
+    /// `` `read path=src/main.rs` ×3, `grep pattern=foo` ×2 ``, or `None` when no call in the
+    /// window had been made before - a real and different state, and the one where the model
+    /// was asking new questions that nothing could answer.
     pub fn repeats_clause(&self) -> Option<String> {
         let mut counts: Vec<(String, usize)> = Vec::new();
         for o in self.window.iter().filter(|o| o.repeat_call) {
@@ -357,10 +317,8 @@ impl ProgressDetector {
     }
 }
 
-/// The outcome, as one word, for the tally.
-///
-/// Deliberately not `Debug`: `NotRun { why: "…" }` would put a whole sentence into
-/// a count, and this is the axis a reader scans.
+/// The outcome, as one word, for the tally. Deliberately not `Debug`: `NotRun { why: "…" }`
+/// would put a whole sentence into a count, and this is the axis a reader scans.
 fn outcome_word(outcome: &ToolOutcome) -> &'static str {
     match outcome {
         ToolOutcome::Ok => "ok",
@@ -373,11 +331,8 @@ fn outcome_word(outcome: &ToolOutcome) -> &'static str {
     }
 }
 
-/// `read path=src/main.rs` — the call as a person would name it.
-///
-/// Every scalar argument, in the order the model wrote them, rather than a guess at
-/// which one is the interesting one. A guess would be wrong exactly on the tools
-/// nobody anticipated, and the label is evidence: it has to be the call that ran.
+/// `read path=src/main.rs` - the call as a person would name it. Every scalar argument, in
+/// the order the model wrote them, rather than a guess at which one is the interesting one.
 fn label(call: &ToolCall) -> String {
     let mut s = call.name.clone();
     if let Ok(serde_json::Value::Object(map)) =
@@ -424,19 +379,8 @@ mod tests {
         ToolOutcome::Ok
     }
 
-    /// **Starting a background job is progress**, and the operator's own session is where it
-    /// was measured: four rounds in a row, each backgrounding one job, scored as four STALLED
-    /// rounds and drew the nudge —
-    ///
-    ///     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
-    ///     not already seen (4 backgrounded)
-    ///
-    /// Four jobs started, and the turn one round from being stopped for looping.
-    ///
-    /// The cause was `is_effect`, which is the intent ledger's predicate and answers a
-    /// different question: from the ledger's side a backgrounded outcome is not an effect,
-    /// because the job was handed off and has produced nothing to record as done. Here the
-    /// question is whether the round told the model something new, and a job handle is new.
+    /// Starting a background job is progress, and the operator's own session is where it
+    /// was measured
     #[test]
     fn starting_a_background_job_is_not_a_stalled_round() {
         let mut d = ProgressDetector::new(5);
@@ -465,7 +409,7 @@ mod tests {
     }
 
     /// The other half: backgrounding the SAME command twice in a row, with nothing else
-    /// between, is quiet — the fix is not a licence to call every round progress.
+    /// between, is quiet - the fix is not a licence to call every round progress.
     #[test]
     fn the_same_background_call_twice_is_still_quiet() {
         let mut d = ProgressDetector::new(5);
@@ -482,7 +426,7 @@ mod tests {
             );
             d.end_round();
         }
-        // **The FIRST one is still progress and the repeats are not** — which is the rule
+        // The FIRST one is still progress and the repeats are not - which is the rule
         // read correctly rather than a leniency: that round told the model `j7` exists, and
         // the two after it told it the same thing again.
         assert_eq!(d.stalled_run(), 2, "identical bytes are not progress");

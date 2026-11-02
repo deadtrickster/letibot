@@ -1,16 +1,6 @@
-//! **A reviewer firecode had no free slot for WAITS; a review that stops says why.**
-//!
-//! The hub row these tests are written against, on pg-noop's session, 2026-10-12 ~00:56:
-//!
-//! > `queue_blocked — the review of agent/panic-groupingsets-join
-//! > (s-1789919514688401228-sub-1791743034603570463) is BLOCKED after 3 attempts without a
-//! > verdict: the reviewer s-gatekeeper-sub-1791759365511364772 failed: placing this session in a
-//! > firecode VM: io: firecode up refused (exit status: 1): [firecode] starting a VM and leaving it
-//! > up (log: /home/dead/Projects/firecode/runs/up.6DSWx1.log)`
-//!
-//! The operator: *"investigate"*, then *"fix them now"*. Every test drives the real queue thread's
-//! claims ([`RepoQueue::pass`]) and the real reviewers' host ([`serve`]) against a temp repository
-//! and a temp store, with a placement that refuses with firecode's own capacity text.
+//! A reviewer firecode had no free slot for WAITS; a review that stops says why. A shortage
+//! of VM slots used to be counted as a failed attempt, so three refusals in a row blocked a
+//! branch nobody had judged.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -37,7 +27,7 @@ use crate::sessions::gatekeeper::ReviewerPlacement;
 const HOST: &str = "s-gatekeeper";
 const ID: &str = "pg";
 
-/// The capacity refusal of 2026-10-12, as a reviewer's failure carries it.
+/// The capacity refusal, as a reviewer's failure carries it.
 fn no_slot() -> String {
     capacity::tests::FIRECODE_NO_SLOT.to_string()
 }
@@ -46,8 +36,8 @@ fn no_slot() -> String {
 const NO_FIRECODE: &str =
     "placing this session in a firecode VM: io: running firecode: No such file or directory";
 
-/// **What the next reviewer started will do** — refused for want of a slot, refused for a real
-/// reason, or run (and then hand in whatever the test puts at the desk).
+/// What the next reviewer started will do - refused for want of a slot, refused for a real reason, or
+/// run (and then hand in whatever the test puts at the desk).
 #[derive(Clone)]
 enum Next {
     NoSlot,
@@ -55,7 +45,7 @@ enum Next {
     Runs,
 }
 
-/// **A placement with a script**: each `start` takes the next outcome; `collect` answers it.
+/// A placement with a script: each `start` takes the next outcome; `collect` answers it.
 struct Placer {
     script: Mutex<VecDeque<Next>>,
     started: Mutex<Vec<(String, Next)>>,
@@ -116,7 +106,7 @@ struct World {
     desk: ReviewDesk,
     placer: Placer,
     raised: Arc<Mutex<Vec<(String, String)>>>,
-    /// What the pool's `slots` answers — the holders a long wait names.
+    /// What the pool's `slots` answers - the holders a long wait names.
     holders: Vec<String>,
 }
 
@@ -176,7 +166,7 @@ impl World {
             holders: Vec::new(),
         }
     }
-    /// This daemon's lease identity — the owner `env` names (`serve::tests::me`).
+    /// This daemon's lease identity - the owner `env` names (`serve::tests::me`).
     fn me(&self) -> String {
         format!("test/{}", self.tag)
     }
@@ -213,7 +203,7 @@ impl World {
             events: &events,
             warn: &|_: &str, e| events(e),
             deliver: &deliver,
-            // No session of this fixture is live, and its `deliver` takes every message anyway,
+            // No session of this fixture is live, and its `deliver` takes every message anyway
             // so the workspace fallback is never reached.
             live: &|_: &str| false,
             settings: &settings,
@@ -232,8 +222,8 @@ impl World {
         self.serve(); // started
         self.serve(); // collected
     }
-    /// **Time passes** for a capacity wait: its not-before time is moved into the past, as a
-    /// note on the waiting row (which ends no wait).
+    /// Time passes for a capacity wait: its not-before time is moved into the past, as a note on the
+    /// waiting row (which ends no wait).
     fn time_passes(&self) {
         let r = self.row();
         assert_eq!(r.state, ReviewState::Waiting);
@@ -289,9 +279,9 @@ impl World {
     }
 }
 
-/// **Capacity is a wait, not an attempt**: the row goes back to `waiting` (never `blocked`) with
-/// no attempt counted, is NOT claimed again before its time, says so ONCE in the routine register
-/// however many times it is refused, and is reviewed when a slot frees.
+/// Capacity is a wait, not an attempt: the row goes back to `waiting` (never `blocked`) with no attempt
+/// counted, is NOT claimed again before its time, says so ONCE in the routine register however many
+/// times it is refused, and is reviewed when a slot frees.
 #[test]
 fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_frees() {
     let w = World::new(
@@ -308,18 +298,16 @@ fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_f
         "{}",
         r.failure
     );
-    // **The LENGTH of the wait, read off the row's own two stamps.** `deadline_ms` is set from the
-    // `now` the pool read and `state_ms` is the store's, taken microseconds later, so the pair is
-    // the wait itself. Measured against `gate::now_ms()` it was instead *how long the fixture had
-    // been running*: MEASURED 2026-10-31, 48 323 ms on a box carrying six copies of this binary,
-    // with the row's own pair still saying 60 000.
+    // The LENGTH of the wait, read off the row's own two stamps: `deadline_ms` is set from the `now`
+    // the pool read and `state_ms` is the store's, taken microseconds later. Measured against
+    // `gate::now_ms` it would instead be how long the fixture had been running.
     let held_for = r.deadline_ms.unwrap().saturating_sub(r.state_ms);
     assert!(
         (59_000..=60_000).contains(&held_for),
         "the first wait is a minute: {held_for}"
     );
 
-    // Not claimed before its time — firecode is not asked every pass.
+    // Not claimed before its time - firecode is not asked every pass.
     w.queue_pass();
     w.queue_pass();
     assert_eq!(w.row().state, ReviewState::Waiting);
@@ -374,7 +362,7 @@ fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_f
     );
 }
 
-/// **A long wait raises once**, with firecode's own lines for raising the ceiling.
+/// A long wait raises once, with firecode's own lines for raising the ceiling.
 #[test]
 fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
     let w = World::new("long", &[Next::NoSlot, Next::NoSlot, Next::NoSlot]);
@@ -431,9 +419,9 @@ fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
     assert!(w.raised("queue_blocked").is_empty());
 }
 
-/// **Another row of the same branch, already in a capacity wait** — enqueued beside `pg`, its
-/// wait begun `ago_min` minutes ago (and raised as long when `raised`), and held back so the queue
-/// does not claim it. What a red branch looks like: one row per red tip, all for one branch.
+/// Another row of the same branch, already in a capacity wait - enqueued beside `pg`, its wait begun
+/// `ago_min` minutes ago (and raised as long when `raised`), and held back so the queue does not claim
+/// it. What a red branch looks like: one row per red tip, all for one branch.
 fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) {
     let s = w.store();
     let first = w.row();
@@ -493,12 +481,9 @@ fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) {
     );
 }
 
-/// **A wait is the branch's, said once while any of its rows is in it** — pg-noop's
-/// `feat/memory-engine`, 2026-10-15: one row per red tip, and each new row drew its own "waiting
-/// for a VM slot" (16:10, 16:16, 16:34, 16:48, …) and its own "VM slots exhausted" half an hour
-/// later, for one wait that never ended. A new row joining a wait its branch is already in says
-/// nothing new; when the branch's wait passes half an hour it is raised once — and the raise
-/// names what holds each slot.
+/// A wait is the branch's, said once while any of its rows is in it: one row per red tip, and a new row
+/// joining a wait its branch is already in says nothing new. When the branch's wait passes half an
+/// hour it is raised once, and the raise names what holds each slot.
 #[test]
 fn a_new_row_of_a_branch_already_waiting_does_not_say_it_again() {
     let mut w = World::new("branch", &[Next::NoSlot]);
@@ -527,7 +512,7 @@ fn a_new_row_of_a_branch_already_waiting_does_not_say_it_again() {
     }
 }
 
-/// **…and a branch whose wait was already raised is not raised again by its next row.**
+/// …and a branch whose wait was already raised is not raised again by its next row.
 #[test]
 fn a_branch_whose_wait_was_raised_is_not_raised_again_by_a_new_row() {
     let w = World::new("raised", &[Next::NoSlot]);
@@ -542,9 +527,9 @@ fn a_branch_whose_wait_was_raised_is_not_raised_again_by_a_new_row() {
     );
 }
 
-/// **A real placement failure still counts** — and a capacity wait between them does not; the
-/// block names every counted attempt by firecode's or the error's own words, and says they were
-/// placement, not a judgement.
+/// A real placement failure still counts - and a capacity wait between them does not; the block names
+/// every counted attempt by firecode's or the error's own words, and says they were placement, not a
+/// judgement.
 #[test]
 fn a_real_placement_failure_still_counts_and_the_block_names_each_attempt() {
     let w = World::new(
@@ -589,9 +574,9 @@ fn a_real_placement_failure_still_counts_and_the_block_names_each_attempt() {
     );
 }
 
-/// **Three `could not decide` at three heads**: the stop says THAT — how many, at which heads,
-/// the reviewer's decisive `BUT …` sentence, and the operator's verbs — and not an earlier
-/// placement failure, which is not why it stopped.
+/// Three `could not decide` at three heads: the stop says THAT - how many, at which heads, the
+/// reviewer's decisive `BUT …` sentence, and the operator's verbs - and not an earlier placement
+/// failure, which is not why it stopped.
 #[test]
 fn three_could_not_decide_verdicts_are_named_with_their_heads_and_the_decisive_reason() {
     let w = World::new("undecided", &[Next::Broken]);

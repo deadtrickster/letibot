@@ -1,18 +1,6 @@
-//! **The operator's `/nag pause`, end to end through the daemon's own door** — the verb as a head
-//! sends it (`CommandKind::Slash`), the clock it stands down, the hub rows that make it loud, the
-//! settings row a head draws it from, and the session row that carries it across a restart.
-//!
-//! The operator: *"and i need a way to stop todo nags"*, then *"or rather - pause and the pause
-//! must be loud"*. The clock's own reading of a pause is pinned with the times injected in
-//! `sessions/idle_nag.rs`; what only this crate can assert is the seam — that the verb reaches the
-//! clock, that a delivery pass runs no turn for a paused session, that a pause with an end is
-//! LIFTED by the pass that finds it over, and that a resume comes back paused.
-//!
-//! # What this needs, and what it does not
-//!
-//! The vocabulary GGUF (a `Harness` renders its stable prefix at open) and **not a model**: the
-//! endpoint is a port nothing listens on, with no retries — a turn that ran would fail at once,
-//! and the assertions are that none runs.
+//! The operator's `/nag pause`, end to end through the daemon's own door - the verb as a
+//! head sends it (`CommandKind::Slash`), the clock it stands down, the hub rows that make
+//! it loud, the settings row a head draws it from, and the session row that carries it
 
 use std::time::Duration;
 
@@ -34,15 +22,15 @@ fn config(store: &std::path::Path, session_id: &str) -> Config {
     cfg.session_id = session_id.to_string();
     cfg.web_search = None;
     cfg.permission = Vec::new();
-    // **Never this box's model server**, and no ladder: a turn that ran would be the defect, and
-    // it should fail at once rather than hide behind doubling waits.
+    // Never this box's model server, and no ladder: a turn that ran would be the defect, and it
+    // should fail at once rather than hide behind doubling waits.
     cfg.endpoint = Endpoint::new("127.0.0.1", 1);
     cfg.http_retries = 0;
     cfg.vocab_gguf = support::vocab::gguf();
     cfg
 }
 
-/// A store holding one session with an unfinished plan — `todos.rs`'s fixture.
+/// A store holding one session with an unfinished plan - `todos.rs`'s fixture.
 fn seeded(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, String) {
     let dir = std::env::temp_dir().join(format!(
         "harnessd-nag-pause-{tag}-{}-{}-{}",
@@ -140,7 +128,7 @@ fn rows(hub: &Hub, code: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether a `[todo check]` turn was started on this hub — the self-addressed prompt a delivered
+/// Whether a `[todo check]` turn was started on this hub - the self-addressed prompt a delivered
 /// check IS (`Speaker::Agent`).
 fn checked(hub: &Hub) -> bool {
     hub.retained().iter().any(|e| {
@@ -167,9 +155,9 @@ fn nags_row(registry: &Registry, session_id: &str) -> String {
         .unwrap_or_else(|| panic!("the settings carry a `nags` row"))
 }
 
-/// **`/nag pause` stops the arming AND the delivery** — the clock stands down, a delivery pass
-/// whose window has long passed runs no turn, and an operator's added row (R77's sooner check)
-/// arms nothing either. The hub says so, and so does the settings row.
+/// `/nag pause` stops the arming AND the delivery - the clock stands down, a delivery pass whose
+/// window has long passed runs no turn, and an operator's added row arms nothing either. The hub
+/// says so, and so does the settings row.
 #[test]
 fn a_paused_session_is_neither_armed_nor_checked() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -197,7 +185,7 @@ fn a_paused_session_is_neither_armed_nor_checked() {
     let hub = registry.get(&id).expect("the session's hub");
     assert!(!checked(&hub), "no `[todo check]` turn ran");
 
-    // **The operator's own row still lands on the board** — and earns no check while paused.
+    // The operator's own row still lands on the board - and earns no check while paused.
     let out = sessions.dispatch(
         &id,
         &command(CommandKind::SetOperatorTodos {
@@ -226,7 +214,7 @@ fn a_paused_session_is_neither_armed_nor_checked() {
         "R77's sooner check does not slip past the pause"
     );
 
-    // **Loud**: the hub row, the verb's own answer, and the settings row.
+    // Loud: the hub row, the verb's own answer, and the settings row.
     assert_eq!(rows(&hub, "nags_paused").len(), 1, "one `nags_paused` row");
     assert!(
         rows(&hub, "slash")
@@ -237,7 +225,7 @@ fn a_paused_session_is_neither_armed_nor_checked() {
     );
     assert_eq!(nags_row(&registry, &id), "paused until you resume them");
 
-    // **And `/nag resume` puts the clock back.**
+    // And `/nag resume` puts the clock back.
     slash(&mut sessions, &id, "nag resume");
     assert!(
         sessions.next_nag_at().is_some(),
@@ -250,7 +238,7 @@ fn a_paused_session_is_neither_armed_nor_checked() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **`/nag pause 1s` turns itself back on** — the clock's one deadline is the pause's end, and the
+/// `/nag pause 1s` turns itself back on - the clock's one deadline is the pause's end, and the
 /// delivery pass that reaches it lifts the pause, says so, re-arms the check, and runs no turn.
 #[test]
 fn a_pause_with_an_end_lifts_itself_and_re_arms() {
@@ -325,9 +313,9 @@ fn a_pause_with_an_end_lifts_itself_and_re_arms() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The pause survives a restart and a resume** — it is on the session's row, so the daemon that
-/// opens the session next comes back paused, with nothing armed and the settings row saying so;
-/// and a pause whose end passed while nobody held the session comes back OVER, and says it.
+/// The pause survives a restart and a resume - it is on the session's row, so the daemon that opens
+/// the session next comes back paused, with nothing armed and the settings row saying so; and a
+/// pause whose end passed while nobody held the session comes back OVER, and says it.
 #[test]
 fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -351,7 +339,7 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
         "the pause is on the session's row: {stored:?}"
     );
 
-    // **The next daemon.**
+    // The next daemon.
     {
         let (sessions, registry) = opened(&parts, &path, &id);
         assert!(
@@ -375,7 +363,7 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
             "the settings row says it: {}",
             nags_row(&registry, &id)
         );
-        // **The picker's row, off the store, says it too** — through the store source the daemon
+        // The picker's row, off the store, says it too - through the store source the daemon
         // installs at startup (`cli.rs`), which this fixture installs the same way.
         registry.set_source(
             letibot_harnessd::sessions::StoreSessions::open(&config(&path, &id))
@@ -390,7 +378,7 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
         registry.close();
     }
 
-    // **A pause that ran out while nobody held the session.**
+    // A pause that ran out while nobody held the session.
     Store::open(&path)
         .expect("the store")
         .set_nags_paused_until(&id, Some(1_000))

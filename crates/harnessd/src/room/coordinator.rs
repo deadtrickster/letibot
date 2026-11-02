@@ -1,57 +1,6 @@
-//! **The coordinator: a whole `harnessd` whose only job is the room.**
-//!
-//! `docs/room.md` § *The precedent* draws the line this file stands on. The review queue's session
-//! (`crate::sessions::gatekeeper`) is a dedicated, autostarted session inside a daemon whose real
-//! job is the operator's project. The coordinator is a **daemon** whose only job is the room: its
-//! own socket, its own data directory, **no project and no store**, and a session of its own that
-//! arbitrates — the tie-breaker, on the model `--model` names (deepseek by default), the same two
-//! knobs every other role uses.
-//!
-//! # Three things it must do before it serves anything
-//!
-//! 1. **Take the lease** ([`letibot_room::CoordinatorLease`]) — one coordinator per box, or two
-//!    rooms carry one name and no arbiter can settle that. The refusal is the sentence
-//!    [`letibot_room::Held`] carries, naming the live holder and its pid.
-//! 2. **Bind the socket** — after the lease, so a second coordinator is refused *before* it binds
-//!    anything. The order is the point: a lease taken after the bind leaves a window in which two
-//!    sockets are served.
-//! 3. **Say there is no model, and refuse** — a room nobody arbitrates is a queue that fills with
-//!    frozen items. [`configure`] asks the provider's key resolution, which is the same question
-//!    every other role's model is asked at startup, and refuses by name.
-//!
-//! # What it opens
-//!
-//! A session with `cfg.session_id = s-room-<host key>` — derived, so `letibot --session host`
-//! reaches it tomorrow — seated `orchestrator` (the seat with no gated tool, which is the only kind
-//! that opens with nobody attached), with **no store** (`cfg.store = None`), because the room's
-//! state is in memory and a coordinator that could reach a database would eventually put the queue
-//! in it. Its workspace is a directory of its own under the data directory, so nothing it does is
-//! about anybody's project.
-//!
-//! **The seat is load-bearing twice over, and the second half is the one that was missed.**
-//! `orchestrator` is what opens with no adjudicator — and it is also the list of tools the arbiter
-//! can call. `Seat::Orchestrator` resolves `roles::m1_orchestrator()` (`harness.rs`'s
-//! `base_role_for_seat`), and a role that does not NAME `room` has the tool dropped from the
-//! session's registry by `Registry::resolve_role` no matter what `Harness::open` registered. The
-//! tie-breaker would then be woken by this file, handed the prompt below, and have no such tool:
-//! a raised item frozen for ever, which is exactly what [`configure`]'s no-model refusal says it
-//! exists to prevent. `roles::m1_orchestrator()` names `room` for this reason, and
-//! `crates/harnessd/tests/room_coordinator.rs` is the test that says so against a real socket.
-//!
-//! # The tie-breaker, and what wakes it
-//!
-//! The session's own connection to the room is what makes it able to rule: it is the arbiter
-//! ([`letibot_room::Server::with_arbiter`]), so it hears every event, and the events that matter to
-//! it are `Raised` and `Asked` — the two that open a question. But an event only says *there is a
-//! question*; the words and the facts are in [`letibot_room::Question`]. So this file's own thread
-//! watches `open_questions` and puts each new one in front of the session in the arbiter's own
-//! shape — **a sentence with the decision in it, plus the typed facts, never a dashboard** — and
-//! rings the bell. The model answers with the `room` tool's `rule` verb, over its own connection,
-//! and the room applies it.
-//!
-//! Polling is enough here and it is not a compromise: the room has one clock and this thread is a
-//! second reader of the same memory, the questions are rare by construction (three abandonments),
-//! and a prompt for a question already asked is worse than a two-second delay.
+//! The coordinator: a whole `harnessd` whose only job is the room - its own socket, no project
+//! no store. Lease, then bind, then refuse if no model can arbitrate: that order is the point, and
+//! a room nobody arbitrates is a queue that freezes. `docs/room.md` holds the argument.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -66,25 +15,21 @@ use crate::config::{Config, Seat};
 /// seconds and a question is only born from an abandonment, so two seconds is prompt.
 pub const TIE_BREAKER_EVERY_MS: u64 = 2_000;
 
-/// **Turn `cfg` into the coordinator's own configuration**, or refuse with the reason.
-///
-/// Called from `cli::run` the moment `--room` is seen, and **before** anything is bound, opened or
+/// Turn `cfg` into the coordinator's own configuration, or refuse with the reason.
+/// Called from `cli::run` the moment `--room` is seen, and before anything is bound, opened or
 /// loaded: a coordinator with no model must not spend a vocabulary load to find out.
 pub fn configure(cfg: &mut Config) -> Result<(), String> {
     cfg.room = true;
-    // **No store, and it is the whole point.** The room's state is in memory; `sessions.db` is the
-    // operator's, is shared by every daemon on the box, and a coordinator that opened it would be a
-    // second writer to a file it has no business in.
+    // No store, and it is the whole point. The room's state is in memory; `sessions.db` is the
+    // operator's and shared by every daemon, and this one has no business in it.
     cfg.store = None;
-    // **One session, derived from the box.** `letibot --session host` resolves to it (`cli`'s own
-    // name table), so the operator can always reach the agent that arbitrates this machine.
+    // One session, derived from the box, so `letibot --session host` always reaches the agent
+    // that arbitrates this machine.
     cfg.session_id = super::session_id();
     cfg.title = "the room".to_string();
-    // **Two sockets, and they are not the same one.** `room-<host key>.sock` is the ROOM's — what
-    // every session on the box connects to — and the daemon needs one of its own for a head to
-    // attach to the coordinator's session (that is how the operator reaches the arbiter, and how
-    // the wasm pane will). They live side by side, named so a reader can tell which is which;
-    // pointing both at one path would have the room's bind take the daemon's socket away.
+    // Two sockets, and they are not the same one. `room-<host key>.sock` is the ROOM's, which
+    // every session connects to; the daemon needs its own for a head to attach to the arbiter's
+    // session. One path for both would have the room's bind take the daemon's socket away.
     let room_socket = super::socket_path().ok_or_else(|| {
         "a room coordinator needs somewhere to put its socket, and this box has neither \
          $XDG_DATA_HOME nor $HOME — set LETIBOT_ROOM_SOCKET to name one"
@@ -95,9 +40,8 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "room.sock".to_string());
     cfg.socket = room_socket.with_file_name(format!("daemon-{named}"));
-    // **A workspace of its own, and a directory that exists.** A session whose workspace is
-    // missing publishes `workspace_gone` on every wake (`Harness::wake`), which would be the
-    // coordinator's first and only sentence.
+    // A workspace of its own, and a directory that exists. A session whose workspace is
+    // missing publishes `workspace_gone` on every wake - the coordinator's first and only sentence.
     let data = cfg
         .socket
         .parent()
@@ -106,50 +50,33 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     std::fs::create_dir_all(&data)
         .map_err(|e| format!("creating the room's workspace {}: {e}", data.display()))?;
     cfg.workspace = data;
-    // **The seat that opens with nobody attached.** `orchestrator` is the one seat with no gated
-    // tool: `leticode` would be refused at open for an adjudicator nobody is there to answer, which
-    // is the same reasoning `sessions::gatekeeper::SEAT` writes down.
-    //
-    // **And it is the seat that decides whether the arbiter can rule at all.**
-    // `Seat::Orchestrator` resolves `roles::m1_orchestrator()`, and `Registry::resolve_role` keeps
-    // ONLY the tools a role names — so `room` has to be named there, not merely registered by
-    // `Harness::open`. It is (see that role's doc); this line is where the two meet.
+    // The seat that opens with nobody attached - `orchestrator` has no gated tool - and the
+    // seat that decides whether the arbiter can rule at all: `resolve_role` keeps ONLY the tools a
+    // role names, so `room` must be named in `roles::m1_orchestrator`, not merely registered.
     cfg.seat = Seat::Orchestrator;
-    // **And this daemon's own session joins its own room.** `room_link` is `true` on the daemon's
-    // path already (`Config::for_the_daemon`), and it is set here as well because this function is
-    // what makes a daemon a coordinator: a `--room` daemon whose sessions could not join the room
-    // would be a coordinator whose arbiter holds a `NoRoom` tool, and the refusal would arrive one
-    // layer too late to be understood. Set HERE rather than inherited, so a fixture that calls
-    // `configure` on a `for_this_box` config measures the coordinator and not the constructor.
+    // And this daemon's own session joins its own room, so the arbiter does not hold a `NoRoom`
+    // tool and hear the refusal one layer too late. Set HERE rather than inherited, so a fixture
+    // calling `configure` measures the coordinator and not the constructor.
     cfg.room_link = true;
-    // **And it is the one daemon that may NOT restart the room.** The pane's restart control asks a
-    // SUPERVISOR (the launcher), and the arbiter's pane is drawn by the process a restart would
-    // kill: a control that stops its own feed mid-act could not say what happened, which is exactly
-    // what `docs/room.md` rules out. Cleared here rather than left to a caller, because this
-    // function is what makes a daemon a coordinator.
+    // And it is the one daemon that may NOT restart the room: the pane's restart control asks a
+    // SUPERVISOR, and this process draws the pane a restart would kill.
     cfg.restart_room = false;
-    // **No bash, no queue, no project.**
+    // No bash, no queue, no project.
     cfg.allow_bash = false;
     cfg.serve_queues = false;
-    // **And it does not idle out.** A folder's daemon exits after an hour with nothing to do,
-    // because everything it is lives in the store and the next `leticode` resumes it. A coordinator
-    // has no store to resume from — its room is the memory — so an idle exit would be a room that
-    // silently emptied overnight, and every session's `room` tool would find no socket. It is the
-    // box's arbiter: it stays up until somebody stops it.
+    // And it does not idle out. A folder's daemon can exit because the next `leticode` resumes
+    // it from the store; a coordinator has no store, so an idle exit would be a room that silently
+    // emptied overnight and every session's `room` tool would find no socket.
     cfg.idle_exit_after = None;
-    // **The model: `--model`, else `providers.toml`, else deepseek** — the operator's *"a tie
-    // breaker agent (model configurable with deepseek as default)"*. `--provider`/`--model` on the
-    // command line have already been applied by the arg loop, so this only fills an absence.
+    // The model: `--model`, else `providers.toml`, else deepseek - the operator's *"a tie
+    // breaker agent (model configurable with deepseek as default)"*. The arg loop already applied
+    // `--provider`/`--model`, so this only fills an absence.
     if cfg.provider.is_none() && cfg.model.is_empty() {
         crate::cli::apply_main_model(cfg, DEEPSEEK, None);
     }
-    // **And it must be reachable.** A room whose arbiter cannot answer is a queue that freezes
-    // items nobody will ever rule on — worse than no room, because a session's post succeeds and
-    // then nothing happens. Said at startup, by name, with the remedy in the sentence.
-    //
-    // Asked of `provider/model` rather than of `cfg.model`: a metered session's `cfg.model` is the
-    // local vocabulary alias, and the question here is which provider answers and whether its key
-    // resolves on this box.
+    // And it must be reachable - a room whose arbiter cannot answer freezes items nobody will
+    // ever rule on, which is worse than no room. Asked of `provider/model` and not of `cfg.model`
+    // a metered session's `cfg.model` is the local vocabulary alias, not the provider's.
     if let Some(p) = cfg.provider.as_ref() {
         let model = p
             .model
@@ -174,10 +101,10 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     Ok(())
 }
 
-/// **The default model of the tie-breaker** — deepseek, as the operator asked.
+/// The default model of the tie-breaker - deepseek, as the operator asked.
 pub const DEEPSEEK: &str = "deepseek/deepseek-flash";
 
-/// **A running coordinator**, as `cli::run` holds it. Dropping it stops the socket and gives the
+/// A running coordinator, as `cli::run` holds it. Dropping it stops the socket and gives the
 /// lease back, so an orderly stop leaves nothing for the next coordinator to take over.
 pub struct Coordinator {
     server: Server,
@@ -188,10 +115,9 @@ pub struct Coordinator {
 }
 
 impl Coordinator {
-    /// **Take the lease, bind the socket, and start the tie-breaker's watch.**
-    ///
-    /// `bell` is the daemon's — `registry.bell().ring_wake` — and it is what turns *there is a
-    /// question* into a turn of the coordinator's own session.
+    /// Take the lease, bind the socket, and start the tie-breaker's watch. `bell` is the
+    /// daemon's - `registry.bell.ring_wake` - and it is what turns *there is a question* into a
+    /// turn of the coordinator's own session.
     pub fn start(
         session: &str,
         bell: Arc<dyn Fn(&str) + Send + Sync>,
@@ -199,7 +125,7 @@ impl Coordinator {
         let socket = super::socket_path().ok_or_else(|| "no room socket path".to_string())?;
         let lease_path = super::lease_path().ok_or_else(|| "no room lease path".to_string())?;
         let lease = CoordinatorLease::new(lease_path);
-        // **The lease first**, so a second coordinator is refused before it binds anything.
+        // The lease first, so a second coordinator is refused before it binds anything.
         let now = letibot_room::server::now_ms();
         match lease.acquire(now) {
             Ok(Acquired::Fresh) => {}
@@ -230,11 +156,9 @@ impl Coordinator {
         &self.server
     }
 
-    /// **The flag that ends this coordinator's own threads** — the tie-breaker's, and the tag
-    /// agents' upkeep beside it.
-    ///
-    /// Handed out rather than duplicated, so a daemon that started a thread on the coordinator's
-    /// behalf stops it with the coordinator and not on the next process exit.
+    /// The flag that ends this coordinator's own threads - the tie-breaker's, and the tag
+    /// agents' upkeep beside it. Handed out rather than duplicated, so a daemon that started a
+    /// thread on the coordinator's behalf stops it with the coordinator.
     pub fn stop_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         Arc::clone(&self.stop)
     }
@@ -293,9 +217,8 @@ fn spawn_tie_breaker(
         .ok()
 }
 
-/// **The question, in the arbiter's own shape** — a sentence with the decision in it, and the typed
-/// facts beside it. Never a dashboard: `docs/room.md` § *Where the tie-breaker decides* is the
-/// argument, and a model handed a table answers with a paragraph about the table.
+/// The question, in the arbiter's own shape - a sentence with the decision in it, and the typed
+/// facts beside it. Never a dashboard: a model handed a table answers with a paragraph about it.
 pub fn tie_breaker_prompt(q: &letibot_room::Question) -> String {
     format!(
         "[room] question #{id} is yours to rule on.\n\n{text}\n\nfacts: {facts}\n\n\
@@ -315,10 +238,8 @@ mod tests {
     use letibot_room::client::Client;
     use letibot_room::{Request, Response, Speaker};
 
-    /// **One test at a time for anything that sets `LETIBOT_ROOM_SOCKET`.** It is a process-wide
-    /// variable and the harness runs a module's tests in parallel, so two tests that each point it
-    /// at their own directory would otherwise read each other's answer — the socket one bound and
-    /// the other asserted about.
+    /// One test at a time for anything that sets `LETIBOT_ROOM_SOCKET` - it is process-wide and
+    /// the harness runs a module's tests in parallel, so two tests would read each other's answer.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -347,7 +268,7 @@ mod tests {
 
         let outcome = configure(&mut cfg);
         unsafe { std::env::remove_var(super::super::SOCKET_ENV) };
-        // The model check is the box's own — this test asserts the SHAPE, not whether a key exists.
+        // The model check is the box's own - this test asserts the SHAPE, not whether a key exists.
         if let Err(why) = outcome {
             assert!(
                 why.contains("no model to arbitrate with"),
@@ -372,9 +293,9 @@ mod tests {
         assert!(!cfg.allow_bash);
         assert!(!cfg.serve_queues);
         assert_eq!(cfg.seat, Seat::Orchestrator);
-        // **And the arbiter's own session can reach the room it arbitrates.** Without this the
-        // seat names `room` and the tool behind it is a `NoRoom`: the tie-breaker is woken, told
-        // to call a tool it cannot use, and a raised item stays frozen.
+        // And the arbiter's own session can reach the room it arbitrates. Without this the seat
+        // names `room` and the tool behind it is a `NoRoom`: the tie-breaker is woken, told to call
+        // a tool it cannot use, and a raised item stays frozen.
         assert!(
             cfg.room_link,
             "a coordinator's own session must join the room: the arbiter rules through it"
@@ -426,7 +347,7 @@ mod tests {
         }
     }
 
-    /// **The coordinator's whole runtime, on a socket of its own**: the lease, the server, the
+    /// The coordinator's whole runtime, on a socket of its own: the lease, the server, the
     /// arbiter, and a real client ruling through it. No daemon, no store, no model.
     #[test]
     fn a_coordinator_serves_a_question_to_its_arbiter_and_takes_the_ruling() {
@@ -473,7 +394,7 @@ mod tests {
         let questions = coord.server().open_questions();
         assert_eq!(questions.len(), 1, "three abandonments raise one question");
 
-        // **The tie-breaker's own door**: the prompt it is given, and the ruling it makes.
+        // The tie-breaker's own door: the prompt it is given, and the ruling it makes.
         let prompt = tie_breaker_prompt(&questions[0]);
         assert!(prompt.contains("question #1"), "{prompt}");
         let ruling = a
@@ -489,7 +410,7 @@ mod tests {
         assert!(matches!(ruling, Response::Ruled { .. }), "{ruling:?}");
         assert!(coord.server().open_questions().is_empty());
         drop(coord);
-        // **An orderly stop gives the lease back**, so the next coordinator is a FRESH start and
+        // An orderly stop gives the lease back, so the next coordinator is a FRESH start and
         // not a takeover of a dead one.
         let lease = CoordinatorLease::new(super::super::lease_path().unwrap());
         assert_eq!(lease.read(), None);

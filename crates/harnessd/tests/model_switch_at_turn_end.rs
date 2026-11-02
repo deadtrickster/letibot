@@ -1,8 +1,8 @@
-//! **A model switch takes effect when the turn ends, never inside one.**
+//! A model switch takes effect when the turn ends, never inside one.
 //!
 //! # The report, and the screen it was measured on
 //!
-//! 2026-10-26 14:36, the operator's Stroppy session, `glm-coding/glm-5.3` → `deepseek/deepseek-flash`:
+//! 2026-10-26 14:36, the operator's Stroppy session, `glm-coding/glm-5.3` → `deepseek/deepseek-flash`
 //!
 //! ```text
 //! slash · /models deepseek/deepseek-flash   turns go to deepseek/deepseek-flash from the next one on…
@@ -13,10 +13,10 @@
 //! ```
 //!
 //! The daemon's request dump (`harnessd-2000f08acfaa.log`, request `9f2a5669…`) shows why: the round
-//! was re-issued on deepseek carrying the rest of GLM's turn — a run of assistant tool-call rounds
+//! was re-issued on deepseek carrying the rest of GLM's turn - a run of assistant tool-call rounds
 //! since the last user message, most with no `reasoning_content`. Deepseek's thinking mode requires
 //! reasoning to be passed back for the tool-call rounds of the CURRENT turn, and is right to: those
-//! rounds are another model's. Their words for the rule: **"we can switch after turn ends"**.
+//! rounds are another model's. Their words for the rule: "we can switch after turn ends".
 //!
 //! # What is measured here, and against a real daemon
 //!
@@ -25,27 +25,24 @@
 //! already running when the switch arrives, and the only honest way to measure that is to let one
 //! run and fail.
 //!
-//!   * **A — a switch during a running turn.** The prompt goes to the OLD model, which answers its
-//!     first round with a tool call and refuses the second; `/models glm/glm-4.6` goes in while that
-//!     second round is failing. The turn stays on the old model and ends FAILED; the switch is said
-//!     as *"turns go to glm/glm-4.6 when this turn ends"*, then applied. The next prompt's request
-//!     is the FIRST thing the new model ever sees, and what it carries is the assertion that
-//!     matters: the old turn's tool-call rounds are in the history, the last message is a USER
-//!     message, and there is no assistant tool-call round after it.
-//!   * **B — a switch during a failing round's retries.** `http_retries = 1`, so the ladder takes the
-//!     round again: every attempt is still sent to the old model, and the new one is sent nothing at
-//!     all until the next prompt. This is the *"the model changed … while this round was failing"*
-//!     line being unmade.
-//!   * **C — `[fallback]` is the same rule for the daemon's own switch.** No `/models` at all: the
-//!     model is out, `[fallback] models` names where this session goes, and it goes there when the
-//!     turn ends rather than being re-issued there.
-//!   * **D — an interrupted turn applies the pending switch.** A switch recorded during a failing
-//!     turn's ladder survives the operator's own interrupt: the turn ends the other way, and the
-//!     switch still lands.
+//! * A - a switch during a running turn. The prompt goes to the OLD model, which answers its
+//!   first round with a tool call and refuses the second; `/models glm/glm-4.6` goes in while that
+//!   second round is failing. The turn stays on the old model and ends FAILED; the switch is said
+//!   as *"turns go to glm/glm-4.6 when this turn ends"*, then applied. The next prompt's request
+//!   is the FIRST thing the new model ever sees, and what it carries is the assertion that
+//!   matters: the old turn's tool-call rounds are in the history, the last message is a USER
+//!   message, and there is no assistant tool-call round after it. * B - a switch during a failing round's retries. `http_retries = 1`, so the ladder takes the
+//!   round again: every attempt is still sent to the old model, and the new one is sent nothing at
+//!   all until the next prompt. This is the *"the model changed … while this round was failing"*
+//!   line being unmade. * C - `[fallback]` is the same rule for the daemon's own switch. No `/models` at all: the
+//!   model is out, `[fallback] models` names where this session goes, and it goes there when the
+//!   turn ends rather than being re-issued there. * D - an interrupted turn applies the pending switch. A switch recorded during a failing
+//!   turn's ladder survives the operator's own interrupt: the turn ends the other way, and the
+//!   switch still lands.
 //!
 //! # One test, four sessions, and why not four tests
 //!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs the tests in a binary in parallel —
+//! `XDG_CONFIG_HOME` is process-global and libtest runs the tests in a binary in parallel -
 //! `apparatus::present`'s own tests carry the measurement of what that costs. So the scratch config
 //! dir is pointed at once, by the single test that owns this process, and the four scenarios run in
 //! sequence inside it. `slash.rs` is the same shape for the same reason.
@@ -72,19 +69,16 @@ const ANSWER: &str = "the-round-went-through";
 /// The first prompt. Nothing tool-shaped in it: where a round is sent is this file's subject.
 const PROMPT: &str = "say hello";
 
-/// The second prompt — **the user message the first request on the new model must follow**.
+/// The second prompt - the user message the first request on the new model must follow.
 const NEXT: &str = "now carry on";
 
 /// The file the old model's tool round reads, so that turn has a real tool-call round in its
 /// history. Its contents do not matter; that the round EXISTS is the point.
 const TOOL_FILE: &str = "notes.txt";
 
-/// How long the old model holds a request before answering `429`.
-///
-/// **This is the operator's window**, made reachable: a round in flight when they typed `/models`,
-/// and a stub that answered instantly would close that window before a test thread could get a line
-/// into the queue. Not a synchronisation — the driver waits on the stub's own request count — but
-/// the difference between a window of milliseconds and one of most of a second.
+/// How long the old model holds a request before answering `429`: the operator's window
+/// made reachable. The driver waits on the stub's request count; without it a round in flight
+/// would close before a line could be queued.
 const REFUSAL_HOLD_MS: u64 = 900;
 
 /// The provider's own words, as they arrived. The retry policy reads this: a 429 whose body names
@@ -96,12 +90,9 @@ const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhau
 // The two stubs
 // ---------------------------------------------------------------------------
 
-/// One loopback model, plus every request body it was sent.
-///
-/// The bodies are the evidence: `model` says which model the harness believed it was talking to,
-/// and `messages` says what the model was asked to continue — which is the whole of what deepseek
-/// refused. `Clone` is cheap and shares the recorder: the stub's thread holds one handle and each
-/// scenario's driver thread takes another.
+/// One loopback model, plus every request body it was sent: `model` says which model the
+/// harness believed it was talking to, `messages` what it was asked to continue. `Clone`
+/// shares the recorder.
 #[derive(Clone)]
 struct Model {
     port: u16,
@@ -134,24 +125,24 @@ impl Model {
     }
 }
 
-/// **What a stub does with one request**, from `model`'s script — the nth request gets the nth
+/// What a stub does with one request, from `model`'s script - the nth request gets the nth
 /// entry, and the last entry repeats for ever.
 #[derive(Clone, Copy)]
 enum Act {
     /// A `read` tool call: a round that runs a real tool and asks the model again after it.
     ToolCall,
-    /// The provider's own 429, after [`REFUSAL_HOLD_MS`] — the operator's quota, and the window a
+    /// The provider's own 429, after [`REFUSAL_HOLD_MS`] - the operator's quota, and the window a
     /// `/models` is typed in.
     Refuse,
     /// One text answer, all at once.
     Answer,
-    /// **An answer dribbled out one delta at a time**, slowly enough that a steer arrives between
+    /// An answer dribbled out one delta at a time, slowly enough that a steer arrives between
     /// two of them. An urgent steering message is only acted on where a delta is delivered (a
     /// refused round delivers none), so this is what makes an interrupted turn reachable at all.
     Slow,
 }
 
-/// **A loopback model with a script** — see [`Act`].
+/// A loopback model with a script - see [`Act`].
 fn model(script: &'static [Act]) -> Model {
     let listener = TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
     let port = listener.local_addr().unwrap().port();
@@ -245,23 +236,23 @@ fn model(script: &'static [Act]) -> Model {
     }
 }
 
-/// **The model every scenario begins on**: one tool round, then the operator's own 429 for ever.
+/// The model every scenario begins on: one tool round, then the operator's own 429 for ever.
 fn old_model() -> Model {
     model(&[Act::ToolCall, Act::Refuse])
 }
 
-/// **The model a switch moves to**: one plain answer.
+/// The model a switch moves to: one plain answer.
 fn new_model() -> Model {
     model(&[Act::Answer])
 }
 
-/// **The model an INTERRUPT is measured on**: the same tool round and refusal, and then a slow
-/// answer — so the operator's interrupt arrives at a round that is generating and is heard there.
+/// The model an INTERRUPT is measured on: the same tool round and refusal, and then a slow
+/// answer - so the operator's interrupt arrives at a round that is generating and is heard there.
 fn slow_model() -> Model {
     model(&[Act::ToolCall, Act::Refuse, Act::Slow])
 }
 
-/// Drain one request — headers plus the body `Content-Length` names — and answer its body, so the
+/// Drain one request - headers plus the body `Content-Length` names - and answer its body, so the
 /// client's write side is finished before the reply arrives.
 fn read_request(s: &mut TcpStream) -> String {
     let mut acc: Vec<u8> = Vec::new();
@@ -299,15 +290,15 @@ fn read_request(s: &mut TcpStream) -> String {
 // What one request says about the model it was sent to
 // ---------------------------------------------------------------------------
 
-/// **The facts about one request this file asserts on** — read off the body the harness actually
+/// The facts about one request this file asserts on - read off the body the harness actually
 /// sent, not off the daemon's intent.
 struct Sent {
     /// What `model` said: the identity the harness believed it was talking to.
     model: String,
     /// The roles, in order, as the provider received them.
     roles: Vec<String>,
-    /// **Is this request ending inside a run of assistant tool-call rounds?** That is the shape
-    /// deepseek's thinking mode refuses — another model's half-finished turn — and the reason the
+    /// Is this request ending inside a run of assistant tool-call rounds? That is the shape
+    /// deepseek's thinking mode refuses - another model's half-finished turn - and the reason the
     /// switch waits for the turn to end.
     ends_mid_tool_run: bool,
     /// The last message's text: the operator's prompt for a turn they started, and the daemon's
@@ -323,7 +314,7 @@ fn sent(body: &str) -> Sent {
         .iter()
         .map(|m| m["role"].as_str().unwrap_or("?").to_string())
         .collect();
-    // **The last message's own words** — for the continuation, that is the notice the daemon
+    // The last message's own words - for the continuation, that is the notice the daemon
     // wrote, which is the only thing that says where the work is being picked up from.
     let last_text = msgs
         .last()
@@ -357,13 +348,13 @@ fn sent(body: &str) -> Sent {
 /// Everything one head has seen, folded to the facts this file asserts on.
 #[derive(Default)]
 struct Rec {
-    /// Every `model_endpoint_retry` sentence, in order — what a person read.
+    /// Every `model_endpoint_retry` sentence, in order - what a person read.
     retries: Vec<String>,
     /// Every `model_switch_pending` sentence: *when* the switch will take.
     pending: Vec<String>,
     /// Every `model_switch_applied` sentence.
     applied: Vec<String>,
-    /// Every `model_switch_not_applied` sentence — there must be none.
+    /// Every `model_switch_not_applied` sentence - there must be none.
     refused: Vec<String>,
     /// Every `slash` answer, in order.
     slashes: Vec<String>,
@@ -371,7 +362,7 @@ struct Rec {
     listing: String,
     /// Turns the daemon reported as failed.
     failed: usize,
-    /// **Why each of those turns failed**, in the daemon's words — the interrupt's own name is in
+    /// Why each of those turns failed, in the daemon's words - the interrupt's own name is in
     /// here when the turn ended on the operator's word rather than on a provider's refusal.
     failures: Vec<String>,
 }
@@ -387,7 +378,7 @@ impl Rec {
         self.retries.iter().find(|d| d.contains("[fallback]"))
     }
 
-    /// **Every notice that says the round is being waited for** — the evidence a retry happened.
+    /// Every notice that says the round is being waited for - the evidence a retry happened.
     fn backoffs(&self) -> Vec<&String> {
         self.retries
             .iter()
@@ -395,7 +386,7 @@ impl Rec {
             .collect()
     }
 
-    /// The answers to a `/models NAME` switch — *turns go to …* — as opposed to the listing.
+    /// The answers to a `/models NAME` switch - *turns go to …* - as opposed to the listing.
     fn switch_answers(&self) -> Vec<&String> {
         self.slashes
             .iter()
@@ -454,7 +445,7 @@ fn fold(rec: &mut Rec, inb: Inbound) {
     }
 }
 
-/// Pump until `done`, folding every frame in. The deadline is generous — it exists so a regression
+/// Pump until `done`, folding every frame in. The deadline is generous - it exists so a regression
 /// reads as its missing fact rather than as a hung test.
 fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -467,7 +458,7 @@ fn watch(rx: &Receiver<Inbound>, rec: &mut Rec, done: impl Fn(&Rec) -> bool) {
     }
 }
 
-/// **Wait for a fact about the STUB, not about the socket** — the request counts are the only thing
+/// Wait for a fact about the STUB, not about the socket - the request counts are the only thing
 /// in this file that moves on the model's side of the wire, and every scenario's window is opened by
 /// one of them.
 fn until(what: &str, cond: impl Fn() -> bool) {
@@ -481,7 +472,7 @@ fn until(what: &str, cond: impl Fn() -> bool) {
     panic!("waited 30s for {what}");
 }
 
-/// **Is the model's answer a row yet** — the proof a turn finished successfully, read off the
+/// Is the model's answer a row yet - the proof a turn finished successfully, read off the
 /// daemon's own snapshot rather than off an event tally.
 fn answered(hub: &Hub) -> bool {
     hub.snapshot()
@@ -491,9 +482,9 @@ fn answered(hub: &Hub) -> bool {
         .any(|i| matches!(i, TranscriptItem::Assistant { text, .. } if text.contains(ANSWER)))
 }
 
-/// **Every user row's speaker and first words**, off the daemon's snapshot — the transcript is
+/// Every user row's speaker and first words, off the daemon's snapshot - the transcript is
 /// where "whose words are these" is recorded, and a notice the daemon wrote must not read as the
-/// operator's (`Speaker::Agent`, R42).
+/// operator's.
 fn user_rows(hub: &Hub) -> Vec<(String, String)> {
     hub.snapshot()
         .items
@@ -515,14 +506,14 @@ fn user_rows(hub: &Hub) -> Vec<(String, String)> {
         .collect()
 }
 
-/// **Does the transcript carry the daemon's `[fallback]` notice, in the harness's own voice?**
+/// Does the transcript carry the daemon's `[fallback]` notice, in the harness's own voice?
 fn carries_the_daemons_notice(hub: &Hub) -> bool {
     user_rows(hub)
         .iter()
         .any(|(speaker, text)| speaker == "agent" && text.starts_with("[fallback] "))
 }
 
-/// **A config for one session of this file**, on the box's own vocabulary.
+/// A config for one session of this file, on the box's own vocabulary.
 fn config(
     scratch: &std::path::Path,
     gguf: &std::path::Path,
@@ -537,7 +528,7 @@ fn config(
         std::fs::write(ws.join(TOOL_FILE), "the file a tool round reads\n").expect("the file");
     }
     let mut cfg = Config::for_this_box(&ws);
-    // **Not this box's configuration** (`wired.rs`'s rule): no web search, no permission file, no
+    // Not this box's configuration (`wired.rs`'s rule): no web search, no permission file, no
     // seat that asks a person anything.
     cfg.web_search = None;
     cfg.permission = Vec::new();
@@ -545,7 +536,7 @@ fn config(
     cfg.vocab_gguf = Some(gguf.to_path_buf());
     cfg.session_id = format!("model-switch-{tag}");
     cfg.socket = scratch.join(format!("{tag}.sock"));
-    // **A store, because the choice is written to the session row** — that is half of what a switch
+    // A store, because the choice is written to the session row - that is half of what a switch
     // is (`Harness::persist_provider_choice`), and a session without one would let this file pass
     // while that half did nothing.
     cfg.store = Some(scratch.join(format!("{tag}.db")));
@@ -557,18 +548,15 @@ fn config(
         api_key: None,
         thinking: false,
     });
-    // **No ladder unless a scenario asks for one.** A 429 that names a reset time is not something
+    // No ladder unless a scenario asks for one. A 429 that names a reset time is not something
     // to wait out: the turn ends, which is what these scenarios need to see.
     cfg.http_retries = 0;
     cfg
 }
 
-/// **One session, one daemon, one head** — the arrangement `run_off_worker.rs` uses, with the
-/// driver on a thread of its own and the worker loop on this one.
-///
-/// `body` runs on the driver thread with the head, the pump and the hub. When it returns, this asks
-/// the session `/models` — **the turn's own end**, since the worker is inside the turn until it
-/// finishes — and only then closes the registry, which is what ends `daemon.run`.
+/// One session, one daemon, one head, with the driver on a thread of its own. When `body`
+/// returns this asks `/models`, which is the turn's own end, and then closes the registry
+/// which is what ends `daemon.run`.
 fn drive<F>(parts: &Parts, cfg: Config, body: F) -> (Rec, Arc<Hub>, Config)
 where
     F: FnOnce(&mut HeadClient, &Receiver<Inbound>, &Arc<Hub>, &mut Rec) + Send + 'static,
@@ -602,7 +590,7 @@ where
         std::thread::spawn(move || {
             let mut client = client;
             let mut rec = Rec::default();
-            // **The registry is closed even if the driver panics**, and that is not tidiness: a
+            // The registry is closed even if the driver panics, and that is not tidiness: a
             // panic here would otherwise leave `daemon.run` blocked on a bell nobody rings, and a
             // regression would read as a hung test rather than as the missing fact it is.
             let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -690,26 +678,25 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
     // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
-    // ── A. The switch waits for the turn, and the next turn is the first request on the new model
-    //
-    // The old model runs one round with a tool call and then refuses; `/models glm/glm-4.6` goes in
-    // while that second round is in flight, which is the operator's own window.
+    // A. The switch waits for the turn, and the next turn is the first request on the new model.
+    // `/models` goes in while the old model's second round is in flight, which is the operator's
+    // own window.
     old.forget();
     new.forget();
     let cfg = config(&scratch, &gguf, "window", "deepseek", "deepseek-chat");
     let (o, _n) = (old.clone(), new.clone());
     let (rec, _hub, _cfg) = drive(&parts, cfg, move |client, rx, hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        // **The switch goes in while the refusing round is in flight.** The stub's own request count
+        // The switch goes in while the refusing round is in flight. The stub's own request count
         // is the signal: one was the tool round, two means the round that will fail has arrived and
         // is being held.
         until("the refusing round to arrive", || o.count() >= 2);
         client
             .slash(0, "models glm/glm-4.6")
             .expect("the switch is accepted");
-        // **It is not applied.** The sentence says when, and the turn goes on to its own end.
+        // It is not applied. The sentence says when, and the turn goes on to its own end.
         watch(rx, rec, |rec| rec.when_it_ends().is_some());
-        // And the switch lands where the turn did — after it, on the way out.
+        // And the switch lands where the turn did - after it, on the way out.
         watch(rx, rec, |rec| !rec.applied.is_empty());
         // The next turn, and the first thing the new model is ever sent.
         client
@@ -746,7 +733,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "the switch was refused: {:?}",
         rec.refused
     );
-    // **The verb's own reply says when it takes**, and is answered inside the turn — which is the
+    // The verb's own reply says when it takes, and is answered inside the turn - which is the
     // half of the 2026-10-12 change worth keeping now that the switch itself waits.
     assert_eq!(
         rec.switch_answers().len(),
@@ -759,7 +746,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "and the answer says when: {:?}",
         rec.switch_answers()
     );
-    // **The turn it was typed in stayed on the old model.** No retry notice, because nothing was
+    // The turn it was typed in stayed on the old model. No retry notice, because nothing was
     // re-issued anywhere: the round failed on the model the turn started on.
     let old_sent: Vec<Sent> = old.sent().iter().map(|b| sent(b)).collect();
     assert!(
@@ -772,10 +759,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "the retry loop announced a model change: {:?}",
         rec.retries
     );
-    // **And the new model's first request is the next turn's, not the rest of this one.** This is
-    // the assertion the whole change exists for: the history it inherits ends at a user message,
-    // and the old turn's tool-call rounds sit BEFORE it — which is what a provider that demands
-    // `reasoning_content` for the current turn's rounds can read.
+    // And the new model's first request is the next turn's, not the rest of this one: the history
+    // it inherits ends at a user message, with the old turn's tool-call rounds before it.
     let new_sent: Vec<Sent> = new.sent().iter().map(|b| sent(b)).collect();
     assert_eq!(
         new_sent.len(),
@@ -800,7 +785,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "the new model was handed a run of assistant tool-call rounds: {:?}",
         first_new.roles
     );
-    // And it really did carry the old turn's tool round — otherwise the assertion above is about an
+    // And it really did carry the old turn's tool round - otherwise the assertion above is about an
     // empty history rather than about a turn that ended.
     assert!(
         first_new
@@ -816,11 +801,9 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.listing
     );
 
-    // ── B. A switch during a failing round's RETRIES changes nothing about the retries
-    //
-    // `http_retries = 1`: the ladder takes the round again once. Every attempt is still sent to the
-    // old model, and the new one is sent nothing until the next prompt. This is the operator's *"the
-    // model changed to … while this round was failing"* line being unmade.
+    // B. A switch during a failing round's RETRIES changes nothing about the retries
+    // `http_retries = 1` takes the round again once, still on the old model, and the new one is
+    // sent nothing until the next prompt.
     old.forget();
     new.forget();
     let mut cfg = config(&scratch, &gguf, "ladder", "deepseek", "deepseek-chat");
@@ -856,7 +839,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "every retry was sent to the model the turn started on: {:?}",
         old_sent.iter().map(|s| &s.model).collect::<Vec<_>>()
     );
-    // **ONE request in all** — the next prompt's. A retry that had picked the switch up would be a
+    // ONE request in all - the next prompt's. A retry that had picked the switch up would be a
     // second one here, and it is the request the operator's screen named.
     let after: Vec<Sent> = new.sent().iter().map(|b| sent(b)).collect();
     assert_eq!(
@@ -873,13 +856,9 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.slashes
     );
 
-    // ── C. `[fallback]` — the switch takes at the turn's end, and the WORK GOES ON
-    //
-    // No `/models` at all and no second prompt either: the model is out, the list names where this
-    // session goes, and the daemon opens the next turn itself — in the harness's voice, on the new
-    // model, with the notice as its user item. That is the operator's ruling of 2026-10-12 (*"when
-    // it finally applied the turn didnt continue"*) measured end to end: nobody types anything,
-    // and the work is carried on.
+    // C. `[fallback]`: the switch takes at the turn's end and the work goes on. Nobody types
+    // anything: the model is out, the list names where the session goes, and the daemon opens the
+    // next turn itself on the new model, with the notice as its user item.
     old.forget();
     new.forget();
     let mut cfg = config(&scratch, &gguf, "fallback", "deepseek", "deepseek-chat");
@@ -887,7 +866,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
     let (rec, hub, _cfg) = drive(&parts, cfg, move |client, rx, hub, rec| {
         // The first turn is the operator's.
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        // **And then nothing**: the daemon's own turn is what answers, so this waits for the answer
+        // And then nothing: the daemon's own turn is what answers, so this waits for the answer
         // row rather than sending a prompt to provoke it.
         until("the continuation turn's answer", || answered(hub));
         watch(rx, rec, |rec| rec.failed > 0 && !rec.applied.is_empty());
@@ -909,7 +888,7 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         said.contains("the daemon opens the next turn itself"),
         "and that the work goes on without anyone typing: {said}"
     );
-    // **One request, and it is the continuation's** — no operator prompt follows the fallback in
+    // One request, and it is the continuation's - no operator prompt follows the fallback in
     // this scenario, so a second request here would be a turn nobody started.
     let new_sent: Vec<Sent> = new.sent().iter().map(|b| sent(b)).collect();
     assert_eq!(
@@ -947,8 +926,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         "which names what refused and where the work goes on: {:?}",
         continuation.last_text
     );
-    // **And it is the harness's row, not the operator's.** A head draws the two differently
-    // (R42), and a continuation that read as a prompt would be the session talking as a person
+    // And it is the harness's row, not the operator's. A head draws the two differently
+    // , and a continuation that read as a prompt would be the session talking as a person
     // who said nothing.
     assert!(
         carries_the_daemons_notice(&hub),
@@ -962,12 +941,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         rec.listing
     );
 
-    // ── D. An interrupted turn applies the pending switch
-    //
-    // This is the session that goes slow after its refusal, so the operator's interrupt arrives at a
-    // round that is GENERATING and is heard there (a refused round delivers no delta, and an urgent
-    // steer is only acted on where one is). The switch is recorded after the first refusal, and the
-    // turn then ends the other way — and it still lands.
+    // D. An interrupted turn applies the pending switch: the interrupt is heard at a round that is
+    // generating, the switch is recorded after the first refusal, and the turn ends the other way.
     old.forget();
     new.forget();
     slow.forget();
@@ -980,8 +955,8 @@ fn a_model_switch_takes_effect_when_the_turn_ends() {
         client
             .slash(0, "models glm/glm-4.6")
             .expect("the switch is accepted");
-        // **The interrupt goes in once the switch is recorded**, and reaches the slow round the
-        // retry takes after the backoff — a turn that ends on the operator's word rather than on
+        // The interrupt goes in once the switch is recorded, and reaches the slow round the
+        // retry takes after the backoff - a turn that ends on the operator's word rather than on
         // the ladder's.
         watch(rx, rec, |rec| rec.when_it_ends().is_some());
         until("the slow round to start", || s.count() >= 3);

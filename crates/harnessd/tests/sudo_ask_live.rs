@@ -1,61 +1,5 @@
-//! **The daemon's own words for the hang** — a live `harnessd` on this box, its stderr
-//! redirected to a file, an operator run driven through the socket.
-//!
-//! This is the capture the operator asked for and did not get. Their live daemon's log
-//! (`/home/dead/logs/harnessd.log`) holds only its startup disclosures, so *"the command
-//! appears queued and the daemon hangs"* arrived with nothing behind it. What this file does is
-//! reproduce the state with a daemon of this branch — **the real binary, its own worker, its own
-//! socket, its own store under a temp path** — and write down both of the voices it has:
-//!
-//! * its **stderr**, which is the file the operator reads, captured to a temp path; and
-//! * its **session log**, read off the socket as the frames a head receives.
-//!
-//! # The state being reproduced
-//!
-//! `! sudo apt install mc`, after the password: `apt` runs as root, so `/proc/<pid>/fd/0` is
-//! `EACCES` for the daemon, and the process that is waiting at `Continue? [Y/n]` cannot be
-//! looked at. No card can be raised (a card is a *reading* of the process, and this is a
-//! failure to read one), the run holds the daemon's single worker, and the `!` line's echo
-//! still says `queued` because no row has landed.
-//!
-//! A real `sudo` is not used — this test must not depend on the box's sudo policy, and the
-//! password path is covered by `sudo_ask.rs`. What stands in for `apt` is the same thing that
-//! file uses: **`PR_SET_DUMPABLE 0`**, which is the flag a setuid exec sets and which makes
-//! `/proc/<pid>/fd/0` `EACCES` for every reader without `CAP_SYS_PTRACE`. MEASURED 2026-10-06:
-//! `readlink /proc/1/fd/0` → `PermissionDenied` for a root process, and the same for an
-//! undumpable process of this uid, with `wchan` reading `0` — the kernel's own *could not look*.
-//!
-//! # What is asserted
-//!
-//! 1. **The daemon says it cannot tell** — `operator_run_unreadable` on the session log, once,
-//!    naming the command and `!send`.
-//! 2. **The way in works on a real daemon**: `!send` reaches the run's stdin and the run ends,
-//!    which is the difference between a command that is *answerable* and one that hangs.
-//! 3. **The daemon's stderr is the file it always was** — its banner and its per-turn lines —
-//!    and it carries no line about the run at all. That is stated rather than assumed: it is why
-//!    the operator's own capture came up empty, and it is why the sentence had to go where a
-//!    head reads it (the session log, which the store keeps) rather than to a file nobody
-//!    tails.
-//!
-//! # The other three, which are the operator's second report
-//!
-//! The three above are one half of the case. The other half is the report they made **after**
-//! they had seen the sentence once — *"so i start it completely fresh and do apt install and
-//! harnessd hangs without printing anything to me"* — and each of the three tests below is one
-//! of the facts that made that run silent:
-//!
-//! 4. `a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape` — the same case
-//!    with a **real root process** in the tree (`/usr/bin/su`, setuid, reading the terminal)
-//!    rather than a stand-in of this uid. The detection must not depend on the stand-in being
-//!    faithful.
-//! 5. `the_operators_own_sudo_line_says_something_while_it_is_stuck` — `! sudo apt install mc`,
-//!    character for character, through the daemon's own shim and `SUDO_ASKPASS`, with the
-//!    password card answered by a head.
-//! 6. `a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at` — **the one that was
-//!    silent**. The unreadable report used to be gated behind the 250 ms quiet beat the *card*
-//!    needs, and `apt` streams its progress, so a run nobody could see the output of never had
-//!    the beat and was never reported on. It is reported either way now, and the sentence says
-//!    which of the two facts it is.
+//! A live `harnessd` on this box, its stderr to a file, and an operator `!` run whose
+//! waiting process it may not look at.
 
 // `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
 // `<linux/prctl.h>`: there is no macOS spelling of the same shape.
@@ -75,19 +19,16 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 const PATIENCE: Duration = Duration::from_secs(90);
 
 /// `PR_SET_DUMPABLE`, from `<linux/prctl.h>`. The one libc call in this file, declared rather
-/// than pulled in with a crate — and the whole of what stands in for a root `apt`.
+/// than pulled in with a crate - and the whole of what stands in for a root `apt`.
 const PR_SET_DUMPABLE: i32 = 4;
 
 unsafe extern "C" {
     fn prctl(option: i32, ...) -> i32;
 }
 
-/// **The run's own process, when this test binary is re-executed as it.**
-///
-/// Same device as `sudo_ask.rs`'s: the `!` line names this test with `--exact`, so what the
-/// daemon's exec host spawns is this function, with the daemon's **terminal** on fd 0 and the
-/// run's cgroup around it. It makes itself unreadable to the daemon and then waits on that
-/// terminal.
+/// The run's own process, when this test binary is re-executed as it. The `!` line names this
+/// test with `--exact`, so the daemon's exec host spawns this function with the daemon's terminal
+/// on fd 0; it makes itself unreadable and then waits on that terminal.
 #[test]
 fn the_process_the_daemon_may_not_read() {
     if std::env::var("LETIBOT_SUDO_ASK_CHILD").as_deref() != Ok("1") {
@@ -100,7 +41,7 @@ fn the_process_the_daemon_may_not_read() {
     println!("child: read {n} byte(s): {:?}", line.trim_end());
 }
 
-/// A temp directory for this run's socket, store and log — **never the live store.**
+/// A temp directory for this run's socket, store and log - never the live store.
 fn scratch(tag: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -114,13 +55,8 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
-/// The daemon, its stderr going to `log`.
-///
-/// **`HOME` is a temp directory and the endpoint is a dead port, on purpose.** The daemon's
-/// standing choice comes from the operator's own `providers.toml` (`[default] provider`), and a
-/// test that inherits it spends the operator's money on the turn that a `!` line starts. With
-/// no config directory there is no provider, and the local endpoint refuses at once — so the
-/// turn fails the way an unreachable server fails and nothing leaves the box.
+/// The daemon, its stderr going to `log`. `HOME` is a temp directory and the endpoint is a
+/// dead port, on purpose
 fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &str) -> Child {
     let out = std::fs::File::create(log).expect("the log file");
     let err = out.try_clone().expect("a second handle on the log");
@@ -150,14 +86,9 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         // `XDG_DATA_HOME` would reach it past the `HOME` above).
         .env("LETIBOT_LANDING_ROOT", home.join("landing"))
         .env("LETIBOT_LOGS_ROOT", home.join("logs"));
-    // **A real daemon must be handed a vocabulary, and `--vocab` is how.** The comment that
-    // used to stand here said the session's vocabulary was "read from the box's default path"
-    // — true when `harnessd` carried one, and no longer true since the vocabulary became
-    // optional (a daemon on the byte vocabulary needs none). Without this the daemon exits
-    // with `no vocabulary: a local model needs the GGUF it serves` and the test fails at
-    // "the daemon never served", which reads like a broken test rather than a missing
-    // argument. The question is the same one these tests' own `vocab_gguf` gate asks, so it
-    // is asked the same way: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's GGUF.
+    // A real daemon must be handed a vocabulary, and `--vocab` is how. Without it the daemon
+    // exits with `no vocabulary` and the test fails at "the daemon never served", which reads like
+    // a broken test rather than a missing argument.
     if let Some(gguf) = std::env::var("LETIBOT_VOCAB_GGUF")
         .ok()
         .map(std::path::PathBuf::from)
@@ -170,11 +101,9 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         // of the run.
         .current_dir(repo)
         .env("HOME", &home)
-        // **`XDG_RUNTIME_DIR` is this temp directory, and that is not tidiness.**
-        // `sudo::install()` writes its shim to `$XDG_RUNTIME_DIR/letibot/shims/sudo`, which is
-        // the directory the operator's LIVE daemon and its sessions use. A test that inherited
-        // it would be writing into a running box's shim path; pointing it here makes the test
-        // hermetic, and the shim it writes is the same file either way.
+        // `XDG_RUNTIME_DIR` is this temp directory, and that is not tidiness: `sudo::install`
+        // writes its shim under the runtime dir the operator's LIVE daemon uses, so inheriting it
+        // would write into a running box's shim path. The shim is the same file either way.
         .env("XDG_RUNTIME_DIR", dir)
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
@@ -187,7 +116,7 @@ fn stop(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// **The whole capture**: a live daemon, a run it may not look at, and both voices written down.
+/// The whole capture: a live daemon, a run it may not look at, and both voices written down.
 #[test]
 fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -254,10 +183,9 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
         "the sentence must name the way in: {sentence}"
     );
 
-    // ---- **The daemon's stderr while the run is still stuck.** This is the capture the
-    // operator asked for: the run is at this moment waiting on the device the daemon holds for
-    // it, with nothing having answered it, and the file they read says nothing about it. Read here,
-    // before `!send`, so what is printed is the state and not the aftermath.
+    // ---- The daemon's stderr while the run is still stuck: it waits on the device the daemon
+    // holds for it, nothing has answered it, and the file the operator reads says nothing about it.
+    // Read before `!send`, so this is the state and not the aftermath.
     let during = std::fs::read_to_string(&log).unwrap_or_default();
     eprintln!("---- {log:?} while the run is still waiting ----");
     for line in BufReader::new(during.as_bytes())
@@ -317,36 +245,9 @@ fn a_live_daemons_own_words_for_a_run_it_may_not_look_at() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own shape, with a REAL root process in it** — not a stand-in.
-///
-/// The test above makes a process of *this* uid undumpable, which `sudo_ask.rs` measured to be
-/// the same `/proc` refusal a root `apt` gives. That is a stand-in, and a stand-in is exactly
-/// where a reproduction stops reproducing: the operator's report is about a process that is
-/// **root**, and the difference between *same uid, undumpable* and *another user* is the one
-/// `ask`'s own module header names as the two ways `EACCES` happens.
-///
-/// So this test uses neither a stand-in nor a fake: `/usr/bin/su` is setuid root on this box,
-/// and it reads the password **from the terminal** — which is the run's own pty, the one this
-/// daemon holds the master of. That is `apt` at `Continue? [Y/n]` in every fact that matters: a
-/// root process, undumpable, blocked in a read on the device it was given, with the operator's
-/// own shell above it in `wait4`. `! /usr/bin/su -c true` is `! sudo apt install mc` with the
-/// password step taken out, and the assertion is the same one: the daemon says it cannot tell.
-///
-/// **And `su` is the trade in the wild, which is worth saying here rather than in the abstract.**
-/// It used to read fd 0 because there was no controlling terminal for it to open; with the pty
-/// as the run's controlling terminal it calls `setsid` and takes it — measured, 2026-10-07, the
-/// process appears as `Ss+` in the run's tree, a *session leader in the foreground process
-/// group*, which is the state that only exists on a controlling terminal. It reads the password
-/// from there instead of from fd 0, and **`!send` still reaches it**, because `!send` writes to
-/// the master of that same terminal. That is the whole of the trade `exec::pty`'s header states:
-/// a program reached **indirectly** that opens `/dev/tty` now *waits* instead of failing at
-/// once — and this test is the evidence that it is answerable rather than lost.
-///
-/// # Why this is a second test and not the first one written differently
-///
-/// The stand-in proves the *detection*. This proves the *report* for the tree the operator
-/// actually had, and it is the only version of the case that can be checked against the
-/// operator's own daemon, which is running as this uid against a root child.
+/// The operator's own shape, with a REAL root process in it - `/usr/bin/su`, setuid, reading
+/// the password from the run's own pty. The stand-in above proves the *detection*; this proves the
+/// *report* for a tree that is root and undumpable, and that `!send` still reaches it.
 #[test]
 fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -369,10 +270,9 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     head.operator_shell(0, "! /usr/bin/su -c true")
         .expect("the line is submitted");
 
-    // ---- The tree, read from `/proc` while the run is stuck. This is the evidence the
-    // reproduction is faithful, and it is printed rather than asserted: what the kernel says
-    // about these processes is the fact under test, and a test that asserted the shape would
-    // fail on a box whose `su` behaves differently for reasons that are not this daemon's.
+    // ---- The tree, read while the run is stuck: printed rather than asserted, because what the
+    // kernel says about these processes is the fact under test and a box whose `su` differs would
+    // fail the assertion for reasons that are not this daemon's.
     let mut sentence: Option<String> = None;
     let deadline = Instant::now() + PATIENCE;
     let mut tree_printed = false;
@@ -417,10 +317,9 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
         "the sentence must name the way in: {sentence}"
     );
 
-    // ---- And the way in, on a real root process: the line goes down the terminal, `su` reads
-    // it as a password, refuses it, and the run ends. The point is not that the password is
-    // wrong — it is that a line the operator typed **reached the program that was waiting**,
-    // which is the difference between a command that is stuck and one that is answerable.
+    // ---- And the way in, on a real root process: the line goes down the terminal, `su` reads it
+    // as a password and refuses it. The point is not that the password is wrong - it is that a
+    // line the operator typed reached the program that was waiting.
     head.send_line("not-the-password").expect("the verb's line");
     let mut ended = false;
     let deadline = Instant::now() + PATIENCE;
@@ -443,18 +342,9 @@ fn a_real_root_process_waiting_on_the_terminal_is_the_operators_own_shape() {
     );
 }
 
-/// **The operator's command, verbatim, against the box's real `sudo`.**
-///
-/// Everything above is a stand-in for one half of `! sudo apt install mc`. This is the report
-/// itself: the same line, the daemon's own shim and `SUDO_ASKPASS`, the password card answered
-/// by a head, and then the run's tree — `bash` in `wait4`, over `sudo` as **root**, over
-/// `letibot-askpass` — which is the tree the operator had. A wrong password is typed, on
-/// purpose: what is being measured is not whether the install succeeds but whether the daemon
-/// says *anything at all* while the run is stuck, and a run that is stuck waiting for a
-/// password is the same silence with a shorter fuse.
-///
-/// It is here rather than left to a live session because this is the one test whose `!` line is
-/// the operator's, character for character.
+/// The operator's command, verbatim, against the box's real `sudo` - the daemon's own shim and
+/// `SUDO_ASKPASS`, the password card answered by a head. A wrong password is typed on purpose: the
+/// question is not whether the install succeeds but whether the daemon says anything at all.
 #[test]
 fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -475,9 +365,8 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     head.operator_shell(0, "! sudo apt install mc")
         .expect("the line is submitted");
 
-    // ---- The password card, answered with something that is not the password. `sudo` will
-    // ask again and then give up; the point is that the card was served while the run was
-    // blocked, which is the operator's own sequence.
+    // ---- The password card. `sudo` asks again and then gives up; the point is that the card was
+    // served while the run was blocked.
     let mut sentence: Option<String> = None;
     let mut card_answered = false;
     let deadline = Instant::now() + PATIENCE;
@@ -490,9 +379,8 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
                 SessionEvent::Warning { code, detail, .. } if code == "operator_run_unreadable" => {
                     sentence = Some(detail.clone());
                 }
-                // The password card, answered with something that is not the password. `sudo`
-                // asks again and then gives up; the point is that the card was served while
-                // the run was blocked, which is the operator's own sequence.
+                // The password card. `sudo` asks again and then gives up; the point is that the
+                // card was served while the run was blocked.
                 SessionEvent::SecretRequested { req_id, .. } if !card_answered => {
                     card_answered = true;
                     eprintln!("---- the password card is up for {req_id} ----");
@@ -524,47 +412,7 @@ fn the_operators_own_sudo_line_says_something_while_it_is_stuck() {
     );
 }
 
-/// **A run that is still WRITING while one of its processes is blocked on the terminal.**
-///
-/// # The operator's own report, and the one fact the daemon was not looking at
-///
-/// Their second report, on a fresh daemon, is not the one the sentence above answers:
-///
-/// > *"so i start it completely fresh and do apt install and harnessd hangs without printing
-/// > anything to me. I suppose it waits for y or n but doesnt show me anything"*
-///
-/// And their own transcript records what `apt` does in that run, in as many words:
-///
-/// > `! sudo apt install mc` **streamed its progress** and then aborted at `Continue? [Y/n]`
-///
-/// So the run they were looking at was **producing output** — apt's own progress — while the
-/// process that would eventually ask was one the daemon may not look at. And the daemon said
-/// nothing, because the unreadable report is gated behind the **same 250 ms quiet beat the
-/// card needs**: `ask_if_waiting` returns before it ever asks when `since_last_output` is
-/// under a beat, and a run writing every 100 ms never has one.
-///
-/// # Why the two facts are not the same fact
-///
-/// The beat is right for the **card**. A card claims *some process of this run is blocked
-/// reading the answer we hold*, and a run that is still drawing is genuinely not blocked —
-/// that is the operator's own correction (`"i think Continue? is an overfit"`) turned into a
-/// rule about the process.
-///
-/// `Unreadable` is the opposite kind of thing: it is the **absence** of a reading — *one of
-/// this run's processes is not mine to look at* — and that is a fact about **permissions**, not
-/// about the clock. It is exactly as true at a 100 ms write interval as at a 2 s one. Gating
-/// it behind the beat is what made the daemon silent for a person who could see no output at
-/// all: the run's bytes land only when it ends, so *working* and *blocked* look the same to
-/// them, and the one sentence that would have told them the difference was never said.
-///
-/// # What is asserted
-///
-/// 1. **The daemon says it cannot tell**, on this path too — the sentence is published while
-///    the run is still writing.
-/// 2. **And it says which of the two facts it is**: the run is still writing, so the sentence
-///    must not claim the quiet beat it did not earn. That is the sibling of the askpass
-///    deadline's sentence (`no head answered before the deadline, or the person refused`),
-///    which is one sentence for two facts and is wrong for one of them.
+/// A run that is still WRITING while one of its processes is blocked on the terminal.
 #[test]
 fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -578,9 +426,9 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
-    // ---- The run. A writer every 100 ms, and beside it a process that is not this daemon's to
-    // look at, blocked on the terminal the daemon holds. `apt`'s shape while it works, with the
-    // question one keystroke away — which is exactly the state the operator was in.
+    // ---- The run: a writer every 100 ms, and beside it a process that is not this daemon's to
+    // look at, blocked on the terminal the daemon holds - `apt`'s shape while it works, with the
+    // question one keystroke away.
     let exe = std::env::current_exe().expect("this test binary's own path");
     let script = dir.join("streaming-run.sh");
     letibot_tools::testing::write_stub(
@@ -645,44 +493,8 @@ fn a_run_still_writing_is_still_a_run_this_daemon_cannot_look_at() {
     );
 }
 
-/// **The operator's own run has no deadline — not even the 120 s one.**
-///
-/// Measured 2026-10-09, verbatim from the daemon's own row: `! sudo apt install mc`, apt
-/// at its `Continue? [Y/n]`, the person reading the package list, the run killed at 120 s
-/// and the install never run. The 120 s default exists for a command the MODEL did not ask
-/// to run longer; a person's `!` line is watched by the person who typed it, its output is
-/// on their screen, and their own acts — Ctrl+C, `!term`, closing the head — are its stop.
-/// `deadline_for` (in `letibot-tools`' `bash`) therefore hands the operator's run `None`,
-/// and this is the live proof that `None` means what it says at exactly the moment the old
-/// rule killed: past 120 s the run is still going, still the person's, and the daemon is
-/// not silent about it.
-///
-/// # Why the door is not the route, which was tried first
-///
-/// The head-run door looks like the cheap way in: it takes the same path into the same tool
-/// (`invoke_operator` → `bash` → `wait_with_progress`). It is refused — `HEAD_RUN_TOOLS`
-/// does not contain `bash`, deliberately, because *"`bash` and `write` behind a composer's
-/// chord would put a shell one keystroke from where the operator is typing"*. So the
-/// operator's own `!` line is the only way to run a `bash` call as the operator — and the
-/// run it starts now arms no deadline at all, which is the rule this test measures.
-///
-/// # Why this is opt-in
-///
-/// Unchanged from the test it replaces, whose cost profile it shares: over two minutes of
-/// wall clock for a run that is *supposed* to sit still. `sudo_live.rs` gates its
-/// real-`sudo` test for the same reason, and a suite that blocks a child that long on every
-/// run is a suite people stop running. `LETIBOT_DEADLINE_LIVE=1` turns it on.
-///
-/// # What is asserted
-///
-/// 1. Past the old kill time the run is STILL the operator's: no `operator_shell_ran`
-///    warning, no row saying it was killed or that it outlived anything. The test this
-///    replaces waited for exactly that row at exactly 120 s — its assertion was the bug.
-/// 2. The daemon is not hung while it waits: the `operator_run_unreadable` sentence still
-///    arrives for a run whose waiting process belongs to root — *"harnessd hangs without
-///    printing anything to me"* is the report silence there would reproduce.
-/// 3. `stop` ends the run, by closing the pty it is blocked on — which is the stop a person
-///    gets by closing the head.
+/// The operator's own run has no deadline - not even the 120 s one. The 120 s default is
+/// for a command the MODEL did not ask to run longer
 #[test]
 fn the_operators_own_run_outlives_the_models_deadline() {
     if std::env::var("LETIBOT_DEADLINE_LIVE").as_deref() != Ok("1") {
@@ -706,17 +518,14 @@ fn the_operators_own_run_outlives_the_models_deadline() {
     let mut daemon = start_daemon(&dir, &log, &socket, &store, session);
     let (mut head, rx) = attach(&socket, session, &log, &mut daemon);
 
-    // ---- The run: `su` as root, reading the terminal the daemon holds, so it waits forever
-    // and cannot be signalled by this uid. The operator's `!` line, which arms no deadline
-    // at all.
+    // ---- The run: `su` as root, reading the terminal the daemon holds, so it waits forever and
+    // this uid cannot signal it. The operator's `!` line, which arms no deadline at all.
     let started = Instant::now();
     head.operator_shell(0, "! /usr/bin/su -c true")
         .expect("the line is submitted");
 
-    // ---- The window: PAST the old kill time, and it never exits early on any row. The test
-    // this replaced broke out of this loop the moment the deadline's own row arrived at
-    // 120 s; this one has to still be holding the run at 125 s, so it reads the whole window
-    // and lets the assertions below say what did and did not arrive.
+    // ---- The window: PAST the old kill time, and it never exits early on any row, so the
+    // assertions below say what did and did not arrive.
     let mut ended = false;
     let mut rows = String::new();
     let mut unreadable: Option<String> = None;
@@ -728,12 +537,12 @@ fn the_operators_own_run_outlives_the_models_deadline() {
         if let ServerFrame::Event(env) = inbound.frame() {
             match &env.event {
                 SessionEvent::Warning { code, .. } if code == "operator_shell_ran" => ended = true,
-                // The sentence for a run whose waiting process this daemon may not look at:
+                // The sentence for a run whose waiting process this daemon may not look at
                 // the daemon SPEAKING is the not-hung half of what this test asserts.
                 SessionEvent::Warning { code, detail, .. } if code == "operator_run_unreadable" => {
                     unreadable = Some(detail.clone());
                 }
-                // The row the run produced, had it ended — none may arrive claiming a kill.
+                // The row the run produced, had it ended - none may arrive claiming a kill.
                 SessionEvent::TranscriptContent { item, .. } => {
                     if let letibot_transcript::TranscriptItem::ToolResult { payload, .. } =
                         item.as_ref()
@@ -766,11 +575,8 @@ fn the_operators_own_run_outlives_the_models_deadline() {
     );
 }
 
-/// **The `!` line's tree, as the box's own `ps` reports it**, for the evidence.
-///
-/// Read from `ps` rather than from `/proc` by hand: the shape under test is *whose uid each
-/// process is and where each one sits*, and `ps` is the one program that already renders
-/// exactly that.
+/// The `!` line's tree, as the box's own `ps` reports it, for the evidence: the shape under
+/// test is whose uid each process is and where each one sits, and `ps` already renders that.
 fn run_tree() -> Vec<String> {
     let out = Command::new("ps")
         .args(["-eo", "pid,ppid,user,stat,wchan:22,args", "--forest"])

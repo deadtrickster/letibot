@@ -12,18 +12,15 @@ use crate::config::Config;
 use crate::harness::Parts;
 use crate::sessions::{Sessions, StoreSessions};
 
-/// **The review-queue session of the fixture's workspace** — `s-gatekeeper-<workspace key>`.
-///
-/// One per daemon now, so a test that names it derives it from the config it built rather than from
-/// a constant every daemon on the box once shared; a test that compared against the constant would
+/// The review-queue session of the fixture's workspace - `s-gatekeeper-<workspace key>`. One
+/// per daemon, so a test derives it from its own config: comparing against the old constant would
 /// be asserting the defect.
 fn queue_of(cfg: &Config) -> String {
     super::session(&cfg.workspace)
 }
 
-/// **A runner that records what it was asked to start and answers `Running` for ever** — the
-/// child a real runner would start needs a model, and what is measured here is *whose runner
-/// was asked for what*.
+/// A runner that records what it was asked to start and answers `Running` for ever - a real
+/// child needs a model, and what is measured here is whose runner was asked for what.
 struct Recording {
     /// `(prompt, role)` per `start`, in order.
     started: Arc<Mutex<Vec<(String, String)>>>,
@@ -70,7 +67,7 @@ impl Drop for TempDir {
     }
 }
 
-/// This test process's daemon identity — the owner the board is read for.
+/// This test process's daemon identity - the owner the board is read for.
 fn me() -> String {
     crate::mergequeue::lease::this_daemon().owner.clone()
 }
@@ -146,7 +143,7 @@ fn claim(store: &Store, id: &str) {
     );
 }
 
-/// An approval, written the way another host writes it — straight into the store.
+/// An approval, written the way another host writes it - straight into the store.
 fn approve(store: &Store, id: &str) {
     let r = store.review_row(id).unwrap().unwrap();
     assert!(
@@ -170,8 +167,8 @@ fn approve(store: &Store, id: &str) {
     );
 }
 
-/// **One row per review waiting for a verdict, named by the daemon's run name, the row id and
-/// the first line of the ask.**
+/// One row per review waiting for a verdict, named by the daemon's run name, the row id and
+/// the first line of the ask.
 #[test]
 fn one_row_per_review_waiting_for_a_verdict() {
     let (_dir, store, ws) = store_with("rows");
@@ -205,7 +202,7 @@ fn one_row_per_review_waiting_for_a_verdict() {
     );
 }
 
-/// **A verdict reached elsewhere takes the row off** — approved and rejected rows are not
+/// A verdict reached elsewhere takes the row off - approved and rejected rows are not
 /// waiting for anything.
 #[test]
 fn a_verdict_reached_elsewhere_takes_the_row_off() {
@@ -230,7 +227,7 @@ fn a_verdict_reached_elsewhere_takes_the_row_off() {
     assert!(queue_rows(&store, &me()).is_empty());
 }
 
-/// **A repository whose lease another daemon holds is not on this board** — R61 defect 9:
+/// A repository whose lease another daemon holds is not on this board - defect 9
 /// every daemon served the one global review session, and two would each spawn a reviewer.
 #[test]
 fn another_daemons_repository_is_not_on_this_board() {
@@ -245,7 +242,7 @@ fn another_daemons_repository_is_not_on_this_board() {
     assert!(rows[0].content.contains("m-mine"), "{:?}", rows[0]);
 }
 
-/// **The red target's review comes first on the board, as it does in the queue.**
+/// The red target's review comes first on the board, as it does in the queue.
 #[test]
 fn the_red_targets_review_is_first() {
     let (_dir, store, ws) = store_with("red-first");
@@ -256,7 +253,7 @@ fn the_red_targets_review_is_first() {
     assert_eq!(rows[0].id, "red-main", "{rows:?}");
 }
 
-/// **A daemon over a temp store**, with the queue's session and a recording runner. `None`
+/// A daemon over a temp store, with the queue's session and a recording runner. `None`
 /// after announcing the skip when this box has no vocabulary GGUF.
 struct Fixture {
     _dir: TempDir,
@@ -274,11 +271,9 @@ impl Fixture {
         let ws = dir.path.join("ws");
         std::fs::create_dir_all(&ws).expect("the workspace");
         let ws = std::fs::canonicalize(&ws).expect("the workspace canonicalizes");
-        // **The workspace is a git repository, because a reviewer's tree is made FROM one.**
-        // `mergequeue::review::start_reviewer` clones the row's repository at its `head_sha` for
-        // both placements (a reviewer judges a checkout of the head, never the tree the operator
-        // has out), so a fixture with no repository would measure *a reviewer that could not
-        // start* — the raise, not the review.
+        // The workspace is a git repository, because a reviewer's tree is made FROM one - it
+        // clones the row's repository at its `head_sha`, so a fixture with none would measure the
+        // raise, not the review.
         crate::mergequeue::serve::tests::sh(&ws, &["init", "-q", "-b", "main"]);
         crate::mergequeue::serve::tests::sh(&ws, &["config", "user.email", "q@test"]);
         crate::mergequeue::serve::tests::sh(&ws, &["config", "user.name", "queue test"]);
@@ -291,7 +286,7 @@ impl Fixture {
         cfg.store = Some(db.clone());
         cfg.session_id = "s-host".into();
         cfg.http_retries = 0;
-        // **A directory of the fixture's own** for the reviewers' clones — `sweep_clones` refuses
+        // A directory of the fixture's own for the reviewers' clones - `sweep_clones` refuses
         // any other name, and a fixture must never write into (or sweep) the box's own.
         cfg.review_clones = Some(dir.path.join(crate::mergequeue::review::CLONES_DIR));
         let registry = Registry::new();
@@ -349,7 +344,7 @@ impl Fixture {
         Store::open(&self.db).expect("the store reopens")
     }
 
-    /// A review row in this daemon's repository (its workspace), lease held by this daemon — and
+    /// A review row in this daemon's repository (its workspace), lease held by this daemon - and
     /// the HEAD it names, because the row's head is a real commit on a real branch.
     fn entry(&self, id: &str, brief: &str) -> String {
         let (_wt, base, head) =
@@ -391,13 +386,9 @@ impl Fixture {
     }
 }
 
-/// **The session is TOLD what its board is** — the operator's *"it managed via its prompt and
-/// so on"*, which is the one place a session can be managed without a person at the keyboard.
-///
-/// Four facts the paragraph has to carry, and each is asserted rather than the whole text: the
-/// rows are the queue's, a review is a `task` child of THIS session, the row names the child's
-/// handle, and the verdict — not `todo_write` — is what takes a row off. A prompt that lost one
-/// of them would be a session guessing at exactly the thing this slice moved.
+/// The session is TOLD what its board is - the operator's *"it managed via its prompt and so
+/// on"*, the one place a session is managed with nobody at the keyboard. Four facts are asserted
+/// rather than the whole text: whose rows they are, the child, its handle, and what takes a row off.
 #[test]
 fn the_session_is_told_what_its_board_is() {
     let Some(f) = Fixture::new("prompt") else {
@@ -431,10 +422,8 @@ fn the_session_is_told_what_its_board_is() {
         said.contains("The verdict is what takes the row off your board"),
         "and what DOES take a row off: {said}"
     );
-    // **And that the verdict is the CHILD's own act**, which is the half this slice adds: the
-    // session is told the door the reviewer holds, and that a reply in prose is not a verdict —
-    // because a session that went looking for one in `task_result`'s payload would be reading
-    // exactly what the queue stopped reading.
+    // And that the verdict is the CHILD's own act: a session that went looking for one in
+    // `task_result`'s payload would be reading exactly what the queue stopped reading.
     assert!(
         said.contains("review_verdict"),
         "and that the reviewer hands its verdict in ITSELF: {said}"
@@ -443,7 +432,7 @@ fn the_session_is_told_what_its_board_is() {
         said.contains("has judged nothing"),
         "and what an answer in prose means: {said}"
     );
-    // **And it is the session's OWN prompt, not the daemon's** — the ordinary sessions are the
+    // And it is the session's OWN prompt, not the daemon's - the ordinary sessions are the
     // composed prompt byte for byte, which is what `OwnSession::prompt`'s `None` means.
     assert!(
         !sessions
@@ -457,14 +446,9 @@ fn the_session_is_told_what_its_board_is() {
     );
 }
 
-/// **A reviewer is placed in a VM where this box can boot one, and on this machine where it
-/// cannot — and *the box cannot* is a DECLARED state, not a silent fallback.**
-///
-/// The box is an ARGUMENT here rather than the environment, so every arm holds on whatever
-/// machine runs this and `$FIRECODE_BIN` is not raced — the discipline `firecode.rs` states for
-/// its own `bin` field. Three arms, and the third is the point: *the session said no* and *the
-/// box could not* are two different states, and a catch-all `_ => Host` is exactly how they
-/// become one thing that neither a reader nor the session can tell apart.
+/// A reviewer is placed in a VM where this box can boot one, and on this machine where it
+/// cannot - and *the box cannot* is a DECLARED state, not a silent fallback. The box is an
+/// argument rather than the environment, so no `$FIRECODE_BIN` is raced.
 #[test]
 fn a_reviewer_is_placed_where_the_box_can_place_one() {
     let here = PathBuf::from("/usr/local/bin/firecode");
@@ -476,7 +460,7 @@ fn a_reviewer_is_placed_where_the_box_can_place_one() {
         "a box that can boot a VM places the reviewer in one: the VM is the boundary, so no \
              `bash` call of its is a permission card"
     );
-    // **And the box cannot: a state carrying the box's own words**, not a bare `Host`.
+    // And the box cannot: a state carrying the box's own words, not a bare `Host`.
     let no_vm = reviewer_placement(true, Err(absent.clone()));
     assert_eq!(
         no_vm,
@@ -489,7 +473,7 @@ fn a_reviewer_is_placed_where_the_box_can_place_one() {
         Placement::Host,
         "and what the spawn carries is this machine — the only placement left"
     );
-    // **And a project that says `host` is not overridden by a box that could boot one.**
+    // And a project that says `host` is not overridden by a box that could boot one.
     assert_eq!(
         reviewer_placement(false, Ok(PathBuf::from("/usr/bin/firecode"))),
         ReviewerPlacement::Host,
@@ -497,13 +481,9 @@ fn a_reviewer_is_placed_where_the_box_can_place_one() {
     );
 }
 
-/// **The session is told WHERE ITS REVIEWERS RUN**, and told which of the three states it is
-/// in — because the two `host` states have different consequences for the session reading them.
-///
-/// `the_session_is_told_what_its_board_is` asserts the constant half. This is the half that
-/// cannot be a constant, so all three arms are asserted on the pure function — where the box is
-/// an argument and no machine's `$PATH` is consulted — and the arm a real session can be put in
-/// without racing the box is asserted on the session itself below.
+/// The session is told WHERE ITS REVIEWERS RUN, and which of the three states it is in - the
+/// two `host` states have different consequences. All three arms are asserted on the pure function
+/// where the box is an argument and no machine's `$PATH` is consulted.
 #[test]
 fn the_session_is_told_where_its_reviewers_run() {
     let vm = prompt(&reviewer_placement(
@@ -544,16 +524,9 @@ fn the_session_is_told_where_its_reviewers_run() {
     );
 }
 
-/// **A session that says `host` reads it in its own prompt** — the arm a test can put a real
-/// session in on ANY box, because `host` is the default whatever `firecode_available()` says. The
-/// other two arms are the pure function's, above.
-///
-/// **The fixture says nothing to get this.** It is built the ordinary way
-/// (`Config::for_this_box`), which says `host` — so this is also the assertion that a session a
-/// test opens cannot boot a microVM over its workspace by forgetting a line. A test that means
-/// to exercise the VM arm asks for one by name (`Config::allow_vm_reviewers`), and the VM arm's
-/// own words are asserted on the pure function above, where the box is an argument rather than a
-/// `$FIRECODE_BIN` race.
+/// A session that says `host` reads it in its own prompt - the arm a test can put a real
+/// session in on ANY box. The fixture says nothing to get it (`Config::for_this_box` says `host`)
+/// so this also asserts that a session a test opens cannot boot a microVM by forgetting a line.
 #[test]
 fn a_session_that_says_host_is_told_its_reviewers_run_here() {
     let Some(f) = Fixture::new("prompt-host") else {
@@ -571,11 +544,9 @@ fn a_session_that_says_host_is_told_its_reviewers_run_here() {
     );
 }
 
-/// **The session is started once, and a second pass or a second daemon does not make a twin.**
-///
-/// The idle arm calls `ensure_gatekeeper` on every pass it reads the store — every thirty
-/// seconds — so "once" has to be a property of the door and not of the caller. It is two
-/// checks: `self.open` for this daemon, and the store (through the registry) for the box.
+/// The session is started once, and a second pass or a second daemon does not make a twin.
+/// The idle arm calls `ensure_gatekeeper` every thirty seconds, so "once" is a property of the
+/// door and not of the caller: `self.open` for this daemon, the registry for the box.
 #[test]
 fn the_session_is_started_once_and_not_twice() {
     let Some(f) = Fixture::new("once") else {
@@ -600,7 +571,7 @@ fn the_session_is_started_once_and_not_twice() {
     );
     assert_eq!(held(&f.registry), 1, "one row in the registry, not two");
 
-    // **The second pass is the same session, not a second one.** This is the common case: the
+    // The second pass is the same session, not a second one. This is the common case: the
     // idle arm reaches this line every time the review clock is due.
     assert!(
         !sessions.ensure_gatekeeper().expect("a no-op"),
@@ -613,20 +584,9 @@ fn the_session_is_started_once_and_not_twice() {
     );
     assert_eq!(held(&f.registry), 1, "still one");
 
-    // **And a second DAEMON does not make a twin either** — the restart, one process along: a
-    // fresh registry over the same store, which finds the session on disk and RESUMES it.
-    //
-    // **The first daemon GOES FIRST, and that is now a condition of the test rather than a
-    // convenience.** A session has one writer (`crate::writer`, and
-    // `sessions::writer_tests::a_second_session_cannot_write_one_transcript` proves it): a second
-    // daemon opening one a LIVE process holds is refused, which is the whole of what that guard
-    // is for. What this half measures is the restart — the first daemon gone, its claim given
-    // back with its harnesses — and that is what a restart is.
-    //
-    // **The name is changed in the store first, and that is what makes this an assertion rather
-    // than a coincidence**: a session made fresh would carry the hardcoded `TITLE`, and one
-    // RESUMED carries the name its own row holds. The count alone could not tell the two apart —
-    // `put_session` is skipped for a row that is already there, so a twin would leave one row too.
+    // And a second DAEMON does not make a twin either - the restart, one process along. The
+    // first daemon goes first because a session has one writer (`crate::writer`), and the store's
+    // name is changed first because a RESUMED session keeps its row's name and a fresh one would not.
     f.store()
         .set_title(&queue_of(&f.cfg), "the queue, renamed")
         .expect("the store takes a name");
@@ -678,8 +638,8 @@ fn the_session_is_started_once_and_not_twice() {
     );
 }
 
-/// **A claimed review is a `task` child of THIS session, bound to the head the claim read**
-/// (decision 6), and the row says which child is on it; a second pass starts no second child;
+/// A claimed review is a `task` child of THIS session, bound to the head the claim read
+/// (decision 6), and the row says which child is on it; a second pass starts no second child
 /// the verdict takes the row off.
 #[test]
 fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
@@ -726,7 +686,7 @@ fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
     assert_eq!(sessions.serve_reviews(), 0, "no second child for one row");
     assert_eq!(f.asked().len(), 1);
 
-    // **The daemon's own session serves nothing**: reviewers are the queue session's.
+    // The daemon's own session serves nothing: reviewers are the queue session's.
     assert_eq!(
         sessions
             .open
@@ -737,15 +697,9 @@ fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
     );
 }
 
-/// **A review queue per daemon, and the id is the workspace's** — the defect this replaced, at
-/// the level of the id.
-///
-/// The id used to be the constant `s-gatekeeper` in every daemon on every box, while every daemon
-/// on the box shares ONE store — so the operator's daemon and the project daemon each opened their
-/// own copy of the same session and both appended to one transcript (MEASURED 2026-10-26:
-/// `s-gatekeeper#t0`, `transcript_item seq must be the next one`). Two folders are two daemons and
-/// now two sessions; the same folder is the same session across a restart, which is what keeps its
-/// board and its review rows.
+/// A review queue per daemon, and the id is the workspace's. The id was the constant
+/// `s-gatekeeper` in every daemon while they share ONE store, so two daemons opened one transcript
+/// .
 #[test]
 fn two_workspaces_get_two_review_sessions_and_one_workspace_keeps_its_own() {
     let a = queue_of(&Config::for_this_box("/tmp/letibot-review-a"));
@@ -765,7 +719,7 @@ fn two_workspaces_get_two_review_sessions_and_one_workspace_keeps_its_own() {
         letibot_sessionlog::is_gatekeeper_session("s-gatekeeper"),
         "and so is the constant every daemon shared before, which a store still holds"
     );
-    // **A reviewer child of one is NOT one of these** — `hubs_of_repository` and `roots_of` filter
+    // A reviewer child of one is NOT one of these - `hubs_of_repository` and `roots_of` filter
     // on this predicate, and a child admitted as "the queue's board" would be a publish into a
     // subagent's hub.
     assert!(

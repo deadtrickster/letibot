@@ -1,25 +1,5 @@
-//! **Where a fanout's and a scenario's processes are written down** — the daemon's half of
+//! Where a fanout's and a scenario's processes are written down - the daemon's half of
 //! `letibot_tools::fleet::ProcessBook`.
-//!
-//! A branch of `fanout`, a role of `scenario` and their readiness checks are jobs of the *host's*
-//! table, not of the session's own process host — the session is placed on one machine and a
-//! fanout deliberately reaches the others. [`crate::jobwatch::JobRecorder`] writes the supervisor's
-//! record for a job of *this* host, and nothing wrote one for a job of another, which would have
-//! left two holes: a daemon that restarted mid-fanout would find no process to adopt and would
-//! report nothing, and a session's close would kill nothing on the machines it reached.
-//!
-//! So the tool reports its own starts and endings through this, and the supervisor does the rest —
-//! one liveness check per host per tick, the record's own deadline, and RH7's teardown that follows
-//! ownership. **The store is the truth here as it is there**: nothing in this file remembers a pid
-//! or a connection, so a daemon that starts an hour later has the same list.
-//!
-//! # Two rules borrowed from `JobRecorder`, because they are the same rules
-//!
-//! * **A process that cannot be identified is not written down at all.** A record whose identity is
-//!   empty cannot be told from a stranger's pid, and the supervisor would signal the wrong process
-//!   with it — so the write is skipped and the reason is said.
-//! * **A write that fails is said, and kills nothing.** The processes are running either way; what
-//!   is missing is the row, and a missing row with no sentence is a mystery.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -31,9 +11,8 @@ use letibot_tools::fleet::{ProcessBook, ProcessNote};
 pub struct StoreBook {
     path: PathBuf,
     session: String,
-    /// **Opened lazily**, and kept: a session that never fans out pays nothing, and one that fans
-    /// out twice pays one open. It is a handle onto the process's one connection, not a second
-    /// one — see `Store::path`.
+    /// Opened lazily, and kept: a session that never fans out pays nothing, and one that fans out
+    /// twice pays one open. It is a handle onto the process's one connection, not a second one.
     store: Mutex<Option<Store>>,
 }
 
@@ -46,7 +25,7 @@ impl StoreBook {
         }
     }
 
-    /// Run `f` against the store, opening it once — and say when it could not be done.
+    /// Run `f` against the store, opening it once - and say when it could not be done.
     fn with(&self, handle: &str, what: &str, f: impl FnOnce(&Store) -> Result<(), String>) {
         let Ok(mut g) = self.store.lock() else {
             return;
@@ -82,9 +61,8 @@ impl StoreBook {
 
 impl ProcessBook for StoreBook {
     fn started(&self, p: &ProcessNote) {
-        // **An identity that is empty is a pid and nothing else**, so the record is not written —
-        // see the module header. A job on this box whose `/proc` could not be read, or a host that
-        // gave no marker, is that case.
+        // An identity that is empty is a pid and nothing else, so the record is not written -
+        // see the module header.
         if p.identity.trim().is_empty() {
             self.said(
                 &p.handle,
@@ -98,9 +76,8 @@ impl ProcessBook for StoreBook {
             return;
         }
         let mut rec = ProcessRecord::starting(&self.session, &p.handle, p.host.clone(), p.pid);
-        // **`starting`, not `running`**: nobody has looked at this process yet, and the first tick
-        // is what says it is there. `running` written by the starter would be a claim the starter
-        // is not in a position to make — it knows the pid, not the process.
+        // `starting`, not `running`: nobody has looked at this process yet, and the first tick
+        // is what says it is there. `running` written by the starter would be a claim it cannot make.
         rec.state = ProcState::Starting;
         rec.identity = p.identity.clone();
         rec.command = p.command.clone();
@@ -113,9 +90,9 @@ impl ProcessBook for StoreBook {
         rec.started_ms = p.started_ms;
         rec.deadline_ms = p.deadline_ms;
         rec.log_path = p.log.clone();
-        // **The pid is written as the group it leads, and the reader decides.** On a host, a job's
-        // launch is `setsid`'d, so the pid really is its group; here, `LocalProbe` re-asks before a
-        // signal (`supervise::signal`) and falls back to the pid alone when it does not lead one.
+        // The pid is written as the group it leads, and the reader decides. On a host a job's
+        // launch is `setsid`'d, so the pid really is its group; here `LocalProbe` re-asks before a
+        // signal and falls back to the pid alone when it does not lead one.
         rec.pgid = Some(p.pid);
         self.with(&p.handle, "its process record", |store| {
             store.put_process(&rec).map_err(|e| e.to_string())
@@ -140,8 +117,8 @@ mod tests {
     use super::*;
     use letibot_tokencore::store::Store;
 
-    /// A store on disk — `StoreBook` opens a path, so an in-memory one would not exercise the thing
-    /// under test (the lazy open is half of what it is).
+    /// A store on disk - `StoreBook` opens a path, so an in-memory one would not exercise the thing
+    /// under test.
     fn store_path(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("letibot-book-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -167,10 +144,9 @@ mod tests {
         }
     }
 
-    /// **What the supervisor needs is what the record carries** — the host it checks on, the identity
+    /// What the supervisor needs is what the record carries - the host it checks on, the identity
     /// that makes a reused pid not this process, the deadline it enforces, and the output file its
-    /// probe derives the exit file from. And the scope is the session's, because the book knows the
-    /// session and a note cannot.
+    /// probe derives the exit file from. And the scope is the session's, because a note cannot know it.
     #[test]
     fn a_branch_is_written_as_a_record_a_tick_can_read() {
         let path = store_path("start");
@@ -190,7 +166,7 @@ mod tests {
             rec.log_path.as_deref(),
             Some("/home/dead/letibot-remote/fanout-1/.letibot-remote/jobs/7.out")
         );
-        // **`starting`, and not `running`**: the starter knows a pid, not a process, and the first
+        // `starting`, and not `running`: the starter knows a pid, not a process, and the first
         // tick is what says the process is there.
         assert_eq!(rec.state, ProcState::Starting);
         assert_eq!(rec.scope, "session.s-rh8");
@@ -204,7 +180,7 @@ mod tests {
         );
     }
 
-    /// **The ending is a check**, so the record stops being open and the exit is the command's own.
+    /// The ending is a check, so the record stops being open and the exit is the command's own.
     #[test]
     fn an_ending_is_written_as_the_check_that_settles_it() {
         let path = store_path("end");
@@ -229,9 +205,9 @@ mod tests {
         );
     }
 
-    /// **A note with no identity is not written down at all**, and says why — the rule `JobRecorder`
-    /// follows for the same reason: a record with an empty identity cannot be told from a reused
-    /// pid, and the supervisor would signal a stranger.
+    /// A note with no identity is not written down at all, and says why - the rule `JobRecorder`
+    /// follows: a record with an empty identity cannot be told from a reused pid, and the supervisor
+    /// would signal a stranger.
     #[test]
     fn a_note_that_cannot_be_identified_writes_nothing() {
         let path = store_path("noid");

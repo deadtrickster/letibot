@@ -1,27 +1,6 @@
-//! **`--host NAME` seats a root session whose tools run on that machine.**
-//!
-//! `docs/remote-hosts.md`: *"the operator | `leticode --host lab2x1` — a session whose tools
-//! run on lab2x1 (like `--vm`)"*. This is that, measured through the real opener: a real
-//! `Harness::open`, the real backend construction, the real gate wiring — and a **fake ssh**
-//! (a script that accepts the flags and runs the command against a temporary directory
-//! standing in for the machine), so nothing here reaches a network or a second box.
-//!
-//! What it pins:
-//!
-//! | fact | measured by |
-//! |---|---|
-//! | the placement is `Remote(name)`, not a VM and not a host session | `Harness::config` |
-//! | the backend is the ssh one, and says so in a sentence | `Harness::wiring().backend` |
-//! | the repository's HEAD arrives as a checkout on that machine | the worktree on the fake remote |
-//! | the session's workspace is the CHECKOUT, and the boundary answer is not invented | `workspace_path` in the description |
-//! | its commits come back as `remote/<host>/<short id>` when it ends | `close_backend`'s sentence and the local branch |
-//! | the placement says where it is, and what stayed here | the `remote_placement` warning |
-//!
-//! `$LETIBOT_HOSTS` and `$LETIBOT_SSH` are set here, and this file is a test binary of its
-//! own — nothing else in this process reads either, which is why the `set_var`s below are
-//! the whole of the environment this suite touches. `$HOME` is set with them, because the one
-//! ssh policy asks the *operator's* home whether a key is inside their own ssh directory, and
-//! the answer a test must get is about its fixture.
+//! `--host NAME` seats a root session whose tools run on that machine, measured through the
+//! real opener - a real `Harness::open`, the real backend construction, the real gate
+//! wiring - with a fake `ssh` that runs each command against a temporary directory, so
 
 use std::path::{Path, PathBuf};
 
@@ -52,14 +31,13 @@ impl Rig {
         ));
         std::fs::create_dir_all(dir.join("bin")).expect("bin");
         std::fs::create_dir_all(dir.join("home")).expect("home");
-        // **Resolved**, because the remote resolves it: `pwd -P` on the far side follows
-        // `/var` -> `/private/var` here, and comparing against the unresolved path would fail
-        // for a reason that has nothing to do with the placement.
+        // Resolved, because the remote resolves it: `pwd -P` on the far side turns `/var` into
+        // `/private/var`, so comparing against the unresolved path would fail for the wrong reason.
         let dir = dir.canonicalize().unwrap_or(dir);
         let bin = dir.join("bin");
         let home = dir.join("home");
         // The fake ssh: flags ignored, the last argument is the remote command, and `HOME`
-        // is the machine's — so `root = "~/letibot-remote"` is expanded *there*.
+        // is the machine's - so `root = "~/letibot-remote"` is expanded *there*.
         let ssh = bin.join("ssh");
         letibot_tools::testing::write_stub(
             &ssh,
@@ -83,22 +61,17 @@ impl Rig {
         git(&repo, &["add", "README"]);
         git(&repo, &["commit", "-q", "-m", "the first commit"]);
 
-        // **The operator's file**, which is the only place a host may come from.
-        //
-        // **`mise = false`, because this "host" is a directory on the box running the test.** The
-        // default is to probe the far side for a mise (`$HOME/.local/bin/mise`, then `PATH`) and
-        // wrap every remote command in `mise exec` — and the fake ssh above inherits this process's
-        // `PATH`, so on a box that has mise the placement would be tested through it. A fixture
-        // says what it means; `remote_hosts.rs` has the tests that DO have a mise.
+        // The operator's file, which is the only place a host may come from. `mise = false` because
+        // this "host" is a directory on the box running the test: the default probes the far side
+        // for a mise and wraps every command in `mise exec`, and the fake ssh inherits this `PATH`.
         let hosts = dir.join("hosts.toml");
         std::fs::write(
             &hosts,
             "[host.fake]\nhostname = \"fake.invalid\"\nuser = \"tester\"\nroot = \"~/letibot-remote\"\nmise = false\n",
         )
         .expect("a hosts file");
-        // **letibot's own ssh material**, under this rig's home: the dedicated key the host
-        // connects with and the host key already accepted. `Ssh::connect` refuses a placement
-        // without both, so a fixture that did not write them would be testing the refusal.
+        // letibot's own ssh material, under this rig's home: the dedicated key the host connects
+        // with and the host key already accepted. `Ssh::connect` refuses a placement without both.
         let paths = letibot_tools::remote::Paths::in_home(&home);
         std::fs::create_dir_all(paths.keys()).expect("the keys directory");
         std::fs::write(paths.default_key("fake"), b"a dedicated key").expect("the key");
@@ -107,11 +80,9 @@ impl Rig {
             "fake.invalid ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI\n",
         )
         .expect("the host key");
-        // SAFETY (Rust 2024's `unsafe` on `set_var`): this test binary is one file and these
-        // three are read by nothing else in it, before any thread that would read them starts.
-        // `HOME` is this rig's, because the ssh policy reads the *operator's* home from it to
-        // answer "is this key inside their own ssh directory" — the answer for a test must be
-        // about this fixture and never about the box.
+        // SAFETY: this test binary is one file and these are read by nothing else in it, before any
+        // thread that would read them starts. `HOME` is this rig's because the ssh policy reads the
+        // operator's home from it to answer "is this key inside their own ssh directory".
         unsafe {
             std::env::set_var("LETIBOT_HOSTS", &hosts);
             std::env::set_var("LETIBOT_SSH", &ssh);
@@ -152,10 +123,8 @@ fn git(repo: &Path, args: &[&str]) -> String {
 #[test]
 fn a_host_placement_seats_a_session_whose_tools_run_there() {
     let rig = Rig::new();
-    // **The operator's own answer**: `leticode --host fake` is `placement = Remote("fake")`
-    // and nothing else — the same two lines `cli.rs` runs for `--host` once the name has
-    // been checked against the file (`Hosts::get`), which is what the opener then repeats
-    // for a session reopened from the store.
+    // The operator's own answer: `leticode --host fake` is `placement = Remote("fake")` and nothing
+    // else - the same two lines `cli.rs` runs for `--host` once the name is checked against the file.
     let mut cfg = Config::for_this_box(&rig.repo);
     cfg.session_id = SESSION.into();
     cfg.seat = Seat::Leticode;
@@ -181,8 +150,8 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
     let hub = registry.new_hub(SESSION.to_string());
     let harness = Harness::open(&parts, cfg.clone(), hub).expect("the session seats on the host");
 
-    // **The placement is the remote one, and it is not a VM**: a VM is a boundary and runs
-    // allow-all inside it, and this must not have taken that path.
+    // The placement is the remote one, and it is not a VM: a VM is a boundary and runs allow-all
+    // inside it, and this must not have taken that path.
     assert_eq!(
         harness.config().placement,
         Placement::Remote("fake".into()),
@@ -190,14 +159,12 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
     );
     assert!(harness.config().vm_attach.is_none());
 
-    // **The backend is the ssh one, in its own words** — the sentence a session shows and
-    // the banner is built from.
+    // The backend is the ssh one, in its own words - the sentence a session shows and the banner is
+    // built from.
     let described = harness.wiring().backend.clone();
     assert!(described.contains("ssh host `fake`"), "{described}");
-    // **Confined or not is MEASURED on the machine behind the fake** — which is the box running
-    // this test: a Linux host with a working `bwrap` says `CONFINED, and measured`, a Mac says
-    // `NOT CONFINED — <why>`. Either is right; what must hold is that the description says which,
-    // rather than assuming one (RH3 took the hardcoded answer out of this sentence).
+    // Confined or not is MEASURED on the machine behind the fake: a Linux host with a working
+    // `bwrap` says `CONFINED, and measured`, a Mac says `NOT CONFINED - <why>`. Either is right.
     assert!(
         described.contains("CONFINED, and measured") || described.contains("NOT CONFINED"),
         "the description says whether the host confines, and how it knows: {described}"
@@ -211,8 +178,8 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
         "a leticode session writes, on this machine or another one"
     );
 
-    // **The tree went over**: the checkout is on the fake remote, on its own branch, and the
-    // session's workspace is that checkout rather than anything on this box.
+    // The tree went over: the checkout is on the fake remote, on its own branch, and the session's
+    // workspace is that checkout rather than anything on this box.
     let worktree = rig.worktree();
     assert!(
         worktree.join("README").is_file(),
@@ -224,9 +191,9 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
         format!("remote/{SHORT}")
     );
 
-    // **Its commits come back when it ends.** A commit made "there" — the same git, run where
-    // the session's own tools would run it — arrives as `remote/<host>/<short id>` in the
-    // local repository, and the local branch it started from is untouched.
+    // Its commits come back when it ends: a commit made "there" - the same git, run where the
+    // session's own tools would run it - arrives as `remote/<host>/<short id>` in the local
+    // repository, and the branch it started from is untouched.
     std::fs::write(worktree.join("feature.rs"), b"// the work\n").expect("a file");
     git(&worktree, &["add", "feature.rs"]);
     git(

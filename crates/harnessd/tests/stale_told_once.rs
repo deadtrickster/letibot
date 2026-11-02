@@ -1,15 +1,6 @@
-//! **The model is told its prompt is stale ONCE, and as information.**
-//!
-//! The operator, asking for the reseat card: *"regarding reseat - since it is important id
-//! suggest to show me "select" with one option - reseat and abstain and then when on abstain
-//! keep reseat select open. this way i keep reseat in mind because it stares at me yet can
-//! continue at my risk"*. The person owns the decision through the card, so the plan-check no
-//! longer appends the stale sentence to every check with *keep saying it until they act* — it
-//! says it once, says whose decision it is, and the next check is silent about it.
-//!
-//! Driven through `Harness` directly: a session seated under one prompt, reopened under
-//! another, and two plan-checks. The model is the canned server the turn crate's tests replay.
-//! It needs the vocabulary GGUF and not a model.
+//! The model is told its prompt is stale ONCE, and as information. The operator asked for
+//! the reseat card to stay in front of them - the person owns the decision and can continue
+//! at their own risk.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::{ForkTail, Harness};
@@ -78,7 +69,7 @@ fn a_plain_answer(vocab: &letibot_tokencore::Vocab, answer: &str) -> canned::Rep
     canned::Reply::Frames(frames)
 }
 
-/// **Two plan-checks on a stale session: the first carries the sentence, the second does not.**
+/// Two plan-checks on a stale session: the first carries the sentence, the second does not.
 #[test]
 fn the_model_is_told_the_prompt_is_stale_once_and_not_on_every_check() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

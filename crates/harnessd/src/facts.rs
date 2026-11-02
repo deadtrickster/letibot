@@ -1,14 +1,6 @@
-//! The daemon's answer to [`letibot_tools::builtins::harness_view::HarnessFacts`]:
-//! what a session may know about itself.
-//!
-//! The trait lives in `letibot-tools` so that crate keeps depending on nothing
-//! above it; the implementation lives here because this is the layer that holds
-//! the hub and the config. Same split as every other seam in this tree.
-//!
-//! **Every field is read at CALL time, not at open.** A session that reported the
-//! warnings it had when it started would be answering a question about the past
-//! with the confidence of the present — and warnings are exactly what a model
-//! asks about because something just happened.
+//! The daemon's answer to [`letibot_tools::builtins::harness_view::HarnessFacts`] what a
+//! session may know about itself. The trait lives in `letibot-tools` so that crate keeps
+//! depending on nothing above it
 
 use std::sync::Arc;
 
@@ -16,20 +8,9 @@ use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::view::TurnState;
 use letibot_tools::builtins::harness_view::HarnessFacts;
 
-/// The disclosures, filled once the session is wired.
-///
-/// A slot rather than a value because the tool is registered BEFORE the gate,
-/// the backend and the seated role exist — they are what the disclosures
-/// describe. Same shape as the flowy seat's slot, and for the same reason: the
-/// tool has to exist early enough to be in the prompt, and its subject arrives
-/// later.
-///
-/// Filled once and not refreshed, which is honest for most of it: the disclosures
-/// describe how the session was WIRED — the backend, the seat, the seams — and
-/// that is fixed for its life by construction. The mode is the exception since
-/// `/mode` started moving the live session; a model that wants the current point
-/// reads `harness what=status` knowing that one line may be a session-open
-/// reading, and the `mode_set` warning is the newer fact.
+/// The disclosures, filled once the session is wired. A slot, not a value: the tool is
+/// registered before the gate, the backend and the role it describes exist. Filled once, so
+/// the mode line can be stale.
 pub type DisclosureSlot = Arc<std::sync::Mutex<Vec<(String, String, String)>>>;
 
 pub struct DaemonFacts {
@@ -61,9 +42,9 @@ impl HarnessFacts for DaemonFacts {
                 (
                     w.code,
                     w.detail,
-                    // Age rather than a timestamp: a session's clock is hours old
-                    // by the time it reads this, and "four seconds ago" is the
-                    // fact a model is actually asking for.
+                    // Age rather than a timestamp: a session's clock is hours
+                    // old by the time it reads this, and "four seconds ago" is
+                    // the fact a model is asking for.
                     now.saturating_sub(w.ts) / 1000,
                 )
             })
@@ -91,9 +72,8 @@ impl HarnessFacts for DaemonFacts {
 
     fn screen(&self) -> Option<(usize, usize, Vec<String>)> {
         // Ask nobody when nobody is there. Without this the tool would sit out
-        // the whole deadline on every one-shot run to learn what `heads` already
-        // knows, and a model that waited two seconds for silence tends to read
-        // the silence as a slow screen rather than as no screen.
+        // the whole deadline on every one-shot run, and a model that waited two
+        // seconds for silence reads it as a slow screen rather than no screen.
         if self.hub.snapshot().heads.is_empty() {
             return None;
         }
@@ -101,9 +81,9 @@ impl HarnessFacts for DaemonFacts {
         match rx.recv_timeout(SCREEN_DEADLINE) {
             Ok(screen) => Some(screen),
             Err(_) => {
-                // Forget it under the lock before returning, so a head that draws
-                // late finds nothing waiting instead of parking a row nobody will
-                // ever read.
+                // Forget it under the lock before returning, so a head that
+                // draws late finds nothing waiting instead of parking a row
+                // nobody will ever read.
                 self.hub.abandon_screen(&req_id);
                 None
             }
@@ -111,10 +91,7 @@ impl HarnessFacts for DaemonFacts {
     }
 }
 
-/// How long a head gets to draw itself and answer.
-///
-/// A head redraws on the event that carries the request, so the honest cost is
-/// one round trip over a Unix socket plus one frame — milliseconds. The two
-/// seconds are for a head that is wedged, not for a head that is working, and
-/// the tool call blocks a turn for exactly this long when one is.
+/// How long a head gets to draw itself and answer. A head redraws on the event that carries
+/// the request, so the honest cost is one round trip and one frame; the two seconds are for
+/// a wedged head.
 const SCREEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);

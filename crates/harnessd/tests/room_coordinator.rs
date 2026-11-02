@@ -1,36 +1,6 @@
-//! **The arbiter can rule** — a `--room` coordinator's own session, opened for real, with the
-//! `room` tool on its seat and a raised item reaching a ruling through it.
-//!
-//! # What this file exists to have caught
-//!
-//! The coordinator was refused at `9a0e7426` for one defect that made the whole feature silently
-//! useless. `coordinator::configure` seats `Seat::Orchestrator`; `harness.rs`'s `base_role_for_seat`
-//! resolves that to `roles::m1_orchestrator()`; and `Registry::resolve_role` keeps **only** the
-//! tools a role names. The `room` tool was registered by `Harness::open` and named by
-//! `roles::orchestrator()` — §8.4's table, which **nothing seats** — so the coordinator's own
-//! registry had no `room` in it. The tie-breaker thread was then woken, handed a prompt saying
-//! *"answer with the `room` tool: verb `rule`"*, and had no such tool: a raised item stayed frozen
-//! for ever, which is the exact outcome `configure`'s no-model refusal says it exists to prevent.
-//!
-//! `coordinator.rs`'s own test exercised `Coordinator::start` with **raw clients**, so it proved
-//! the lease, the socket, the server and the ruling — and never asked what tools the session that
-//! does the ruling actually has. This file asks that, and then does the ruling through the tool.
-//!
-//! # What it needs
-//!
-//! Nothing on the box: the byte vocabulary and no provider (`vocab_gguf = None`, no
-//! `cfg.provider`), so no GGUF, no model server and no key. `configure` fills the default model
-//! only when both `provider` and `model` are empty, and the test names `local` — which is what a
-//! coordinator whose arbiter runs on this box's own llama.cpp says. No turn is ever run: the
-//! question is raised by two raw clients and answered by one tool call, and the arbiter's model is
-//! never asked anything.
-//!
-//! # The socket
-//!
-//! `LETIBOT_ROOM_SOCKET` is process-wide, so this file holds **one** test: a second one in the
-//! same binary would race it for the variable. The socket, the lease and the coordinator's
-//! workspace all live in a directory this test owns, so nothing touches `~/.local/share/letibot`
-//! and no coordinator is started against the operator's data directory.
+//! The arbiter can rule - a `--room` coordinator's own session, opened for real, with the
+//! `room` tool on its seat and a raised item reaching a ruling through it. The defect this
+//! file exists for
 
 use std::sync::Arc;
 
@@ -52,7 +22,7 @@ fn scratch(what: &str) -> std::path::PathBuf {
     dir
 }
 
-/// **The coordinator's own session, opened the way `cli::run` opens it**, and then a question
+/// The coordinator's own session, opened the way `cli::run` opens it, and then a question
 /// raised by two raw clients and ruled on through the session's `room` tool.
 #[test]
 fn a_coordinators_own_session_can_rule_through_its_room_tool() {
@@ -63,9 +33,9 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
     // whole test inside `dir`.
     unsafe { std::env::set_var(daemon_room::SOCKET_ENV, &socket) };
 
-    // **The config a `--room` daemon gets**, through the function that makes it one. `model` is
+    // The config a `--room` daemon gets, through the function that makes it one. `model` is
     // named so `configure` neither fills the deepseek default nor asks whether a key for it
-    // resolves — this box is not being measured for its provider keys, and no turn is ever run.
+    // resolves - this box is not being measured for its provider keys, and no turn is ever run.
     let workspace = dir.join("start");
     std::fs::create_dir_all(&workspace).expect("a starting workspace");
     let mut cfg = Config::for_this_box(&workspace);
@@ -84,10 +54,9 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         cfg.room_link,
         "and that session must be able to join the room: it is the arbiter"
     );
-    // **And it may NOT restart the room it serves.** The pane's restart asks a supervisor, and this
-    // daemon IS the process a restart would kill: a control that stops its own feed mid-act could
-    // not say what happened. Set here rather than inherited, so a fixture that calls `configure` on
-    // a `for_this_box` config measures the coordinator and not the constructor.
+    // And it may NOT restart the room it serves. The pane's restart asks a supervisor, and
+    // this daemon IS the process a restart would kill: a control that stops its own feed
+    // mid-act could not say what happened.
     assert!(
         !cfg.restart_room,
         "the room's own daemon is never given a restart supervisor"
@@ -104,7 +73,7 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
             rung.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         })
     };
-    // **The coordinator first**, exactly as `cli::run` does it: the socket has to exist when
+    // The coordinator first, exactly as `cli::run` does it: the socket has to exist when
     // `Harness::open` builds the session's room link, and the session id has to be the arbiter's
     // before an event can be routed to it.
     let coord = Coordinator::start(&arbiter, Arc::clone(&bell)).expect("a coordinator");
@@ -112,7 +81,7 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
     let h = Harness::open(&parts, cfg, hub).expect("the coordinator's session opens");
 
     // ---------------------------------------------------------------------------------------
-    // 1. The registry the seat resolves has `room` in it — the assertion that was missing.
+    // 1. The registry the seat resolves has `room` in it - the assertion that was missing.
     // ---------------------------------------------------------------------------------------
     let seated = h.wiring().seated.clone();
     assert!(
@@ -141,7 +110,7 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         })
         .expect("a post");
     assert!(matches!(posted, Response::Posted { .. }), "{posted:?}");
-    // Three abandonments raise the item — `ABANDON_THRESHOLD` — which is the only thing that
+    // Three abandonments raise the item - `ABANDON_THRESHOLD` - which is the only thing that
     // asks the arbiter anything.
     for k in 1..=3 {
         let _ = a.request(&Request::Claim {
@@ -158,12 +127,9 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
     assert_eq!(open.len(), 1, "three abandonments raise one question");
     let question = open[0].id;
 
-    // **The arbiter is WOKEN before it is asked to rule.** Two things put a line in front of it:
+    // The arbiter is WOKEN before it is asked to rule. Two things put a line in front of it
     // the link's reader thread, which turns the `Raised` event into a sentence, and the
-    // tie-breaker's own thread, which pushes the prompt naming the verb and rings. The queue is
-    // process-wide and `take` empties it, so this drains it until the PROMPT is in hand rather
-    // than assuming which of the two arrived first. A question nobody is woken for is a question
-    // nobody answers, and that is the other half of *the arbiter can rule*.
+    // tie-breaker's own thread, which pushes the prompt naming the verb and rings.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut prompted: Vec<String> = Vec::new();
     while std::time::Instant::now() < deadline {
@@ -183,8 +149,8 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
          the sentence the whole defect was about: {prompted:?}"
     );
 
-    // **The call the tie-breaker's prompt tells the model to make**, through the runtime the
-    // session actually invokes through — not `SessionRoom::call` directly, because the whole
+    // The call the tie-breaker's prompt tells the model to make, through the runtime the
+    // session actually invokes through - not `SessionRoom::call` directly, because the whole
     // defect was a tool that was not there while the link underneath it was.
     let call = ToolCall {
         id: "call_rule".into(),
@@ -210,7 +176,7 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         "and the room must agree: nothing is left frozen"
     );
 
-    // The item is out of the queue for good, which is what `drop` means — a ruling that only
+    // The item is out of the queue for good, which is what `drop` means - a ruling that only
     // emptied the question list would leave the item claimable and the queue still stuck.
     let queue = a
         .request(&Request::Queue { tag: "ram".into() })
@@ -225,13 +191,13 @@ fn a_coordinators_own_session_can_rule_through_its_room_tool() {
         other => panic!("a queue read answers rows: {other:?}"),
     }
 
-    // **The bell rang** — the tie-breaker's own thread prompts the arbiter by pushing a sentence
-    // and ringing; that is asserted above, before the ruling, because a question ruled within the
-    // thread's two-second period is a question it never prompts.
+    // The bell rang - the tie-breaker's own thread prompts the arbiter by pushing a sentence
+    // and ringing; asserted above, before the ruling, because a question ruled inside the thread's
+    // two-second period is a question it never prompts.
 
     drop(h);
     drop(coord);
-    // SAFETY: as above — this binary holds one test.
+    // SAFETY: as above - this binary holds one test.
     unsafe { std::env::remove_var(daemon_room::SOCKET_ENV) };
     let _ = std::fs::remove_dir_all(&dir);
 }

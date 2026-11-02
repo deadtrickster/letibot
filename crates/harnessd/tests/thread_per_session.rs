@@ -1,37 +1,6 @@
-//! **One thread per session, and the turn that used to hold the daemon** — the operator's
-//! requirement, in their words: *"one daemon, several sessions … give a thread to each session and
-//! that is it"*.
-//!
-//! # The defect this pins
-//!
-//! Every session the daemon held used to be served by ONE worker, one command at a time across all
-//! of them. MEASURED 2026-10-26 in the operator's own daemon: a prompt to session B sat queued from
-//! 14:08 until 14:10:52 — exactly one second after session A's three-minute turn ended. The
-//! sessions were unrelated conversations and neither was waiting for the other's answer; the wait
-//! was one thread.
-//!
-//! # The three properties, in the order they are asked
-//!
-//! 1. **A held turn in one session does not delay another.** Session A's model answers only when
-//!    this test releases it — a socket the test owns, which is what a three-minute turn is made of —
-//!    and B's prompt is answered while A's is still held.
-//! 2. **A session's own commands stay ordered.** Two prompts into the held session are answered in
-//!    the order they were submitted, whatever else the daemon is doing.
-//! 3. **A stop with both sessions busy ends inside its bound** and names what it could not wait for,
-//!    rather than hanging on a turn nobody can interrupt.
-//!
-//! # One test function, on purpose
-//!
-//! This file sets `XDG_CONFIG_HOME`/`XDG_DATA_HOME` (the only door a session has to a non-preset
-//! provider address, which is how the fake on loopback is reached), and `set_var` is only sound in a
-//! process where nothing else is reading the environment. Three test functions in one binary would
-//! be three of them racing over that. So the phases are numbered below, each with its own
-//! assertions and its own sentence when it fails.
-//!
-//! # What makes this runnable anywhere
-//!
-//! Both sessions open on the **byte vocabulary** with a provider pointed at a loopback fake
-//! (`vocab_gguf: None`), so no model file is needed and nothing leaves 127.0.0.1.
+//! One thread per session, and the turn that used to hold the daemon. Every session the
+//! daemon held used to be served by ONE worker, one command at a time across all of them so
+//! a prompt to one session sat behind an unrelated session's turn.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
@@ -43,14 +12,14 @@ use letibot_sessionlog::protocol::Caps;
 use letibot_sessionlog::registry::Registry;
 use letibot_transcript::TranscriptItem;
 
-/// The daemon's own first session — `open_first` opens it eagerly, which is what the banner needs.
+/// The daemon's own first session - `open_first` opens it eagerly, which is what the banner needs.
 const SLOW: &str = "s-held-turn";
 /// The second session: a head makes it while the daemon is running, which is the path that has to
 /// hand it a thread too.
 const QUICK: &str = "s-quick-turn";
 
-/// How long anything in this test may take. Nothing here is a performance claim — the held turn is
-/// released by the test itself — so this is only a bound on a hang.
+/// How long anything in this test may take. Nothing here is a performance claim - the held turn is
+/// released by the test itself - so this is only a bound on a hang.
 const PATIENCE: Duration = Duration::from_secs(30);
 
 /// The wait the daemon's own stop uses (`cli::SUBAGENT_EXIT_GRACE`'s shape, smaller so the test is
@@ -61,7 +30,7 @@ const STOP_BOUND: Duration = Duration::from_secs(2);
 fn a_held_turn_in_one_session_does_not_delay_another() {
     let dir = TempDir::new("thread-per-session");
     let root = dir.path();
-    // **Nothing of the operator's may reach these sessions**: a key in their `providers.toml`
+    // Nothing of the operator's may reach these sessions: a key in their `providers.toml`
     // would decide where a request goes, and this test's whole point is that no request leaves
     // loopback.
     std::fs::create_dir_all(root.join("config/letibot")).expect("config dir");
@@ -93,8 +62,7 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     cfg.seat = Seat::Leticode;
     cfg.http_retries = 0;
     cfg.session_id = SLOW.into();
-    // The byte vocabulary and a provider — the door `activity_two_sessions.rs` takes, so this runs
-    // on a machine with no model file at all.
+    // The byte vocabulary and a provider, so this runs on a machine with no model file at all.
     cfg.vocab_gguf = None;
     cfg.provider = Some(ProviderConfig {
         name: "deepseek".into(),
@@ -113,7 +81,7 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     let socket = letibot_sessionlog::testing::socket_path(root, "harnessd.sock");
     let daemon = Daemon::serve(registry.clone(), &socket).expect("the socket binds");
 
-    // **The daemon, running exactly as `cli.rs` runs it**: `open_first`, the loop, the stop, and the
+    // The daemon, running exactly as `cli.rs` runs it: `open_first`, the loop, the stop, and the
     // bounded wait for every session's thread that the process's exit needs.
     let worker = {
         let cfg = cfg.clone();
@@ -132,7 +100,7 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     // ---- 1. the sessions the daemon holds are served by their own threads ----------------
     let slow = registry.get(SLOW).expect("the first session's hub");
     let slow_head = slow.attach("tui", "tester", Caps::default(), 0);
-    // **A session made WHILE the daemon is running**, which is the path that has to hand it a
+    // A session made WHILE the daemon is running, which is the path that has to hand it a
     // thread as well: `Registry::create` rings the open, the daemon opens it, and its court is
     // spawned with the harness it just built.
     registry
@@ -172,11 +140,8 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     );
 
     // ---- 4. a session's own commands stay ordered ----------------------------------------
-    // **The second prompt is submitted while the first is inside the model call**, so it is queued
-    // behind it — the case a single worker serialised by holding the daemon, and the case a thread
-    // of its own must keep the ORDER of. The evidence is the order the model was asked in: whichever
-    // turn the second prompt ends up in (its own, or a follow-up item of the first), it may not
-    // reach the model before the first one did.
+    // The second prompt is submitted while the first is inside the model call, so it is queued
+    // behind it - the order a thread of its own must keep.
     let before = fake.arrived();
     fake.hold(Hold::Next);
     prompt(&slow, &slow_head, "req-one", MARK_ONE);
@@ -233,13 +198,13 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
     // session's thread with the bound.
     registry.close();
     let (said, waited) = worker.join().expect("the daemon's own thread");
-    // **Nothing may be waited for for ever**: the bound is what keeps a Ctrl-C from hanging on a
+    // Nothing may be waited for for ever: the bound is what keeps a Ctrl-C from hanging on a
     // turn that cannot be interrupted.
     assert!(
         waited <= STOP_BOUND + Duration::from_secs(2),
         "the stop took {waited:?} against a bound of {STOP_BOUND:?}"
     );
-    // **And what it could not wait for is NAMED** — both sessions are inside a model call, so the
+    // And what it could not wait for is NAMED - both sessions are inside a model call, so the
     // honest answer is that it gave up rather than that it waited.
     let sentence = said.expect("a stop that could not wait for two busy sessions says so");
     assert!(
@@ -254,8 +219,8 @@ fn a_held_turn_in_one_session_does_not_delay_another() {
 // The fixture
 // ---------------------------------------------------------------------------------------------
 
-/// Three markers no prompt this test sends could produce by accident: the transcript's own system
-/// message is full of ordinary English, so a search for "first" would find the prompt's preamble.
+/// Markers no prompt this test sends could produce by accident: the transcript's own system message
+/// is full of ordinary English, so a search for "first" would find the prompt's preamble.
 const HOLD_THIS: &str = "zz-marker-held";
 const ANSWER_WHILE_HELD: &str = "zz-marker-quick";
 const MARK_ONE: &str = "zz-marker-one";
@@ -263,7 +228,7 @@ const MARK_TWO: &str = "zz-marker-two";
 const BUSY_SLOW: &str = "zz-marker-busy-slow";
 const BUSY_QUICK: &str = "zz-marker-busy-quick";
 
-/// The model's answers in this session's transcript — the row a head draws when the model speaks.
+/// The model's answers in this session's transcript - the row a head draws when the model speaks.
 fn answers(hub: &Arc<letibot_sessionlog::Hub>) -> usize {
     hub.snapshot()
         .items
@@ -272,7 +237,7 @@ fn answers(hub: &Arc<letibot_sessionlog::Hub>) -> usize {
         .count()
 }
 
-/// Submit one prompt the way a head does — the hub's own door, which is the one a session's thread
+/// Submit one prompt the way a head does - the hub's own door, which is the one a session's thread
 /// takes its commands from.
 fn prompt(hub: &Arc<letibot_sessionlog::Hub>, head: &Attached, request: &str, text: &str) {
     let frame = hub.submit(
@@ -333,19 +298,15 @@ impl Drop for TempDir {
     }
 }
 
-/// **Which answers the fake holds** — `Next` for one, `Every` for all of them until released.
+/// Which answers the fake holds - `Next` for one, `Every` for all of them until released.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hold {
     Next,
     Every,
 }
 
-/// **A fake provider on a loopback port that answers every request except the ones this test
-/// holds.**
-///
-/// One thread per connection, and that is load-bearing rather than tidy: a fake that served its
-/// connections from one thread would make the SECOND session wait behind the held first — the very
-/// defect this test exists to catch, reproduced in the fixture and blamed on the daemon.
+/// A fake provider on a loopback port that answers every request except the ones this test
+/// holds. One thread per connection, and that is load-bearing rather than tidy
 struct Fake {
     url: String,
     state: Arc<State>,
@@ -453,7 +414,7 @@ impl Fake {
             .clone()
     }
 
-    /// Whether a request is inside the hold right now — read so the test can say *nothing released
+    /// Whether a request is inside the hold right now - read so the test can say *nothing released
     /// it* about a turn that is still waiting.
     fn still_held(&self) -> bool {
         self.state
@@ -486,7 +447,7 @@ fn read_request(stream: &std::net::TcpStream) -> String {
     String::from_utf8_lossy(&body).into_owned()
 }
 
-/// One round as SSE — the frames `letibot-provider` parses, in the shapes
+/// One round as SSE - the frames `letibot-provider` parses, in the shapes
 /// `crates/bridge/tests/end_to_end.rs` serves (so two fakes cannot drift on the wire bytes that
 /// matter).
 fn write_sse(mut stream: std::net::TcpStream, text: &str) -> std::io::Result<()> {

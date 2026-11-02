@@ -1,37 +1,4 @@
-//! **Looks, slice 1: `{"read": path}` and nothing else.**
-//!
-//! A plugin never does I/O (`docs/plugins-plan.md` §1, principle 1). When a pane needs the
-//! world, it *declares* a look in its answer and the host runs it — so the wasm call never blocks
-//! on a filesystem, the same input always gives the same output, and the capability a manifest
-//! declared is checked at the one moment it means something: here, by the host, against the layer
-//! that answered.
-//!
-//! # Why the answer is a look RESULT and not an error
-//!
-//! Everything that can go wrong — no `read` capability, a path outside the workspace, a file that
-//! is not there — is answered `{"exit":1,"stderr":"…"}` rather than raised, because that is what
-//! the contract says a look produces and because the plugin is the half that knows how to draw a
-//! refusal: the example dashboard turns a non-zero exit into a panel saying what it could not read
-//! and how to fix it (C3's *"a panel that cannot get its data says why and how to fix it"*). An
-//! `Err` raised here would reach the pane as a failure with no plugin involved, which is the same
-//! screen with less said on it.
-//!
-//! # Confinement
-//!
-//! `docs/plugins-plan.md` §3: `read` is *"the same confinement `read` has"* — the workspace root
-//! and nothing above it. **And `read:<path>` is one tree outside it**, named in the manifest
-//! (`crate::plugins::tool`'s docstring is the long argument; this is the same rule enforced for a
-//! pane's look). Both paths are canonicalised before the comparison, so a symlink or a `..`
-//! cannot spell its way out: the check is on what the path *resolves to*, not on what it says. An
-//! absolute path is not refused by name, because canonicalising it is the same check and a better
-//! one — `/etc/passwd` simply resolves outside the root.
-//!
-//! # `exec` is refused, and says which slice it is missing from
-//!
-//! Slice 1 runs no process (C3 lists `exec` in the vocabulary; W4's brief says *do not run
-//! anything*), and the answer is `exit 126` — the shell's own *"found but not executable"* —
-//! rather than a false success, so a plugin written for slice 2 draws an unavailable panel instead
-//! of an empty one.
+//! Looks, slice 1: `{"read": path}` and nothing else. A plugin never does I/O.
 
 use std::io::Read;
 use std::path::Path;
@@ -40,9 +7,8 @@ use letibot_plugins::Capability;
 use letibot_sessionlog::pane::LookSpec;
 use serde_json::{Value, json};
 
-/// **How much of a file one look may hand a plugin.** A megabyte is a status file, a plan, a log
-/// tail — C3's looks are for dashboards, and a pane that read a gigabyte would spend a session's
-/// memory on a screen nobody asked to be that big.
+/// How much of a file one look may hand a plugin. A megabyte is a status file, a plan, a log tail -
+/// and a pane that read a gigabyte would spend a session's memory on a screen nobody asked for.
 pub const CAP: usize = 1 << 20;
 
 /// The word a refused `exec` look carries. One constant, because it is in the answer a plugin
@@ -54,8 +20,8 @@ pub const EXEC_REFUSED: &str = "exec looks are not in slice 1";
 pub fn run(spec: &LookSpec, root: &Path, caps: &[Capability]) -> Value {
     match spec {
         LookSpec::Read { read } => read_file(read, root, caps),
-        // 126 is the shell's own *found but not executable*, so a plugin written for slice 2
-        // draws an unavailable panel instead of an empty one that looks like a finished read.
+        // 126 is the shell's own *found but not executable*, so a plugin written for slice 2 draws
+        // an unavailable panel instead of an empty one that looks like a finished read.
         LookSpec::Exec { .. } => {
             json!({"exit": 126, "stdout": "", "stderr": EXEC_REFUSED})
         }
@@ -64,8 +30,8 @@ pub fn run(spec: &LookSpec, root: &Path, caps: &[Capability]) -> Value {
 
 /// `{"exit":0,"stdout":<the file>,"stderr":""}`, or `exit 1` with the reason in `stderr`.
 fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
-    // **Every tree this layer may read**: the workspace if it declared `read`, and each tree it
-    // named as `read:<path>`. Nothing else — the declaration is the approval.
+    // Every tree this layer may read: the workspace if it declared `read`, and each tree it named
+    // as `read:<path>`. Nothing else - the declaration is the approval.
     let mut roots: Vec<(String, std::path::PathBuf)> = Vec::new();
     if caps.contains(&Capability::Read) {
         match root.canonicalize() {
@@ -93,9 +59,8 @@ fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
              so `{path}` is not read for it"
         ));
     }
-    // A path that is absolute replaces the root in `join`, and that is fine: the containment
-    // check below is on what the path resolves to, so an absolute path outside every tree is
-    // refused for being outside it rather than for being absolute.
+    // An absolute path replaces the root in `join`, and that is fine: the check below is on what
+    // the path resolves to, so one outside every tree is refused for being outside it.
     let wanted = if path.starts_with("~/") {
         match crate::plugins::tool::expand(path) {
             Some(p) => p,
@@ -111,7 +76,7 @@ fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
     let inside = roots.iter().any(|(_, tree)| real.starts_with(tree));
     if !inside {
         let named: Vec<String> = roots.iter().map(|(what, _)| what.clone()).collect();
-        // The workspace's refusal keeps its old words: it is the sentence a project's own layer
+        // The workspace's refusal keeps its own words: it is the sentence a project's own layer
         // reads most often, and a test asserts it.
         let why = if named.len() == 1 && named[0] == root.display().to_string() {
             format!(
@@ -141,8 +106,7 @@ fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
     };
     let mut bytes = Vec::new();
     // One byte over the cap is read so a file of exactly `CAP` is not reported as truncated, and
-    // the text is cut back to `CAP` afterwards. A lossy decode because a plugin asked for a text
-    // and a plan with a stray byte in it is still a plan.
+    // the text is cut back afterwards. Lossy, because a plan with a stray byte is still a plan.
     if let Err(e) = file.take(CAP as u64 + 1).read_to_end(&mut bytes) {
         return refused(format!("{}: {e}", real.display()));
     }
@@ -154,8 +118,8 @@ fn read_file(path: &str, root: &Path, caps: &[Capability]) -> Value {
     })
 }
 
-/// The one shape every refusal has: a non-zero exit and the sentence in `stderr`, which is where
-/// a shell and C3's look result both put it.
+/// The one shape every refusal has: a non-zero exit and the sentence in `stderr`, which is where a
+/// shell and a look result both put it.
 fn refused(why: impl AsRef<str>) -> Value {
     json!({"exit": 1, "stdout": "", "stderr": why.as_ref()})
 }
