@@ -563,6 +563,63 @@ fn nag_verb_to(hub: &Hub, line: &str) {
     );
 }
 
+/// **A command a child does not run is said back to its head, naming the child and what it was**
+/// (R67 item 15 / R74 item 31). Until this test the sentence was asserted only as a pure function of
+/// its two arguments; here it arrives on a REAL child's hub, from the door that refuses the command -
+/// and the queue it was refused from is the child's own, which is the half a pure function cannot
+/// show.
+#[test]
+fn a_command_a_child_does_not_own_is_said_back_to_its_head_by_name() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-child-door");
+    let path = dir.path().join("sessions.db");
+    let parent = "s-parent-of-the-refused-child";
+    let child = "s-child-refused-by-the-door";
+    let parts = Parts::load(&config(&path, child)).expect("the vocabulary must load");
+    let canned = canned::Canned::serve_each(
+        vec![a_plain_answer_turn(
+            &parts.vocab,
+            "planning",
+            "the task is done",
+            30,
+        )],
+        1,
+    );
+    drop(parts);
+
+    let kid = park_a_child(parent, child, canned, &path);
+    // A compaction is the child's PARENT's: a child inherits the machinery rather than owning a
+    // copy, so the door refuses it and the head that sent it is told.
+    assert!(
+        kid.hub.submit_daemon(
+            "dead",
+            "compact-the-child".to_string(),
+            letibot_sessionlog::CommandKind::Compact,
+        ),
+        "the child's hub takes the command"
+    );
+    let said = wait_for(&kid.hub, |hub| warnings_on(hub, "child_door_refused").pop());
+    for asked in [
+        // The verb, in the words a person sends it in.
+        "a `compact` command",
+        // The child it did not run in, by name.
+        child,
+        // Why, and where to send it instead.
+        "a door a child does not own",
+        "its parent's",
+    ] {
+        assert!(said.contains(asked), "`{asked}` is missing from: {said}");
+    }
+    // And nothing ran: the child's own transcript holds one turn's answer and no summary row.
+    assert!(
+        checks_on(&kid.hub).is_empty(),
+        "a refused command leaves no row behind"
+    );
+    kid.release();
+}
+
 /// `/nag pause` on a CHILD pauses that child - its clock is on its own thread, and the verb is
 /// answered there: a parent's row lands on the paused child's board and is not asked about, and
 /// `/nag resume` brings the check. The pause is per session, and a child is a session.
