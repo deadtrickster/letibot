@@ -394,7 +394,7 @@ fn the_reap_log_reaches_the_model_through_job_list() {
 
     let after = h.call("job_list", "{}");
     assert!(
-        after.payload.contains("scope(s) have ended this session"),
+        after.payload.contains("0 scopes have ended this session"),
         "{}",
         after.payload
     );
@@ -624,7 +624,7 @@ fn an_unknown_job_comes_back_with_the_jobs_there_are() {
         "job_output",
         &serde_json::json!({"job": "j999"}).to_string(),
     );
-    assert!(warm.payload.contains("job(s):"), "{}", warm.render());
+    assert!(warm.payload.contains("jobs:"), "{}", warm.render());
 }
 
 #[test]

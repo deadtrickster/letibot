@@ -597,7 +597,7 @@ fn a_monitor_dies_with_the_scope_that_owns_it() {
         listing.payload
     );
     assert!(
-        listing.payload.contains("0 monitor(s) watching"),
+        listing.payload.contains("0 monitors watching"),
         "the turn ended and its watcher did not: {}",
         listing.payload
     );

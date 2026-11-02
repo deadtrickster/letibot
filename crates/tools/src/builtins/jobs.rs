@@ -42,7 +42,7 @@ pub(crate) fn unknown_job(jobs: &[JobView], asked: &str) -> Invocation {
          with `bash`."
             .to_string()
     } else {
-        let mut s = format!("this session has {} job(s):\n", jobs.len());
+        let mut s = format!("this session has {}:\n", counted(jobs.len(), "job", "jobs"));
         for j in jobs {
             s.push_str(&format!(
                 "  {} — {} — {}\n",
@@ -187,32 +187,36 @@ fn job_list_summary(
     running: usize,
 ) -> String {
     let settled = in_scope - running;
+    let jobs = counted(total, "job", "jobs");
     // Nothing running is the answer, so it goes first; the settled count inside it says
     // where the rest went, rather than being said again on the line below.
     if running == 0 && settled > 0 {
         return match want {
             Some(w) => format!(
-                "Nothing is running in scope `{w}`; {settled} job(s) there have settled — \
-                 `job_list` with `all: true` shows them.\n"
+                "Nothing is running in scope `{w}`; {} there have settled — \
+                 `job_list` with `all: true` shows them.\n",
+                counted(settled, "job", "jobs")
             ),
             None => format!(
-                "Nothing is running; {settled} job(s) have settled — `job_list` with \
-                 `all: true` shows every one.\n"
+                "Nothing is running; {} have settled — `job_list` with \
+                 `all: true` shows every one.\n",
+                counted(settled, "job", "jobs")
             ),
         };
     }
     match (want, everything) {
         (Some(w), true) => {
-            format!("{in_scope} of {total} job(s) this session started are in scope `{w}`.\n")
+            format!("{in_scope} of {jobs} this session started are in scope `{w}`.\n")
         }
         (Some(w), false) => format!(
-            "{running} of {total} job(s) this session started are still running in scope `{w}`; \
-             {settled} settled job(s) there are not listed — `job_list` with `all: true` shows \
-             them.\n"
+            "{running} of {jobs} this session started are still running in scope `{w}`; \
+             {} there are not listed — `job_list` with `all: true` shows \
+             them.\n",
+            counted(settled, "settled job", "settled jobs")
         ),
-        (None, true) => format!("{total} job(s) this session has started.\n"),
+        (None, true) => format!("{jobs} this session has started.\n"),
         (None, false) => format!(
-            "{running} of {total} job(s) this session has started are still running; {settled} \
+            "{running} of {jobs} this session has started are still running; {settled} \
              have settled and are not listed — `job_list` with `all: true` shows every one.\n"
         ),
     }
@@ -316,7 +320,10 @@ impl Tool for JobList {
         // The scopes, so a listing shows what is open and what will reap it.
         let scopes = host.scopes();
         if !scopes.is_empty() {
-            body.push_str(&format!("\n{} scope(s) open:\n", scopes.len()));
+            body.push_str(&format!(
+                "\n{} open:\n",
+                counted(scopes.len(), "scope", "scopes")
+            ));
             for s in &scopes {
                 body.push_str(&format!("  {} — {}\n", s, s.kind.reaped_when()));
             }
@@ -328,8 +335,8 @@ impl Tool for JobList {
             let live = monitors.list();
             let done = monitors.firings();
             body.push_str(&format!(
-                "\n{} monitor(s) watching, {} fired",
-                live.len(),
+                "\n{} watching, {} fired",
+                counted(live.len(), "monitor", "monitors"),
                 done.len()
             ));
             if live.is_empty() && done.is_empty() {
@@ -370,8 +377,8 @@ impl Tool for JobList {
         let promotions = host.promotions();
         if !promotions.is_empty() {
             body.push_str(&format!(
-                "\n{} job(s) moved to a different scope this session:\n",
-                promotions.len()
+                "\n{} moved to a different scope this session:\n",
+                counted(promotions.len(), "job", "jobs")
             ));
             for p in &promotions {
                 body.push_str(&format!("  {}\n", p.summary()));
@@ -383,8 +390,8 @@ impl Tool for JobList {
         // are different rows, and neither of them is silence.
         let reaps = host.reap_log();
         body.push_str(&format!(
-            "\n{} scope(s) have ended this session",
-            reaps.len()
+            "\n{} have ended this session",
+            counted(reaps.len(), "scope", "scopes")
         ));
         if reaps.is_empty() {
             body.push_str(
@@ -829,13 +836,17 @@ fn wait_on_scope(
         Ok(Waited::Deadline { took, .. }) => Invocation {
             outcome: letibot_transcript::ToolOutcome::Timeout,
             payload: format!(
-                "scope `{sid}` STILL HOLDS {} process(es) after {}. Nothing was \
+                "scope `{sid}` STILL HOLDS {} after {}. Nothing was \
                  killed. `job_list` shows what is in it; `job_kill` with \
                  scope=\"{name}\" ends it.",
-                host.jobs()
-                    .iter()
-                    .filter(|j| j.scope.path.starts_with(&sid.path) && j.state.is_running())
-                    .count(),
+                counted(
+                    host.jobs()
+                        .iter()
+                        .filter(|j| j.scope.path.starts_with(&sid.path) && j.state.is_running())
+                        .count(),
+                    "process",
+                    "processes"
+                ),
                 secs(took)
             ),
             notes: vec![],
@@ -1049,8 +1060,8 @@ impl Tool for JobKill {
             body.push_str(&format!("the command was: {}\n", clip(cmd, 200)));
         }
         body.push_str(&format!(
-            "observed before the kill: {} process(es)\n",
-            r.observed.len()
+            "observed before the kill: {}\n",
+            counted(r.observed.len(), "process", "processes")
         ));
         for p in &r.observed {
             body.push_str(&format!(
@@ -1092,14 +1103,24 @@ impl Tool for JobKill {
         if !r.clean() {
             return Invocation::failed(
                 format!(
-                    "{} process(es) survived the kill of {}",
-                    r.survivors.len(),
+                    "{} survived the kill of {}",
+                    counted(r.survivors.len(), "process", "processes"),
                     r.scope
                 ),
                 body,
             );
         }
         Invocation::ok(body)
+    }
+}
+
+/// A count, said in words: `1 job`, `3 jobs`. A placeholder is for a writer who does not
+/// know the number, and every caller here knows it.
+fn counted(n: usize, one: &str, many: &str) -> String {
+    if n == 1 {
+        format!("{n} {one}")
+    } else {
+        format!("{n} {many}")
     }
 }
 
@@ -1122,7 +1143,10 @@ pub(crate) fn unknown_scope(host: &dyn ProcessHost, asked: &str) -> Invocation {
          created by the first `bash` call that needs it."
             .to_string()
     } else {
-        let mut s = format!("this session has {} scope(s) open:\n", open.len());
+        let mut s = format!(
+            "this session has {} open:\n",
+            counted(open.len(), "scope", "scopes")
+        );
         for o in &open {
             s.push_str(&format!("  {} — {}\n", o, o.kind.reaped_when()));
         }
@@ -1335,7 +1359,7 @@ mod tests {
     fn the_default_listing_is_the_active_jobs_and_says_what_it_hid() {
         let head = job_list_summary(None, false, 44, 44, 1);
         assert!(
-            head.contains("1 of 44 job(s) this session has started are still running"),
+            head.contains("1 of 44 jobs this session has started are still running"),
             "{head}"
         );
         assert!(
@@ -1354,7 +1378,7 @@ mod tests {
         // With `all`, nothing is hidden and no note is owed - the count is the old one.
         let every = job_list_summary(None, true, 44, 44, 1);
         assert!(
-            every.contains("44 job(s) this session has started"),
+            every.contains("44 jobs this session has started"),
             "{every}"
         );
         assert!(
@@ -1366,7 +1390,7 @@ mod tests {
         // run of this default printed the same fact twice, one line apart (see the function).
         let idle = job_list_summary(None, false, 44, 44, 0);
         assert!(
-            idle.starts_with("Nothing is running; 44 job(s) have settled"),
+            idle.starts_with("Nothing is running; 44 jobs have settled"),
             "{idle}"
         );
         assert!(
@@ -1381,20 +1405,50 @@ mod tests {
         // And the scope arm keeps the same promise about what it hid *there*.
         let scoped = job_list_summary(Some("turn"), false, 44, 7, 2);
         assert!(
-            scoped
-                .contains("2 of 44 job(s) this session started are still running in scope `turn`"),
+            scoped.contains("2 of 44 jobs this session started are still running in scope `turn`"),
             "{scoped}"
         );
         assert!(
-            scoped.contains("5 settled job(s) there are not listed"),
+            scoped.contains("5 settled jobs there are not listed"),
             "{scoped}"
         );
         let scoped_all = job_list_summary(Some("turn"), true, 44, 7, 2);
         assert!(
-            scoped_all.contains("7 of 44 job(s) this session started are in scope `turn`"),
+            scoped_all.contains("7 of 44 jobs this session started are in scope `turn`"),
             "{scoped_all}"
         );
         assert!(!scoped_all.contains("not listed"), "{scoped_all}");
+    }
+
+    /// A count the tool already knows is said in words. `job(s)` is a form for a writer who
+    /// does not know the number, and the number is right there - so both shapes are asserted
+    /// through the opening line a `job_list` actually prints, and neither placeholder survives.
+    #[test]
+    fn a_count_is_said_in_words_not_a_placeholder() {
+        // The singular and the plural, through the function the listing is rendered by.
+        let one = job_list_summary(None, true, 1, 1, 1);
+        assert!(
+            one.contains("1 job this session has started"),
+            "one job is `1 job`: {one}"
+        );
+        let many = job_list_summary(None, true, 3, 3, 3);
+        assert!(
+            many.contains("3 jobs this session has started"),
+            "three jobs are `3 jobs`: {many}"
+        );
+
+        // The nouns no listing of this session's jobs has room for: a scope and a monitor.
+        assert_eq!(counted(1, "job", "jobs"), "1 job");
+        assert_eq!(counted(3, "job", "jobs"), "3 jobs");
+        assert_eq!(counted(1, "scope", "scopes"), "1 scope");
+        assert_eq!(counted(2, "monitor", "monitors"), "2 monitors");
+        assert_eq!(counted(0, "scope", "scopes"), "0 scopes");
+        assert_eq!(counted(4, "process", "processes"), "4 processes");
+
+        for text in [one, many] {
+            assert!(!text.contains("(s)"), "a count in a placeholder: {text}");
+            assert!(!text.contains("(es)"), "a count in a placeholder: {text}");
+        }
     }
 
     /// `job_kill` reaches a subagent through the runner, which is what makes its handle
