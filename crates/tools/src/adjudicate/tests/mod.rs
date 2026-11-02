@@ -148,11 +148,9 @@ fn bash<'a>(args: &'a Value) -> GateCall<'a> {
     }
 }
 
-/// The ladder's inputs for a call nothing was left off: a durable rule when one is named, and a
-/// session grant that would be honoured.
-///
-/// A test that wants a missing rung asks the gate for it (`AdjudicatedGate::request_for`) instead
-/// of assembling an [`Offer`] by hand, so a rung and its note cannot disagree only in a fixture.
+/// The ladder's inputs for a call nothing was left off: a durable rule when one is named, and a session
+/// grant that would be honoured. A test that wants a missing rung asks the gate for it instead of
+/// assembling an [`Offer`] by hand, so a rung and its note cannot disagree only in a fixture.
 fn offered(derived: Option<&str>, program: &str) -> Offer {
     Offer {
         derived: derived.map(str::to_string),

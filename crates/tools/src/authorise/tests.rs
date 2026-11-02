@@ -347,12 +347,8 @@ fn a_compromised_oracle_cannot_admit_an_blocked_action() {
     }
 }
 
-/// An unresolved action is the oracle's, and its verdict is followed: the deterministic
-/// reader's failure is exactly the case a second opinion exists for, and the witness is
-/// minted for anything but a blocked boundary.
-///
-/// Both directions of the verdict are asserted, because "follow the verdict" cannot be
-/// tested with one of them.
+/// An unresolved action is the oracle's, and its verdict is followed: the deterministic reader's failure
+/// is the case a second opinion exists for. Both directions are asserted, since one cannot test it.
 #[test]
 fn an_unresolved_action_is_the_oracles_and_its_verdict_is_followed() {
     let called = Arc::new(AtomicUsize::new(0));
@@ -792,10 +788,8 @@ fn the_whole_seam_admits_what_the_operator_asked_for_and_records_the_row() {
     assert!(row.operator.is_none());
 }
 
-/// An always-ask rule is the oracle's to answer: the set is the MODE's (nothing outside it
-/// is admitted without a gate), and the gate itself is answered by the guard.
-///
-/// Both directions of the verdict are asserted here.
+/// An always-ask rule is the oracle's to answer: the set is the MODE's, and the gate itself is answered
+/// by the guard. Both directions of the verdict are asserted here.
 #[test]
 fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
     // The same list, end to end, with an oracle that refuses what it cannot ground.
@@ -821,9 +815,8 @@ fn an_always_ask_rule_is_answered_by_the_oracle_and_its_verdict_is_followed() {
             outcome: ToolOutcome::Denied { .. },
             tell,
         } => {
-            // The oracle's own sentence reaches the model, and the remedy says there is NO
-            // pending decision: a model refusal raises no card, so prose telling the model
-            // to "answer the pending decision" would send it looking for a question that
+            // The oracle's own sentence reaches the model, and the remedy says there is no pending
+            // decision: prose telling the model to answer one would send it looking for a question that
             // does not exist.
             assert!(tell.contains("REFUSED"), "{tell}");
             assert!(tell.contains("no witness"), "{tell}");

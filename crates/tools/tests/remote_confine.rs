@@ -730,10 +730,9 @@ fn the_gate_is_told_about_the_boundary_and_not_shown_a_fixed_sentence() {
     assert!(!said.contains("INSIDE a measured boundary"), "{said}");
 }
 
-/// What a confined session is asked about and what it still is: there is one gate and it has no
-/// confinement input, so what is measured is the line confinement makes meaningful. A shell command that
-/// only looks, at paths layer A cannot place as outside, is a read and is admitted unasked; one naming a
-/// path the classifier can call outside keeps exec access.
+/// What a confined session is asked about and what it still is: one gate, with no confinement input, so
+/// what is measured is the line confinement makes meaningful. A shell that only looks at paths layer A
+/// cannot place as outside is a read; one naming a path it can call outside keeps exec access.
 #[test]
 fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
     use letibot_tools::adjudicate::AdjudicatedGate;

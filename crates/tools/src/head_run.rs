@@ -73,11 +73,9 @@ pub enum BareForm {
     None(String),
 }
 
-/// Derive the bare form of one schema.
-///
-/// Exactly one required field is the condition: two means the operator would have
-/// to supply two things and a bare line carries one, and none means there is
-/// nothing for the line to be.
+/// Derive the bare form of one schema. Exactly one required field is the condition: two means the
+/// operator would supply two things and a bare line carries one, and none means there is nothing for the
+/// line to be.
 pub fn bare_form(schema: &ToolSchema) -> BareForm {
     let params = &schema.parameters;
     let required: Vec<&str> = params
@@ -89,11 +87,8 @@ pub fn bare_form(schema: &ToolSchema) -> BareForm {
         [field] => {
             let declared = params.get("properties").and_then(|p| p.get(*field));
             let kind = Kind::of(field, declared.unwrap_or(&Value::Null));
-            // Every other property with a default travels with the line, so the object
-            // the daemon runs is the one a model's minimal call would have produced;
-            // otherwise one tool answers differently depending on who asked.
-            // Sorted, because the wire type is a `BTreeMap` and a `Vec` in schema order
-            // would be a second order for one list.
+            // Every other property with a default travels with the line, so a model's minimal call and the
+            // daemon's own produce the same object. Sorted, because the wire type is a `BTreeMap`.
             let mut defaults: Vec<(String, String)> = Vec::new();
             if let Some(props) = params.get("properties").and_then(Value::as_object) {
                 for (name, spec) in props {
@@ -136,11 +131,8 @@ pub fn bare_form(schema: &ToolSchema) -> BareForm {
     }
 }
 
-/// The bare forms of a list of names, for a daemon publishing its door.
-///
-/// `names` comes from the daemon's own allowlist and `schemas` from the registry it
-/// seats, so a name in the door with no tool behind it is a visible miss rather
-/// than a silent absence: it comes back with the sentence a head says.
+/// The bare forms of a list of names, for a daemon publishing its door. A name in the door with no tool
+/// behind it comes back with the sentence a head says, which makes the miss visible rather than silent.
 pub fn bare_forms<'a>(
     names: &[&str],
     schemas: impl IntoIterator<Item = &'a ToolSchema>,
@@ -168,11 +160,8 @@ mod the_derivation_is_read_off_the_real_schemas {
     use crate::builtins;
     use crate::runtime::Registry;
 
-    /// The three door tools, from the registry this box actually seats.
-    ///
-    /// Not hand-written schemas: the point of deriving the bare form is that a
-    /// schema change moves a head's behaviour, so a fixture would prove nothing
-    /// about the tools the operator will type.
+    /// The three door tools, from the registry this box actually seats. Not hand-written schemas: the point
+    /// of deriving the bare form is that a schema change moves a head's behaviour.
     fn seat() -> Registry {
         use crate::builtins::external::web::{
             UnavailableFetcher, UnavailableSearch, WebFetch, WebSearch,

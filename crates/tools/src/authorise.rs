@@ -1378,11 +1378,9 @@ impl OperatorOverride {
     }
 }
 
-/// One fine-tuning example, produced as a side effect of working: the two judgements are separate
-/// values and `shown` is the literal bytes the oracle received, since a corpus rebuilt from outcomes
-/// alone is not recoverable.
-// No `Eq`: `p_allow` is an `f64`, and a probability compared for exact equality is a comparison
-// nobody wants.
+/// One fine-tuning example, produced as a side effect of working: the two judgements are separate values
+/// and `shown` is the literal bytes the oracle received, since a corpus rebuilt from outcomes alone is not
+/// recoverable. No `Eq`, because `p_allow` is an `f64`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorpusRow {
     pub request_id: String,

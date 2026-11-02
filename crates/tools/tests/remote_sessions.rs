@@ -52,8 +52,8 @@ impl Fake {
         let d = dir.display().to_string();
         let body = body.replace("@DIR@", &d);
         // `[ $# -eq 0 ] && exit 0` first, because `write_stub` proves the file by exec'ing it with no
-        // arguments and a `sleep 300` prelude would be this fixture hanging. `-O check`/`-O exit` are the
-        // control-socket verbs and answer `1`, so nothing waits on a socket nothing listens to.
+        // arguments and a `sleep 300` prelude would be this fixture hanging. `-O check`/`-O exit` answer `1`,
+        // so nothing waits on a socket nothing listens to.
         //
         // `bash -lc "$last"` runs as a CHILD, not an `exec`: a replaced shell runs no `EXIT` trap, so the
         // session's `live` file would never be removed.
@@ -250,11 +250,9 @@ fn payload(len: usize) -> Vec<u8> {
 // The write
 // ---------------------------------------------------------------------------
 
-/// A write whose far side fails never moves a short temp file over the target: the fake breaks `base64
-/// -d` there, so the target must be byte-identical and the tool must say the write failed.
-///
-/// Linux only, because the fake shadows `base64` by putting its `bin` first on `PATH` and a macOS login
-/// shell rebuilds `PATH` with the system directories in front.
+/// A write whose far side fails never moves a short temp file over the target: the fake breaks `base64 -d`
+/// there, so the target must be byte-identical and the tool must say the write failed. Linux only, because
+/// a macOS login shell rebuilds `PATH` with the system directories in front.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_far_side_that_cannot_decode_never_touches_the_target() {

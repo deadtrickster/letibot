@@ -361,13 +361,9 @@ fn an_address_carrying_credentials_is_refused_before_anything_is_sent() {
     assert!(!r.render().contains("hunter2"), "{}", r.render());
 }
 
-// ---------------------------------------------------------------------------
-// web_fetch, and the scratchpad
-//
-// A page is too big for the transcript, so the tool writes it to the session scratchpad and
-// hands over the path. What is under test is the hand-off: the file is where the result says,
-// it holds the whole quarantined page, and the inline half is bounded rather than the page.
-// ---------------------------------------------------------------------------
+// web_fetch and the scratchpad: a page is too big for the transcript, so the tool writes it to the
+// session scratchpad and hands over the path. What is under test is the hand-off, and that the inline
+// half is bounded rather than the page.
 
 /// A page long enough that one `read`'s worth is a proper subset of it.
 fn a_long_page() -> String {

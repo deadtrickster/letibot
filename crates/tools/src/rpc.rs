@@ -181,10 +181,9 @@ pub fn standing(host: &str) -> Standing {
 // Rule 8 - back-pressure
 // ---------------------------------------------------------------------------
 
-/// How many ssh invocations this process has in flight to one host. Eight, because OpenSSH's
-/// `MaxSessions` is 10 per `ControlMaster` and the two left over are the master's own channel and one
-/// `-O check`: a ninth would have the server refuse with `Session open refused`, which reads as a
-/// fault on the host.
+/// How many ssh invocations this process has in flight to one host. Eight, because OpenSSH's `MaxSessions`
+/// is 10 per `ControlMaster` and a ninth would have the server refuse with `Session open refused`, which
+/// reads as a fault on the host.
 pub const MAX_SESSIONS_PER_HOST: usize = 8;
 
 struct Gate {

@@ -30,10 +30,8 @@ fn tool(rig: &Rig) -> Fanout {
         .with_bound(Duration::from_secs(5))
 }
 
-/// A command that lives long enough to have a pid. A job that exits in milliseconds has already
-/// written its exit file when the launch's pid poll asks, and `RemoteProcesses` then reports pid
-/// `0`; five seconds rather than milliseconds because the poll's window is a round trip through a
-/// shell, which a loaded box stretches by seconds.
+/// A command that lives long enough to have a pid: a job that exits in milliseconds has written its exit
+/// file when the launch's pid poll asks, and the poll's window is a round trip through a shell.
 const BRIEFLY: &str = "sleep 5";
 
 /// How long a wait may last before it is the thing that failed: a ceiling on the far side never
@@ -252,10 +250,9 @@ fn the_call_is_one_exec_that_names_every_host() {
     assert!(schema.description.contains("deadline_s"));
 }
 
-/// What a book is told is what the supervisor needs, the start and then the ending, measured here
-/// because it is the contract between the two crates: a record with no identity is one the
-/// supervisor must not act on, and a record whose host is empty would be checked on the wrong
-/// machine.
+/// What a book is told is what the supervisor needs, the start and then the ending, measured here because
+/// it is the contract between the two crates: a record with no identity is one the supervisor must not act
+/// on.
 #[test]
 fn every_started_branch_is_written_down_with_its_host() {
     #[derive(Default)]
@@ -334,11 +331,9 @@ fn a_run_with_no_daemon_writes_no_records_and_still_works() {
 
 // ------------------------------------------------- `background: true` (FB)
 
-/// The session's own job table, on a box with no cgroup to delegate.
-///
-/// A backgrounded fanout needs a host to hold its handle and nothing else: the branches are jobs
-/// of the fake remotes' own tables, so no process of this box is started. `NoScopes` says that,
-/// which is why this rig runs on a container as happily as on a desktop.
+/// The session's own job table, on a box with no cgroup to delegate: the branches are jobs of the fake
+/// remotes' own tables, so no process of this box is started and this rig runs on a container as happily
+/// as on a desktop.
 fn session_host(tag: &str) -> Arc<HostProcesses> {
     let root = std::env::temp_dir().join(format!(
         "letibot-fanout-bg-{tag}-{}-{}",

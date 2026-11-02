@@ -112,11 +112,9 @@ fn a_command_that_exits_125_ran_and_did_not_fail_to_join_its_scope() {
     );
 }
 
-/// The other direction, without which a fix could pass by classifying nothing at all.
-///
-/// The wrapper writes its own pid into the scope's `cgroup.procs` and `exec`s only if that
-/// worked, so a scope whose `cgroup.procs` cannot be written is a launcher failure and the
-/// command is not run. The tree is a stub because a real cgroup cannot be asked to fail.
+/// The other direction, without which a fix could pass by classifying nothing at all. The wrapper writes
+/// its own pid into the scope's `cgroup.procs` and `exec`s only if that worked, so a scope that cannot be
+/// written is a launcher failure and the command is not run.
 #[test]
 fn a_scope_that_cannot_be_joined_still_says_the_command_never_ran() {
     let dir = std::env::temp_dir().join(format!("letibot-notscoped-{}", std::process::id()));
@@ -245,11 +243,9 @@ fn the_procs_path_this_test_relies_on_is_the_real_one() {
     );
 }
 
-/// A command that PRINTS the marker is not a command that never ran.
-///
-/// Replacing the exit code with the marker is still not the evidence the question needs: the
-/// marker is a string a command can print. Only the daemon holds whether a process was ever in
-/// the cgroup, and the command below does everything a launcher failure does except fail.
+/// A command that PRINTS the marker is not a command that never ran: the marker is a string a command can
+/// print. Only the daemon holds whether a process was ever in the cgroup, and the command below does
+/// everything a launcher failure does except fail.
 #[test]
 fn a_command_that_prints_the_marker_ran_and_did_not_fail_to_join_its_scope() {
     let mut h = runner!("marker_echo");

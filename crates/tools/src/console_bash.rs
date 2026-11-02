@@ -50,12 +50,9 @@ fn chosen() -> String {
         .clone()
 }
 
-/// The rule, with the box injected, so the whole of it is assertable without a
-/// process.
-///
-/// `major` answers a program's bash major version, and `None` for anything that
-/// is not a bash this box can run - the probe is `-c` and non-interactive, so no
-/// rc file is read and nothing of the operator's runs.
+/// The rule, with the box injected, so the whole of it is assertable without a process. `major` answers a
+/// program's bash major version and `None` for anything that is not a bash this box can run; the probe is
+/// `-c` and non-interactive, so nothing of the operator's runs.
 fn choose(
     console_shell: Option<&str>,
     path_bash: Option<&str>,

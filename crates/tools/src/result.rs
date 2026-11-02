@@ -240,11 +240,9 @@ impl Envelope {
         format!("{}\n{}\n{}", self.open(), body.trim_end(), self.close())
     }
 
-    /// Wrap content that arrived from outside, and make this envelope's own delimiters unspellable by
-    /// it. The mark is derivable, so every `<<<` in the body is spaced out, and the count comes back for
-    /// the caller to report as a `[note]`.
-    ///
-    /// Returns `(wrapped, sequences_neutralised)`.
+    /// Wrap content that arrived from outside, and make this envelope's own delimiters unspellable by it:
+    /// the mark is derivable, so every `<<<` in the body is spaced out and the count comes back for the
+    /// caller to report as a `[note]`. Returns `(wrapped, sequences_neutralised)`.
     pub fn wrap_untrusted(&self, header: &str, body: &str) -> (String, usize) {
         let neutralised = body.matches("<<<").count();
         let safe = body.replace("<<<", "< < <");

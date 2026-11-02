@@ -252,12 +252,9 @@ fn a_promote_request_from_the_head_moves_the_running_command() {
     );
 }
 
-/// A run moved to the background mid-flight keeps what it wrote on both sides of the
-/// move: the promotion seeds the file from the window and the drains keep filling it, so
-/// the bytes the foreground result carried are not the only copy.
-///
-/// The command prints on a clock, so before and after the move are facts about time and
-/// not about a race.
+/// A run moved to the background mid-flight keeps what it wrote on both sides of the move: the promotion
+/// seeds the file from the window and the drains keep filling it. The command prints on a clock, so
+/// before and after are facts about time and not about a race.
 #[test]
 fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     let mut h = runner!("promote_keeps_output");
@@ -377,12 +374,9 @@ fn a_promoted_run_keeps_the_output_from_before_and_after_the_move() {
     );
 }
 
-/// A run that began in the background has a file holding all of it: the harness sends
-/// exactly these long runs to `background: true`, so a window-only copy loses the output
-/// of the run its own advice produced.
-///
-/// Three readers must name the file, because a reader knowing where the whole of it is is
-/// the value: the `bash` result, `job_output` and `job_list`.
+/// A run that began in the background has a file holding all of it, since the harness sends exactly these
+/// long runs to `background: true`. Three readers must name it: the `bash` result, `job_output` and
+/// `job_list`.
 #[test]
 fn a_run_started_in_the_background_gets_a_file_holding_all_of_it() {
     let mut h = runner!("background_spill");
@@ -737,12 +731,9 @@ fn pkill_lists_and_kills_by_pid_only() {
 
 // ------------------------------------------------------------------- the wait declines
 
-/// A `job_wait` on a job the harness is already delivering returns at once, because the
-/// daemon submits that job's settlement as a turn of its own: the promise is in the
-/// mechanism, not in a sentence advising the model not to wait.
-///
-/// Elapsed time is the measurement, since text alone passes for a wait that blocked its
-/// whole deadline and then said the right thing.
+/// A `job_wait` on a job the harness is already delivering returns at once, because the daemon submits
+/// that settlement as a turn of its own. Elapsed time is the measurement, since text alone passes for a
+/// wait that blocked its whole deadline.
 #[test]
 fn a_wait_on_a_job_the_harness_is_delivering_returns_at_once() {
     let mut h = runner!("r23_at_once");

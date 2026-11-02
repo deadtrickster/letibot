@@ -807,10 +807,9 @@ fn a_forwarded_agent_socket_is_in_the_view_at_a_fixed_path_and_the_key_is_not() 
 
 #[test]
 fn the_cgroup_still_owns_a_confined_process_and_reaps_it() {
-    // The join happens on the HOST, before the namespaces exist, because
-    // `/sys/fs/cgroup` is deliberately not in the view. This asserts the ordering
-    // held: a confined process is a member of its scope and `cgroup.kill` reaches
-    // it across the pid namespace.
+    // The join happens on the HOST, before the namespaces exist, since `/sys/fs/cgroup` is deliberately
+    // not in the view: a confined process is a member of its scope and `cgroup.kill` reaches it across the
+    // pid namespace.
     let mut h = confined!("the_cgroup_still_owns_a_confined_process");
     let r = h.call(
         "bash",
@@ -927,12 +926,9 @@ fn the_environment_is_cleared_so_a_token_is_absent_rather_than_filtered() {
 
 #[test]
 fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
-    // The two-call scratch idiom: with a fresh tmpfs per command a file written by one call is
-    // gone by the next, and `No such file or directory` then reads as a broken shell rather than
-    // as the boundary. `TmpView::Session` binds one directory of the session's own there.
-    //
-    // Run through `wrap` and a plain `/bin/sh`, not `HostProcesses`: a cgroup subtree is
-    // different apparatus, and needing one here would skip on boxes that bind fine.
+    // The two-call scratch idiom: with a fresh tmpfs per command a file written by one call is gone by the
+    // next, and the shell's complaint reads as a broken shell rather than as the boundary. Run through a
+    // plain `/bin/sh`, because a cgroup subtree is different apparatus.
     let dir = std::env::temp_dir().join(format!("letibot-tmp-{}", std::process::id()));
     let project = dir.join("project");
     let session_tmp = dir.join("session-tmp");
@@ -1012,11 +1008,9 @@ fn a_file_written_to_tmp_in_one_confined_call_is_there_for_the_next() {
 
 #[test]
 fn a_sessions_tmp_is_created_at_open_and_removed_at_close() {
-    // Two facts about the directory: it exists before any command runs, because a `--bind` of a
-    // path that is not there fails at every spawn and says nothing about why, and it goes at
-    // close so a daemon does not keep one directory per session id for its whole life.
-    //
-    // No cgroup and no spawn: the question is a view and a directory, not a process.
+    // Two facts about the directory: it exists before any command runs, because a `--bind` of a path that
+    // is not there fails at every spawn and says nothing about why, and it goes at close so a daemon does
+    // not keep one directory per session id for ever.
     use letibot_tools::backend::{ExecBackend, HostBackend};
     use letibot_tools::exec::NoScopes;
 

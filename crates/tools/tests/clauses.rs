@@ -374,12 +374,8 @@ fn the_transcript_row_carries_the_envelope_the_model_saw() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The write tools, against the same six clauses.
-//
-// These are the first tools that can change the operator's tree, so the clause tests are also
-// safety tests: every one asserts what is on disk afterwards, through `read_file`.
-// ---------------------------------------------------------------------------
+// The write tools, against the same six clauses. These are the first tools that can change the
+// operator's tree, so every one asserts what is on disk afterwards.
 
 #[test]
 fn clause1_an_edit_that_misses_reports_the_text_that_is_actually_there() {
@@ -704,11 +700,9 @@ fn the_never_write_list_is_refused_before_any_adjudicator_sees_it() {
     assert_eq!(h.read_file(".ssh/config"), "Host x\n");
 }
 
-/// A note's body is prose, and the never-write list does not read prose: its `text` and `abstract`
-/// are content, its `name` is not, and the next test is that half.
-///
-/// The list once applied to every string argument, so a note about the operator's ssh directory
-/// could not be written at all, and that is exactly the note that has to be writable.
+/// A note's body is prose and the never-write list does not read prose: its `text` and `abstract` are
+/// content, its `name` is not. The list once applied to every string argument, so a note about the
+/// operator's ssh directory could not be written at all.
 #[test]
 fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
     let mut h = writable_harness();
@@ -733,10 +727,8 @@ fn a_notes_body_is_prose_so_the_list_does_not_refuse_it() {
     assert!(said.contains(&store), "with its prose intact: {said}");
 }
 
-/// A note's `name` is still a path-like argument, and the list keeps reading it.
-///
-/// The exemption above is about content: a name becomes a file under the notes directory, so the
-/// rule that refuses `.ssh` as a `path` refuses it as a `name`.
+/// A note's `name` is still a path-like argument and the list keeps reading it: a name becomes a file
+/// under the notes directory, so the rule that refuses `.ssh` as a `path` refuses it as a `name`.
 #[test]
 fn a_notes_name_is_still_a_path_like_argument() {
     let mut h = writable_harness();

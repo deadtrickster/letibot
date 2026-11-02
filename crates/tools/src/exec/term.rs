@@ -834,10 +834,9 @@ mod tests {
             vec![("TERM".to_string(), "st-256color".to_string())],
             "the console's own TERM is the console's, and is passed through"
         );
-        // And the terminfo lookup through a real program on a real pty: with the default the
-        // pane's program resolves its terminal, and with `TERM=` it cannot.
-        // Bound to a name, not `_`: a `TermSession` dropped at the end of the statement closes
-        // the pane and kills the program before it has printed anything.
+        // The terminfo lookup through a real program on a real pty: with the default the pane's program
+        // resolves its terminal, and with `TERM=` it cannot. Bound to a name, not `_`, because a
+        // `TermSession` dropped at the end of the statement closes the pane before it prints.
         let (_s, sink) = pane("printf 'tput:%s\n' \"$(tput cols 2>&1)\"");
         assert!(
             sink.wait_for("tput:", PATIENCE),

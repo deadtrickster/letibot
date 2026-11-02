@@ -9,11 +9,8 @@ use letibot_transcript::ToolOutcome;
 
 use crate::runtime::Invocation;
 
-/// A tool whose backend is not attached, and everything the caller needs to
-/// either attach it or work without it.
-///
-/// Every field but [`NotAttached::instead`] is required: each one is a sentence
-/// a caller would otherwise leave out.
+/// A tool whose backend is not attached, and everything the caller needs to attach it or work without
+/// it. Every field but [`NotAttached::instead`] is required: each is a sentence a caller would leave out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotAttached {
     /// The tool that did not run, as declared.

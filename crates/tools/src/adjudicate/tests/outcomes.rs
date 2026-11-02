@@ -275,11 +275,9 @@ fn a_shell_that_only_reads_is_judged_on_the_work() {
         "a secret reached a person"
     );
 
-    // A line the parser refused is a line the point decides about, not a read: `$(ls)` has no
-    // known prefix, so the scope widens to unbounded and the boundary conjunct voids.
-    //
-    // The model is the one asked. An unresolved meaning is the case a second opinion exists for,
-    // so `Adjudicable` is minted and the person is asked only when the oracle is unsure.
+    // A line the parser refused is a line the point decides about, not a read: `$(ls)` has no known
+    // prefix, so the scope widens and the boundary conjunct voids. The model is the one asked, and the
+    // person only when the oracle is unsure.
     let (mut g, asked) = gate();
     let unresolved = json!({"command": "cd /w && cat $(ls) src/lib.rs"});
     let row = g.request_for(&bash(&unresolved));

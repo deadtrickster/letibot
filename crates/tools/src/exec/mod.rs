@@ -56,10 +56,8 @@ pub use shell::{ShellConfig, ShellError, ShellSession, Turn};
 pub use term::{TermConfig, TermError, TermSession, TermSink};
 pub use terminal::{Class, Refusal, wants_the_terminal};
 
-/// Why an exec request did not become a process.
-///
-/// Every variant names what was missing: a refusal the caller cannot act on is
-/// the one that costs an hour, and `Display` is what the model reads.
+/// Why an exec request did not become a process. Every variant names what was missing: a refusal the
+/// caller cannot act on is the one that costs an hour, and `Display` is what the model reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecError {
     /// No scope mechanism. Fail closed: a process with no owner is a leak, so

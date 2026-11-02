@@ -42,11 +42,9 @@ fn a_read_through_the_runtime_answers_with_no_adjudicator() {
     assert!(seen.contains("`before`"), "{seen}");
 }
 
-/// A read-only session refuses a change; which gate refuses it depends on what is attached.
-///
-/// Two gates stand above the platform in a fixed order, and neither runs anything: with no
-/// adjudicator the call is `not run` before the tool is reached, and with an admitting one the
-/// backend's own read-only answer is what refuses.
+/// A read-only session refuses a change, and which gate refuses it depends on what is attached: with no
+/// adjudicator the call is `not run` before the tool is reached, and with an admitting one the backend's
+/// own read-only answer refuses.
 #[test]
 fn a_set_from_a_read_only_session_is_refused_before_the_platform() {
     let set = r#"{"verb":"set","setting":"fixture-knob","value":"after",
