@@ -1,11 +1,8 @@
-//! The deadline is enforced by the host, and not by the thread that runs the command.
+//! The deadline is enforced by the host, not by the thread that runs the command.
 //!
-//! A deadline enforced at the top of `bash`'s wait loop is enforced inside the thing it guards:
-//! if that thread does not come back round the loop, nothing ends the run, and the daemon's one
-//! worker is held for as long as the command lives.
-//!
-//! So each test spawns a run and never waits on it from the spawning thread. The run must still
-//! be gone when its deadline passes, and the record must say the deadline is what ended it.
+//! A deadline enforced at the top of `bash`'s wait loop is enforced inside the thing it guards: if
+//! that thread does not come back round the loop, nothing ends the run and the daemon's one worker is
+//! held for as long as the command lives. So each test spawns a run and never waits on it.
 
 use std::time::{Duration, Instant};
 
@@ -13,10 +10,9 @@ use letibot_tools::exec::{
     DEADLINE_KILL, HostProcesses, JobState, ProcessHost, ScopeKind, SpawnRequest,
 };
 
-/// A foreground run of `command`, in this host's turn scope.
-///
-/// `tty` decides whether the run gets its own terminal, held by the daemon, which matters: a
-/// run with `/dev/null` on stdin gets EOF at once and exits, a different shape entirely.
+/// A foreground run of `command`, in this host's turn scope. `tty` decides whether the run gets its own
+/// terminal, which matters: a run with `/dev/null` on stdin gets EOF at once and exits, a different
+/// shape entirely.
 fn spawn(host: &HostProcesses, command: &str, tty: bool) -> letibot_tools::exec::JobId {
     host.spawn(&SpawnRequest {
         command: command.to_string(),
@@ -46,10 +42,8 @@ fn settled(host: &HostProcesses, id: &letibot_tools::exec::JobId) {
     }
 }
 
-/// The firing, once the watchdog has written it.
-///
-/// A second read rather than the same one: the watchdog settles the job first and records the
-/// reap second, so a reader that sees the state can be a moment ahead of the record.
+/// The firing, once the watchdog has written it: a second read rather than the same one, because the
+/// watchdog settles the job first and records the reap second.
 fn firing(
     host: &HostProcesses,
     id: &letibot_tools::exec::JobId,
@@ -109,11 +103,9 @@ fn host() -> Option<HostProcesses> {
     }
 }
 
-/// A run whose own thread never comes back round any loop is still ended.
-///
-/// `sleep 300` is spawned, its deadline is armed, and then nothing waits on it, which is
-/// precisely the state the wait loop is in when it is not moving. The host's watchdog must end
-/// the cgroup anyway.
+/// A run whose own thread never comes back round any loop is still ended: `sleep 300` is spawned, its
+/// deadline armed, and then nothing waits on it, which is precisely the state the wait loop is in when
+/// it is not moving.
 #[test]
 fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
     let Some(host) = host() else { return };
@@ -196,11 +188,9 @@ fn a_run_nobody_is_waiting_on_is_still_ended_by_its_deadline() {
     );
 }
 
-/// The same, for a tree this uid may not signal.
-///
-/// A root process blocked on a read whose `/proc` entry is `EACCES` cannot be signalled by pid,
-/// so the deadline must go through `cgroup.kill`, a write to a file this daemon owns, which
-/// reaches every process the run forked whatever uid they are.
+/// The same, for a tree this uid may not signal: a root process blocked on a read whose `/proc` entry is
+/// `EACCES` cannot be signalled by pid, so the deadline goes through `cgroup.kill`, a file this daemon
+/// owns, which reaches every process the run forked.
 #[test]
 fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     let Some(host) = host() else { return };
@@ -257,12 +247,9 @@ fn a_root_process_the_daemon_may_not_signal_is_ended_by_the_same_deadline() {
     );
 }
 
-/// A run ended by something other than its own deadline says WHO ended it.
-///
-/// `ProcessHost::end_running` is what the daemon calls when it is asked to stop while a run
-/// holds its one worker, and the reason it passes is what [`JobState::Killed`] carries and what
-/// `bash` renders onto the row. Four different things happened to one command, and one word for
-/// all four would report a caller's own decision as the command's answer.
+/// A run ended by something other than its own deadline says WHO ended it. Four different things
+/// happened to one command, and one word for all four would report a caller's own decision as the
+/// command's answer.
 #[test]
 fn a_run_ended_by_the_daemon_stopping_says_so() {
     let Some(host) = host() else { return };
@@ -296,11 +283,8 @@ fn a_run_ended_by_the_daemon_stopping_says_so() {
     );
 }
 
-/// Can this uid look at the process? asked the way the daemon asks it.
-///
-/// The detection is `/proc/<pid>/fd/0`, so the fact this test needs is not whose uid it is (a
-/// setuid binary's real uid is the caller's) but whether the daemon may open it, which is the
-/// question that changes its behaviour.
+/// Can this uid look at the process, asked the way the daemon asks it: not whose uid it is, but whether
+/// the daemon may open `/proc/<pid>/fd/0`, which is the question that changes its behaviour.
 fn may_look_at(pid: u32) -> bool {
     std::fs::read_link(format!("/proc/{pid}/fd/0")).is_ok()
 }

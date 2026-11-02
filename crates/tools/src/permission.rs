@@ -1,9 +1,8 @@
-//! opencode's permission model: a rule is `{ permission, pattern, action }`, a call
-//! is tested against every rule of every ruleset, and the LAST match wins, with
-//! `ask` as the answer when nothing matches.
+//! opencode's permission model: a rule is `{ permission, pattern, action }`, a call is tested against
+//! every rule of every ruleset, and the LAST match wins, with `ask` when nothing matches.
 //!
-//! The config is the nested form, flattened into a ruleset with the user's key
-//! order preserved, because that order is what decides precedence.
+//! The config is the nested form, flattened into a ruleset with the user's key order preserved,
+//! because that order is what decides precedence.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -84,10 +83,8 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     regex.is_match(&normalized)
 }
 
-/// The last rule whose permission and pattern both wildcard-match, else `ask`.
-///
-/// Rulesets are flattened in order, so a later one (the `always` approvals) outranks
-/// an earlier one (the config).
+/// The last rule whose permission and pattern both wildcard-match, else `ask`. Rulesets are flattened in
+/// order, so a later one (the `always` approvals) outranks an earlier one (the config).
 pub fn evaluate(permission: &str, pattern: &str, rulesets: &[&Ruleset]) -> Rule {
     rulesets
         .iter()
@@ -100,10 +97,8 @@ pub fn evaluate(permission: &str, pattern: &str, rulesets: &[&Ruleset]) -> Rule 
         .unwrap_or_else(|| Rule::new(permission, "*", Action::Ask))
 }
 
-/// A `permission` config as JSON: an action string or a nested `{ pattern: action }`
-/// object, with `"*"` as the default key.
-///
-/// Key order is preserved, because last-match precedence depends on it.
+/// A `permission` config as JSON: an action string or a nested `{ pattern: action }` object, with `"*"`
+/// as the default key. Key order is preserved, because last-match precedence depends on it.
 pub fn config_to_ruleset(
     config: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<Ruleset, String> {
@@ -377,21 +372,16 @@ pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<Stri
     }
 }
 
-/// Whether a durable rule can ever apply to this command.
-///
-/// [`bash_segments`] refuses to split a heredoc or a substitution, and [`evaluate_bash`]
-/// turns that into [`Action::Ask`] before any rule is consulted - so no rule in the file
-/// can answer such a command, and offering a durable one is a button that does nothing.
+/// Whether a durable rule can ever apply to this command. The segmenter refuses to split a heredoc or a
+/// substitution and the evaluation turns that into an ask before any rule is consulted, so offering a
+/// durable rule for such a command is a button that does nothing.
 pub fn a_durable_rule_can_apply(command: &str) -> bool {
     bash_segments(command).is_some()
 }
 
-/// The pattern an "always allow" answer over a `bash` command writes down: the program,
-/// its verb when the program has verbs, and `*` - so `git status --short` gives
-/// `git status*`.
-///
-/// It takes the first whitespace token, which is the program only for a single stage; see
-/// [`always_pattern_for_stage`] for the caller that has a parse.
+/// The pattern an "always allow" answer over a `bash` command writes down: the program, its verb when it
+/// has verbs, and `*`, so `git status --short` gives `git status*`. It takes the first whitespace token,
+/// which is the program only for a single stage.
 pub fn always_pattern_for_command(command: &str) -> String {
     let mut words = command.split_whitespace();
     let Some(program) = words.next() else {
@@ -400,10 +390,9 @@ pub fn always_pattern_for_command(command: &str) -> String {
     always_pattern_for_stage(program, words.next())
 }
 
-/// The same pattern, from a stage the shell grammar already resolved.
-///
-/// Two derivations of "which program is this" would disagree, and the durable rule is the
-/// one written to a file, so the caller passes the stage `grant_program` reads.
+/// The same pattern from a stage the shell grammar already resolved. Two derivations of "which program is
+/// this" would disagree, and the durable rule is the one written to a file, so the caller passes the
+/// stage `grant_program` reads.
 pub fn always_pattern_for_stage(program: &str, first_arg: Option<&str>) -> String {
     const VERBED: &[&str] = &[
         "git",
@@ -455,10 +444,9 @@ pub fn file_path() -> Option<std::path::PathBuf> {
     Some(base.join("letibot").join("permission.json"))
 }
 
-/// The rules in the file, or none when there is no file.
-///
-/// A file that does not parse is an error, not an empty ruleset: a rule the operator wrote
-/// and the gate silently dropped is the failure this module exists to prevent.
+/// The rules in the file, or none when there is no file. A file that does not parse is an error and not
+/// an empty ruleset: a rule the operator wrote and the gate silently dropped is the failure this module
+/// exists to prevent.
 pub fn load_file(path: &std::path::Path) -> Result<Ruleset, String> {
     let raw = match std::fs::read_to_string(path) {
         Ok(r) => r,
