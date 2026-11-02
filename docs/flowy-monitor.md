@@ -40,9 +40,9 @@ default. The env file's `FLOWY_TOKEN=$(cat …)` line is read as the path it nam
     harnessd … --flowy-addr http://192.168.1.55:8787 --flowy-token-file /path   # manual
     harnessd … --flowy --flowy-new-reader                     # a seat that has never listened
 
-Three refusals, each naming what it looked at: no seat named and two on the box (*"A seat is an
-identity, so it is not guessed"*); `~/.config/flowy/token`, never read, because it is the
-operator's own credential; and `https://`, because the client has no TLS.
+Three refusals: no seat named and two on the box (*"A seat is an identity, so it is not guessed"*);
+`~/.config/flowy/token`, never read, because it is the operator's own credential; and `https://`,
+because the client has no TLS.
 
 `--flowy` that cannot be honoured is a startup error; a node merely away is not - the seat opens
 (claim + spool), the loop starts stalled, and the banner says so.
@@ -145,13 +145,13 @@ forever in silence.
 
 ## 5b. The shelf, and the fabric block
 
-`SkillRegistry` has a `SkillShelf` seam (`crates/flowy/src/shelf.rs`): `skill list` shows disk
-and shelf skills labelled, a disk skill wins a name clash, and a node that is away is "could not
-be read", never an empty shelf. `letibot_flowy::context` renders the operator's rule - *"skills
-are summaries of full pages, memories are titles"* - into one block that `Sessions` puts into a
-root session's system prompt at open, and after a compaction appends as a **system update** when
-it changed. Offline is a state: the live read, else the cached copy with its `read_at`, else a
-block saying no copy exists - never an empty block that reads as no skills.
+`SkillRegistry` has a `SkillShelf` seam: `skill list` shows disk and shelf skills labelled, a disk
+skill wins a name clash, and a node that is away is "could not be read", never an empty shelf.
+`letibot_flowy::context` renders the operator's rule - *"skills are summaries of full pages,
+memories are titles"* - into one block that `Sessions` puts into a root session's system prompt at
+open, and after a compaction appends as a **system update** when it changed. Offline is a state: the
+live read, else the cached copy with its `read_at`, else a block saying no copy exists - never an
+empty block that reads as no skills.
 
 ## 6. What flowy would have to provide for this to get better
 
