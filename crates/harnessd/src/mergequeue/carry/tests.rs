@@ -45,9 +45,8 @@ fn an_entry_is_a_path_inside_the_repository_and_anything_else_is_refused_by_name
     }
 }
 
-/// **The copy**: what the gate needs arrives in the landing tree as a copy — a gate that writes
-/// there does not write into the operator's checkout — and a file gone from the checkout is gone
-/// from the landing tree on the next run (`--delete`). Both copiers.
+/// **The copy**: what the gate needs arrives as a copy, so a gate that writes there does not write
+/// into the operator's checkout — and a file gone from the checkout is gone here too (`--delete`).
 #[test]
 fn gate_carry_copies_the_named_ignored_dirs_and_never_links_them() {
     for rsync in [true, false] {

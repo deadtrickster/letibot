@@ -197,9 +197,8 @@ fn the_heads_reviewers_could_not_decide_at_are_read_off_the_history() {
     assert_eq!(undecided_heads(&h), vec!["2cefd4b97b", "8e4b727"]);
 }
 
-/// **The branch's wait, across its rows**: the first refusal of a row opens it only when no row
-/// of the branch is already waiting; it began at the earliest refusal of any; and a raise by any
-/// row is the branch's raise.
+/// **The branch's wait, across its rows**: a row's first refusal opens it only when no row of the
+/// branch is already waiting; it began at the earliest refusal of any; any row's raise is the branch's.
 #[test]
 fn a_branch_waits_once_across_its_rows() {
     let none = Streak::default();

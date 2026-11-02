@@ -1,18 +1,9 @@
-//! **Moves another daemon made, heard by this one** (R92 item 5, lifecycle C30).
+//! Moves another daemon made, heard by this one.
 //!
-//! A row moves in the shared store, and the daemon that moved it says so with a `QueueMoved` on
-//! ITS hubs (`serve::RepoQueue::announce_move`, the verbs' `events`). Every other daemon on the
-//! box heard nothing: a head attached to a session of a daemon that does not hold the
-//! repository's lease — a second daemon seated in a worktree, a daemon in another folder — never
-//! re-read the queues, and its edge kept whatever it last drew, or nothing.
-//!
-//! So every daemon reads the store's append-only `queue_transition` history every
-//! [`POLL_EVERY`], and for each new move in a repository whose lease is NOT this daemon's,
-//! broadcasts the `QueueMoved` the mover's daemon broadcast on its own hubs. A move in a
-//! repository this daemon serves was already announced by this daemon's worker, so it is not
-//! said twice. (A `/queue` verb typed in this daemon about a repository another daemon serves is
-//! announced by the verb AND by this watcher; that costs one extra re-read on the heads, which
-//! coalesce a burst into one.)
+//! A row moves in the shared store and the mover announces it on ITS hubs only, so a head attached
+//! to any other daemon never re-read the queues and its edge kept what it last drew, or nothing.
+//! Every daemon therefore reads the history and broadcasts the moves of repositories whose lease it
+//! does NOT hold - its own worker already said those.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,14 +13,14 @@ use std::time::Duration;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::Store;
 
-/// How often a daemon reads the store for moves another daemon made — the serve loop's own pace.
+/// How often a daemon reads the store for moves another daemon made - the serve loop's own pace.
 pub const POLL_EVERY: Duration = Duration::from_secs(2);
 
-/// How many moves one poll reads at most — a head re-reads the whole snapshot on one event, so a
+/// How many moves one poll reads at most - a head re-reads the whole snapshot on one event, so a
 /// burst larger than this loses only sentences in the log, never freshness.
 const BATCH: usize = 200;
 
-/// **Where this daemon has read the history up to.**
+/// Where this daemon has read the history up to.
 pub struct MoveWatch {
     seen: i64,
 }
@@ -46,8 +37,8 @@ impl MoveWatch {
         MoveWatch { seen }
     }
 
-    /// **The moves since the last poll that this daemon did not announce itself** — those in a
-    /// repository whose lease `me` does not hold — as the events to broadcast.
+    /// The moves since the last poll that this daemon did not announce itself - those in a
+    /// repository whose lease `me` does not hold.
     pub fn poll(&mut self, store: &Store, me: &str) -> Vec<SessionEvent> {
         let Ok(moves) = store.recent_transitions(BATCH) else {
             return Vec::new();
@@ -77,7 +68,7 @@ impl MoveWatch {
     }
 }
 
-/// **The watcher's thread** — polls until `stop`, broadcasting through `announce`.
+/// The watcher's thread - polls until `stop`, broadcasting through `announce`.
 pub fn spawn(
     store_path: PathBuf,
     me: String,
@@ -126,8 +117,7 @@ mod tests {
             .unwrap();
     }
 
-    /// **A daemon that does not hold the lease hears the holder's moves** — the reason a head
-    /// attached to a second daemon never refreshed its queue standing. And a move in a
+    /// A daemon that does not hold the lease hears the holder's moves - and a move in a
     /// repository this daemon serves is not said twice: its own worker said it.
     #[test]
     fn a_daemon_hears_moves_in_repositories_another_daemon_serves_and_only_those() {
@@ -175,9 +165,8 @@ mod tests {
         );
     }
 
-    /// **A head is told which repository its session is a session of** (R92 item 5) — the
-    /// daemon's own rule, carried on the snapshot it answers, so the head scopes its pane and
-    /// edge without guessing. A worktree is its repository; a directory of none is `None`.
+    /// A head is told which repository its session is a session of, so it scopes
+    /// its pane and edge without guessing. A worktree is its repository; a directory of none is `None`.
     #[test]
     fn the_snapshot_names_the_asking_sessions_repository() {
         use crate::mergequeue::serve::tests::{branch, repo};
