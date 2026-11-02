@@ -326,6 +326,13 @@ pub struct SessionWiring {
     pub workspace: String,
 }
 
+/// The `model` row's value, for the one setting that has to reach a head unprompted.
+fn model_row(rows: &[crate::protocol::SettingRow]) -> Option<String> {
+    rows.iter()
+        .find(|r| r.key == crate::protocol::MODEL_KEY)
+        .map(|r| r.value.clone())
+}
+
 /// A fresh [`Registry::instance`]: pid, wall clock in nanoseconds, and a per-process counter.
 fn mint_instance() -> String {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1300,11 +1307,37 @@ impl Registry {
     }
 
     /// Publish the settings a session runs under. See `Entry::settings`.
+    ///
+    /// A `model` row that MOVED is also said on the session's hub: the rows are an answer to a
+    /// request, so without this a head that did not make the switch keeps naming the old model.
     pub fn set_settings(&self, session_id: &str, rows: Vec<crate::protocol::SettingRow>) {
-        let mut g = self.lock();
-        if let Some(e) = g.entry_mut(session_id) {
+        let now = model_row(&rows);
+        let (hub, moved) = {
+            let mut g = self.lock();
+            let Some(e) = g.entry_mut(session_id) else {
+                return;
+            };
+            let was = model_row(&e.settings);
             e.settings = rows;
+            // The first publish is what a head reads on attaching; only a move is news.
+            let moved = match (was, now) {
+                (Some(was), Some(now)) if was != now => Some(now),
+                _ => None,
+            };
+            (e.hub.clone(), moved)
+        };
+        let Some(moved) = moved else {
+            return;
+        };
+        // Nobody to tell, and the publish is what would make the row history.
+        if hub.attached_heads() == 0 {
+            return;
         }
+        hub.publish(crate::SessionEvent::Warning {
+            code: crate::protocol::MODEL_SET.into(),
+            detail: moved,
+            compaction: None,
+        });
     }
 
     /// Publish what this session's harness found about its frozen prefix: the sentence an
@@ -1925,6 +1958,84 @@ mod tests {
 
     fn reg() -> Arc<Registry> {
         Registry::new()
+    }
+
+    /// **A moved `model` row, said to the heads already attached.** The rows answer a request, so a
+    /// switch made from another head (or by the daemon itself) left this one drawing the old name
+    /// until its next turn.
+    #[test]
+    fn a_moved_model_row_is_said_on_the_session_hub() {
+        let r = reg();
+        r.create("s-1", "", SessionWiring::default()).unwrap();
+        let hub = r.get("s-1").expect("the session is held");
+        let head = hub.attach("tui", "dead", Caps::default(), 0);
+        let row = |v: &str| crate::protocol::SettingRow {
+            key: crate::protocol::MODEL_KEY.into(),
+            value: v.into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        };
+        // A probe of the head's own, so a read has something to answer even when nothing was said.
+        let said = |hub: &Hub| -> Vec<(String, String)> {
+            hub.publish(crate::SessionEvent::Warning {
+                code: "prefix_current".into(),
+                detail: String::new(),
+                compaction: None,
+            });
+            let Delivery::Events(batch) = hub.next_batch(&head.head_id, 64) else {
+                panic!("a batch, not a resync")
+            };
+            batch
+                .events()
+                .iter()
+                .filter_map(|e| match &e.event {
+                    crate::SessionEvent::Warning { code, detail, .. } => {
+                        Some((code.clone(), detail.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+
+        // The first publish is what a head reads when it asks for the rows: not news.
+        r.set_settings("s-1", vec![row("local (qwen-3.8-27b)")]);
+        assert_eq!(
+            said(&hub),
+            vec![("prefix_current".to_string(), String::new())]
+        );
+
+        // The switch itself. The world spelling is the row's, and the head strips the alias.
+        r.set_settings("s-1", vec![row("deepseek/deepseek-flash")]);
+        assert!(
+            said(&hub).contains(&("model_set".into(), "deepseek/deepseek-flash".into())),
+            "the move reached nobody"
+        );
+
+        // A republish of the same rows - every `/config` - is not a move and says nothing.
+        r.set_settings("s-1", vec![row("deepseek/deepseek-flash")]);
+        assert_eq!(
+            said(&hub),
+            vec![("prefix_current".to_string(), String::new())]
+        );
+
+        // With no head on the session there is nobody to tell, and the switch is not made history.
+        hub.detach(&head.head_id);
+        r.set_settings("s-1", vec![row("grok/grok-4")]);
+        let late = hub.attach("tui", "later", Caps::default(), 0);
+        let snapshot = late.snapshot.expect("a fresh head gets a snapshot");
+        let moved: Vec<&str> = snapshot
+            .warnings
+            .iter()
+            .filter(|w| w.code == crate::protocol::MODEL_SET)
+            .map(|w| w.detail.as_str())
+            .collect();
+        assert_eq!(
+            moved,
+            vec!["deepseek/deepseek-flash"],
+            "only the move a head was there for is a warning at all"
+        );
     }
 
     /// An operator run in flight when the registry closes is named, even though the prompts and

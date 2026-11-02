@@ -304,10 +304,10 @@ pub struct App {
     /// it; nothing else does.
     pub(crate) hist_floor: usize,
     /// The `seq` at which the head last read the `model` settings row, and the `seq` of the
-    /// `TurnStarted` that last named a model. The header takes whichever is later, because a
-    /// settings row is only ever an answer while a turn arrives unprompted.
+    /// last live word about it - a turn starting, or the daemon saying the row moved. The
+    /// header takes whichever is later: a row is only ever an answer to a request.
     pub(crate) model_from_settings_at: u64,
-    pub(crate) model_from_turn_at: u64,
+    pub(crate) model_from_live_at: u64,
     /// How much transcript this head will walk from the beginning before it renders the tail
     /// instead. A field and not a constant, so a test can force the full walk with `usize::MAX`
     /// and render both ways.
@@ -1117,7 +1117,7 @@ impl App {
             hist_upto: 0,
             hist_floor: 0,
             model_from_settings_at: 0,
-            model_from_turn_at: 0,
+            model_from_live_at: 0,
             walk_limit: SELF_WALK_LIMIT,
             hist_first_class: None,
             hist_marks: Vec::new(),

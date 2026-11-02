@@ -478,6 +478,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // says it stands now. The other verdict of the same channel, one line up, and Routine for the
     // same reason `slash` is.
     ("model_switch_applied", Class::Routine),
+    // **The session's model moved, said to the heads already attached**: the head takes it as the
+    // name the header draws, and nothing is wrong - a switch is what somebody asked for.
+    ("model_set", Class::Routine),
     // **The operator asked for a model and did not get it**: the pending switch could not be
     // made, and the session is left on a model that works.
     ("model_switch_not_applied", Class::Refused),
@@ -775,8 +778,8 @@ mod the_register_census {
         // **The census, kept where it cannot drift.** Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 173, "the table's size");
-        assert_eq!(count(Class::Routine), 68);
+        assert_eq!(TABLE.len(), 174, "the table's size");
+        assert_eq!(count(Class::Routine), 69);
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 90);
         // A code with an id is read by its family.

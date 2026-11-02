@@ -95,8 +95,8 @@ impl App {
                 }
                 self.model = model.clone();
                 // Stamped, so the header can prefer this over a settings row it read
-                // earlier at attach. See `model_from_turn_at`.
-                self.model_from_turn_at = self.seq;
+                // earlier at attach. See `model_from_live_at`.
+                self.model_from_live_at = self.seq;
                 // Which boundary is this? `began_ms` is the only thing on the wire that tells the
                 // next ROUND of a prompt from a new PROMPT, so an unmeasured one (a wake turn) over
                 // a turn still RUNNING is the same run: the operator's own row ends a run, not this.

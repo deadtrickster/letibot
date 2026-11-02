@@ -326,6 +326,12 @@ impl App {
             if self.boot_warning(&w.code, &w.detail) {
                 continue;
             }
+            // The model is state too, and a snapshot replays the switch that named it: taken the
+            // same way the live arm takes it, and never filed as a note.
+            if w.code == letibot_sessionlog::protocol::MODEL_SET {
+                self.model_set(&w.detail);
+                continue;
+            }
             let n = Note::Warned(w);
             if holds(&mine, &n) {
                 continue;

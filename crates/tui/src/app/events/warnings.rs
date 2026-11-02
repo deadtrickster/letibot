@@ -34,6 +34,18 @@ impl App {
         }
     }
 
+    /// **The model the daemon says answers now** - the `model` row's value, which may be a local
+    /// alias in the config pane's spelling. One door for the live arm and for a snapshot, and no
+    /// note either way: a name is what the header draws, not a finding to read.
+    pub(crate) fn model_set(&mut self, value: &str) {
+        let model = crate::ui::header::header_model(value);
+        if !model.is_empty() {
+            self.model = model;
+            self.model_from_live_at = self.seq;
+            self.redraw = true;
+        }
+    }
+
     /// **A warning the daemon raised.** One family of
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_warning(&mut self, e: SessionEvent, ts: u64) -> Disposition {
@@ -133,6 +145,12 @@ impl App {
                 if code == "model_switch_applied" || code == "model_switch_not_applied" {
                     self.model_pending = None;
                     self.queued.push(Action::Settings);
+                }
+                // The model answering NOW, on the daemon's word rather than a request: the `model`
+                // row moved on somebody else's act, and a name is state, not a finding to file.
+                if code == letibot_sessionlog::protocol::MODEL_SET {
+                    self.model_set(&detail);
+                    return Disposition::Filtered;
                 }
                 // A slash LISTING opens the pane and a slash sentence stays a note. Both
                 // arrive under one code with `detail` = the echoed command then the reply,

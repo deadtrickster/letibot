@@ -81,8 +81,8 @@ impl App {
             .find(|r| r.key == "model")
             .map(|r| header_model(&r.value))
             .filter(|m| !m.is_empty());
-        let turn_is_newer = self.model_from_turn_at > self.model_from_settings_at;
-        let model = match (from_settings, turn_is_newer) {
+        let live_is_newer = self.model_from_live_at > self.model_from_settings_at;
+        let model = match (from_settings, live_is_newer) {
             (Some(row), false) => row,
             (Some(row), true) if self.model.is_empty() => row,
             (Some(_), true) => self.model.clone(),

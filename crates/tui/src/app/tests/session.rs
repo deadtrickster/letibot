@@ -2016,6 +2016,49 @@ fn the_header_follows_a_mid_session_model_switch() {
     );
 }
 
+/// **A switch somebody else made reaches this head.** `Settings` has one send site and it answers a
+/// request, so a head that did not type `/models` went on naming the model `Hello` carried until its
+/// next turn. The daemon names the model on the session's hub; the header takes that word, and a
+/// model is not a warning, so no note is filed for it.
+#[test]
+fn a_switch_reaches_the_heads_that_did_not_type_it() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(model_settings("local (qwen-3.8-27b)", &["local"]));
+    assert!(
+        a.header_line(200).contains("qwen-3.8-27b"),
+        "the attach state: {}",
+        a.header_line(200)
+    );
+    let notes = a.notes.len();
+
+    a.apply(ServerFrame::Event(env(
+        9,
+        SessionEvent::Warning {
+            code: "model_set".into(),
+            detail: "deepseek/deepseek-flash".into(),
+            compaction: None,
+        },
+    )));
+
+    let h = a.header_line(200);
+    assert!(
+        h.contains("deepseek/deepseek-flash"),
+        "the switch reached nobody: {h}"
+    );
+    assert!(!h.contains("qwen"), "the old name is still there: {h}");
+    assert_eq!(
+        a.notes.len(),
+        notes,
+        "a model is state, not a warning to read: {:?}",
+        a.notes
+    );
+}
+
 /// Taking a keyless row from the picker asks for the key: the ask is a card with a masked buffer of its own,
 /// never the composer, so the key cannot land in a prompt, and never the sudo path, whose `req_id` is the
 /// daemon's. Enter does both in one verb.

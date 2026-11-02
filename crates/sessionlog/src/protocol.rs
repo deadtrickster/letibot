@@ -30,6 +30,11 @@ pub const HEAD_RUN_TOOLS_KEY: &str = "head-run.tools";
 /// owners: the head offers its own, and asks the daemon for the rest.
 pub const DAEMON_VERBS_KEY: &str = "daemon.verbs";
 
+/// The `model` row's key, and the code the registry publishes when that row MOVES: the rows
+/// answer a request, so a head that did not make the switch would otherwise keep the old name.
+pub const MODEL_KEY: &str = "model";
+pub const MODEL_SET: &str = "model_set";
+
 /// Which providers this box holds a key for, so a model picker greens only rows that can be
 /// taken. Only the daemon can answer: the key may be in a file the head never reads.
 pub const MODEL_KEYS_KEY: &str = "models.keys";
