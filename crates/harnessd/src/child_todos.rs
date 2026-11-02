@@ -3,38 +3,26 @@
 //! # Why a module and not a method on `Harness`
 //!
 //! The parent's tool and the child's board are in the SAME daemon but never in the same
-//! [`crate::harness::Harness`]: a child spawned by `task` is run by the thread that spawned it
-//! (`serve_child` parks it there), and the daemon holds no `Harness` for it — `Sessions::open`
-//! has the roots, the registry has the hubs, and the boards were, until now, reachable only
-//! through the harness that owned them. So a session-id → board map, registered by every
-//! `Harness` at open (root or child, resumed or fresh), is the one place a parent's write can
-//! find its child — the same shape as `tree_slots` and `tree_head` one feature over: a live
-//! `Arc` that rides [`crate::harness::Parts`] because it belongs to the daemon and not to any
-//! one session's config.
+//! [`crate::harness::Harness`]: a child spawned by `task` is run by the thread that spawned it, and
+//! the daemon holds no `Harness` for it. So a session-id → board map, registered by every `Harness`
+//! at open, is the one place a parent's write can find its child - a live `Arc` that rides
+//! [`crate::harness::Parts`] because it belongs to the daemon and not to any one session's config.
 //!
 //! # What the resolver refuses, and why by name
 //!
-//! The operator's ask is narrow — *"yes - i want parent agents to be able to create todos for
-//! subagents. throught tree author - (Parent <session-id-of-parent>)"* — and the whole of its
-//! safety is one predicate: **the target must be a session whose `parent_session_id` is the
-//! caller.** A session that could write a sibling's board, or its own parent's, is a session
-//! that can overwrite another agent's plan, so every other shape is refused naming what was
-//! asked for and what this session actually holds — the register the rest of this tree's
-//! refusals keep. The caller's id is BOUND at construction (the resolver is built per session
-//! in `Harness::open_with_registry`), so the author stamp `Parent <caller>` is the daemon's
-//! fact and never the call's claim.
+//! The operator's ask is narrow - *"i want parent agents to be able to create todos for
+//! subagents"* - and the whole of its safety is one predicate: the target must be a session
+//! whose `parent_session_id` is the caller. A session that could write a sibling's board is a
+//! session that can overwrite another agent's plan, so every other shape is refused naming what
+//! was asked for and what this session actually holds. The caller's id is BOUND at construction
+//! so the author stamp `Parent <caller>` is the daemon's fact and never the call's claim.
 //!
 //! # The flush, and why it is here rather than at the child's next turn
 //!
-//! [`crate::harness::Harness::flush_todos`] is version-gated and runs at the CHILD's turn
-//! boundaries. A parked child runs no turn — `serve_child` is explicitly *"not on a clock"* —
-//! so rows left to that path would sit in memory only, and a daemon restart would take them:
-//! exactly the omission `Harness::set_operator_todos` records for the operator's rows
-//! (*"on a session where no turn ever runs again, the operator's rows would sit on the board
-//! unpublished and unwritten"*). So the resolver persists and publishes at the moment of the
-//! write, through its own handle onto the session store — the process's one connection to that
-//! file, taken by `Store::open` — and the child's own `flush_todos` re-publishing the same list
-//! at its next boundary is a harmless duplicate.
+//! `Harness::flush_todos` runs at the CHILD's turn boundaries, and a parked child runs no turn -
+//! rows left to that path would sit in memory only and a daemon restart would take them. So the
+//! resolver persists and publishes at the moment of the write, through its own handle onto the
+//! store; the child's own `flush_todos` re-publishing the same list later is a harmless duplicate.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -46,18 +34,17 @@ use letibot_tokencore::store::{Store, TodoBy, TodoNeed, TodoStatus};
 
 use letibot_tools::builtins::todo::{ChildTodos, TodoBoard};
 
-/// Every live board this daemon holds, by session id — and the store connection a parent's
-/// write flushes through. Held in [`crate::harness::Parts`], registered by every `Harness` at
-/// open; never unregistered, because a finished child's board is still the truth its store row
-/// holds and a late write to it is still the parent's to make.
+/// Every live board this daemon holds, by session id - and the store connection a parent's write
+/// flushes through. Held in [`crate::harness::Parts`], registered by every `Harness` at open; never
+/// unregistered, because a finished child's board is still the truth its store row holds.
 #[derive(Default)]
 pub struct ChildBoards {
     boards: Mutex<HashMap<String, Arc<TodoBoard>>>,
     /// The session store's path, for the resolver's flush. `None` is a storeless daemon: the
     /// write still lands on the board, publishes to the child's hub, and is honestly not
-    /// durable — the same shape a storeless session's own todos have.
+    /// durable - the same shape a storeless session's own todos have.
     store_path: Option<PathBuf>,
-    /// **The store, opened once on first write** — a handle onto the process's one connection to
+    /// The store, opened once on first write - a handle onto the process's one connection to
     /// that file (`Store::open`), behind a `Mutex` because a flush runs on whichever thread wrote
     /// the board. It used to be a second connection; there is one per file per process now.
     store: Mutex<Option<Store>>,
@@ -73,8 +60,8 @@ impl ChildBoards {
         })
     }
 
-    /// Called by `Harness::open_with_registry` for EVERY session this daemon opens — root,
-    /// child, resumed or fresh — so a parent's write can find any of its children's boards.
+    /// Called by `Harness::open_with_registry` for EVERY session this daemon opens - root
+    /// child, resumed or fresh - so a parent's write can find any of its children's boards.
     pub fn register(&self, session_id: &str, board: Arc<TodoBoard>) {
         self.boards
             .lock()
@@ -90,7 +77,7 @@ impl ChildBoards {
             .cloned()
     }
 
-    /// The child's list, persisted — or a note naming what did not happen, printed the way
+    /// The child's list, persisted - or a note naming what did not happen, printed the way
     /// `Harness::set_operator_todos` prints its own. The rows are already ON the board when
     /// this runs, so a flush failure is reported and never unwritten.
     fn flush(&self, child: &str, board: &TodoBoard) {
@@ -119,10 +106,9 @@ impl ChildBoards {
         }
     }
 
-    /// **`parent`'s children the store records as running** — `(id, name)` from their
-    /// `subagent_run` rows. A child is recorded the moment it is spawned and registered only
-    /// once its session has opened, which for a `firecode` child is after its VM has booted:
-    /// minutes in which the registry has never heard of it. Empty for a storeless daemon.
+    /// `parent`'s children the store records as running - `(id, name)` from their
+    /// `subagent_run` rows. A child is recorded the moment it is spawned and registered only once
+    /// its session has opened, which for a `firecode` child is after its VM has booted.
     fn running_children(&self, parent: &str) -> Vec<(String, String)> {
         let Some(path) = &self.store_path else {
             return Vec::new();
@@ -143,7 +129,7 @@ impl ChildBoards {
     }
 }
 
-/// **The resolver bound to ONE caller** — built per session in `Harness::open_with_registry`,
+/// The resolver bound to ONE caller - built per session in `Harness::open_with_registry`
 /// with the caller's own id and the daemon's registry already in hand. Implements the tool's
 /// [`ChildTodos`]; everything the feature's safety turns on is decided here and nowhere else.
 pub struct ParentTodos {
@@ -163,7 +149,7 @@ impl ParentTodos {
         }
     }
 
-    /// **The caller's own children, full ids** — the names the refusal lists, because they are
+    /// The caller's own children, full ids - the names the refusal lists, because they are
     /// the names `task`'s reply and `task_result`'s listing already handed the parent.
     fn my_children(&self) -> Vec<String> {
         let mut out: Vec<String> = self
@@ -173,7 +159,7 @@ impl ParentTodos {
             .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
             .map(|b| letibot_tools::builtins::task::subagent_label(Some(&b.slug), &b.session_id))
             .collect();
-        // **And the ones still starting**, named as such: a child the store records as running
+        // And the ones still starting, named as such: a child the store records as running
         // and the registry does not hold yet is booting its placement, not gone.
         for (id, slug) in self.starting() {
             out.push(format!(
@@ -184,7 +170,7 @@ impl ParentTodos {
         out
     }
 
-    /// **The caller's children that are recorded as running and not registered yet** — still
+    /// The caller's children that are recorded as running and not registered yet - still
     /// opening, which for a VM-placed child is its whole boot.
     fn starting(&self) -> Vec<(String, String)> {
         let live: std::collections::HashSet<String> = self
@@ -200,7 +186,7 @@ impl ParentTodos {
             .collect()
     }
 
-    /// **The refusal's tail, the same for every arm**: what this session holds. A parent with
+    /// The refusal's tail, the same for every arm: what this session holds. A parent with
     /// no children is told THAT, which is a different fact from a typo and deserves its own
     /// sentence.
     fn held(&self) -> String {
@@ -221,19 +207,18 @@ impl ParentTodos {
         }
     }
 
-    /// Resolve the target to one brief: an exact id, else the short `…tail` form
-    /// [`short_id`] spells — the one the subagent pane and `task_result` show. Ambiguity is
-    /// refused with the candidates named, the house rule for an ambiguous name: the guess this
-    /// refuses to make is one child's board changing under a parent that quoted another.
+    /// Resolve the target to one brief: an exact id, a child's name, else the short `…tail` form
+    /// [`short_id`] spells - the one the subagent pane and `task_result` show. Ambiguity is refused
+    /// with the candidates named: the guess it refuses to make is one child's board changing under
+    /// a parent that quoted another.
     fn resolve(&self, target: &str) -> Result<letibot_sessionlog::registry::SessionBrief, String> {
         let all = self.registry.list();
         if let Some(exact) = all.iter().find(|b| b.session_id == target) {
             return Ok(exact.clone());
         }
-        // **A child's name** — its slug, as `task` and `task_start` handed it back — among the
-        // CALLER's children only: a name is unique among one parent's children, not across the
-        // daemon, and a sibling's child of the same name is not this caller's to write. Two of
-        // the caller's own children under one name is refused naming both.
+        // A child's name - its slug, among the CALLER's children only: a name is unique among
+        // one parent's children, not across the daemon, and a sibling's child of the same name is
+        // not this caller's to write.
         let named: Vec<_> = all
             .iter()
             .filter(|b| b.parent_session_id.as_deref() == Some(self.caller.as_str()))
@@ -284,14 +269,13 @@ impl ChildTodos for ParentTodos {
         rows: &[(String, TodoStatus, Vec<TodoNeed>)],
     ) -> Result<Vec<letibot_tokencore::store::TodoItem>, String> {
         let brief = self.resolve(target)?;
-        // **THE ONE PREDICATE.** The target's `parent_session_id` must be the CALLER — a
-        // session that could reach a sibling's or its parent's board is a session that can
-        // overwrite another agent's plan. Refused naming what was asked, what it actually is,
-        // and what this session holds.
+        // THE ONE PREDICATE. The target's `parent_session_id` must be the CALLER - a session
+        // that could reach a sibling's board is a session that can overwrite another agent's plan.
+        // Refused naming what was asked, what it actually is, and what this session holds.
         if brief.parent_session_id.as_deref() != Some(self.caller.as_str()) {
             let what_it_is = match &brief.parent_session_id {
                 // The caller naming itself lands here too, as a session with a parent that is
-                // not itself — said plainly rather than special-cased.
+                // not itself - said plainly rather than special-cased.
                 Some(other) => format!("a child of `{other}`"),
                 None => "a top-level session nobody spawned".to_string(),
             };
@@ -314,17 +298,14 @@ impl ChildTodos for ParentTodos {
             ));
         };
         let author = TodoBy::parent_of(&self.caller);
-        // **The title cap is the BOARD's here, and `Err` is its refusal.** A parent writes onto a
-        // half this tool cannot see — the child's — so `upsert_parent` holds the one spelling of the
-        // rule (`check_titles`) and refuses a NEW row whose title is over it before anything is
-        // pushed. It propagates unchanged: `upsert_child`'s `Err` is already written to be shown to
-        // the model as it stands, and the tool's arm for it names the cap too.
+        // The title cap is the BOARD's here, and `Err` is its refusal. A parent writes onto a
+        // half this tool cannot see - the child's - so `upsert_parent` holds the one spelling of
+        // the rule and refuses a NEW row whose title is over it before anything is pushed.
         let changed = board.upsert_parent(rows, &author)?;
         if changed > 0 {
-            // **Persist and publish at the moment of the write** — see the module doc for why
-            // waiting for the child's next turn boundary is the omission, not the patience.
-            // The publish reaches every head attached to the child, which is what keeps its
-            // pane current; the store write is what survives the daemon's restart.
+            // Persist and publish at the moment of the write - see the module doc. The publish
+            // reaches every head attached to the child, which keeps its pane current; the store
+            // write is what survives the daemon's restart.
             self.boards.flush(&child, &board);
             if let Some(hub) = self.registry.get(&child) {
                 hub.publish(SessionEvent::TodosUpdated {
@@ -334,32 +315,25 @@ impl ChildTodos for ParentTodos {
                         .map(crate::harness::Harness::todo_entry)
                         .collect(),
                 });
-                // **AND THE CHILD'S OWN READER IS WOKEN**, because the child is a session and a
-                // session's board move arms its idle plan-check — the operator's ruling:
-                // *"childs being just a session should get nags"*. A parked child is blocked
-                // in `Hub::take_own_work_until`, and a publish alone does not open that door:
-                // the condvar wakes, the take's predicate finds no command and no wake, and
-                // the reader sleeps on with a new row on its board and no clock armed. The
-                // wake carries no reason — it never does — and needs none: the child's loop
-                // looks (`Harness::wake`, usually finding nothing settled), then sees the
-                // board's version move and re-arms from THIS write, which is the same anchor
-                // `SetOperatorTodos` gives a session the daemon holds.
+                // AND THE CHILD'S OWN READER IS WOKEN, because a session's board move arms its
+                // idle plan-check - *"childs being just a session should get nags"*. A parked child
+                // is blocked in `Hub::take_own_work_until` and a publish alone does not open that
+                // door: the condvar wakes, the predicate finds no command and no wake, and the
+                // reader sleeps on with a new row and no clock armed.
                 //
-                // The rows are nag-worthy by construction: `the_check_may_ask_about` filters
-                // by status and never by author, so what the parent wrote is asked about
-                // exactly as what the model wrote — and what the operator postponed is not
-                // asked about here either.
+                // The wake carries no reason, and needs none: the child's loop looks, then sees the
+                // board's version move and re-arms from THIS write.
                 hub.wake_its_own_reader();
             }
         }
         Ok(board.snapshot())
     }
 
-    /// **`wait_on`'s `child`: the caller's own child, or a refusal naming what it is instead** —
+    /// `wait_on`'s `child`: the caller's own child, or a refusal naming what it is instead -
     /// [`ParentTodos::resolve`] and the parentage predicate `upsert_child` keeps, and nothing
     /// more: a wait reaches no board but the caller's own, so there is nothing to flush.
     fn own_child(&self, asked: &str) -> Result<String, String> {
-        // **A child still starting is waited on like any other** — by its id, its name or its
+        // A child still starting is waited on like any other - by its id, its name or its
         // short form. Its wait ends when it answers, which it does once it has opened.
         if let Some((id, _)) = self.starting().into_iter().find(|(id, slug)| {
             id == asked || (!slug.is_empty() && slug == asked) || short_id(id) == asked
@@ -394,7 +368,7 @@ mod tests {
         }
     }
 
-    /// A registry holding a parent, its two children, and somebody else's child — the family
+    /// A registry holding a parent, its two children, and somebody else's child - the family
     /// the refusals have to name their way through. Boards are registered the way every
     /// `Harness` registers them.
     fn family() -> (Arc<Registry>, Arc<ChildBoards>, ParentTodos) {
@@ -416,8 +390,8 @@ mod tests {
         (registry, boards, resolver)
     }
 
-    /// **The one predicate, both ways.** A child of the caller is writable; a sibling's child
-    /// and the caller itself are refused — BY NAME, saying what the target is and what this
+    /// The one predicate, both ways. A child of the caller is writable; a sibling's child
+    /// and the caller itself are refused - BY NAME, saying what the target is and what this
     /// session holds.
     #[test]
     fn only_a_session_this_caller_spawned_may_be_written() {
@@ -435,7 +409,7 @@ mod tests {
             "{board:?}"
         );
 
-        // And by the short form the pane shows (`…` + the last 8 characters — `short_id`).
+        // And by the short form the pane shows (`…` + the last 8 characters - `short_id`).
         let board = resolver
             .upsert_child(
                 "…ild-aaaa",
@@ -444,7 +418,7 @@ mod tests {
             .expect("the short form resolves");
         assert!(board.iter().any(|t| t.content == "by the short id"));
 
-        // **Somebody else's child.**
+        // Somebody else's child.
         let why = resolver
             .upsert_child(
                 "s-other-child",
@@ -460,7 +434,7 @@ mod tests {
             "and what this session holds, by name: {why}"
         );
 
-        // **The caller itself.**
+        // The caller itself.
         let why = resolver
             .upsert_child(
                 "s-parent-1111",
@@ -472,7 +446,7 @@ mod tests {
             "yourself included, in the same sentence: {why}"
         );
 
-        // **No such session.**
+        // No such session.
         let why = resolver
             .upsert_child("s-nope", &[("x".into(), TodoStatus::Pending, Vec::new())])
             .expect_err("an unknown id is refused");
@@ -482,8 +456,8 @@ mod tests {
         );
     }
 
-    /// **`wait_on`'s child is the same predicate**: the caller's own child resolves to its full
-    /// id (the short form too), and a sibling's child is refused by name — a wait on a session
+    /// `wait_on`'s child is the same predicate: the caller's own child resolves to its full
+    /// id (the short form too), and a sibling's child is refused by name - a wait on a session
     /// that is not this one's is a wait nothing here ends.
     #[test]
     fn a_wait_names_only_a_child_of_the_caller() {
@@ -500,8 +474,8 @@ mod tests {
         assert!(resolver.own_child("s-nope").is_err());
     }
 
-    /// **The author is the CALLER's, stamped daemon-side** — `Parent <full session id>`, the
-    /// operator's own string — and the rows go in as the parent's half, leaving the child's own
+    /// The author is the CALLER's, stamped daemon-side - `Parent <full session id>`, the
+    /// operator's own string - and the rows go in as the parent's half, leaving the child's own
     /// rows and the operator's exactly where they were.
     #[test]
     fn the_author_is_the_callers_own_string_and_nobody_elses_rows_move() {
@@ -552,7 +526,7 @@ mod tests {
             "the child's rows lead, the parent's are between, the operator's are last: {board:?}"
         );
 
-        // **And a second send moves state, never membership** — the upsert, through the real
+        // And a second send moves state, never membership - the upsert, through the real
         // resolver this time.
         let board = resolver
             .upsert_child(
@@ -576,13 +550,12 @@ mod tests {
         );
     }
 
-    /// **A write is PUBLISHED on the child's hub and PERSISTED in the store** — the two halves
-    /// of the flush that keep the child's pane current and the rows alive past a daemon restart.
+    /// A write is PUBLISHED on the child's hub and PERSISTED in the store - the two halves of
+    /// the flush that keep the child's pane current and the rows alive past a restart.
     ///
-    /// The publish is asserted on the hub's own seq (`head_seq`), which advances once per
-    /// published event: an unchanged re-send must not move it and a changed write must, which is
-    /// the version rule read through the whole resolver. The persistence is asserted by opening
-    /// the store again and reading the row back — the restart's own path.
+    /// The publish is asserted on the hub's own seq (`head_seq`), which advances once per published
+    /// event; the persistence by opening the store again and reading the row back - the restart's
+    /// own path.
     #[test]
     fn a_write_is_published_and_persisted() {
         let dir = std::env::temp_dir().join(format!("child-todos-{}", std::process::id()));
@@ -627,7 +600,7 @@ mod tests {
         let resolver = ParentTodos::new("s-parent-1111".into(), registry.clone(), boards.clone());
         let child = registry.get("s-child-aaaa").expect("the child's hub");
 
-        // **Published.** The hub's seq advances exactly once for the write.
+        // Published. The hub's seq advances exactly once for the write.
         let before = child.head_seq();
         resolver
             .upsert_child(
@@ -641,7 +614,7 @@ mod tests {
             "one event — the TodosUpdated — was published to the child's hub"
         );
 
-        // **Persisted.** A connection of its own reads back what a restart would find.
+        // Persisted. A connection of its own reads back what a restart would find.
         let stored = Store::open_private(&db).unwrap();
         let rows = stored.todos("s-child-aaaa").unwrap();
         assert!(
@@ -649,7 +622,7 @@ mod tests {
             "the row survived in the store, as it must past a restart: {rows:?}"
         );
 
-        // **And an unchanged re-send is not an event** — the version rule, through the resolver.
+        // And an unchanged re-send is not an event - the version rule, through the resolver.
         resolver
             .upsert_child(
                 "s-child-aaaa",
@@ -664,7 +637,7 @@ mod tests {
         let _ = std::fs::remove_file(&db);
     }
 
-    /// **An ambiguous short id is refused with the candidates named** — the house rule; the
+    /// An ambiguous short id is refused with the candidates named - the house rule; the
     /// guess it refuses to make is one child's board changing under a parent that quoted
     /// another.
     #[test]
@@ -695,7 +668,7 @@ mod tests {
         );
     }
 
-    /// **A registry row with no board is refused as the state it is** — named, not guessed at.
+    /// A registry row with no board is refused as the state it is - named, not guessed at.
     #[test]
     fn a_child_without_a_board_is_refused_as_the_state_it_is() {
         let (registry, boards, resolver) = family();
@@ -722,7 +695,7 @@ mod tests {
         assert!(boards.board("s-child-late").is_none(), "and none was made");
     }
 
-    /// **A child is named by its slug too**, among the CALLER's children only: the name its
+    /// A child is named by its slug too, among the CALLER's children only: the name its
     /// runner gave it resolves, two of the caller's children under one name are refused naming
     /// both, and a name only another parent's child carries is no child of this caller's.
     #[test]
@@ -760,11 +733,11 @@ mod tests {
         );
     }
 
-    /// **A child still booting its VM is a child** — the operator's stroppy session, 2026-10-14:
-    /// a `firecode` child is recorded the moment it is spawned and registered only once its VM is
-    /// up, so for the whole boot `wait_on` refused it as *not one of this session's children* and
-    /// listed the children whose VMs had finished booting — never the newest. The model took the
-    /// first run for dead and dispatched a second VM doing the same work.
+    /// A child still booting its VM is a child - the operator's stroppy session, 2026-10-14: a
+    /// `firecode` child is recorded the moment it is spawned and registered only once its VM is up
+    /// so for the whole boot `wait_on` refused it and listed the children whose VMs had finished
+    /// booting. The model took the first run for dead and dispatched a second VM doing the same
+    /// work.
     #[test]
     fn a_child_still_booting_its_vm_can_be_waited_on_by_id_or_name() {
         let dir = letibot_sessionlog::testing::scratch_root().join(format!(

@@ -1,50 +1,29 @@
-//! **One turn tail for every door** — `TODO.md` R68.4.
+//! One turn tail for every door - `TODO.md`.
 //!
-//! A turn reaches a session through eight doors: a head's prompt, a peer's or parent's message,
-//! a wake (a monitor fired, a job or child settled, a condition came due), the idle plan-check,
-//! the operator's own `!` line, a subagent's task, the continuation after a wall, and the
-//! continuation after a FALLBACK — the model was out, the session moved, and the work goes on
-//! without the operator. Each one used to carry its own copy of what has to happen around a turn,
-//! and the copies had drifted.
-//! The 2026-10-11 review of the daemon (`TODO.md` section 4, *the daemon*, finding 6) listed what
-//! each copy was missing:
+//! A turn reaches a session through eight doors: a head's prompt, a peer's or parent's message, a
+//! wake, the idle plan-check, the operator's `!` line, a subagent's task, the continuation after a
+//! wall, and the continuation after a FALLBACK. Each used to carry its own copy of what happens
+//! around a turn, and the copies had drifted: no waiter armed by a wake, a child's `turn_failed`
+//! with no reason in it, a refused-compaction latch shared with nobody.
 //!
-//! * `arm_wake` was called by the prompt, the message and the continuation — not by the wake, the
-//!   nag, or either `!` door, so a monitor first declared in one of those turns got no waiter
-//!   until the next prompt;
-//! * the nag door armed neither the sweep nor the wake (R67 item 10 patched that one door);
-//! * children ran a SECOND copy (`Harness::submit_spoken_as_a_normal_session`, plus
-//!   `harness::serve_child`): no forced compaction on a wake or nag turn at the wall, never swept
-//!   (the sweep walked only `Sessions.open`), `take_new_title` never drained (a child's picker
-//!   row never took its title), no refused-compaction latch shared with the daemon's, and the
-//!   `Answer` arm dropped its error (`.is_ok()`), so a child's `turn_failed` carried no reason.
-//!
-//! So the sequence lives here, once, and both owners call it: [`run_turn`] is what
-//! `Sessions` runs for every door of a session the daemon's worker holds, and what
-//! `harness::serve_child` runs for every door of a subagent on its own thread. What differs
-//! between the two owners is not the SEQUENCE but where its effects land — a title goes to the
-//! registry either way but a root's also renames its seat on the fabric; the sweep is the
-//! worker's clock for one and the child's own for the other — and that is the [`TurnOwner`]
-//! trait: the owner answers *how*, this module decides *when*.
+//! So the sequence lives here, once, and both owners call it: [`run_turn`] is what `Sessions` runs
+//! for a session the daemon's worker holds and what `harness::serve_child` runs for a subagent on
+//! its own thread. What differs is not the SEQUENCE but where its effects land, and that is the
+//! [`TurnOwner`] trait: the owner answers *how*, this module decides *when*.
 //!
 //! # The sequence, in order
 //!
-//! Before the turn: **arm the sweep** (a turn can strand a tool call, and only an idle pass can
-//! close it out); **compact if the next turn would not fit** (the pre-wall check); **earn the
-//! plan-check back** when somebody spoke (`Prompt`, `Message`); **start the turn's clock**.
+//! Before the turn: arm the sweep; compact if the next turn would not fit; earn the
+//! plan-check back when somebody spoke; start the turn's clock.
 //!
-//! After each turn — the first and every continuation: **drain the title**; **arm the monitor
-//! wake**; **publish a failure** (`TurnFailed` + `turn_failed`, with the reason); **compact** — the
-//! pre-emptive door after a success, the refused door after a wall, and say so by name when the
-//! refused door declines; and **continue past a wall** while there is measured room, at most
-//! [`crate::sessions::WALL_CONTINUES`] times.
+//! After each turn - the first and every continuation: drain the title; arm the monitor
+//! wake; publish a failure with its reason; compact - the pre-emptive door after a
+//! success, the refused door after a wall; and continue past a wall while there is measured
+//! room, at most [`crate::sessions::WALL_CONTINUES`] times.
 //!
-//! After the last: **stop the clock**, then the **owner's idle clocks** (the plan-check is
-//! re-armed, a spent nag is recorded as said, a subagent's park window starts again).
-//!
-//! The `!` state is the one obligation that is not here: a settled run's flag comes down in the
-//! `OperatorShellResult` arm BEFORE any return (R67 item 11), because it must come down whether
-//! or not a turn follows, and a turn tail cannot run for a turn that never starts.
+//! After the last: stop the clock, then the owner's idle clocks. The `!` state is the one
+//! obligation that is not here: it comes down in the `OperatorShellResult` arm before any return
+//! , because a turn tail cannot run for a turn that never starts.
 
 use std::sync::Arc;
 
@@ -54,7 +33,7 @@ use letibot_sessionlog::registry::Registry;
 
 use crate::harness::{Harness, HarnessError, Reply};
 
-/// **Which door a turn came through** — what the shared tail needs to know about it, and nothing
+/// Which door a turn came through - what the shared tail needs to know about it, and nothing
 /// more. The difference between doors is in the turn they run (the closure [`run_turn`] is
 /// handed); the tail itself differs only where a door says something about the idle clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,38 +44,34 @@ pub enum Door {
     Message,
     /// Something the session owns settled, or a monitor fired, or a row's condition came due.
     Wake,
-    /// **The idle plan-check, carrying the notice it was built from** — so the owner can record
+    /// The idle plan-check, carrying the notice it was built from - so the owner can record
     /// it as said before the clock is re-armed (the metronome rule: the same notice is not sent
     /// again every window).
     Nag(Option<String>),
-    /// **The queue's stuck-row census, as a turn** — the clock's second subject, and it carries
+    /// The queue's stuck-row census, as a turn - the clock's second subject, and it carries
     /// nothing: its identity is the DELIVERY (`TodoNagClock::census_said`), not the words, because
-    /// the sentence names the AGE of the oldest row and so changes at every delivery. A door that
-    /// had to be recorded by its text would be a new notice every time and a metronome at the base
-    /// window.
+    /// the sentence names the AGE of the oldest row and so changes at every delivery.
     ///
-    /// **It is a door of its own rather than a [`Door::Nag`] for one reason beyond the metrics**:
-    /// the owner's arm records a nag against the PLAN's ladder, and a census written into
-    /// `TodoNagClock::nagged` would tell that ladder the plan's notice had been sent.
+    /// A door of its own rather than a [`Door::Nag`] because the owner's arm records a nag
+    /// against the PLAN's ladder, and a census written into `TodoNagClock::nagged` would tell that
+    /// ladder the plan's notice had been sent.
     Census,
     /// The turn after the operator's own `!` line.
     OperatorShell,
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
     Reseat,
-    /// **The turn the daemon owes after it moved the session off a model that was out** — the
+    /// The turn the daemon owes after it moved the session off a model that was out - the
     /// operator's ruling, 2026-10-12: *"when it finally applied the turn didnt continue"*. The
-    /// model that refused has already been replaced and the turn that met the refusal has ended
-    /// (see [`Harness::fall_back_from`]); this one opens with a notice in the harness's voice and
-    /// the work goes on without the operator.
+    /// model that refused has already been replaced; this one opens with a notice in the harness's
+    /// voice and the work goes on without the operator.
     ///
-    /// **It is a door of its own for one reason beyond the metrics**: a turn that IS this
-    /// continuation never earns another, which is what keeps a fallback chain from ping-ponging
-    /// between two names — see the take in [`run_turn`].
+    /// A door of its own for one reason beyond the metrics: a turn that IS this continuation
+    /// never earns another, which keeps a fallback chain from ping-ponging between two names.
     Fallback,
 }
 
 impl Door {
-    /// The door as a metrics row names it (`turn.start`'s `name`, TODO R81).
+    /// The door as a metrics row names it.
     pub fn word(&self) -> &'static str {
         match self {
             Door::Prompt => "prompt",
@@ -111,17 +86,16 @@ impl Door {
     }
 
     /// Somebody spoke to the session: a new idle period, and the plan-check may be made again
-    /// (*"but certainly not after my message"* — the check is earned back by being spoken to).
+    /// (*"but certainly not after my message"* - the check is earned back by being spoken to).
     fn is_spoken_to(&self) -> bool {
         matches!(self, Door::Prompt | Door::Message)
     }
 }
 
-/// **Where the effects of the shared sequence land** — the owner's half of [`run_turn`].
+/// Where the effects of the shared sequence land - the owner's half of [`run_turn`].
 ///
-/// Two implementations: `Sessions` for a session the daemon's worker holds, and the serving
-/// state of a subagent's own thread (`harness::ChildTurns`). Each method is one step of the
-/// sequence; the ORDER is [`run_turn`]'s and no owner can reorder it.
+/// Two implementations: `Sessions` for a session the daemon's worker holds, and a subagent's own
+/// thread (`harness::ChildTurns`). The ORDER is [`run_turn`]'s and no owner can reorder it.
 pub trait TurnOwner {
     /// Before the turn: ask for an abandoned-call sweep a moment after it.
     fn arm_sweep(&mut self);
@@ -138,10 +112,9 @@ pub trait TurnOwner {
     fn turn_ended(&mut self, h: &mut Harness, door: &Door);
 }
 
-/// **The owner that does nothing** — for a harness driven directly with no daemon around it
-/// (a test, or `Harness::submit_as_a_normal_session` called bare). The compaction, the failure
-/// and the continuation are still the shared sequence's; only the owner's clocks are absent,
-/// because there are none.
+/// The owner that does nothing - for a harness driven directly with no daemon around it (a
+/// test, or `Harness::submit_as_a_normal_session` called bare). The compaction, the failure and
+/// the continuation are still the shared sequence's; only the owner's clocks are absent.
 pub struct Bare;
 
 impl TurnOwner for Bare {
@@ -151,31 +124,22 @@ impl TurnOwner for Bare {
     fn turn_ended(&mut self, _h: &mut Harness, _door: &Door) {}
 }
 
-/// **Run one turn through DOOR, and everything around it.** See the module docs for the
-/// sequence. `turn` is the door's own act; `Ok(None)` is a door that found nothing to say (a wake
-/// whose settlement was already delivered, a nag whose plan moved) — no turn ran, nothing is
-/// tidied after it, and the answer is `None`.
+/// Run one turn through DOOR, and everything around it. `turn` is the door's own act
+/// `Ok(None)` is a door that found nothing to say, and then no turn ran and nothing is tidied.
 ///
-/// **And the turn a fallback owes**: when the turn that just ended is the one that met a model
-/// that was out, the daemon opens the next one itself — [`Harness::continue_after_fallback`]'s
-/// notice as its user item, on the model the session has just moved to — through *this same*
-/// sequence ([`one_turn`]), so it is a turn like any other: its own clock, its own tail, its own
-/// `turn.start` row. That is the operator's ruling of 2026-10-12 (*"when it finally applied the
-/// turn didnt continue"*), and it is bounded: a turn that IS a continuation never earns another,
-/// and nothing is started over a stop the operator pressed — see
-/// [`Harness::take_fallback_continuation`].
+/// And the turn a fallback owes: when the turn that just ended met a model that was out, the
+/// daemon opens the next one itself ([`Harness::continue_after_fallback`]'s notice as its user
+/// item, on the model the session has just moved to) through *this same* sequence - its own clock
+/// its own tail, its own `turn.start` row. It is bounded: a turn that IS a continuation never
+/// earns another, and nothing starts over a stop the operator pressed.
 ///
-/// **The prompt's clock is NOT started here**, and it used to be. A door that finds nothing to say
-/// runs no turn, but a clock started on the way in had already published `waiting on: turn` — and
-/// a `wait` blocked on that session armed on it and answered `0 — the turn ended` about a session
-/// that had run nothing. MEASURED 2026-10-26: the daemon's own first session, woken by the startup
-/// ring (`Sessions::put_a_restored_session_to_work`) with nothing to say, read as a turn in flight
-/// for as long as `Harness::wake` took to answer `Ok(None)`.
+/// The prompt's clock is NOT started here, and it used to be: a door that found nothing to say
+/// runs no turn, but a clock started on the way in had already published `waiting on: turn`, and a
+/// `wait` armed on it answered `0 - the turn ended` about a session that had run nothing.
 ///
-/// **Two functions and not one loop**, because the fallback continuation is a SECOND turn through
-/// the same sequence: a recursive `run_turn` with a closure made inside itself does not
-/// monomorphise (each level would want the one below), and a `loop` cannot, because `turn` is
-/// `FnOnce`. So the sequence is [`one_turn`] and this is the pair.
+/// Two functions and not one loop, because the fallback continuation is a SECOND turn through
+/// the same sequence: a recursive `run_turn` does not monomorphise and a `loop` cannot, because
+/// `turn` is `FnOnce`. So the sequence is [`one_turn`] and this is the pair.
 pub fn run_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -185,7 +149,7 @@ pub fn run_turn(
     // Read before the door is moved: a continuation never earns a second one.
     let is_continuation = door == Door::Fallback;
     let out = one_turn(h, owner, door, turn);
-    // **The notice is taken whatever happens** (so a fallback can never arm a turn nobody asked
+    // The notice is taken whatever happens (so a fallback can never arm a turn nobody asked
     // for later), and only a turn that FAILED can have armed it.
     let continuation = h.take_fallback_continuation();
     if !is_continuation
@@ -202,7 +166,7 @@ pub fn run_turn(
     out
 }
 
-/// **One turn's whole sequence** — the body of [`run_turn`], and never called from inside itself.
+/// One turn's whole sequence - the body of [`run_turn`], and never called from inside itself.
 fn one_turn(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -210,22 +174,21 @@ fn one_turn(
     turn: impl FnOnce(&mut Harness) -> Result<Option<Reply>, HarnessError>,
 ) -> Option<Result<Reply, HarnessError>> {
     owner.arm_sweep();
-    // **A turn is taken before the door's own act and the clock starts only once the door has
-    // something to say** — see [`Harness::begin_turn_clock`]. What this buys is the door that
-    // answers `Ok(None)`: no clock was started, so nothing is walked back and no reader is told
-    // a turn was in flight.
+    // A turn is taken before the door's own act and the clock starts only once the door has
+    // something to say. What this buys is the door that answers `Ok(None)`: no clock was
+    // started, so no reader is told a turn was in flight.
     h.turn_taken();
     if door.is_spoken_to() {
         owner.spoken_to(h);
     }
-    // **The wall is checked BEFORE the send** — measured 2026-10-02: a resumed session sent
+    // The wall is checked BEFORE the send - measured 2026-10-02: a resumed session sent
     // 1,463,497 tokens against a 1,048,576 window, because every check ran after a turn and a
     // reopened session had taken none. Before the clock: the compaction is tidying, not a round.
     if h.compact_if_at_the_wall() {
         owner.compacted(h);
     }
-    // **A turn is one prompt however many rounds it takes, so the clock starts once** — inside the
-    // door's own act, where a turn that never speaks never starts it (see this function's doc),
+    // A turn is one prompt however many rounds it takes, so the clock starts once - inside the
+    // door's own act, where a turn that never speaks never starts it (see this function's doc)
     // and where every round and continuation of one prompt leaves it where it was.
     crate::instruments::turn_begins(h, door.word());
     let out = match turn(h) {
@@ -239,27 +202,23 @@ fn one_turn(
     };
     let before = h.transcript_id().to_string();
     let mut out = settle(h, owner, out);
-    // R93.E1: a continuation says "continue from the summary above", so it follows only a turn
-    // whose wall was actually compacted — a fork, a new transcript.
+    // .E1: a continuation says "continue from the summary above", so it follows only a turn
+    // whose wall was actually compacted - a fork, a new transcript.
     let mut compacted = h.transcript_id() != before;
-    // **A wall that compacted is not the end of the prompt.** The continuation is
-    // `Harness::continue_after_wall`'s user item, and each one is a whole turn with this same
-    // settle. Room is MEASURED, not read off a flag (the no-progress guard turns `auto_compact`
-    // off without freeing anything), and `WALL_CONTINUES` caps the cycles the room check
-    // cannot see. When either gate closes, the last wall error is the answer.
+    // A wall that compacted is not the end of the prompt. Each continuation is a whole turn
+    // with this same settle. Room is MEASURED, not read off a flag (the no-progress guard turns
+    // `auto_compact` off without freeing anything); `WALL_CONTINUES` caps what the room check
+    // cannot see.
     let mut walls = 0;
     while is_wall(&out) {
         h.measure_resident();
-        // **Not closed on an estimate.** A metered base the provider has not counted is the
-        // fork's estimate, and the continuation's first round is what measures it — the
-        // estimate said ≈ 1,039,055 for a base deepseek counted at 507,355 (pg-noop,
-        // 2026-10-11). Over the window, the provider refuses and the refused door folds,
-        // inside `WALL_CONTINUES`.
+        // Not closed on an estimate. A metered base the provider has not counted is the fork's
+        // estimate, and the continuation's first round is what measures it: the estimate said
+        // ≈ 1,039,055 for a base deepseek counted at 507,355.
         let room = h.base_is_unmeasured() || h.config().room_for_next_turn(h.ledger_len() as u64);
-        // **Only the wall that ends the prompt is its failure** — the operator: *"there was a
-        // wall of red 'compaction was attempted blabla'"*. Each wall the daemon compacted and
-        // carries on from was published as the turn's failure, a red six-line footer on a turn
-        // that had not ended; now it is one routine line, and the red is the last wall's alone.
+        // Only the wall that ends the prompt is its failure - *"there was a wall of red
+        // 'compaction was attempted blabla'"*: each wall the daemon carried on from was published
+        // as the turn's failure, a red footer on a turn that had not ended.
         match wall_goes_on(compacted, walls, room) {
             WallNext::Fails => {
                 if let Err(e) = &out {
@@ -302,7 +261,7 @@ pub(crate) enum WallNext {
     Fails,
 }
 
-/// **Whether a wall is the prompt's end** — compacted (a fork happened), under
+/// Whether a wall is the prompt's end - compacted (a fork happened), under
 /// [`crate::sessions::WALL_CONTINUES`] continuations, with room for the next turn.
 pub(crate) fn wall_goes_on(compacted: bool, walls: usize, room: bool) -> WallNext {
     if compacted && walls < crate::sessions::WALL_CONTINUES && room {
@@ -316,7 +275,7 @@ fn is_wall(out: &Result<Reply, HarnessError>) -> bool {
     matches!(out, Err(HarnessError::ContextWall { .. }))
 }
 
-/// **What follows every turn, the first and each continuation.**
+/// What follows every turn, the first and each continuation.
 fn settle(
     h: &mut Harness,
     owner: &mut dyn TurnOwner,
@@ -326,19 +285,17 @@ fn settle(
         owner.title(h, title);
     }
     owner.arm_wake(h);
-    // **The failure reaches the head FIRST**: it is the answer to what was asked, and the
-    // tidying after it is not. With its reason — a child's failure used to be `.is_ok()`'d away.
-    // **Except the wall**, whose failure is decided after its compaction: a wall the prompt goes
-    // on past is not one (`run_turn`, `wall_goes_on`).
+    // The failure reaches the head FIRST: it is the answer to what was asked, and the tidying
+    // after it is not. With its reason - a child's failure used to be `.is_ok`'d away. Except
+    // the wall, whose failure is decided after its compaction.
     if let Err(e) = &out
         && !is_wall(&out)
     {
         publish_failure(h.hub(), h.last_turn_id(), e);
-        // **A switch that fails says how to go back** — the operator's own session was
-        // switched to a model whose every request was refused, and the screen named the
-        // refusal and nothing else. See `Harness::switch_back_notice`: `None` when this
-        // turn is not the first after a switch, or the failure is not the provider
-        // refusing what was sent.
+        // A switch that fails says how to go back - the operator's session was switched to a
+        // model whose every request was refused, and the screen named the refusal and nothing
+        // else. `Harness::switch_back_notice` answers `None` when this turn is not the first after
+        // a switch, or the failure is not the provider refusing what was sent.
         if let Some(said) = h.switch_back_notice(e) {
             h.hub().publish(SessionEvent::Warning {
                 code: "model_switch_refused".into(),
@@ -347,11 +304,10 @@ fn settle(
             });
         }
     }
-    // **The wall is the one failure that must still compact**, and the two outcomes take two
+    // The wall is the one failure that must still compact, and the two outcomes take two
     // DIFFERENT doors: a success takes the pre-emptive door (would the next turn fit?), which the
-    // no-progress guard stands down; a turn stopped AT the wall takes the refused door, which
-    // does not read that flag — MEASURED 2026-10-09, `s-1789919514688401228`: one compaction,
-    // then thirty provider refusals in a row, because every recovery was gated on the flag.
+    // no-progress guard stands down; a turn stopped AT the wall takes the refused door, which does
+    // not read that flag -
     let wall = is_wall(&out);
     let attempted = if out.is_ok() {
         h.compact_if_at_the_wall()
@@ -383,20 +339,12 @@ fn settle(
     out
 }
 
-/// Announce a failed turn on the session's own log, as a **terminal** event.
+/// Announce a failed turn on the session's own log, as a terminal event.
 ///
-/// `crates/ui/DESIGN.md` §4.5, paid. This used to publish a `Warning` and nothing
-/// else, so a head's `TurnState` stayed `Running` for the rest of the session and
-/// its spinner span at a dead turn — the head covered for it with *"nothing
-/// received for 17.0s"*, which cannot tell a failed turn from a slow one. Only the
-/// party that saw the error can, and that party is this function.
-///
-/// Both frames go out: `TurnFailed` is what stops the spinner and puts the reason
-/// under the turn, and the `Warning` is what puts it in the scrollback with a code
-/// somebody can grep the log for. They are not the same disclosure — one is state,
-/// the other is history — and neither is a substitute for the other. Since R68.4 a
-/// subagent's failures come through here too: its own thread used to publish a
-/// `turn_failed` warning with no reason in it and no `TurnFailed` at all.
+/// It used to publish a `Warning` and nothing else, so a head's `TurnState` stayed `Running` for
+/// the rest of the session and its spinner span at a dead turn. Both frames go out: `TurnFailed`
+/// is what stops the spinner, the `Warning` is what puts it in the scrollback with a code somebody
+/// can grep for - one is state, the other history, and neither substitutes for the other.
 pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     hub.publish(SessionEvent::TurnFailed {
         turn_id: turn_id.to_string(),
@@ -413,18 +361,13 @@ pub(crate) fn publish_failure(hub: &Arc<Hub>, turn_id: &str, e: &HarnessError) {
     });
 }
 
-/// **Start this session's monitor waiter** — the thread that rings the bell when a monitor the
-/// session declared fires between turns. `Ok(false)` when nothing is watching yet (no thread is
-/// started for a session with no monitors: T24's rule that watchers must not accumulate);
-/// `Err` when the thread could not be started.
+/// Start this session's monitor waiter - the thread that rings the bell when a monitor the
+/// session declared fires between turns. `Ok(false)` when nothing is watching yet (T24's rule that
+/// watchers must not accumulate); `Err` when the thread could not be started.
 ///
-/// One function for both owners, so a subagent's monitors wake it the same way a root's do: the
-/// ring names the session, the worker routes it (`Sessions::wake` — a child's goes to its own
-/// reader), and the session's own `Harness::wake` delivers the firing.
-///
-/// **The waiter ends with its session** (R68.3), not only with the daemon: it holds the hub
-/// weakly, and a hub that was closed (the session was closed or parked) ends it at the next
-/// recheck.
+/// One function for both owners, so a subagent's monitors wake it the same way a root's do. The
+/// waiter ends with its session, not only with the daemon: it holds the hub weakly, and
+/// a hub that was closed ends it at the next recheck.
 pub(crate) fn spawn_monitor_wake(
     registry: &Arc<Registry>,
     h: &mut Harness,
@@ -447,11 +390,10 @@ pub(crate) fn spawn_monitor_wake(
     std::thread::Builder::new()
         .name(format!("monitor-wake-{}", &id[..id.len().min(24)]))
         .spawn(move || {
-            // The waiter's **own** cursor, advanced by what it has already rung for. The harness
-            // has a second one, shared with that session's steering source, which decides what
-            // is actually delivered — a firing picked up mid-turn is not delivered again by the
-            // wake. Two cursors because they answer two questions: "have I rung for this?" and
-            // "has the model seen this?"
+            // The waiter's own cursor, advanced by what it has already rung for. The harness
+            // has a second one, which decides what is actually delivered - a firing picked up
+            // mid-turn is not delivered again by the wake. "have I rung for this?" against "has
+            // the model seen this?"
             let mut notified = monitors.settled_count();
             let alive = || !bell.is_closed() && hub.upgrade().is_some_and(|h| !h.is_closed());
             while alive() {
@@ -475,7 +417,7 @@ pub(crate) fn spawn_monitor_wake(
 mod wall_tests {
     use super::*;
 
-    /// **Only the last wall fails the prompt** — a compacted wall with room and continuations
+    /// Only the last wall fails the prompt - a compacted wall with room and continuations
     /// left goes on, and is not published as the turn's failure.
     #[test]
     fn a_wall_goes_on_only_while_it_compacted_has_room_and_continuations_left() {
