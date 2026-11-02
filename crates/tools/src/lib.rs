@@ -101,10 +101,9 @@ pub use spill::{
     SpillEntry, SpillRef, SpillStore, Spiller,
 };
 
-/// The read-only tool set, in the order the prompt lists them.
-///
-/// Order is part of the stable prefix, so reordering these re-prefills the whole
-/// conversation: it is written down here once rather than assembled per session.
+/// The read-only tool set, in the order the prompt lists them. Order is part of the stable prefix, so
+/// reordering these re-prefills the whole conversation: it is written down once rather than assembled
+/// per session.
 pub fn read_only_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -124,14 +123,9 @@ pub fn read_only_tools(
     Ok(reg)
 }
 
-/// Add the session tool (`todo_write`) to a registry.
-///
-/// It is not in [`read_only_tools`] because its board is the session's own, restored from
-/// the store - yet the read-only roles name it, so every registry they resolve against
-/// must hold it.
-///
-/// `children` is the daemon-side half of `target`, absent in a test registry; a `target`
-/// call without it is refused by name.
+/// Add the session tool (`todo_write`) to a registry. It is not in [`read_only_tools`] because its board
+/// is the session's own, yet the read-only roles name it, so every registry they resolve against must
+/// hold it.
 pub fn with_session_tools(
     mut reg: Registry,
     board: std::sync::Arc<builtins::todo::TodoBoard>,
@@ -213,12 +207,9 @@ pub fn with_session_tools(
     Ok(reg)
 }
 
-/// Add the tools that need infrastructure this box does not run.
-///
-/// They are registered, not seated: the registry is a superset and [`Registry::resolve_role`]
-/// decides what a session's prompt carries, because the seat's ceiling is smaller than the
-/// union. MCP tools are not here - their schemas are the server's, so they are mounted from
-/// a catalog at open time ([`builtins::external::mcp::mount`]).
+/// Add the tools that need infrastructure this box does not run. Registered, not seated: the registry is
+/// a superset and the role decides what a session's prompt carries. MCP tools are not here, since their
+/// schemas are the server's.
 pub fn external_tools(
     mut reg: Registry,
     backends: &ExternalBackends,
@@ -233,11 +224,9 @@ pub fn external_tools(
     Ok(reg)
 }
 
-/// The M2 tool set: the read-only ones plus `write` and `edit`.
-///
-/// Registering them is not being able to use them: the gate must admit the call, since
-/// [`NoBoundary`] is the default and it refuses, and the backend must have been opened
-/// with [`HostBackend::writable`]. A refusal names which of the two stopped it.
+/// The M2 tool set: the read-only ones plus `write` and `edit`. Registering them is not being able to use
+/// them: the gate must admit the call, since the default boundary refuses, and the backend must have been
+/// opened writable. A refusal names which of the two stopped it.
 pub fn coder_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -247,13 +236,9 @@ pub fn coder_tools(
     Ok(reg)
 }
 
-/// The exec tool set: `bash`, the job tools and `monitor`, on top of the read-only ones.
-///
-/// The same three mechanisms one capability further out: the tools registered, a gate
-/// that admits `bash` and `job_kill`, and a backend opened with
-/// [`HostBackend::executable`], which needs a delegated cgroup v2 subtree and fails rather
-/// than degrading without one, since a process with no owner is a leak. `bash` is
-/// reachable only under [`roles::m2_runner`].
+/// The exec tool set: `bash`, the job tools and `monitor`, on top of the read-only ones. The same three
+/// mechanisms one capability further out, and a backend opened executable fails rather than degrading
+/// without a cgroup v2 subtree, since a process with no owner is a leak.
 pub fn runner_tools(
     retrieval: std::sync::Arc<dyn builtins::retrieval::Retrieval>,
 ) -> Result<Registry, RegisterError> {
@@ -264,10 +249,9 @@ pub fn runner_tools(
     reg.register(Box::new(builtins::jobs::JobWait))?;
     reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
-    // Work on many machines. Registered with the exec surface, and proved by nothing here:
-    // a registry that names a role's tool and does not hold it is refused at resolve, so a
-    // seat seated `leticode` or `runner` opens only where these two exist. The daemon binds
-    // the process book so a started branch is a supervisor record.
+    // Work on many machines, registered with the exec surface and proved by nothing here: a registry that
+    // names a role's tool and does not hold it is refused at resolve. The daemon binds the process book so
+    // a started branch is a supervisor record.
     reg.register(Box::new(builtins::fanout::Fanout::new()))?;
     reg.register(Box::new(builtins::scenario::Scenario::new()))?;
     Ok(reg)

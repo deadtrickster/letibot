@@ -1,34 +1,24 @@
 //! Does this command run code the agent wrote?
 //!
-//! On a host with no boundary, running the project's test file is running the agent's
-//! code, and a grant answered once is not consent to the next script: the file can change
-//! between the answer and the run. So a runner, a build that executes project code, or a
-//! script in the checkout asks every time.
+//! On a host with no boundary, running the project's test file is running the agent's code, and a grant
+//! answered once is not consent to the next script, since the file can change between the answer and the
+//! run. So a runner, a build that executes project code, or a script in the checkout asks every time.
 //!
-//! It changes no tier - a refusal, a boundary and an always-ask entry all happen first - so
-//! this can only make the gate ask more. The rows are programs and sub-verbs, not a regex,
-//! because `cargo test` and `cargo tree` are the same program and nothing alike, and each
-//! row is read from the same parse the gate reads.
+//! It changes no tier, so this can only make the gate ask more, and the rows are programs and sub-verbs
+//! rather than a regex, because `cargo test` and `cargo tree` are nothing alike.
 
 use crate::intent::Baseline;
 use letibot_code::shell::Word;
 
-/// Why this call runs the project's own code, in the words a card can print - or
-/// `None`.
-///
-/// The sentence names the thing it found (`cargo test`, `make`, `scripts/check.sh`)
-/// rather than restating the rule: the operator reads it while deciding, so *what
-/// am I being asked about* is the useful half.
+/// Why this call runs the project's own code, in the words a card can print, or `None`. The sentence
+/// names the thing it found rather than restating the rule, because the operator reads it while deciding.
 pub fn runs_project_code(baseline: &Baseline) -> Option<String> {
     find(baseline).map(|f| f.what)
 }
 
-/// The bucket the runner falls in, for a report that has to be read at a glance -
-/// `cargo test`, `cargo build`, `pytest`, `make`, `a script in the checkout`.
-///
-/// The card's sentence names the file (`bash scripts/check-fmt.sh`), and a table of
-/// those is one row per path. This is the same traversal and the same judgement,
-/// only the label differs, so a report cannot drift from what the gate does.
+/// The bucket the runner falls in, for a report read at a glance. The card's sentence names the file and
+/// a table of those is one row per path; this is the same traversal and the same judgement, so a report
+/// cannot drift from what the gate does.
 pub fn runs_project_code_kind(baseline: &Baseline) -> Option<String> {
     find(baseline).map(|f| f.kind)
 }
@@ -67,14 +57,9 @@ fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<Found> 
     };
     let argv = argv.get(skip.min(argv.len())..).unwrap_or(&[]);
     let name = program.rsplit('/').next().unwrap_or(&program);
-    // A program that is a path into the checkout is somebody's code: `./scripts/test.sh`,
-    // `target/debug/deps/letibot_tools-abc`, `scripts/run.sh`. A bare name comes from `PATH`
-    // and is judged by the table below instead.
-    //
-    // A system binary is not: `/bin/sed -n 1p f` is the same act as `sed -n 1p f`, and
-    // reading a slash as this project's would narrow the ladder over half the corpus. The
-    // line is the system roots; what it leaves out - a toolchain under `~/.local/bin` -
-    // reads as project code and therefore asks, which is the narrow direction.
+    // A program that is a path into the checkout is somebody's code. A bare name comes from `PATH` and
+    // is judged by the table below instead. A system binary is not: reading a slash as this project's
+    // would narrow the ladder over half the corpus, so the line is the system roots.
     let system = program.starts_with('/')
         && [
             "/bin/", "/sbin/", "/usr/", "/lib", "/opt/", "/snap/", "/nix/", "/etc/",
@@ -115,12 +100,9 @@ fn stage_runs_project_code(stage: &letibot_code::shell::Stage) -> Option<Found> 
     None
 }
 
-/// The sub-verb that makes this program run the project's code, when one does.
-///
-/// The cargo family compiles and runs project code: a build script (`build.rs`) runs
-/// on `cargo check` and `cargo clippy` exactly as on `cargo build`, so excluding them
-/// would leave the argument open one flag over. Everything here only makes the gate
-/// ask more.
+/// The sub-verb that makes this program run the project's code, when one does. A build script runs on
+/// `cargo check` and `cargo clippy` exactly as on `cargo build`, so excluding them would leave the
+/// argument open one flag over.
 fn subcommand_that_runs_code(program: &str, argv: &[String]) -> Option<String> {
     let words: Vec<&str> = argv
         .iter()
@@ -177,12 +159,9 @@ fn subcommand_that_runs_code(program: &str, argv: &[String]) -> Option<String> {
     }
 }
 
-/// Is this argument a path in the checkout rather than something else?
-///
-/// A relative path is one: commands run from the session's workspace, so
-/// `scripts/x.sh` is in the tree it stands in. An absolute path is not, because
-/// somewhere else is exactly what this module must not have to model. A URL or a
-/// bare word is not a path.
+/// Is this argument a path in the checkout rather than something else? A relative path is one, since
+/// commands run from the session's workspace; an absolute path is not, because somewhere else is what
+/// this module must not have to model.
 fn is_relative_or_inside(arg: &str) -> bool {
     if arg.starts_with('/') {
         return false;

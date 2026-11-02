@@ -1,10 +1,9 @@
-//! A session whose tools run in a firecode VM on another machine, against a fake `firecode` and
-//! a fake `ssh`.
+//! A session whose tools run in a firecode VM on another machine, against a fake `firecode` and a fake
+//! `ssh`.
 //!
-//! The `ssh` runs the last argument locally with `HOME` in a temporary directory and a login
-//! `PATH` written by that home's own `.bash_profile`, so nothing installed on this box can answer
-//! a question the fixture asks. The fake `firecode` records what it was asked and behaves like
-//! the client. What that proves is the placement's shape, not firecode itself.
+//! The `ssh` runs the last argument locally with `HOME` in a temporary directory and a login `PATH`
+//! written by that home's own `.bash_profile`, so nothing installed on this box can answer a question
+//! the fixture asks. What that proves is the placement's shape, not firecode itself.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -48,10 +47,9 @@ impl Rig {
         let home = dir.join("home");
         std::fs::create_dir_all(&bin).expect("bin");
         std::fs::create_dir_all(&home).expect("home");
-        // The login shell's `PATH` is the fixture's and nothing else. `bash -lc` reads
-        // `/etc/profile` first, and that file is the box's: a real `firecode` in `~/bin` was found
-        // there and the refusal this suite tests never happened. A `~/.bash_profile` runs after it
-        // and replaces whatever the box put there.
+        // The login shell's `PATH` is the fixture's and nothing else: `bash -lc` reads `/etc/profile`
+        // first and that file is the box's, so a `~/.bash_profile` runs after it and replaces what the box
+        // put there.
         std::fs::write(
             home.join(".bash_profile"),
             format!(
@@ -167,10 +165,8 @@ fn write_executable(path: &Path, text: &str) {
     letibot_tools::testing::write_stub(path, text);
 }
 
-/// The fake `firecode`'s body, and the one difference that is a defect.
-///
-/// `forwards_stdin = false` is the real client: `firecode in` sends the command over the vsock and
-/// never the caller's stdin, so it is read here and dropped and the guest sees an empty one.
+/// The fake `firecode`'s body, and the one difference that is a defect: `forwards_stdin = false` is the
+/// real client, which sends the command over the vsock and never the caller's stdin.
 fn firecode_body(asked: &Path, forwards_stdin: bool) -> String {
     let guest = if forwards_stdin {
         "  exec bash -lc \"$last\" ;;"
@@ -283,11 +279,9 @@ fn a_vm_placement_boots_the_guest_and_runs_every_call_in_it() {
     );
 }
 
-/// A commit made inside the guest comes home: the guest holds a copy, so its work reaches the
-/// branch only because `down` leaves that copy beside the checkout and the close takes it onto the
-/// checkout the branch comes back from.
-///
-/// The fixture's stand-in for the guest's copy is that sibling directory.
+/// A commit made inside the guest comes home: the guest holds a copy, so its work reaches the branch
+/// only because `down` leaves that copy beside the checkout and the close takes it onto the checkout the
+/// branch comes back from.
 #[test]
 fn a_commit_made_in_the_guest_comes_back_as_the_branch() {
     let _turn = turns();
@@ -398,11 +392,9 @@ fn a_host_placement_never_asks_for_a_guest() {
     assert!(!said.contains("firecode VM"), "{said}");
 }
 
-/// A background job starts in a guest whose client forwards no stdin.
-///
-/// The launcher a job runs from is staged by `Ssh::write_abs`, whose payload travels on the ssh's
-/// stdin as `base64 -d > "$t"`. `firecode in` forwards none, so the guest would wait for an end
-/// that cannot come.
+/// A background job starts in a guest whose client forwards no stdin. The launcher is staged by
+/// `Ssh::write_abs`, whose payload travels on the ssh's stdin, so the guest would wait for an end that
+/// cannot come.
 #[test]
 fn a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin() {
     let _turn = turns();
@@ -457,11 +449,9 @@ fn a_background_job_starts_in_a_guest_whose_client_forwards_no_stdin() {
     letibot_tools::remote::guests_down();
 }
 
-/// A guest that nothing closed is brought down by the process's last act, once, and the line says
-/// where the copy came out.
-///
-/// A forced exit closes no backend, so a VM whose daemon ended that way would outlive it with the
-/// calls still stuck inside. This is the hook those exits call.
+/// A guest that nothing closed is brought down by the process's last act, once, and the line says where
+/// the copy came out: a forced exit closes no backend, so a VM whose daemon ended that way would outlive
+/// it with the calls stuck inside.
 #[test]
 fn a_guest_nothing_closed_is_brought_down_once_by_the_last_act() {
     let _turn = turns();
