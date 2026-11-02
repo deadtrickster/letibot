@@ -203,7 +203,8 @@ fn length_cap(text: &str) -> Option<Card> {
     ))
 }
 
-/// `[todo check] …` - the plan check that did not fold to its items.
+/// `[todo check] …` - the plan check, as ONE line whatever it carries: the first row of the plan,
+/// whose row it is, and how many more are open. The whole check is the popup.
 fn todo_check(text: &str) -> Option<Card> {
     let rest = text.strip_prefix("[todo check] ")?;
     let (head, body) = rest.split_once('\n').unwrap_or((rest, ""));
@@ -223,22 +224,34 @@ fn todo_check(text: &str) -> Option<Card> {
             parts.push(short(&first_clause(&flat(first)), PART));
         }
     } else {
-        let item = items.first()?;
+        let bullet = items.first()?;
+        // **Whose row it is is the bullet's own tail**, ` — yours` / ` — the operator's` / ` —
+        // Parent <id>` / ` — the merge queue's`; the advice under it is prose, and prose is
+        // reworded.
+        let (item, owner, in_progress) = owner_of(bullet);
         parts.push(short(&first_clause(&flat(item)), PART));
-        let whose = if body.contains("the operator asked for this one")
-            || head.contains("the operator added")
-        {
-            "operator's"
-        } else if body.contains("your parent asked for this one") {
-            "parent's"
-        } else if body.contains("this row is the merge queue's")
-            || body.contains("— the merge queue's")
-        {
-            "queue's"
-        } else {
-            "yours"
-        };
+        let whose = owner.unwrap_or_else(|| {
+            // A row written before the tail was there is read from the advice under it.
+            if body.contains("the operator asked for this one")
+                || body.contains("operator asked for it")
+            {
+                "operator's"
+            } else if body.contains("your parent asked for this one")
+                || body.contains("Your parent asked for it")
+            {
+                "parent's"
+            } else if body.contains("this row is the merge queue's")
+                || body.contains("— the merge queue's")
+            {
+                "queue's"
+            } else {
+                "yours"
+            }
+        });
         parts.push(whose.to_string());
+        if in_progress {
+            parts.push("in progress".to_string());
+        }
         if let Some(more) = head.rsplit_once('(').and_then(|(_, m)| {
             m.strip_suffix("more open):")
                 .or(m.strip_suffix("more open)"))
@@ -248,6 +261,27 @@ fn todo_check(text: &str) -> Option<Card> {
     }
     let title = format!("todo · {}", parts.first().cloned().unwrap_or_default());
     Some(card("todo", Role::Attention, parts, title))
+}
+
+/// `T2 · the launcher — yours` → the item, whose row it is, and whether it is in progress. The
+/// tail is the daemon's own word for the author, so it is read and not guessed at.
+fn owner_of(bullet: &str) -> (&str, Option<&'static str>, bool) {
+    let b = bullet.trim();
+    let (b, in_progress) = match b.strip_suffix(" (in progress)") {
+        Some(head) => (head, true),
+        None => (b, false),
+    };
+    let Some((item, tail)) = b.rsplit_once(" — ") else {
+        return (b, None, in_progress);
+    };
+    let whose = match tail.trim() {
+        "yours" => Some("yours"),
+        "the operator's" => Some("operator's"),
+        "the merge queue's" => Some("queue's"),
+        t if t.starts_with("Parent ") => Some("parent's"),
+        _ => return (b, None, in_progress),
+    };
+    (item.trim_end(), whose, in_progress)
 }
 
 /// `message from your parent session `ID`: ...` and `message from session `ID`: ...` - a parent

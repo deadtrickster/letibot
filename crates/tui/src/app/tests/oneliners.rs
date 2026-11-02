@@ -222,3 +222,79 @@ fn alt_n_with_no_notice_says_so() {
         a.notice
     );
 }
+
+/// **A plan check is ONE notice, whatever it carries** - a row per item was the worst wall the
+/// review measured, and a stored check from before the daemon named one item at a time still has
+/// its whole list in it.
+#[test]
+fn a_plan_check_with_many_open_items_is_one_line() {
+    let mut text = String::from(
+        "[todo check] this turn is finished and 20 items are not done (20 more open):\n",
+    );
+    for i in 1..=20 {
+        text.push_str(&format!(
+            "  - add the retry budget {i} (entry s-{i}) — the operator's\n"
+        ));
+    }
+    text.push_str("mark it done with `todo_write` if it is finished, or leave it open.");
+    let mut a = with_notice(&text);
+    let screen = a.screen(80, 40);
+    let drawn = a
+        .spans
+        .iter()
+        .find(|sp| sp.row == 0)
+        .map(|sp| sp.lines)
+        .unwrap_or(0);
+    assert!(
+        drawn <= 2,
+        "the row took {drawn} screen rows: {}",
+        screen.join("\n")
+    );
+    assert_eq!(newest_notice(&mut a), text);
+}
+
+/// **Whose the row is, read off the row itself** - the bullet the daemon writes ends `— yours`,
+/// `— the operator's`, `— the merge queue's` or `— Parent <id>`, and the advice under it is prose
+/// that changed wording once already.
+#[test]
+fn a_plan_check_names_the_rows_owner() {
+    let cases = [
+        (
+            "[todo check] Not done:\n  - T2 · the launcher — yours\nDo it, or mark it done with \
+             `todo_write`'s `update` field (quote it exactly).",
+            "todo · T2 · the launcher · yours",
+        ),
+        (
+            "[todo check] The operator added this, and it is not done:\n  - git status in the \
+             status line — the operator's\nThe operator asked for it: do it, or mark it done with \
+             `todo_write`'s `operator` field (quote it exactly).",
+            "todo · git status in the status line · operator's",
+        ),
+        (
+            "[todo check] Not done:\n  - the retry budget — Parent s-9\nYour parent asked \
+             for it: do it and say so in your reply; they retire the row.",
+            "todo · the retry budget · parent's",
+        ),
+        (
+            "[todo check] Not done:\n  - review-agent/a-pass — the merge queue's\nThe merge \
+             queue's row; its reviewer has finished or gone quiet: read its reply, or \
+             `task_message` it. The verdict takes the row off.",
+            "todo · review-agent/a-pass · queue's",
+        ),
+        (
+            "[todo check] Not done:\n  - T3 · the notes — yours (in progress)\nDo it, or mark \
+             it done with `todo_write`'s `update` field.",
+            "todo · T3 · the notes · yours · in progress",
+        ),
+    ];
+    for (text, want) in cases {
+        let mut a = with_notice(text);
+        let screen = a.screen(120, 30);
+        let line = rows_with(&screen, want)
+            .first()
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| panic!("{want}: {}", screen.join("\n")));
+        assert!(line.contains("· click for details"), "{line}");
+        assert_eq!(newest_notice(&mut a), text, "the popup is the row whole");
+    }
+}

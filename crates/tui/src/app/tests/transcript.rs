@@ -3557,38 +3557,44 @@ fn a_named_jobs_settlement_folds_with_its_name() {
     );
 }
 
-/// The plan's nag folds to its head alone, so the advice addressed to the model is not drawn. Both
-/// closings are named, and a nag the fold cannot account for is drawn whole rather than halved.
+/// **A plan check is ONE notice however many rows it names** - its items are detail, so the check
+/// is one line and the advice addressed to the model is not on it. A nag whose closing the head has
+/// never known is the same one line: the card reads it either way.
 #[test]
-fn the_todo_nag_folds_to_the_item_and_not_to_the_advice() {
+fn a_todo_nag_is_one_line_and_not_the_advice() {
     const MINE: &str = "[todo check] this turn is finished and one item is not done (1 more open):\n  - T2 · the launcher — yours\ndo this one, or mark it done with `todo_write`'s `update` field, quoting the text above exactly — a row left out of `todo_write` STAYS on the board, so a line of work you are dropping is something you say in your reply, not something a call does. If you are stopping here deliberately, say why in your reply.";
-    assert_eq!(
-        folded_notice(MINE, &[]).unwrap(),
-        "Todo T2 · the launcher — yours"
-    );
     const THEIRS: &str = "[todo check] this turn is finished and one item is not done:\n  - git status in the status line — look how leticl did it — the operator's\nthe operator asked for this one, so do it — or mark it done with `todo_write`'s `operator` field, quoting the text above exactly.";
+    // A nag whose closing is not one this head knows: the card is the same one line.
+    const STRANGE: &str = "[todo check] this turn is finished and one item is not done:\n  - T2 · the launcher — yours\nSomething new the daemon has started saying.";
+    let line = |text: &str| crate::ui::transcript::notice_card::session_notice(text).line;
     assert_eq!(
-        folded_notice(THEIRS, &[]).unwrap(),
-        "Todo git status in the status line — look how leticl did it — the operator's"
+        line(MINE),
+        "todo · T2 · the launcher · yours · 1 more open · click for details"
+    );
+    assert_eq!(
+        line(THEIRS),
+        "todo · git status in the status line… · operator's · click for details"
     );
     // **No advice reaches the screen**, which is the whole of the ask.
-    for nag in [MINE, THEIRS] {
-        let folded = folded_notice(nag, &[]).expect("a nag folds");
+    for nag in [MINE, THEIRS, STRANGE] {
+        assert!(
+            folded_notice(nag, &[]).is_none(),
+            "a plan check is not a settlement, and a line per item is a screenful"
+        );
+        let said = line(nag);
         for advice in [
             "mark it done",
             "STAYS on the board",
             "quoting the text above",
             "do this one",
+            "Something new the daemon",
         ] {
             assert!(
-                !folded.contains(advice),
-                "`{advice}` is addressed to the model, not to the reader: {folded}"
+                !said.contains(advice),
+                "`{advice}` is addressed to the model, not to the reader: {said}"
             );
         }
     }
-    // And a nag whose closing is not one this head knows is drawn whole.
-    const STRANGE: &str = "[todo check] this turn is finished and one item is not done:\n  - T2 · the launcher — yours\nSomething new the daemon has started saying.";
-    assert!(folded_notice(STRANGE, &[]).is_none());
 }
 
 /// **One row can hold both kinds** - the daemon coalesces what it submits, so a job group and

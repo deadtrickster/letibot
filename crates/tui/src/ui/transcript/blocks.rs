@@ -166,15 +166,15 @@ pub(crate) fn folded_notice_rows(
             continue;
         }
         let (head, rest) = group.split_once('\n')?;
-        // The noun a folded line names itself with, and whether its bullet is a HANDLE or the line
-        // itself. A job and a child are collected by an id, so their bullets are backticked handles;
-        // a todo nag is collected by nothing, so its bullet is the item's own words and whose row it is.
+        // The noun a folded line names itself with, and the separator between it and the fact: a
+        // job and a child are collected by an id, so their bullets are backticked handles.
+        //
+        // **A plan check folds to nothing** (R89 item 1): a line per item is a screenful for one
+        // plan, so it is `notice_card::todo_check`'s one line, and the whole check is its popup.
         let (who, sep): (&str, Option<&str>) = if head.starts_with("[job] ") {
             ("Job ", Some(" "))
         } else if head.starts_with("[task] ") {
             ("Agent ", Some(" · "))
-        } else if head.starts_with("[todo check] ") {
-            ("Todo ", None)
         } else {
             return None;
         };
