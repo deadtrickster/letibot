@@ -1,10 +1,6 @@
 //! The daemon's half of `!term`: the panes a session owns, and how their bytes reach a
 //! head. [`letibot_sessionlog::TerminalDriver`] is the seam and [`Terminals`] implements
-//! it; the pty itself is [`letibot_tools::exec::term`]. What lives here is what the daemon
-//! has to hold The screen is the daemon's because a program on a pty belongs to the session
-//! while a head is one view of it: any head that asks can be given the screen back, and a
-//! session switch does not lose it. The log is bytes and the head rebuilds cells with
-//! `letibot_vt::Screen`, so no frame has to carry a screen.
+//! it; the pty itself is [`letibot_tools::exec::term`].
 
 use std::collections::HashMap;
 use std::path::PathBuf;

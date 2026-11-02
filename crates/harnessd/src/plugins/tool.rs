@@ -1,10 +1,5 @@
 //! A tool a layer declares, seated where the model can call it: the `tool_` seam the
-//! manifest's `[[tools]]` is the declaration half of. A layer's `plugin.toml` says
-//! `[[tools]] name = "claude_transcript"`, so the host seats a tool of that name with that
-//! description and schema, and a call asks the stack for `tool_claude_transcript` with the
-//! arguments and feeds. Which layers count is [`crate::plugins::declared_tools`]'s answer -
-//! the three disk scopes - so a built-in's block is the text a person installs, not a tool
-//! every session is handed. A hook does no I/O, so a tool asks for it
+//! manifest's `[[tools]]` is the declaration half of.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};

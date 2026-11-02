@@ -1,10 +1,6 @@
 //! The review queue's own SESSION - one, hardcoded, started by the daemon, whose todo board
 //! is the queue. The daemon is the administration: it fills the queue, keeps the worktrees
-//! runs the gates and lands. The teacher is this session, and each review is a `task` child
-//! of it. The rows are a VIEW: the fourth half (`TodoBy::Queue`) is replaced from the store
-//! on every pass. The STATES stay in the store and this module writes none of them - what
-//! takes a row off the board is the child's own `review_verdict`, a person's `/queue
-//! approve|veto`, or a verdict another host wrote into the store.
+//! runs the gates and lands.
 
 use std::path::PathBuf;
 

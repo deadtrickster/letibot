@@ -1,11 +1,6 @@
 //! The feeds a pane is handed, built where the data lives. A pane never runs anything for
 //! its data: it declares which of the host's own facts it reads (`feeds = ["sessions"]`)
-//! and is handed exactly those. The head built its own feed in process from the day feeds
-//! landed; the daemon did not, so a layer on disk that declared one drew an empty pane -
-//! and a declaration the host does not honour is worse than none. Only `sessions` is fed
-//! today. A layer declaring `monitors`, `jobs`, `todos` or `git` is handed no key at all
-//! rather than an empty list: `[]` would say *there are none*, which is a different fact
-//! from *this host cannot answer that yet*. Three fields only a host can fill
+//! and is handed exactly those.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

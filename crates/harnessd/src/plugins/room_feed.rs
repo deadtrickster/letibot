@@ -1,11 +1,4 @@
-//! The `room` feed: one host's agents' queues, per tag, as a pane reads them. The room
-//! keeps no store and lives in another process (`harnessd --room`), so the daemon that
-//! draws the pane holds a [`RoomFeed`] - in production the session's own connection to the
-//! room - and this module is the one place that snapshot becomes the JSON a layer is
-//! handed. A row carries its tag, state, claimant (and whether that is this session), the
-//! age of its beat and its abandonment count: a tag is a lock, so the queue is the unit of
-//! contention, and `claimable` is the predicate rather than `state == open`, because an
-//! abandoned item is claimable and does not say open. Two things only the host can answer
+//! The `room` feed: one host's agents' queues, per tag, as a pane reads them.
 
 use std::collections::BTreeMap;
 

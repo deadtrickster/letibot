@@ -1,10 +1,4 @@
-//! The daemon's command line, as a function rather than a `main`. # Why this is the
-//! cleanest of the five `harnessd`'s binary already had its body in `fn run() ->
-//! Result<i32, String>` with a four-line `main` dispatching on it — so the move is a lift
-//! rather than an untangling. What changed is only what being a library forces: the
-//! arguments arrive as a parameter instead of `std::env::args()`, and the caller decides
-//! the process's fate from the returned `Result`. The `harnessd: {e}` prefix a person sees
-//! is unchanged, because it is the ROLE's name and this is still the daemon role.
+//! The daemon's command line, as a function rather than a `main`.
 
 //! `harnessd` — the daemon.
 //!

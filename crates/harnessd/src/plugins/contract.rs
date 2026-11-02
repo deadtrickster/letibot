@@ -1,10 +1,4 @@
 //! `plugin_hooks`: the contracts, written by the host that enforces them.
-//!
-//! The worked example is built out of the host's own types, not typed as a string, so a renamed
-//! field or a moved `serde(rename)` breaks this file's compilation instead of leaving a document
-//! that says the old thing. The names a model reads are read back out of that example's JSON, and
-//! the test at the bottom parses and validates it the way the daemon validates a plugin's answer
-//! an example the host would refuse is worse than none, because a model copies it.
 
 use std::collections::BTreeMap;
 

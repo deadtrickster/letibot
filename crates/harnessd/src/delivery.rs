@@ -1,11 +1,6 @@
 //! When a finished job or subagent is told to the model: [`decide`], over the [`Facts`] of
 //! one completion. A running turn is not interrupted, so a result is held by default. It is
-//! delivered at once only for what the work actually waits on: an emergency, a monitor
-//! firing, a failure the plan depends on, an open row's `when: job` or `needs`, a wait that
-//! asked for it, or `wake: "now"`. Holding lasts only as long as the turn. When the turn
-//! ends, what is held arrives as one `[meanwhile]` note in a turn of its own
-//! ([`Rule::TurnEnd`]); if another turn starts first the batch rides that turn's start
-//! ([`Rule::Batch`])
+//! delivered at once only for what the work actually waits on:
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
