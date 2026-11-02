@@ -1,5 +1,4 @@
-//! Layer A: what a shell command is and what it intends, decided with no model.
-//!
+//! Layer A: what a shell command is and what it intends, with no model in the loop.
 //! It emits a [`ScopedIntent`] list, never a verdict or a score: danger is the mismatch
 //! between an action and what was authorised, not a property of the string.
 
@@ -13,11 +12,9 @@ use crate::runtime::{ScriptBody, ScriptSource};
 
 // Intents
 
-/// What a command intends, from a fixed vocabulary.
-///
-/// An authorisation can be checked against an intent and not against a number, and
-/// [`Intent::Unknown`] is a member on purpose: a program this table never heard of is not
-/// thereby harmless.
+/// What a command intends, from a fixed vocabulary. An authorisation can be checked against an
+/// intent and not against a number, and [`Intent::Unknown`] is a member on purpose: a program this
+/// table never heard of is not thereby harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Intent {
     /// Reads metadata, not contents: `ls`, `stat`, `git status`.
@@ -1561,9 +1558,8 @@ pub enum Region {
     /// No path to place.
     None,
     /// A path that could be anything: the widening an unresolvable construct gets instead of a
-    /// refusal. `rm -rf $X` may name the workspace or `/`, so the reading is unbounded rather than
-    /// unreadable, and a narrow mode refuses it. Not [`Region::HostOther`], which is a construct
-    /// nobody can read rather than a path nobody can place.
+    /// refusal, since `rm -rf $X` may name the workspace or `/`. Not [`Region::HostOther`], which is
+    /// a construct nobody can read rather than a path nobody can place.
     Unbounded,
 }
 
@@ -1929,19 +1925,16 @@ pub struct Surroundings {
     pub session: env::SessionEnv,
     /// What this gate can honestly see of the filesystem the command will run in.
     pub programs: ProgramLookup,
-    /// The `PATH` the pinned shell gives a command, when the caller knows it. Used for
-    /// one comparison only: a name resolved against a `PATH` this session set is renamed
-    /// when that file is not the one the bare name already meant. `None` cannot say "the
-    /// same binary", so it names the file rather than assuming nothing moved.
+    /// The `PATH` the pinned shell gives a command, when the caller knows it. Used for one
+    /// comparison only: a name resolved against a `PATH` this session set is renamed when that file
+    /// is not the one the bare name already meant.
     pub shell_path: Option<String>,
 }
 
 impl Surroundings {
-    /// For a host gate, which does know these. An explicit constructor so that reading the
-    /// environment is a decision at a call site rather than a hidden dependency.
-    ///
-    /// `shell` is left [`ShellTrust::Unknown`]: reading `$HOME` tells you where the
-    /// operator lives, not whether the shell that runs the command has an alias table.
+    /// For a host gate, which does know these. An explicit constructor so reading the environment
+    /// is a decision at a call site, and `shell` stays [`ShellTrust::Unknown`]: `$HOME` says where
+    /// the operator lives, not whether the shell has an alias table.
     pub fn from_env(workspace: impl Into<String>) -> Self {
         Surroundings {
             home: std::env::var("HOME").ok(),
@@ -1982,23 +1975,17 @@ impl Surroundings {
         self.seen_hosts.insert(host.into());
     }
 
-    /// Is this path in a secret store, and which one - the public form of the question
-    /// that decides whether anybody may open a file.
-    ///
-    /// Apart from [`Surroundings::region_of`] because the reader is not always here: a
-    /// file an interpreter was handed is read before any classifier runs, and that read
-    /// is the one that must not happen. `home` may be `None`, since store directories
-    /// match as whole path segments and a bare key file by its own name.
+    /// Is this path in a secret store, and which one: the public form of the question that decides
+    /// whether anybody may open a file. Apart from [`Surroundings::region_of`] because the reader
+    /// is not always here, and that read is the one that must not happen.
     pub fn secret_store_of(path: &str, home: Option<&str>) -> Option<String> {
         secret_hit(&collapse(&Self::expand_home(path, home)), home)
     }
 
-    /// Hosts the operator's own tooling is already logged into are not unseen: `gh auth
-    /// login` wrote `~/.config/gh/hosts.yml`, and the workspace's git remotes name where
-    /// its code lives. A first contact with one of those is not where an exfiltration and
-    /// a fetch look identical, because the operator chose that host before the session.
-    ///
-    /// Read from files, not by running anything: a session start must not shell out to `gh`.
+    /// Hosts the operator's own tooling is already logged into are not unseen: `gh` wrote its hosts
+    /// file and the workspace's remotes name where the code lives, so a first contact with one of
+    /// those is not where an exfiltration and a fetch look identical. Read from files, never by
+    /// running `gh`.
     pub fn with_known_hosts(mut self) -> Self {
         for h in known_hosts(self.home.as_deref(), self.workspace.as_deref()) {
             self.seen_hosts.insert(h);
@@ -2178,11 +2165,8 @@ fn under(path: &str, dir: &str) -> bool {
     path == d || path.starts_with(&format!("{d}/"))
 }
 
-/// The files that decide what runs unasked, matched wherever they sit.
-///
-/// The only hardcoded list here: these are the paths whose contents are the other
-/// lists. `$XDG_CONFIG_HOME` moves them, so the match is on the tail, and a name is
-/// enough - a session has no legitimate reason to write a `permission.json` under a
+/// The files that decide what runs unasked, matched by tail because `$XDG_CONFIG_HOME` moves them.
+/// A name is enough: no session has a legitimate reason to write a `permission.json` under a
 /// `letibot` directory that is not this one.
 fn touches_own_config(text: &str) -> bool {
     let t = text.replace('\\', "/");
@@ -2196,12 +2180,9 @@ fn touches_own_config(text: &str) -> bool {
     .any(|f| t.contains(&format!("letibot/{f}")))
 }
 
-/// Which secret store a path is in, if any.
-///
-/// Directories before file names, and the order is load-bearing: `~/.ssh/id_rsa`
-/// reports `.ssh`, not `id_rsa`. The store is the label the circuit breaker keys on, and
-/// keying on the file name would make `cat ~/.ssh/id_rsa` and `cat ~/.ssh/id_ed25519`
-/// two directions, so re-spelling the key name would reset the counter.
+/// Which secret store a path is in, if any. Directories before file names, and the order is
+/// load-bearing: `~/.ssh/id_rsa` reports `.ssh`, because the store is what the circuit breaker keys
+/// on and a file name would make re-spelling the key reset the counter.
 fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
     for dir in SECRET_DIRS {
         if dir.starts_with('/') {
@@ -2292,18 +2273,13 @@ fn remote_host(s: &str) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
-/// What a target that nobody could name is called, in a scoped intent and on a card.
-///
-/// One constant rather than a literal in several places: it is a value the model reads,
-/// and a widened scope has to say the target is not known rather than render an empty
-/// string that reads as no target.
+/// What a target nobody could name is called, in a scoped intent and on a card. One constant
+/// because the model reads it, and a widened scope must say the target is unknown rather than
+/// render an empty string that reads as no target.
 pub const UNRESOLVED_TARGET: &str = "<unresolved>";
 
-/// Programs whose positional operands are words or numbers, never places: a region
-/// placed on `20` or `hello` is a fact about nothing.
-///
-/// An unresolvable operand of one widens nothing, which is the same rule read the other
-/// way: `echo "exit=$?"` passes a string, so there is no scope for it to reach.
+/// Programs whose operands are words or numbers, never places: a region placed on `20` or `hello`
+/// is a fact about nothing, so an unresolvable operand of one widens nothing.
 const NON_PATH_OPERANDS: &[&str] = &[
     "sleep", "seq", "echo", "printf", "true", "false", "date", "uname", "hostname", "whoami", "id",
     "nproc", "uptime", "free", "basename", "dirname", "expr", "bc", "yes", "kill", "wait", "exit",
@@ -2329,23 +2305,17 @@ const IDENTITY_FLAGS: &[&str] = &[
 
 // The always-ask list
 
-/// One entry on [`ALWAYS_ASK`], with its reason.
-///
-/// The reason is a field rather than a comment because a list without reasons gets
-/// emptied: an operator editing this is trading something, and can only weigh the trade
-/// if the thing being traded is written next to the entry.
+/// One entry on [`ALWAYS_ASK`], with its reason as a field rather than a comment, because a list
+/// without reasons gets emptied: an operator editing this is trading something and must see what.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AlwaysAskRule {
     pub name: &'static str,
     pub why: &'static str,
 }
 
-/// The fixed list: the operator decides these, every time.
-///
-/// Not a block list. A block list says never, and `rm -rf /` can be the intent; this says
-/// a human decides this one, however confident anything else is. The classifier cannot
-/// shrink it: [`crate::adjudicate::Tier::AlwaysAsk`] mints no
-/// [`crate::adjudicate::Adjudicable`], so no oracle answer widens one of these.
+/// The fixed list: the operator decides these, every time. Not a block list, since `rm -rf /` can
+/// be the intent; a human decides this one however confident anything else is, and no oracle answer
+/// can widen it.
 pub const ALWAYS_ASK: &[AlwaysAskRule] = &[
     AlwaysAskRule {
         name: "privilege_escalation",
@@ -2418,22 +2388,16 @@ const AUTHENTICATES: &[&str] = &[
 
 // Baseline
 
-/// Layer A's deterministic answer, and it has no deny.
-///
-/// Layer A says what a thing is and whether it could be read at all; whether it was
-/// asked for is layer B's question and whether it is forbidden is [`Tier`]'s. There is
-/// no deterministic `Admit` either, so an unclassified action cannot fall through to
-/// "safe".
+/// Layer A's deterministic answer, and it has no deny. Whether an action was asked for is layer B's
+/// question and whether it is forbidden is [`Tier`]'s; there is no deterministic `Admit` either, so
+/// an unclassified action cannot fall through to "safe".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BaselineVerdict {
     /// Readable, and not a disclosure. Nobody has decided yet.
     Ask,
-    /// Nobody could decide, because the action's meaning does not exist yet: a parse
-    /// error the grammar could only recover from, or a program nobody can name. Never
-    /// `Denied`, because nobody decided; never `Admit`, for the same reason.
-    ///
-    /// An unresolvable argument is not this: it widens its scope and asks like anything
-    /// else. What is left here is the two cases with no scope to widen.
+    /// Nobody could decide, because the action's meaning does not exist yet: a parse error the
+    /// grammar could only recover from, or a program nobody can name. Never `Denied`, because nobody
+    /// decided, and never `Admit` for the same reason. An unresolvable argument is not this.
     NotRun { why: String },
 }
 
@@ -2446,11 +2410,8 @@ impl BaselineVerdict {
     }
 }
 
-/// An intent and what it is over.
-///
-/// The scope is the half a classifier can check against a sentence: `destroy` over
-/// `target/debug` and `destroy` over the project root are different intents, and "clean
-/// the build" authorises exactly one of them.
+/// An intent and what it is over. The scope is the half a classifier can check against a sentence:
+/// `destroy` over `target/debug` and `destroy` over the project root are different intents.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopedIntent {
     pub intent: Intent,
@@ -2508,57 +2469,28 @@ pub struct Baseline {
     /// The program that authenticates as the operator, if one does. Distinct from a
     /// disclosure: using the key is an ask, and it is fine when the operator said so.
     pub authenticating: Option<String>,
-    /// The code this call runs was read, not merely named: the fact that makes an
-    /// interpreter a vehicle rather than the work.
-    ///
-    /// `python3 - <<'PY'` and `python3 foo.py` are the same act, and the body goes to
-    /// `scan_script` either way. This field is how the interpreter's own `execute_code`
-    /// stops outranking the work inside it: a body that only writes is an edit.
-    ///
-    /// `false` for a shell body (`cat <<'EOF' | bash`), whose redirects the shell grammar
-    /// places itself.
+    /// The code this call runs was read, not merely named: the fact that makes an interpreter a
+    /// vehicle rather than the work. `false` for a shell body, whose redirects the grammar places
+    /// itself.
     body_read: bool,
-    /// The directory the stage being placed actually runs in: the session's own
-    /// workspace, until a literal `cd` moves it.
-    ///
-    /// Because of nesting, a relative operand was placed against the workspace while the
-    /// command ran one level down, so `cd repo && git checkout -- crates/x.rs` was refused
-    /// as destruction outside the project. `Some(workspace)` at the start of the walk, so a
-    /// command that cds nowhere places its operands as it always did.
+    /// The directory the stage being placed actually runs in: the session's workspace until a
+    /// literal `cd` moves it, so `cd repo && git checkout -- crates/x.rs` is not refused as
+    /// destruction outside the project.
     cwd: Option<String>,
-    /// True when the class of this action was decided from a path
-    /// ([`Baseline::of_paths`]), so the [`Region`] values here are a second classifier's
-    /// opinion that cannot place a relative path and said `host_other` about a file inside
-    /// the workspace. The one-line summary stays silent about regions for such an action;
-    /// the regions themselves still drive the tier rules.
+    /// True when the class was decided from a path, so the [`Region`] values here are a second
+    /// classifier's opinion that cannot place a relative path. The one-line summary stays silent
+    /// about regions for such an action; the regions still drive the tier rules.
     pub path_decided: bool,
-    /// Whether the grammar resolved the whole command - carried rather than derived from
-    /// [`Baseline::verdict`], and that separation is the point.
-    ///
-    /// An unresolvable construct is no longer a refusal: it is a widened scope, and its
-    /// verdict is [`BaselineVerdict::Ask`] like any other readable action. Deriving the two
-    /// from each other would have the record claim a resolution that never happened, so
-    /// the verdict says who may decide this and this says what was actually read.
-    ///
-    /// Consumers that must keep refusing an unread action read this: `Adjudicable` is
-    /// minted only for a resolved one.
+    /// Whether the grammar resolved the whole command, carried rather than derived from
+    /// [`Baseline::verdict`]: an unresolvable construct is a widened scope and an `Ask`, so deriving
+    /// one from the other would claim a resolution that never happened.
     pub resolved: bool,
-    /// Every path this call opens for writing.
-    ///
-    /// It does not change the tier: a detected write already inserts `Intent::WriteFile`
-    /// and already resolves regions. What it adds is the names, which used to be computed
-    /// and dropped, so a card could not say which file a script rewrites.
-    ///
-    /// Empty means no write was FOUND, not that the call writes nothing: a body the
-    /// scanner could not read yields `Runtime` rather than silence.
+    /// Every path this call opens for writing. It does not change the tier, which a detected write
+    /// already moves; it adds the names a card needs. Empty means no write was FOUND, not that the
+    /// call writes nothing.
     pub write_targets: Vec<WriteTarget>,
-    /// The stage that names a grant over this command: the program doing the work, which
-    /// is not the last program in the line.
-    ///
-    /// A grant keyed on a trailing `export` or `head` is a grant nobody can read, and the
-    /// operator cannot weigh what they cannot name. Chosen here, in the pass that reads
-    /// every stage anyway, so there is one answer to what a stage does. `None` for a call
-    /// that is not a command ([`Baseline::of_paths`]).
+    /// The stage that names a grant over this command: the program doing the work, which is not the
+    /// last program in the line, since a grant keyed on a trailing `export` is one nobody can read.
     pub grant_program: Option<String>,
     /// The weight of [`Baseline::grant_program`]'s stage, so a later stage can win only
     /// by doing more. Not read outside this module.
@@ -2566,18 +2498,9 @@ pub struct Baseline {
 }
 
 impl Baseline {
-    /// Is this call a read, and nothing else, inside the boundary?
-    ///
-    /// The defect it answers: a shell call is exec access whatever the program does, so a
-    /// call whose every computed intent was a read still gated as exec.
-    ///
-    /// What qualifies: every intent is a look or a read, the verdict is not `NotRun`, the
-    /// set is non-empty, and no region is one the table names as outside. Deliberately not
-    /// `Tier::Auto`, which requires `Workspace` or `None` everywhere: a relative path lands
-    /// in `HostOther`, so `Auto` would refuse the ordinary `cd X && head` case.
-    ///
-    /// It does not re-judge a program: `sed` stays an exec call, because its `e` command
-    /// runs a shell.
+    /// Is this call a read, and nothing else, inside the boundary? A shell call is exec access
+    /// whatever the program does, so a call whose every intent is a read would otherwise gate as
+    /// exec. Not `Tier::Auto`, which requires `Workspace` everywhere and would refuse `cd X && head`.
     pub fn reads_only(&self) -> bool {
         !self.intents.is_empty()
             && self
@@ -2592,16 +2515,8 @@ impl Baseline {
     }
 
     /// Is this call an edit, and nothing else, inside the boundary? The write half of
-    /// [`Baseline::reads_only`].
-    ///
-    /// What qualifies: the body was read ([`Baseline::body_read`]), every intent is a
-    /// write, a read, a look or the interpreter's own `ExecuteCode`, at least one write was
-    /// found, every write target resolved to a literal path, every written path is inside
-    /// `Workspace` or `Scratch`, and the verdict is not `NotRun`.
-    ///
-    /// Inside, not "not outside": a write this classifier cannot place would otherwise
-    /// ride the write path's disposition with nobody consulted. It does not make the body
-    /// safe, and it does not widen the shell, whose writes the grammar places itself.
+    /// [`Baseline::reads_only`]. Inside and not "not outside": a write this classifier cannot place
+    /// would otherwise ride the write path with nobody consulted.
     pub fn writes_only(&self) -> bool {
         self.body_read
             && !self.intents.is_empty()
@@ -2635,20 +2550,16 @@ impl Baseline {
         Self::of_command_with(command, env, &[])
     }
 
-    /// The same reading, with the files this command will run handed in.
-    ///
-    /// `scripts` is what the session's own reader pulled off disk for the adjudicator's
-    /// brief ([`crate::runtime::scripts_for`]), and they are the same bytes the oracle is
-    /// shown: two reads would leave the halves able to disagree about one file.
+    /// The same reading, with the files this command will run handed in. They are the bytes the
+    /// oracle is shown, since two reads would leave the halves able to disagree about one file.
     pub fn of_command_with(
         command: &str,
         env: &Surroundings,
         scripts: &[ScriptSource],
     ) -> Baseline {
-        // The parameters this call fixes, written out before the grammar reads it: a
-        // `$PWD` or an `export X=...` earlier in the same command is not a mystery, and
-        // calling it one costs the card every standing offer it has. `parameters` is the
-        // one place that decides the order.
+        // The parameters this call fixes, written out before the grammar reads it: a `$PWD` or an
+        // `export X=...` earlier in the same command is not a mystery, and calling it one costs the
+        // card every standing offer it has.
         let mut fixed = parameters::resolve(command, env);
         let mut n = shell::normalise(&fixed.text);
         // A `PATH` in force is followed for every stage under it. Three outcomes, and the
