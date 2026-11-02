@@ -1,30 +1,6 @@
-//! **A plugin's pane as a screen**: the document a `pane_<name>` hook answered
-//! (`docs/plugins-slice1.md`'s C3), drawn the way serenedash drew it — an overview of panels,
-//! every panel a summary with a full view behind its own key, findings collected in one list,
-//! a legend, and one stop's detail.
-//!
-//! # The one grid
-//!
-//! Every `Line` goes through [`line_row`], and the columns it is laid out in are measured
-//! **once per screen over every line on it** — [`grid`] — not once per panel. That is the
-//! whole of "the numbers line up down the frame": two panels whose bars are drawn against two
-//! different rulers are two bars a reader cannot compare, which is the defect the shared grid
-//! exists to prevent.
-//!
-//! # Stops, and why the walk is shared
-//!
-//! A stop is a row the cursor can rest on: a `Line` or a `Row` with an `id`, a markdown item,
-//! a finding (C3). [`each`] is the ONE walk over a screen, and both the drawing ([`content`])
-//! and the list the keys move through ([`stops`]) read it — so the cursor cannot land on a
-//! row the pane does not draw, which is the class of defect this tree has already paid for
-//! twice (`app::hits`).
-//!
-//! # Text here is foreign
-//!
-//! Everything a view carries came from a plugin — a wasm module in the operator's tree — so
-//! it goes through rano's `text::clean` before it is measured: an escape in a label would
-//! otherwise be counted by the wrapper and not drawn, and a row measured one way and drawn
-//! another is a row that misaligns.
+//! A plugin's pane as a screen: the document a `pane_<name>` hook answered, drawn as serenedash drew
+//! it. Every line goes through one grid measured once per screen, and every stop through one walk
+//! ([`each`]), so the drawing and the keys cannot disagree about which row is which.
 
 use letibot_sessionlog::pane as pv;
 use rano::agent::pane::{self, PaneLines};
@@ -46,9 +22,9 @@ const BAR: usize = 10;
 /// What every row spends before its columns: the stop's mark, and the space after it.
 const LEAD: usize = 2;
 
-/// **Which of a pane's screens is drawn.** `Overview` is its head; `Panel(i)` is the view
-/// behind panel `i`'s key; `Findings` and `Legend` are the host's two. A stop read whole is
-/// not one of these: it is a surface of its own, drawn by [`detail`].
+/// Which of a pane's screens is drawn. `Overview` is its head; `Panel(i)` is the view behind panel
+/// `i`'s key; `Findings` and `Legend` are the host's two. A stop read whole is not one of these: it
+/// is a surface of its own, drawn by [`detail`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum Screen {
     #[default]
@@ -58,8 +34,8 @@ pub(crate) enum Screen {
     Legend,
 }
 
-/// **A row the cursor can rest on**, addressed by position rather than by reference: the view
-/// it came from is replaced wholesale on every look, so a name would outlive its row.
+/// A row the cursor can rest on, addressed by position rather than by reference: the view it came
+/// from is replaced wholesale on every look, so a name would outlive its row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stop {
     /// Panel `panel`, block `block`, item `item` — a line, a table or tree row, or a markdown
@@ -73,7 +49,7 @@ pub(crate) enum Stop {
     Finding(usize),
 }
 
-/// **One item of a block**, with the address a stop needs and the row's own data.
+/// One item of a block, with the address a stop needs and the row's own data.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Item<'a> {
     Line {
@@ -106,9 +82,9 @@ pub(crate) enum Item<'a> {
 }
 
 impl Item<'_> {
-    /// **The stop this item is, or nothing.** C3's rule: a line or a row is a stop when it
-    /// carries an `id` (an action names its row by one, and Enter has to have something to
-    /// read); a markdown item and a finding always are.
+    /// The stop this item is, or nothing. C3's rule: a line or a row is a stop when it carries an
+    /// `id` (an action names its row by one, and Enter has to have something to read); a markdown
+    /// item and a finding always are.
     pub(crate) fn stop(&self) -> Option<Stop> {
         match self {
             Item::Line {
@@ -145,8 +121,8 @@ impl Item<'_> {
     }
 }
 
-/// **What a stop IS**, once it has been found again — what Enter reads, what an action key
-/// names, and what the hint bar counts as selected.
+/// What a stop IS, once it has been found again - what Enter reads, what an action key names, and
+/// what the hint bar counts as selected.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Target<'a> {
     Line(&'a pv::Line),
@@ -193,9 +169,9 @@ impl Target<'_> {
         }
     }
 
-    /// **The act Enter performs on this stop, when it is the HOST's** — C3's `enter`: `switch` to a
-    /// session, `fold` a row, or call the pane again. Only a `Row` has one; a `Line`, a markdown
-    /// item and a finding carry their keys as `actions` and Enter reads their detail.
+    /// The act Enter performs on this stop, when it is the HOST's - C3's `enter`: `switch` to a
+    /// session, `fold` a row, or call the pane again. Only a `Row` has one; a `Line`, a markdown item
+    /// and a finding carry their keys as `actions` and Enter reads their detail.
     pub(crate) fn enter(&self) -> Option<&pv::Act> {
         match self {
             Target::Row(r) => r.enter.as_ref(),
@@ -218,23 +194,23 @@ fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or("")
 }
 
-/// **One step of the walk over a screen**: a panel's title, a block's own header, or an item.
+/// One step of the walk over a screen: a panel's title, a block's own header, or an item.
 enum Walk<'a> {
     Panel { index: usize, panel: &'a pv::Panel },
     Block { block: &'a pv::Block },
     Item(Item<'a>),
 }
 
-/// **The ONE walk over a screen** — the drawing and the stops both read it, so a row the
-/// cursor can land on is always a row that was drawn.
+/// The ONE walk over a screen - the drawing and the stops both read it, so a row the cursor can land
+/// on is always a row that was drawn.
 fn each<'a>(view: &'a pv::View, screen: Screen, f: &mut impl FnMut(Walk<'a>)) {
     match screen {
         Screen::Overview => {
             for (i, p) in view.panels.iter().enumerate() {
                 f(Walk::Panel { index: i, panel: p });
-                // **An unavailable panel draws why and how to fix it, and none of its
-                // blocks**: its summary is a drawing of data it could not get, and drawing
-                // that would be drawing an empty result as though it were an answer.
+                // An unavailable panel draws why and how to fix it, and none of its blocks: its
+                // summary is a drawing of data it could not get, and drawing that would be drawing
+                // an empty result as though it were an answer.
                 if p.unavailable.is_some() {
                     continue;
                 }
@@ -280,10 +256,9 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
                     }));
                 }
             }
-            // **A tree's rows are stops of the walk and rows of one list**: the walk is what the
-            // arrows, Enter and a click read, and the drawing hands the whole stand to rano's
-            // list at once (`tree_lines`), so the depth it needs is `rows_deep`'s and not this
-            // item's.
+            // A tree's rows are stops of the walk and rows of one list: the walk is what the
+            // arrows, Enter and a click read, and the drawing hands the whole stand to rano's list
+            // at once (`tree_lines`), so the depth is `rows_deep`'s and not this item's.
             pv::Block::Tree(t) => {
                 for (item, (_, row)) in pv::rows_deep(&t.rows).into_iter().enumerate() {
                     f(Walk::Item(Item::Row {
@@ -316,9 +291,9 @@ fn blocks<'a>(panel: usize, list: &'a [pv::Block], f: &mut impl FnMut(Walk<'a>))
     }
 }
 
-/// **A markdown block itemized**: a heading or a list item begins an item, and the lines
-/// under it belong to it. C3 makes each of them a stop, which is what lets ↑↓ walk a pane's
-/// prose the way the transcript's markers walk a reply.
+/// A markdown block itemized: a heading or a list item begins an item, and the lines under it belong
+/// to it. Each of them is a stop, which is what lets the arrows walk a pane's prose the way the
+/// transcript's markers walk a reply.
 fn markdown_items(text: &str) -> Vec<(&str, bool)> {
     let text = text.trim_matches('\n');
     if text.trim().is_empty() {
@@ -351,7 +326,7 @@ fn markdown_items(text: &str) -> Vec<(&str, bool)> {
     out
 }
 
-/// **The stops of a screen, in the order the cursor walks them.**
+/// The stops of a screen, in the order the cursor walks them.
 pub(crate) fn stops(view: &pv::View, screen: Screen) -> Vec<Stop> {
     let mut out = Vec::new();
     each(view, screen, &mut |w| {
@@ -364,8 +339,8 @@ pub(crate) fn stops(view: &pv::View, screen: Screen) -> Vec<Stop> {
     out
 }
 
-/// **The stop at `index`, found again by position.** `None` for an index the view no longer
-/// has — the view is replaced wholesale on every look, and the cursor can outlive a row.
+/// The stop at `index`, found again by position. `None` for an index the view no longer has - the
+/// view is replaced wholesale on every look, and the cursor can outlive a row.
 pub(crate) fn target_of(view: &pv::View, screen: Screen, index: usize) -> Option<Target<'_>> {
     let stop = *stops(view, screen).get(index)?;
     Some(match stop {
@@ -387,8 +362,8 @@ pub(crate) fn target_of(view: &pv::View, screen: Screen, index: usize) -> Option
     })
 }
 
-/// **The palette's role, as rano's** — C3's six names are these six, and a role the host does
-/// not know is drawn plain rather than guessed at.
+/// The palette's role, as rano's - C3's six names are these six, and a role the host does not know
+/// is drawn plain rather than guessed at.
 pub(crate) fn role(r: Option<pv::Role>) -> Role {
     match r {
         Some(pv::Role::Muted) => Role::Faint,
@@ -396,9 +371,9 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
         Some(pv::Role::Attention) => Role::Attention,
         Some(pv::Role::Success) => Role::Success,
         Some(pv::Role::Failure) => Role::Failure,
-        // **The three words a list needed and a dashboard did not**: `strong` is *where I am*,
-        // `faint` is *a fact rather than good news*, `pending` is *a turn is running*. They map
-        // to the roles this head already draws those things in.
+        // The three words a list needed and a dashboard did not: `strong` is `where I am`, `faint`
+        // is `a fact rather than good news`, `pending` is `a turn is running`. They map to the roles
+        // this head already draws those things in.
         Some(pv::Role::Strong) => Role::Strong,
         Some(pv::Role::Faint) => Role::Faint,
         Some(pv::Role::Pending) => Role::Pending,
@@ -406,9 +381,8 @@ pub(crate) fn role(r: Option<pv::Role>) -> Role {
     }
 }
 
-/// **The cell of a C3 row, as rano's list draws it** — a cell that said nothing takes the row's
-/// role, which is the point of the untagged spelling: only a cell that means something else carries
-/// its own.
+/// The cell of a C3 row, as rano's list draws it - a cell that said nothing takes the row's role,
+/// which is the point of the untagged spelling: only a cell that means something else carries its own.
 fn tree_cell(c: &pv::Cell) -> Cell {
     match c.role {
         Some(x) => Cell::role(clean_line(&c.text), role(Some(x))),
@@ -416,34 +390,22 @@ fn tree_cell(c: &pv::Cell) -> Cell {
     }
 }
 
-/// **C3's `Row` as rano's one tree list draws it** — the plain function this port exists for:
-/// no drawing code, no terminal, just the row's own facts.
-///
-/// **`detail` is deliberately NOT rano's `Row::detail`.** C3's `detail` is prose *read whole on
-/// Enter* (`docs/plugins-slice1.md` C3), where rano's is the faint line drawn **under** the row;
-/// mapping one onto the other would draw every row's whole prose beneath it and double a pane's
-/// height. So C3's `detail` stays where the keys already read it (the walk's own [`Target`]) and
-/// the tree draws the row alone.
-///
-/// **`under` IS rano's `detail`**, and that is not the same field under another name: C3's `under`
-/// is defined as *the faint line(s) UNDER the row* — a reason, an address, a legend sentence —
-/// which is exactly what the list draws. A row that carries neither draws one line, as before.
-///
-/// `open` is `None` because the list reserves no fold column here (see [`tree_lines`]).
+/// C3's `Row` as rano's one tree list draws it: no drawing code, no terminal, just the row's facts.
+/// C3's `detail` is prose read whole on Enter, not rano's `Row::detail` (the faint line under a row),
+/// so it stays where the keys read it; C3's `under` is what rano's `detail` draws.
 fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
     TreeRow {
-        // **Stop-ness is C3's `id`, and an empty one is not a stop** — the same field
-        // `Item::stop` reads, so a row the list draws and a row the cursor walks to are one
-        // row.
+        // Stop-ness is C3's `id`, and an empty one is not a stop - the same field `Item::stop`
+        // reads, so a row the list draws and a row the cursor walks to are one row.
         id: Some(r.id().to_string()).filter(|id| !id.is_empty()),
         depth,
         number: None,
         open: None,
         role: Some(role(r.role)),
         cells: r.cells.iter().map(tree_cell).collect(),
-        // **The right-hand column**, which C3 calls `facts` and the list calls the same — the
-        // age, the owner, the one verb that would move the row. Dropping them (as this function
-        // did) is a pane whose rows say a third of what the plugin answered.
+        // The right-hand column, which C3 calls `facts` and the list the same: the age, the owner,
+        // the one verb that would move the row. Dropping them is a pane whose rows say a third of
+        // what the plugin answered.
         facts: r.facts.iter().map(tree_cell).collect(),
         detail: r.under.iter().map(|u| clean_line(u)).collect(),
         detail_column: None,
@@ -456,30 +418,9 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
     }
 }
 
-/// **One `Tree` block's rows, drawn by rano's list** — in the order the pane's walk numbers them,
-/// and where each row's first line landed.
-///
-/// `depth_first` is the block's rows as [`pv::rows_deep`] flattens them — the pane's OWN walk,
-/// which is what the arrows, Enter and a click read — so the drawing and the keys cannot come to
-/// different conclusions about how many rows there are or which one is third. Rano's list draws
-/// a flat list happily: "a caller that already holds a flat list sets `Row::depth` itself and
-/// leaves `children` empty", which is this caller exactly.
-///
-/// `cursor` is where THIS pane's cursor sits among the tree's own stops, or `None` when it is on
-/// another block. **`None` is rano's *nothing is selected***: the rows keep their ids — they are
-/// still stops, and the pane's click map is written from the same ids — and the list draws no
-/// mark, no inverse row and no row's actions in its hint. The version before this one handed the
-/// list its rows with the ids CLEARED, which suppressed the mark by throwing away the stop-ness
-/// the host's clicks read; the primitive grew the state so the host would not have to.
-///
-/// **A row may draw more than one line**, because C3's `under` is a list and each entry is a faint
-/// line beneath the row. So the answer is the lines AND `starts`, the index of each row's first
-/// line — the caller splices row `i`'s stop-ness and legend entry onto `starts[i]`, which is the
-/// only place that knows it. (This used to be `drawn[i]`, exact only while every row was one line,
-/// which is why `under` could not be drawn at all.)
-///
-/// One row is drawn per entry of `depth_first`, in order; the list is given no title and no frame
-/// lines, so `starts` is the whole of the mapping.
+/// One `Tree` block's rows, drawn by rano's list, in the order the pane's walk numbers them, and
+/// where each row's first line landed: the walk is `pv::rows_deep`, what the arrows and clicks read,
+/// so the drawing and the keys cannot disagree. `cursor: None` keeps the ids - they are still stops.
 fn tree_lines(
     depth_first: &[(usize, &pv::Row)],
     cursor: Option<usize>,
@@ -489,9 +430,8 @@ fn tree_lines(
         .iter()
         .map(|&(depth, r)| tree_row(depth, r))
         .collect();
-    // **Where each row's first line will land**, counted before the list draws: a row takes one
-    // line for itself plus one for each `under` entry. The list appends them in this order and
-    // draws nothing of its own (no title, no hint, no notes), so the count is the answer.
+    // Where each row's first line will land, counted before the list draws: a row takes one line for
+    // itself plus one for each `under` entry. The list draws nothing of its own, so the count is it.
     let mut starts = Vec::with_capacity(rows.len());
     let mut at = 0usize;
     for r in &rows {
@@ -514,11 +454,9 @@ fn tree_lines(
         notes: Vec::new(),
     };
     let mut content = list.content(w);
-    // **The rows, and only the rows.** The list also draws its own hint under them — the
-    // selected row's action letters, which is what a pane that IS a list wants and a block in
-    // the middle of a dashboard does not: a board of three panels would carry three hints. This
-    // pane's keys are the head's, said once in the bottom bar (`App::plugin_actions_hint`), and
-    // the rows themselves the list owns.
+    // The rows, and only the rows: the list also draws its own hint under them - the selected row's
+    // action letters, which a pane that IS a list wants and a block in a dashboard does not. This
+    // pane's keys are the head's, said once in the bottom bar.
     content.lines.truncate(at);
     (content, starts)
 }
@@ -532,15 +470,15 @@ pub(crate) fn severity(s: pv::Severity) -> (&'static str, Role) {
     }
 }
 
-/// **The pane's counter for the status row** — `(words, role)`, or nothing.
+/// The pane's counter for the status row - `(words, role)`, or nothing.
 pub(crate) fn badge(view: &pv::View) -> Option<(String, Role)> {
     let b = view.badge.as_ref()?;
     let text = clean_line(&b.text);
     (!text.is_empty()).then(|| (text, role(b.role)))
 }
 
-/// **The columns a screen's rows share**, measured over every line on it. See the module note:
-/// one grid per screen, not one per panel.
+/// The columns a screen's rows share, measured over every line on it. See the module note: one grid
+/// per screen, not one per panel.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Grid {
     pub(crate) label: usize,
@@ -561,10 +499,9 @@ impl Grid {
             + usize::from(self.tail > 0)
     }
 
-    /// **The grid the width can hold**, giving up in the order a reader would: the tail first
-    /// (it is a note beside the number), then the glyph column (a bar is a second reading of
-    /// the value beside it), then the value, and the label last — a row with a value and no
-    /// words is not a row anybody can read.
+    /// The grid the width can hold, giving up in the order a reader would: the tail first (a note
+    /// beside the number), then the glyph column (a second reading of the value), then the value,
+    /// and the label last - a row with a value and no words is not a row anybody can read.
     fn fit(w: usize, label: usize, value: usize, glyph: usize, tail: usize) -> Grid {
         let mut g = Grid {
             label,
@@ -588,9 +525,8 @@ impl Grid {
     }
 }
 
-/// **The glyph a line draws** — a bar of its `frac`, or a sparkline of its history, in the
-/// line's own role. A bar and a spark are the same reading twice over, so a line carrying
-/// both shows the bar.
+/// The glyph a line draws - a bar of its `frac`, or a sparkline of its history, in the line's own
+/// role. A bar and a spark are the same reading twice over, so a line carrying both shows the bar.
 fn glyph(l: &pv::Line) -> String {
     if let Some(bar) = &l.bar {
         let filled = (bar.frac.clamp(0.0, 1.0) * BAR as f64).round() as usize;
@@ -609,9 +545,9 @@ fn glyph(l: &pv::Line) -> String {
         .collect()
 }
 
-/// **Cut `s` to `max` columns, with a `…` when anything went** — the pane's rule for every
-/// column: a truncated label says it was truncated rather than running into the next column.
-/// `trim_to` is rano's truncate, which adds the `…` itself and counts it in `max`.
+/// Cut `s` to `max` columns, with a `...` when anything went - the pane's rule for every column: a
+/// truncated label says it was truncated rather than running into the next column. `trim_to` is
+/// rano's truncate, which adds the `...` itself and counts it in `max`.
 pub(crate) fn cut(s: &str, max: usize) -> String {
     if visible_width(s) <= max {
         return s.to_string();
@@ -629,8 +565,8 @@ fn pad_left(s: &str, w: usize) -> String {
     format!("{}{s}", " ".repeat(pad))
 }
 
-/// **The grid, measured over every `Line` the screen draws.** A second walk of a frame, and a
-/// cheap one: a view is tens of rows, and the alternative is a per-panel ruler.
+/// The grid, measured over every `Line` the screen draws. A second walk of a frame, and a cheap one:
+/// a view is tens of rows, and the alternative is a per-panel ruler.
 pub(crate) fn grid(view: &pv::View, screen: Screen, w: usize) -> Grid {
     let (mut label, mut value, mut glyph_w, mut tail) = (0, 0, 0, 0);
     each(view, screen, &mut |walk| {
@@ -661,8 +597,8 @@ pub(crate) fn grid(view: &pv::View, screen: Screen, w: usize) -> Grid {
     )
 }
 
-/// **One `Line`, laid out in the grid** — the layout function every line of every panel goes
-/// through: `label | value | glyph | tail`, left to right, cut to the pane.
+/// One `Line`, laid out in the grid - the layout function every line of every panel goes through:
+/// `label | value | glyph | tail`, left to right, cut to the pane.
 pub(crate) fn line_row(l: &pv::Line, g: &Grid, lead: &str) -> Line {
     let r = role(l.role);
     let mut out = Line::new(vec![Span::role(lead.to_string(), Role::Faint)]);
@@ -676,8 +612,8 @@ pub(crate) fn line_row(l: &pv::Line, g: &Grid, lead: &str) -> Line {
     }
     if g.glyph > 0 {
         let mut glyph = glyph(l);
-        // **Cut from the left**: a spark's newest sample is its right end, and a history that
-        // lost its newest is a history about the past alone.
+        // Cut from the left: a spark's newest sample is its right end, and a history that lost its
+        // newest is a history about the past alone.
         if visible_width(&glyph) > g.glyph {
             let skip = visible_width(&glyph) - g.glyph;
             glyph = glyph.chars().skip(skip).collect();
@@ -694,9 +630,8 @@ pub(crate) fn line_row(l: &pv::Line, g: &Grid, lead: &str) -> Line {
     out
 }
 
-/// **A panel's title row**: its key in the key role — the key is what opens it — its name
-/// strong, and its denominator dim beside it, because a bar with no denominator is a number
-/// with no meaning.
+/// A panel's title row: its key in the key role - the key is what opens it - its name strong, and
+/// its denominator dim beside it, because a bar with no denominator is a number with no meaning.
 fn panel_title(p: &pv::Panel) -> Line {
     let mut out = Line::new(vec![Span::role(cut(&clean_line(&p.key), 1), Role::Key)]);
     let name = if p.title.is_empty() {
@@ -713,8 +648,8 @@ fn panel_title(p: &pv::Panel) -> Line {
     out
 }
 
-/// **The line under the title that counts the findings by severity** (C3) — the overview's
-/// one-line answer to *how bad is it*, in the register each count belongs to.
+/// The line under the title that counts the findings by severity - the overview's one-line answer to
+/// `how bad is it`, in the register each count belongs to.
 fn summary_line(view: &pv::View) -> Option<Line> {
     let (tripped, missing, passed) = view.counted();
     if tripped + missing + passed == 0 {
@@ -734,22 +669,21 @@ fn summary_line(view: &pv::View) -> Option<Line> {
     Some(out)
 }
 
-/// **What a screen's drawing produced**: its rows, where each stop landed, and where each
-/// panel's title landed — the three records the frame makes, so the arrows, a click on a stop
-/// and a click on a panel's title are all measured against what was drawn.
+/// What a screen's drawing produced: its rows, where each stop landed, and where each panel's title
+/// landed - the three records the frame makes, so the arrows and both kinds of click are measured
+/// against what was drawn.
 pub(crate) struct Content {
     pub(crate) lines: PaneLines,
     /// `(pane row, panel index)` for every panel title drawn.
     pub(crate) panels: Vec<(usize, usize)>,
-    /// **`(pane row, legend key)`** for every line or row whose label the view's legend
-    /// documents — the record a hover reads. C3 gives a legend two jobs, *the `l` view and the
-    /// hover text*, and this is the second one's: written where the row is drawn, because only
-    /// the draw knows which row the pointer's row became.
+    /// `(pane row, legend key)` for every line or row whose label the view's legend documents - the
+    /// record a hover reads, written where the row is drawn, because only the draw knows which row
+    /// the pointer's row became.
     pub(crate) legend: Vec<(usize, String)>,
 }
 
-/// **The rows of a screen**, and where each stop landed — what the pane draws, the arrows
-/// scroll by, and a click is tested against.
+/// The rows of a screen, and where each stop landed - what the pane draws, the arrows scroll by,
+/// and a click is tested against.
 pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> Content {
     let g = grid(view, screen, w);
     let mut out = PaneLines::new();
@@ -786,8 +720,8 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
     let before = out.lines.len();
 
     let mut next = 0usize;
-    // **Whether the items now arriving belong to a tree block**, whose rows their block already
-    // drew as one list. Set on every block, so an item always knows which block it is under.
+    // Whether the items now arriving belong to a tree block, whose rows their block already drew as
+    // one list. Set on every block, so an item always knows which block it is under.
     let mut in_tree = false;
     let selected = |it: &Item<'_>, next: &mut usize| -> bool {
         if it.stop().is_some() {
@@ -820,13 +754,12 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                 }
             }
         }
-        // **A block's own header**: a table's column names, a tree's whole stand of rows, and
-        // the kind of a block this host does not draw — one muted line naming it, which is
-        // C3's rule.
+        // A block's own header: a table's column names, a tree's whole stand of rows, and the kind
+        // of a block this host does not draw - one muted line naming it, which is C3's rule.
         Walk::Block { block } => {
-            // **The tree is drawn HERE, as one list**, and its rows are skipped below: rano's
-            // list draws a mark per row from one `selected`, so it has to see the whole stand at
-            // once, and the pane's stop counter is advanced here instead of once per item below.
+            // The tree is drawn HERE, as one list, and its rows are skipped below: rano's list draws
+            // a mark per row from one `selected`, so it has to see the whole stand at once, and the
+            // pane's stop counter is advanced here instead of once per item below.
             in_tree = matches!(block, pv::Block::Tree(_));
             match block {
                 pv::Block::Table(t) if !t.columns.is_empty() => {
@@ -836,20 +769,18 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                         cut(&cells.join("  "), w.saturating_sub(4))
                     )));
                 }
-                // **A plugin's tree, drawn by rano's one list** ([`tree_lines`]). Where its
-                // stops sit in the pane's own numbering is what tells the list whether the
-                // cursor is in this block at all: `next` is the first stop this tree contributes
-                // and `sel` is the pane's cursor.
+                // A plugin's tree, drawn by rano's one list ([`tree_lines`]). Where its stops sit in
+                // the pane's own numbering is what tells the list whether the cursor is in this
+                // block: `next` is the first stop this tree contributes and `sel` the pane's cursor.
                 pv::Block::Tree(t) => {
                     let deep = pv::rows_deep(&t.rows);
                     let stops_n = deep.iter().filter(|(_, r)| !r.id().is_empty()).count();
                     let here = (sel >= next && sel < next + stops_n).then(|| sel - next);
                     next += stops_n;
                     let (drawn, starts) = tree_lines(&deep, here, w);
-                    // **One drawn line per row's FIRST line, and `starts[i]` says which** — a
-                    // row may carry faint lines under it (C3's `under`), so the row's index and
-                    // its first line's index are not the same number, and the mapping is the
-                    // drawing's rather than arithmetic over the primitive's internals.
+                    // One drawn line per row's FIRST line, and `starts[i]` says which: a row may
+                    // carry faint lines under it (C3's `under`), so the row's index and its first
+                    // line's index are not the same number, and the mapping is the drawing's.
                     let drawn_lines = drawn.lines;
                     let mut next_row = 0usize;
                     for (i, line) in drawn_lines.into_iter().enumerate() {
@@ -903,8 +834,8 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
             let mut rows: Vec<Line> = Vec::new();
             let first = match it {
                 Item::Line { line, .. } => line_row(line, &g, &lead),
-                // **A table's row**, which is the pane's only flat row: a tree's rows go through
-                // rano's list with their block, above.
+                // A table's row, which is the pane's only flat row: a tree's rows go through rano's
+                // list with their block, above.
                 Item::Row { row, .. } => {
                     let cells: Vec<String> =
                         row.cells.iter().map(|c| clean_line(&c.text)).collect();
@@ -958,21 +889,17 @@ pub(crate) fn content(view: &pv::View, screen: Screen, sel: usize, w: usize) -> 
                     ])
                 }
             };
-            // **Only an item the walk calls a stop is RECORDED as one.** `push_stop` writes an
-            // entry into `stop_rows`, and a click's index is a position in that record while the
-            // cursor is a position in [`stops`] — two counts, so a line that is drawn but is not a
-            // stop (the queue's lease line, its `not queued` line, a `kv`) would shift every stop
-            // below it by one. Measured: the queue pane's three chrome lines and two rows recorded
-            // three stops, a click on the second row selected stop 2 of 2, and Enter on it opened
-            // nothing.
+            // Only an item the walk calls a stop is RECORDED as one: `push_stop` writes into
+            // `stop_rows`, and a click's index is a position there while the cursor's is a position
+            // in [`stops`] - two counts, so a drawn line that is no stop shifts every stop below it.
             if it.stop().is_some() {
                 out.push_stop(first);
             } else {
                 out.push(first);
             }
-            // **A label the legend documents is a row the pointer can explain.** The key is the
-            // label as DRAWN (`clean_line`, the same reading the drawing measured), so a legend
-            // entry and the row it documents cannot disagree about what a label says.
+            // A label the legend documents is a row the pointer can explain. The key is the label as
+            // DRAWN (`clean_line`, the same reading the drawing measured), so a legend entry and the
+            // row it documents cannot disagree about what a label says.
             if !view.legend.is_empty()
                 && let Some(label) = match &it {
                     Item::Line { line, .. } => Some(clean_line(&line.label)),
@@ -1027,9 +954,9 @@ fn legend_rows(view: &pv::View, w: usize, out: &mut PaneLines) {
     }
 }
 
-/// **One stop read whole** — what Enter opens (C3): the row's own words, and for a finding the
-/// numbers behind it, what to do, and how to check it. `screen` is the screen the stop was
-/// selected on: a detail is a surface of its own, and the row it reads is the one under it.
+/// One stop read whole - what Enter opens: the row's own words, and for a finding the numbers behind
+/// it, what to do, and how to check it. `screen` is the screen the stop was selected on: a detail is
+/// a surface of its own, and the row it reads is the one under it.
 pub(crate) fn detail(view: &pv::View, screen: Screen, index: usize, w: usize) -> PaneLines {
     let mut out = PaneLines::new();
     let target = target_of(view, screen, index);
@@ -1112,8 +1039,8 @@ mod tests {
         .unwrap()
     }
 
-    /// **A markdown block is itemized into its headings and its list items**, with the lines
-    /// under one belonging to it — which is what makes them stops.
+    /// A markdown block is itemized into its headings and its list items, with the lines under one
+    /// belonging to it - which is what makes them stops.
     #[test]
     fn markdown_items_are_headings_and_list_items() {
         let items = markdown_items("# head\nprose under it\n- one\n  more\n- two\n");
@@ -1125,8 +1052,8 @@ mod tests {
         assert_eq!(markdown_items(""), Vec::new());
     }
 
-    /// **One ruler for the screen**: the widest label of any panel sets the label column, so
-    /// two panels' values are drawn in the same place.
+    /// One ruler for the screen: the widest label of any panel sets the label column, so two panels'
+    /// values are drawn in the same place.
     #[test]
     fn the_grid_measures_every_line_of_the_screen() {
         let v: pv::View = serde_json::from_str(
@@ -1154,8 +1081,8 @@ mod tests {
         assert_eq!(cut("abcdef", 0), "");
     }
 
-    /// **The stops a screen has**: a line with an id, and a finding; a line with no id is a
-    /// number and the cursor walks past it.
+    /// The stops a screen has: a line with an id, and a finding; a line with no id is a number and
+    /// the cursor walks past it.
     #[test]
     fn only_rows_with_an_id_are_stops() {
         let v = view();
@@ -1169,7 +1096,7 @@ mod tests {
         assert_eq!(stops(&v, Screen::Legend).len(), 0);
     }
 
-    /// **An unknown block kind is one muted line naming it**, inside the panel it belongs to.
+    /// An unknown block kind is one muted line naming it, inside the panel it belongs to.
     #[test]
     fn an_unknown_block_names_its_kind() {
         let v: pv::View = serde_json::from_str(
@@ -1181,9 +1108,9 @@ mod tests {
         assert!(plain.iter().any(|l| l.contains("progress")), "{plain:?}");
     }
 
-    /// **The columns are one grid even when the rows are not**: two lines' values start in the
-    /// same column, with or without a bar — which is the whole reason the grid is measured once
-    /// per screen and not per row.
+    /// The columns are one grid even when the rows are not: two lines' values start in the same
+    /// column, with or without a bar - which is the whole reason the grid is measured once per screen
+    /// and not per row.
     #[test]
     fn a_bar_and_a_bare_value_share_the_glyph_column() {
         let g = Grid::fit(100, 6, 5, BAR, 8);

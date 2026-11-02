@@ -1,29 +1,12 @@
-//! **The pictures an operator's own rows carry, and the one key that opens one whole.**
-//!
-//! The conversation draws each attached image as a thumbnail under the chip that names it
-//! (`ui::transcript::user`), which is what `app::attention::queue_image_uploads` makes possible:
-//! the bytes are on the row, the head sends them to the terminal once, and the renderer draws the
-//! rows the terminal fills.
-//!
-//! What is here is the other half of that — **the picture a reader can point at**:
-//!
-//! * **which row is a picture's**, recorded by the draw rather than recomputed by the key. The
-//!   thumbnail's height depends on the width and on the picture's own aspect, and a key handler
-//!   that did the same arithmetic a second time would be a second opinion about the screen — the
-//!   defect `App::todos_stop_rows` and every other `*_stop_rows` record exists to prevent;
-//! * **what Enter and a click open**: the picture, larger, in the popup the change and the notice
-//!   already open in (`app::diff_popup`) — one overlay with one set of keys, rather than a second
-//!   screen with its own Esc.
-//!
-//! Why an overlay at all, when the thumbnail is already the picture: the thumbnail is a couple of
-//! dozen rows of a 40-column box, and a screenshot at that size is not readable. Four fifths of the
-//! frame is.
+//! The pictures an operator's own rows carry, and the one key that opens one whole: which row is a
+//! picture's, recorded by the draw rather than recomputed by the key, and the overlay Enter and a
+//! click open. A thumbnail is a few dozen rows of a 40-column box; four fifths of the frame is not.
 
 use super::*;
 use letibot_transcript::{TranscriptItem, UserPart};
 
-/// **One picture the conversation drew**, as the key and the click name it — and all of it read
-/// from the row, so a click cannot name a picture that is not the one it was drawn for.
+/// One picture the conversation drew, as the key and the click name it - and all of it read from
+/// the row, so a click cannot name a picture that is not the one it was drawn for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PictureRef {
     /// The row that carries it — the only durable name a picture has.
@@ -39,18 +22,14 @@ pub(crate) struct PictureRef {
 }
 
 impl App {
-    /// **Tell the head what the terminal speaks about pictures** — one decision, taken beside
-    /// `set_features` because it comes from the same environment.
-    ///
-    /// It is [`rano::term::Proto::of`] and not `detect`: the capability query is a write to the
-    /// terminal and a bounded wait on its answer, which is a thing to do *before* a head commits to
-    /// reading input and not something to do twice. Where the names say nothing, this head draws no
-    /// picture and says nothing — the chip is the picture's name, which is what it draws today.
+    /// Tell the head what the terminal speaks about pictures, beside `set_features` because it
+    /// comes from the same environment. `Proto::of` and not `detect`: the capability query is a
+    /// write and a bounded wait, a thing to do once before the head reads input.
     pub fn set_proto(&mut self, proto: rano::term::Proto) {
         if self.proto == proto {
             return;
         }
-        // **Whatever the old protocol held is deleted in the old protocol's terms** — an id the
+        // Whatever the old protocol held is deleted in the old protocol's terms: an id the
         // terminal was holding is memory nothing else can free once the rows that named it are
         // gone.
         for bytes in self.pictures.set_proto(proto) {
@@ -61,13 +40,9 @@ impl App {
         self.redraw = true;
     }
 
-    /// **The pictures among the conversation rows on this window**, as `(screen row, picture)` —
-    /// the sibling of `file_rows_in`, and read the same way.
-    ///
-    /// A thumbnail is the LAST `rows` lines of its row's span (the block, then the pictures, in
-    /// part order), so a click on the operator's own words stays a click on nothing while a click
-    /// on the picture opens it. The arithmetic is the renderer's own — `user_picture_box` of the
-    /// width — because a box measured any other way is a box the frame did not draw.
+    /// The pictures among the conversation rows on this window, as `(screen row, picture)`; the
+    /// sibling of `file_rows_in`. A thumbnail is the LAST `rows` lines of its row's span, and the
+    /// arithmetic is the renderer's own, because a box measured otherwise is not what was drawn.
     pub(crate) fn picture_rows_in(&self, start: usize, end: usize) -> Vec<(usize, PictureRef)> {
         let end = end.min(self.hist_lines.len());
         let mut out = Vec::new();
@@ -124,8 +99,8 @@ impl App {
         out
     }
 
-    /// **Open a picture whole** — the popup the change and the notice open in, with the picture cut
-    /// to the frame and its bytes sent at that box (see `ui::diff_popup`'s `Picture` arm).
+    /// Open a picture whole: the popup the change and the notice open in, with the picture cut to
+    /// the frame and its bytes sent at that box (see `ui::diff_popup`'s `Picture` arm).
     pub(crate) fn open_picture(&mut self, r: &PictureRef) {
         let part = self
             .items
@@ -151,8 +126,8 @@ impl App {
             px: r.px,
             bytes: r.bytes,
         });
-        // **After the popup is open**, because opening one closes the last and closing gives back
-        // what that view held — this picture's bytes are not the previous view's to free.
+        // After the popup is open, because opening one closes the last and closing gives back what
+        // that view held - this picture's bytes are not the previous view's to free.
         if let Some((_, cols, rows, _)) =
             crate::ui::render::user_picture_box(&r.item_id, r.part, self.cfg.width)
         {
@@ -160,7 +135,7 @@ impl App {
         }
     }
 
-    /// **The newest picture the last frame drew**, by the row it is on — `Enter`'s answer where a
+    /// The newest picture the last frame drew, by the row it is on - `Enter`'s answer where a
     /// click has a position and a key has none.
     pub(crate) fn newest_picture_ref(&self) -> Option<PictureRef> {
         self.picture_rows
@@ -170,10 +145,9 @@ impl App {
     }
 }
 
-/// **A picture's size in bytes**, out of its `data:` reference — the base64's own arithmetic, and
-/// no decode: four characters are three bytes, less the padding. The popup's edge says how big the
-/// picture is, and a number that came from decoding a megabyte to count it would be a number this
-/// head paid for.
+/// A picture's size in bytes, out of its `data:` reference: the base64's own arithmetic and no
+/// decode. The popup's edge says how big the picture is, and decoding a megabyte to count it
+/// would be a number this head paid for.
 fn bytes_of(part: &UserPart) -> usize {
     let UserPart::Image { data_ref, .. } = part else {
         return 0;

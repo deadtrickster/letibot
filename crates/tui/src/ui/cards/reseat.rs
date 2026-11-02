@@ -1,5 +1,5 @@
-//! **The reseat card and its pinned strip** — what a stale prompt looks like on this head. The
-//! state and the keys are `app::reseat`'s; this is only the drawing.
+//! The reseat card and its pinned strip: what a stale prompt looks like on this head. The state and
+//! the keys are `app::reseat`'s; this is only the drawing.
 
 use crate::app::reseat::{NOT_NOW, RESEAT_NOW, RESEAT_SUMMARISE};
 use crate::app::*;
@@ -7,17 +7,12 @@ use crate::ui::render::row_strings;
 use rano::agent::text::{one, trim_to, wrap};
 use rano::style::Role;
 
-/// **How many lines the short form of the sentence may take** before it says `tab shows all`.
+/// How many lines the short form of the sentence may take before it says `tab shows all`.
 const SHORT_LINES: usize = 3;
 
-/// **The short form of the daemon's sentence**: what changed, without the explanation.
-///
-/// The daemon's sentence is several: *when the session was seated and what has changed since*,
-/// a paragraph on why a frozen prompt matters, the tools gained, gone and grown, and the remedy
-/// (`/reseat …`). On the card the remedy IS the card and the explanation is for whoever asks,
-/// so the short form keeps the first sentence and the lists — the sentences that name tools —
-/// and the whole is one `tab` away. A sentence this head does not recognise is shown by its
-/// first sentence alone, which is never wrong, only shorter.
+/// The short form of the daemon's sentence: what changed, without the explanation. On the card the
+/// remedy IS the card and the explanation is one `tab` away, so the short form keeps the first
+/// sentence and the lists that name tools; an unrecognised sentence is shown by its first alone.
 pub(crate) fn short_form(said: &str) -> String {
     let sentences: Vec<&str> = said
         .split(". ")
@@ -37,8 +32,8 @@ pub(crate) fn short_form(said: &str) -> String {
 }
 
 impl App {
-    /// **The open card**, split as R20 splits a decision: the content (headline and sentence)
-    /// may be windowed by the fit ladder, the choices (the two rows and the keys) never are.
+    /// The open card, split as a decision card is: the content (headline and sentence) may be
+    /// windowed by the fit ladder, the choices (the two rows and the keys) never are.
     pub(crate) fn reseat_card_lines(&self, w: usize) -> (Vec<String>, Vec<String>) {
         let Some(c) = self.reseat.as_ref() else {
             return (Vec::new(), Vec::new());
@@ -94,10 +89,9 @@ impl App {
         )
     }
 
-    /// **The card's two rows, wrapped** (R90.31) — they were trimmed, and the 79-character
-    /// summarise row lost its reason on an ordinary terminal while a question's rows wrap. The
-    /// continuation lines sit under the row's words. The screen's click stops read the same
-    /// lines, so a wrapped row is one button.
+    /// The card's two rows, wrapped rather than trimmed, because the summarise row is long enough
+    /// to lose its reason on an ordinary terminal. The continuation lines sit under the row's words,
+    /// and the screen's click stops read the same lines, so a wrapped row is one button.
     pub(crate) fn reseat_choice_lines(&self, w: usize) -> [Vec<String>; 2] {
         let Some(c) = self.reseat.as_ref() else {
             return [Vec::new(), Vec::new()];
@@ -129,9 +123,9 @@ impl App {
         [row(0, first), row(1, NOT_NOW)]
     }
 
-    /// **The pinned strip**: the card, abstained from, still on the screen. Drawn while the
-    /// prompt is stale and the open card is not the one in the slot — pinned, or open behind a
-    /// decision or a picker that holds the slot. Empty when the prompt is current.
+    /// The pinned strip: the card, abstained from, still on the screen. Drawn while the prompt is
+    /// stale and the open card is not the one in the slot - pinned, or open behind a decision or a
+    /// picker that holds the slot. Empty when the prompt is current.
     pub(crate) fn reseat_strip(&self, w: usize) -> Vec<String> {
         let Some(c) = self.reseat.as_ref() else {
             return Vec::new();
@@ -139,9 +133,8 @@ impl App {
         if self.reseat_card_up() {
             return Vec::new();
         }
-        // **Asked for during a turn, it waits for the turn**: the daemon runs a reseat on its
-        // queue, between turns and never inside one — the operator, watching this strip stay up
-        // after answering it: *"maybe it will go away when the turn ends"*. It does, and it says so.
+        // Asked for during a turn, it waits for the turn: the daemon runs a reseat on its queue,
+        // between turns and never inside one, so the strip stays up and says when it will go.
         let said = if c.asked && self.turn.is_some() {
             "PROMPT IS STALE — reseat queued: it runs when this turn ends · alt-p shows the card"
                 .to_string()
