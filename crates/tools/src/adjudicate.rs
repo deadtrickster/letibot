@@ -1698,16 +1698,19 @@ impl AdjudicatedGate {
                 )
             } else {
                 format!(
-                    "grant `{}` ({}) for this session, or answer the pending decision. \
-                     Nothing was executed and nothing changed.",
+                    "grant `{}` ({}) for this session. Nothing was executed and nothing \
+                     changed.",
                     req.id, req.tool
                 )
             },
         };
-        if let Some(sink) = &self.denials {
-            sink.denied(&notice);
-        }
-        crate::authorise::refusal_text(&notice)
+        // What the sink says it reached is what the model is told: the sentence about the
+        // operator knowing is a claim about a screen, and only the sink holds that fact.
+        let reached = match &self.denials {
+            Some(sink) => sink.denied(&notice),
+            None => 0,
+        };
+        crate::authorise::refusal_text(&notice, reached)
     }
 
     /// The fail-closed gate, named so that constructing one reads as a decision.

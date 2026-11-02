@@ -6,11 +6,11 @@ use super::*;
 fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
     // A refusal taken on the operator's behalf is news while the work is happening, and it has
     // to say what they can do about it.
-    let sink = std::sync::Arc::new(crate::authorise::RecordingDenialSink::default());
+    let sink = std::sync::Arc::new(crate::authorise::RecordingDenialSink::with_heads(1));
     struct Shared(std::sync::Arc<crate::authorise::RecordingDenialSink>);
     impl crate::authorise::DenialSink for Shared {
-        fn denied(&self, n: &crate::authorise::DenialNotice) {
-            self.0.denied(n);
+        fn denied(&self, n: &crate::authorise::DenialNotice) -> usize {
+            self.0.denied(n)
         }
     }
     let mut g = AdjudicatedGate::closed()
@@ -24,6 +24,44 @@ fn every_denial_reaches_the_operator_with_the_grant_path_attached() {
     assert!(n.grant.contains("grant"), "{}", n.grant);
     assert!(n.grant.contains("Nothing was executed"), "{}", n.grant);
     assert!(n.headline().starts_with("REFUSED bash"));
+}
+
+#[test]
+fn a_refusal_claims_the_operator_was_told_only_when_a_head_was_reached() {
+    // "A prompt was emitted" is not "a person saw it". The sink answers how many heads the
+    // notice reached, and that count is the only evidence the refusal is allowed to speak from.
+    struct Heads(usize);
+    impl crate::authorise::DenialSink for Heads {
+        fn denied(&self, _n: &crate::authorise::DenialNotice) -> usize {
+            self.0
+        }
+    }
+    let args = json!({"command": "/bin/rm /w/x.rs"});
+
+    // Nothing attached: the decision is in the record and on nobody's screen.
+    let mut unwatched = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_denial_sink(Box::new(Heads(0)));
+    match unwatched.admit(&bash(&args)) {
+        GateDecision::Refuse { tell, .. } => {
+            assert!(!tell.contains("The operator has been told"), "{tell}");
+            assert!(tell.contains("Nobody has been told"), "{tell}");
+            assert!(tell.contains("no operator screen is attached"), "{tell}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // A head was attached when it was raised, so it is on that screen.
+    let mut watched = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_denial_sink(Box::new(Heads(2)));
+    match watched.admit(&bash(&args)) {
+        GateDecision::Refuse { tell, .. } => {
+            assert!(tell.contains("The operator has been told"), "{tell}");
+            assert!(!tell.contains("Nobody has been told"), "{tell}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

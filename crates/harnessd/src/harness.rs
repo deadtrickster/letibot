@@ -660,7 +660,10 @@ impl letibot_tools::adjudicate::AdmissionSink for HubAdmissions {
 }
 
 impl DenialSink for HubDenials {
-    fn denied(&self, notice: &DenialNotice) {
+    fn denied(&self, notice: &DenialNotice) -> usize {
+        // Read before publishing: a head that is not attached when the refusal is raised has
+        // not been told, whatever it later finds in the snapshot.
+        let heads = self.hub.attached_heads();
         let (repeat_count, breaker_open) = match notice.repeat {
             BreakerState::Closed => (1u32, false),
             BreakerState::Repeat { consecutive } => (consecutive.max(1) as u32, false),
@@ -681,6 +684,7 @@ impl DenialSink for HubDenials {
             breaker_open,
             grant: notice.grant.clone(),
         });
+        heads
     }
 }
 

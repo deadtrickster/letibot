@@ -660,6 +660,55 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
     );
 }
 
+/// Who holds the decision is a fact about a screen, and the model plans on it, so the sentence
+/// it is given comes from the heads the daemon actually fanned the refusal out to.
+#[test]
+fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
+    use letibot_harnessd::harness::HubDenials;
+    use letibot_sessionlog::Caps;
+    use letibot_tools::{Access, AdjudicatedGate, Gate, GateCall, GateDecision, NoAdjudicator};
+
+    let hub = Hub::new("s-told");
+    let mut gate = AdjudicatedGate::new(Box::new(NoAdjudicator))
+        .with_identity("s-told", "dead")
+        .with_denial_sink(Box::new(HubDenials::new(hub.clone())));
+    let args = serde_json::json!({"path": "/home/dead/Projects/letibot/notes.md"});
+    let told = |d: GateDecision| match d {
+        GateDecision::Refuse { tell, .. } => tell,
+        other => panic!("the call must be refused: {other:?}"),
+    };
+
+    // Nobody at the keyboard: the decision is in the record, and the model must not be told
+    // that a person knows about it.
+    let first = told(gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c1",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+        scripts: &[],
+    }));
+    assert!(!first.contains("The operator has been told"), "{first}");
+    assert!(first.contains("Nobody has been told"), "{first}");
+
+    // A head attaches, so the next refusal is on its screen and the model is told so.
+    hub.attach("tui", "dead", Caps::default(), 0);
+    let second = told(gate.admit(&GateCall {
+        name: "write",
+        access: Access::Write,
+        args: &args,
+        turn_id: "t1",
+        call_id: "c2",
+        workspace: "/home/dead/Projects/letibot",
+        target_exists: Some(false),
+        scripts: &[],
+    }));
+    assert!(second.contains("The operator has been told"), "{second}");
+    assert!(!second.contains("Nobody has been told"), "{second}");
+}
+
 /// The denial is durable: a head attaching after the refusal replays it, rather
 /// than joining a session where a task stopped for no visible reason.
 #[test]

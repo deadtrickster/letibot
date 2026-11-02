@@ -1273,7 +1273,9 @@ impl DenialNotice {
 /// Where denial notices go. No blanket default on purpose: a no-op default is the invisible denial
 /// shipped as a convenience, and a gate with no sink says so in its startup disclosure.
 pub trait DenialSink: Send + Sync {
-    fn denied(&self, notice: &DenialNotice);
+    /// How many heads the notice reached. Zero means no screen holds it, and the refusal that
+    /// goes back to the model must not say a person has been told when nothing was shown.
+    fn denied(&self, notice: &DenialNotice) -> usize;
 }
 
 /// For tests and for a head that has not wired its own.
@@ -1281,9 +1283,19 @@ pub trait DenialSink: Send + Sync {
 pub struct RecordingDenialSink {
     pub notices: Mutex<Vec<DenialNotice>>,
     count: AtomicUsize,
+    /// How many heads this fixture stands for. A recorder is not a screen, so the default is
+    /// that nothing was shown.
+    heads: AtomicUsize,
 }
 
 impl RecordingDenialSink {
+    /// A sink standing for a daemon with this many heads attached.
+    pub fn with_heads(heads: usize) -> Self {
+        let s = RecordingDenialSink::default();
+        s.heads.store(heads, Ordering::Relaxed);
+        s
+    }
+
     pub fn len(&self) -> usize {
         self.count.load(Ordering::Relaxed)
     }
@@ -1298,18 +1310,21 @@ impl RecordingDenialSink {
 }
 
 impl DenialSink for RecordingDenialSink {
-    fn denied(&self, notice: &DenialNotice) {
+    fn denied(&self, notice: &DenialNotice) -> usize {
         self.count.fetch_add(1, Ordering::Relaxed);
         if let Ok(mut g) = self.notices.lock() {
             g.push(notice.clone());
         }
+        self.heads.load(Ordering::Relaxed)
     }
 }
 
 /// The prose the model gets, and its job is to make "forbidden" impossible to read as
 /// "failed": `ToolOutcome` distinguishes them structurally, and this says a variant is
 /// not the recovery, because a refusal the model does not understand is one it retries.
-pub fn refusal_text(notice: &DenialNotice) -> String {
+/// `reached` is how many heads the notice went to, and it decides one sentence: the model
+/// plans around "the operator knows", which may only be said when a head held the notice.
+pub fn refusal_text(notice: &DenialNotice, reached: usize) -> String {
     let repeat = match notice.repeat {
         BreakerState::Closed => String::new(),
         BreakerState::Repeat { consecutive } => format!(
@@ -1334,9 +1349,7 @@ pub fn refusal_text(notice: &DenialNotice) -> String {
          basis: {}\n\
          outcome: {} ({})\n\
          reading: {}\n\n\
-         The operator has been told, with this: {}\n\
-         Do not retry a variant. Say what you were trying to achieve and wait, or ask \
-         for the grant by name.{}",
+         {}{}",
         notice.tool,
         notice.by,
         notice.basis,
@@ -1347,9 +1360,33 @@ pub fn refusal_text(notice: &DenialNotice) -> String {
             "somebody decided"
         },
         notice.baseline,
-        notice.grant,
+        telling(notice, reached),
         repeat
     )
+}
+
+/// Who holds this decision, and what to do next. Two things the harness must not conflate: a
+/// notice queued for a head is delivered, and a notice that reached none is a decision nobody
+/// has seen, so telling the model to wait would be telling it to wait for nothing.
+fn telling(notice: &DenialNotice, reached: usize) -> String {
+    if reached > 0 {
+        format!(
+            "The operator has been told, with this: {}\n\
+             Do not retry a variant. Say what you were trying to achieve and wait, or ask \
+             for the grant by name.",
+            notice.grant
+        )
+    } else {
+        format!(
+            "Nobody has been told: no operator screen is attached to this session, so this \
+             decision reached no head and the operator has not seen it. It is in the \
+             session's record. Nothing is waiting for an answer, and the same call asked \
+             again reaches the same verdict. What would allow it: {}\n\
+             Do not retry a variant. Say what you were trying to achieve and what would \
+             allow it, so the answer is there when the operator next reads this session.",
+            notice.grant
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
