@@ -1,18 +1,6 @@
-//! **D14/R95 and D15/R96, at the resolver** — the tracked environment and the file a bare
-//! stage will run.
-//!
-//! `docs/boundary-and-adjudication.md` §4j is the design; `super::parameters` is what decides
-//! the order a value is read in. What is asserted here is the part a wrong implementation
-//! would get backwards:
-//!
-//! * what a **command** says wins over what the session holds, including `unset`;
-//! * a name the session holds is written out and **the card says where it came from**;
-//! * a credential is **held and never written into the reading**, so it cannot reach a shape,
-//!   a stored row or the oracle's brief;
-//! * a resolved `PATH` **names the file** a bare stage will run, and a grant for the bare name
-//!   therefore cannot settle it;
-//! * and where the file cannot be established the `PATH` is **not resolved at all** — which is
-//!   the property that keeps this change from turning a readable command into `NotRun`.
+//! What a session's environment resolves to at the resolver: what a command says wins over
+//! what the session holds, a name the session holds is written out with its source, and a
+//! credential is held and never written into the reading.
 
 use std::path::PathBuf;
 
@@ -22,11 +10,8 @@ use crate::adjudicate::ActionClass;
 use crate::schema::Access;
 
 /// The surroundings most of these tests want: a pinned shell, this box's own view of the
-/// filesystem, and a session seeded the way the daemon seeds one — the pairs every spawn gets.
-///
-/// `PATH` is in that seed because it is what the host puts on every child after `env_clear()`,
-/// and it is the value `export PATH=…:$PATH` expands `$PATH` to (`surroundings_for` seeds it
-/// from the same place `HostProcesses` pins it).
+/// filesystem, and a session seeded the way the daemon seeds one - `PATH` included, because
+/// it is what the host puts on every child after `env_clear()`.
 fn sur() -> Surroundings {
     let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
     Surroundings {
@@ -59,7 +44,7 @@ fn holding(name: &str, value: &str) -> Surroundings {
     s
 }
 
-/// A scratch directory per test and per process — the tree's own pattern.
+/// A scratch directory per test and per process, so no two tests share one.
 fn tmp(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("letibot-session-env-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -67,12 +52,9 @@ fn tmp(name: &str) -> PathBuf {
     d
 }
 
-/// **A name the session holds is written out, and the card says where it came from.**
-///
-/// This is R95 in one line: `cd $p && …` where `p` was set by an earlier call. The finding is
-/// the half a person reads, and it names BOTH the value and its source — *"from the pairs
-/// every command of this session is spawned with"* is a different claim from *"from the
-/// environment this session's shell reported"*, and the card must not blur them.
+/// A name the session holds is written out, and the card says where it came from.
+/// The finding names both the value and its source: the harness's pairs and the shell's own
+/// report are different claims, and the card must not blur them.
 #[test]
 fn a_name_the_session_holds_is_read_and_the_card_says_where_it_came_from() {
     let b = Baseline::of_command(
@@ -101,9 +83,9 @@ fn a_name_the_session_holds_is_read_and_the_card_says_where_it_came_from() {
     );
 }
 
-/// **What the command says wins, including `unset`** — and the second half is the one a
-/// careless implementation gets wrong: `unset p; cat $p` must not fall through to a value the
-/// session holds, because the shell would not have one either.
+/// What the command says wins, including `unset` - and the second half is the one a careless
+/// implementation gets wrong: `unset p; cat $p` must not fall through to a value the session
+/// holds, because the shell would not have one either.
 #[test]
 fn what_the_command_says_wins_and_unset_does_not_fall_through() {
     let s = holding("p", "/home/dead/session");
@@ -123,9 +105,8 @@ fn what_the_command_says_wins_and_unset_does_not_fall_through() {
     );
 }
 
-/// **A dead shell's report dies with it.** The values it reported are gone and the command
-/// that needed one stays as unread as it was; the pairs every spawn gets are untouched,
-/// because they are a fact about the next spawn rather than about the shell.
+/// A dead shell's report dies with it: the values it reported are gone and the command that
+/// needed one stays as unread as it was, while the pairs every spawn gets are untouched.
 #[test]
 fn a_dead_shell_resolves_nothing_it_reported() {
     let mut s = sur();
@@ -147,7 +128,7 @@ fn a_dead_shell_resolves_nothing_it_reported() {
         !Baseline::of_command("cat $p/x", &s).resolved,
         "a dead shell's value still resolved"
     );
-    // And the harness's own pair still does — it is not the shell's claim.
+    // And the harness's own pair still does: it is not the shell's claim.
     assert!(
         Baseline::of_command("cat $CARGO_TARGET_DIR/x", &s).resolved,
         "{:?}",
@@ -155,12 +136,9 @@ fn a_dead_shell_resolves_nothing_it_reported() {
     );
 }
 
-/// **A credential is held and never written into the reading.**
-///
-/// The spliced text is what `shape_of` renders into the approval key that every row stores and
-/// what the oracle is shown, so a token written there is a token in the store — D12 forbids it.
-/// The command therefore stays exactly as unread as it was, and the card says which name it
-/// was and why, masked.
+/// A credential is held and never written into the reading.
+/// The spliced text is what `shape_of` renders into the approval key every row stores and
+/// what the oracle is shown, so a token written there is a token in the store.
 #[test]
 fn a_credential_is_named_on_the_card_and_never_written_into_the_reading() {
     let token = "ghp_0123456789abcdef4c";
@@ -196,10 +174,9 @@ fn a_credential_is_named_on_the_card_and_never_written_into_the_reading() {
     );
 }
 
-/// **A `PATH` this session set names the file each stage will run** — D15's safety half.
-///
-/// `export PATH=<dir>:$PATH; cargo build` where `<dir>/cargo` exists is NOT a `cargo build`
-/// with the box's `cargo`: the stage becomes the file, and the shape becomes that file's.
+/// A `PATH` this session set names the file each stage will run: `export PATH=<dir>:$PATH;`
+/// followed by `cargo build`, where `<dir>/cargo` exists, is not a `cargo build` with the
+/// box's `cargo` - the stage becomes the file, and the shape becomes that file's.
 #[test]
 fn a_path_the_command_sets_names_the_file_a_bare_stage_will_run() {
     let dir = tmp("names-the-file");
@@ -226,8 +203,8 @@ fn a_path_the_command_sets_names_the_file_a_bare_stage_will_run() {
         said.contains("found along a `PATH` this command set"),
         "the card does not say which PATH put it there: {said}"
     );
-    // **Three names, and all three are the FILE**: the stage's program word (what the shape
-    // and the card read), the approval key `grant_program`, and the shape itself.
+    // Three names, and all three are the FILE: the stage's program word (what the shape and
+    // the card read), the approval key `grant_program`, and the shape itself.
     let stage = b
         .command
         .as_ref()
@@ -252,9 +229,8 @@ fn a_path_the_command_sets_names_the_file_a_bare_stage_will_run() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A grant given for `cargo` does not settle a stage that runs another file.** The test D15
-/// asks for by name, expressed where the decision actually happens: `Grant::covers` compares
-/// the program the READING produced, so a different file is a different program.
+/// A grant given for `cargo` does not settle a stage that runs another file: `Grant::covers`
+/// compares the program the reading produced, so a different file is a different program.
 #[test]
 fn a_grant_for_the_bare_name_does_not_cover_a_stage_that_runs_another_binary() {
     let dir = tmp("grant");
@@ -311,8 +287,8 @@ fn a_grant_for_the_bare_name_does_not_cover_a_stage_that_runs_another_binary() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The same file is not a rename** — a `PATH` that finds the same binary changes nothing:
-/// no new shape, no re-asking, no churn in the approval key.
+/// The same file is not a rename: a `PATH` that finds the same binary changes nothing - no
+/// new shape, no re-asking, no churn in the approval key.
 #[test]
 fn a_path_that_finds_the_same_file_changes_nothing() {
     let s = sur();
@@ -331,12 +307,9 @@ fn a_path_that_finds_the_same_file_changes_nothing() {
     );
 }
 
-/// **Where the file cannot be established, the `PATH` is not resolved at all.**
-///
-/// This is the property that makes the whole feature monotone: a command that needed a `PATH`
-/// read was unread before, and it stays unread — never the other way round. `ProgramLookup::None`
-/// is a remote placement, a VM, or a corpus replay, and it is what the gate says when it cannot
-/// see the disk the command will touch.
+/// Where the file cannot be established, the `PATH` is not resolved at all, which is what
+/// keeps the feature monotone: a command that needed a `PATH` read was unread before and it
+/// stays unread. `ProgramLookup::None` is a remote placement, a VM, or a corpus replay.
 #[test]
 fn a_path_this_gate_cannot_follow_is_left_unread_rather_than_placed() {
     let dir = tmp("cannot-follow");
@@ -360,9 +333,8 @@ fn a_path_this_gate_cannot_follow_is_left_unread_rather_than_placed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **A `PATH` with no lookable stage after it still resolves** — the commonest shape in the
-/// operator's corpus is `export PATH=…:$PATH` on its own, and it must not need a filesystem to
-/// be read.
+/// A `PATH` with no lookable stage after it still resolves: `export PATH=<dir>:$PATH` on its
+/// own is the commonest shape there is, and it must not need a filesystem to be read.
 #[test]
 fn a_path_with_no_bare_stage_after_it_resolves_without_a_lookup() {
     let mut s = sur();
@@ -378,9 +350,9 @@ fn a_path_with_no_bare_stage_after_it_resolves_without_a_lookup() {
     );
 }
 
-/// **A shell builtin is not looked up on `PATH`.** `cd`, `export`, `echo` and `test` are
-/// answered by the shell, so a `PATH` that has been resolved must not be judged unknowable
-/// because `/bin` has no file called `export`.
+/// A shell builtin is not looked up on `PATH`: `cd`, `export`, `echo` and `test` are answered
+/// by the shell, so a resolved `PATH` must not be judged unknowable because there is no file
+/// called `export`.
 #[test]
 fn a_builtin_after_a_resolved_path_is_not_a_file_to_look_for() {
     let mut s = sur();
