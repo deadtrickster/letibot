@@ -12,8 +12,8 @@
 #
 # So the whole-tree check cannot be the gate yet, for two separate reasons:
 #
-#   * It fails on arrival for somebody else's reason. A CI job that is red the moment
-#     it is added, before anyone has changed anything, is a job that gets deleted — and
+#   * It fails on arrival for somebody else's reason. A gate step that is red the moment
+#     it is added, before anyone has changed anything, is a step that gets deleted - and
 #     the person who deletes it takes the clippy step with it.
 #   * Reformatting 26 files inside the push that adds the release machinery would bury
 #     that machinery under 154 hunks of unrelated whitespace, which is the opposite of
@@ -21,13 +21,13 @@
 #
 # Holding the files a change touches is a real gate — new code cannot arrive
 # unformatted — and it passes today. Formatting the rest is a deliberate act, in its
-# own commit, and when it lands `cargo fmt --all -- --check` should replace this call;
-# the workflow step says so where it invokes this.
+# own commit, and when it lands `cargo fmt --all -- --check` should replace this call.
 #
 # # The base
 #
-# `git diff` against the base the change is measured from: for a pull request that is
-# the merge base with the target branch, and for a push it is the ref's previous tip.
+# `git diff` against the base the change is measured from: the gate passes `main`, and a
+# by-hand run names the revision the branch started from. That is the base the landing is
+# judged against, and a check against anything else is checking a different change.
 # If the revision cannot be resolved this FAILS rather than passing, because a check
 # that cannot find its own input is not a check — and a silent pass here would be
 # indistinguishable from a formatted tree, which is the exact confusion this repository
@@ -54,8 +54,8 @@ fi
 #
 # MEASURED, and it made this script's local run useless: `git diff base HEAD` sees only
 # COMMITTED files, so running it before a commit reported "this change touches no Rust
-# files" while a brand-new, unformatted `launcher.rs` sat in the working tree. CI is
-# unaffected — it runs on a clean tree after a push — but the run that is supposed to
+# files" while a brand-new, unformatted `launcher.rs` sat in the working tree. The gate is
+# unaffected - it runs on what is committed - but the run that is supposed to
 # catch a mistake before it leaves the machine saw nothing at all.
 #
 # `git status --porcelain` covers both modified-tracked (` M`) and untracked (`??`),
@@ -91,7 +91,7 @@ done
 # crate's children — MEASURED: `rustfmt --check crates/dialect-qwen/src/lib.rs`
 # reports a hunk in `src/render.rs`, a file it was never given. That made this script
 # fail on PRE-EXISTING debt in files a change did not touch, which is exactly the
-# failure mode it exists to avoid: CI went red on a commit whose own five files were
+# failure mode it exists to avoid: the gate went red on a commit whose own five files were
 # all clean, because one of them was a `lib.rs`.
 #
 # `--skip-children` would fix it and is NOT available on stable (`Unrecognized

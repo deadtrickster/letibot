@@ -174,7 +174,7 @@ fi
 echo "install-gate-build: built from $tree at $(git -C "$tree" rev-parse --short HEAD)"
 
 # **Run the two the launcher execs, from where they now are.** `--version` needs no socket, no
-# store and no model — it is the same probe `install.sh` and CI's smoke step use — and it is
+# store and no model — it is the same probe `install.sh` makes — and it is
 # the difference between *a file was copied* and *a binary is in place*. The other two names
 # are NOT probed: `letibot-askpass`'s first argument is sudo's own prompt, so running it is
 # asking somebody for a password, and the multicall's `--version` would be about the

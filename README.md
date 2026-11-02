@@ -59,6 +59,7 @@ is how to put a session in a VM instead.
 
 - [docs/design-brief.md](docs/design-brief.md) - the thesis, and the constraints it puts on the code.
 - [docs/boundary-and-adjudication.md](docs/boundary-and-adjudication.md) - the gate: what is read, what is refused, and why.
+- [docs/gate.md](docs/gate.md) - the merge gate: what a branch is judged by, here and on the fleet, and how to run it.
 - [docs/compaction.md](docs/compaction.md) and [docs/closed-loop.md](docs/closed-loop.md) - the two subsystems with the most measurement behind them.
 - [docs/room.md](docs/room.md) - coordination between sessions; [docs/plugins-plan.md](docs/plugins-plan.md) - panes and hooks.
 - [docs/cookbook.md](docs/cookbook.md) - recipes; [docs/remote-hosts.md](docs/remote-hosts.md) - running a session on another machine.

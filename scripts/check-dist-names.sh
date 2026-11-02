@@ -154,12 +154,13 @@ fi
 
 echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; install.sh and the archive agree on $(printf '%s ' $packaged | wc -w) file(s)"
 
-# **The two workflows must build against the SAME llama.cpp.**
+# **Every workflow that builds must pin the SAME llama.cpp.**
 #
-# They each pin it separately, because each is a separate job on a separate runner —
-# and a pin that drifts means CI goes green against one library while the release
-# publishes binaries linked against another. Nothing else would notice: both runs are
-# green, the assets are built, and the difference is a tokenizer.
+# Each job pins it in its own `env:`, and a pin that drifts means one job builds
+# against a library the release does not ship. Nothing else would notice: both runs
+# are green, the assets are built, and the difference is a tokenizer. It bit when two
+# workflows shared this tree; R62 deleted the CI one, so today the release is the only
+# job held to the pin and this stays for the next workflow somebody adds.
 #
 # Read as `LLAMA_REF:` values, so this does not have to understand YAML.
 pins=$(grep -h '^[[:space:]]*LLAMA_REF:' "$repo"/.github/workflows/*.yml 2>/dev/null |
@@ -178,8 +179,8 @@ fi
 if [ "$n" -gt 1 ]; then
     echo "check-dist-names: the workflows pin different llama.cpp revisions:" >&2
     printf '  %s\n' $pins >&2
-    echo "  CI would test a different library from the one the release ships." >&2
+    echo "  one job would build against a library the release does not ship." >&2
     exit 1
 fi
-echo "check-dist-names: both workflows pin llama.cpp $pins"
+echo "check-dist-names: the workflows pin llama.cpp $pins"
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# **A subagent in a firecode VM, end to end** — LOCAL ONLY: it boots a VM, which a CI
-# runner cannot, and needs firecode on this box. `tests/acceptance/run.sh --local` runs it.
+# **A subagent in a firecode VM, end to end** - LOCAL ONLY: it boots a VM, needs firecode on
+# this box, and is in no gate. `tests/acceptance/run.sh --local` runs it.
 #
 # The real launcher, daemon and head, on the scripted model (`fakemodel.py`): the parent
 # calls `task(where: firecode)`, the child runs `uname -s` in its shell, and the parent says

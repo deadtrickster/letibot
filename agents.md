@@ -67,19 +67,19 @@ the branch, and a step still running after thirty minutes is killed with its pro
 the row is `timed_out` (R61). A step naming `install-gate-build` is not run with the gate: it runs
 only after the landing was PUSHED (R61 decision 7), so nothing is installed that is not on the
 remote. The same steps (without the install) gate the target's own tip whenever it changes. Read from `main`'s copy of this file, so a
-branch cannot change its own gate. The first five are what `.github/workflows/ci.yml` runs — a
-queue that lands on a weaker standard than CI lands branches CI would refuse, and the ONE
-difference is the `LETIBOT_REQUIRE_APPARATUS=1` prefix on the test step, which makes a skip a
-failure (see below). The sixth is the queue's own and CI has no use for it: a runner has no
-launcher to satisfy.
+branch cannot change its own gate. **The gate runs on this box or on the machine `[queue]
+gate_host` names, never on GitHub Actions** (R62: the operator was rate limited there, the boxes
+are ours, and a workflow judges a push rather than the rebased branch the queue is about to land).
+`docs/gate.md` is how to gate - through the queue and by hand - and `.github/workflows` holds the
+release, which no branch starts.
 
 **The four design-shaped lints are exempt on the clippy line, and the reason is here rather than in
 68 `#[allow]`s in the source.** `result_large_err` (29 findings), `type_complexity` (15),
 `large_enum_variant` (13) and `too_many_arguments` (11) are each a decision about an API's shape, and
 the tree does not meet them today. Suppressing them item by item would hide them where nobody looks
-again; exempting them on the line keeps them **running** - CI's own clippy job still reports every
-one, and the sweep still counts them - while the queue stops demanding them tonight. Making them
-true is a slice of its own. Everything else stays `-D warnings`.
+again; exempting them on the line keeps them **running** - a plain `cargo clippy --all-targets`
+still reports every one, and the sweep still counts them - while the queue stops demanding them
+tonight. Making them true is a slice of its own. Everything else stays `-D warnings`.
 
 **The clippy step goes through `scripts/clippy-gate.sh` because a warm target dir can answer
 for it.** Cargo's fingerprint for a unit does not include the arguments after `--`, so a unit
@@ -89,8 +89,8 @@ workspace member's root first, which costs the re-lint and nothing else.
 
 **`scripts/check-test-attrs.sh` rejects a `#[test]` attribute that is not on a function of its
 own.** Two test attributes separated only by comments and other attributes attach both to one
-function, and the test between them silently stops running while the suite stays green. CI runs
-the same script, so a shape one refuses the other refuses too.
+function, and the test between them silently stops running while the suite stays green. It is the
+gate's second step, so a branch that arrives with the shape is red before anybody reads it.
 
 ```sh
 sh scripts/check-fmt.sh main

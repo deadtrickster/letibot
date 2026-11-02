@@ -59,8 +59,9 @@ _t() { tmux -L "$SERVER" "$@"; }
 screen() { _t capture-pane -p -t acc "$@" 2>/dev/null; }
 
 # The run's own HOME: the head's prefs and rano's config are read from here, never from the
-# person running the suite, so a spec sees the same screen on a laptop and in CI. A spec that
-# needs a setting writes it into $CONFIG first (rano's is $CONFIG/rano/config.toml).
+# person running the suite, so a spec sees the same screen on their laptop as on the box that
+# last ran it. A spec that needs a setting writes it into $CONFIG first (rano's is
+# $CONFIG/rano/config.toml).
 CONFIG="$WORK/home/.config"
 mkdir -p "$CONFIG"
 

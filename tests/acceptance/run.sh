@@ -3,7 +3,7 @@
 #
 #   cargo build -p letibot-tui --bin letibot-tui && tests/acceptance/run.sh
 #   LETIBOT_TUI=target/release/letibot-tui tests/acceptance/run.sh editor-pane
-#   tests/acceptance/run.sh --local             # and local/: a VM, firecode — never CI
+#   tests/acceptance/run.sh --local             # and local/: a VM, firecode - this box only
 #
 # A spec is `tests/acceptance/*.sh` other than `lib.sh` and this file; naming some runs
 # only those. See `lib.sh` for the driver and `docs/tui-testing.md` for the method.
@@ -11,7 +11,8 @@ set -u
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 command -v tmux >/dev/null || { echo "acceptance: tmux is not installed"; exit 2; }
 
-# `--local` adds `local/`: specs that need this box (a VM, firecode) and never run in CI.
+# `--local` adds `local/`: specs that need this box (a VM, firecode) and are not part of the
+# gate - nothing automates them, so run them by hand when a change reaches them.
 local_too=0
 [ "${1:-}" = "--local" ] && { local_too=1; shift; }
 
