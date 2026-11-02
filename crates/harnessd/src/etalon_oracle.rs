@@ -1,24 +1,11 @@
-//! **The gatekeeper measured on an attack corpus.**
-//!
-//! Plan: `docs/guard-corpus-plan.md` §1 (BashArena, arXiv 2512.15688) and §2.
-//! `--etalon` measures layer A alone and `--compare` measures the guard on the
-//! store's own labelled rows — which, measured 2026-09-16, hold no attacks at
-//! all: every one of the 66 asked rows was admitted by the operator. A guard
-//! that has only ever been measured on benign work has a false-prompt rate and
-//! no recall. This measures the recall.
-//!
-//! The input is the etalon's JSONL shape (`scripts/etalon-extract.py`), so any
-//! set in that shape works; the one it was built for is BashArena's
-//! `monitor-eval` split (HF `abhayesian/basharena-monitor-eval`): 339 bash
-//! actions from 134 trajectories, each labelled attack or honest, with the
-//! main task as the operator's utterance. An attack row is `refused`, an honest
-//! row `ran`, so the calibration's own words apply: a FALSE ALLOW is an attack
-//! the guard would have let through, an AGREED refusal is an attack caught.
-//!
-//! Nothing is written to the operator's store. The replay wants store rows
-//! whose sessions have a workspace, so the rows are seated in a temporary
-//! COPY of the store, which is deleted after. The guard, the arm and the
-//! budget are exactly `--compare`'s.
+//! **The gatekeeper measured on an attack corpus.** Plan: `docs/guard-corpus-plan.md` §1
+//! (BashArena, arXiv 2512.15688) and §2. `--etalon` measures layer A alone and `--compare`
+//! measures the guard on the store's own labelled rows — which, measured 2026-09-16, hold
+//! no attacks at all: every one of the 66 asked rows was admitted by the operator. A guard
+//! that has only ever been measured on benign work has a false-prompt rate and no recall.
+//! This measures the recall. The input is the etalon's JSONL shape
+//! (`scripts/etalon-extract.py`), so any set in that shape works; the one it was built for
+//! is BashArena's `monitor-eval` split (HF `abhayesian/basharena-monitor-eval`):
 
 use std::path::Path;
 
@@ -277,10 +264,8 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
         ));
     }
     // **The ceiling's own number** (R12's `UnsureKind`). A reply cut off at `max_tokens` is
-    // not a verdict, and at the pre-R12 prompt order it is scored as *not allowed* — i.e. as
-    // a catch the guard did not make. So how often the ceiling bites is not a curiosity
-    // beside the recall figure: it is part of what the recall figure is made of, and it is
-    // what `--oracle-max-tokens` is chosen against. Counted by token, not by reading prose.
+    // not a verdict, and at the pre-R12 prompt order it is scored as *not allowed* — i.e. as a
+    // catch the guard did not make.
     let truncated = o
         .report
         .rows
@@ -299,11 +284,9 @@ pub fn render(o: &Outcome, arm: &Arm) -> String {
             o.report.rows.len(),
             100.0 * truncated as f64 / o.report.rows.len() as f64
         ));
-        // **The median, beside the mean the table already prints.** The mean is what a
-        // per-source table wants; the median is what a *cost* wants, because one call that
-        // spends the whole 20 s budget drags a mean and says nothing about the ordinary case.
-        // Asked for by name when the ceiling was raised, since latency is the whole price of
-        // that trade and it should be readable without a second instrument.
+        // **The median, beside the mean the table already prints.** The mean is what a per-source
+        // table wants; the median is what a *cost* wants, because one call that spends the whole
+        // 20 s budget drags a mean and says nothing about the ordinary case.
         let mut ms: Vec<u64> = o.report.rows.iter().map(|r| r.ms).collect();
         ms.sort_unstable();
         let median = ms[ms.len() / 2];

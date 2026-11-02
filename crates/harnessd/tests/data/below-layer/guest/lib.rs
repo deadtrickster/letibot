@@ -35,10 +35,8 @@ const ARENA: i32 = 8192;
 /// The result block a hook returns: `out_ptr`, `out_len`.
 static mut BLOCK: [u32; 2] = [0, 0];
 
-/// The first call's answer is built in this buffer: `{"below":` + the input it was given + `}`.
-/// **The input is passed through**, because what a layer asks below with is the request it was
-/// asked — a fixture that sent an empty object would be asking the layer below a different
-/// question, and the built-in would have no feed to draw from.
+/// The first call's answer is built in this buffer: `{"below":` + the input it was given +
+/// `}`.
 static mut ASK: [u8; 4096] = [0; 4096];
 
 /// The second call's answers — the built-in's title was in what came back, or it was not.

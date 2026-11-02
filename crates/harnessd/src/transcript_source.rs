@@ -1,38 +1,10 @@
-//! The store behind the `transcript` and `digest` tools.
-//!
-//! `letibot-tools` cannot name `letibot-tokencore` — it is the lower crate — so
-//! the tools declare a [`TranscriptSource`] trait and this is the daemon's
-//! implementation of it, the same seam `harness` uses for `DaemonFacts`.
-//!
-//! # The fork chain is the whole job
-//!
-//! A session does not have *a* transcript. It has a chain of them, one per
-//! compaction: each fork writes a new `transcript` row whose `parent_transcript_id`
-//! points at the one it replaced and whose `forked_at_seq` says how many rows were
-//! carried over. The conversation running now is the newest link, and everything a
-//! compaction folded into a summary is in the links behind it.
-//!
-//! Which means a search that only looks at the current transcript answers "no"
-//! to exactly the questions worth asking. Walking the chain is not an extra
-//! feature here; it is the reason the tool exists.
-//!
-//! # Reading, not rendering
-//!
-//! A row's `item_json` is the record and its `tokens` are one rendering of it.
-//! This reads the record: [`visible_text`] turns a `TranscriptItem` into what a
-//! person would see, so a `match` predicate is matched against the conversation
-//! rather than against serde tags and field names. It never touches the token
-//! blobs, the hash chain or the stable prefix — nothing here can move a row, and
-//! the append-only triggers would refuse if it tried.
-//!
-//! # A handle, not a connection
-//!
-//! `rusqlite::Connection` is `Send` but not `Sync`, and a tool is `Send + Sync`
-//! by trait, so this holds the store behind a `Mutex`. It used to open the file a
-//! **second** time for that; since the store became one connection per file per
-//! process (`Store::open`), what it takes is a handle onto the daemon's own. The
-//! cost is the store's lock: a search that takes a second now does hold up the
-//! turn's next append, which is the trade the descriptor measurement bought.
+//! The store behind the `transcript` and `digest` tools. `letibot-tools` cannot name
+//! `letibot-tokencore` — it is the lower crate — so the tools declare a
+//! [`TranscriptSource`] trait and this is the daemon's implementation of it, the same seam
+//! `harness` uses for `DaemonFacts`. # The fork chain is the whole job A session does not
+//! have *a* transcript. It has a chain of them, one per compaction: each fork writes a new
+//! `transcript` row whose `parent_transcript_id` points at the one it replaced and whose
+//! `forked_at_seq` says how many rows were carried over.
 
 use letibot_tokencore::store::Store;
 use letibot_tools::builtins::transcript::{
@@ -69,10 +41,9 @@ impl StoreTranscripts {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Which session this query is about. A named one is matched by exact id
-    /// first, then by a case-insensitive substring of the id or the title —
-    /// the operator's own way of naming one is *"check letibot letibot session"*,
-    /// which is a title fragment and not an id.
+    /// Which session this query is about. A named one is matched by exact id first, then by a
+    /// case-insensitive substring of the id or the title — the operator's own way of naming one
+    /// is *"check letibot letibot session"*, which is a title fragment and not an id.
     fn resolve(&self, want: Option<&str>) -> Result<(String, String), String> {
         let sessions = self
             .store()
@@ -122,12 +93,9 @@ impl StoreTranscripts {
         }
     }
 
-    /// The session's transcripts, newest first, each with its generation.
-    ///
-    /// Newest is `created_at DESC, rowid DESC` — the same tie-break
-    /// `Store::list_sessions` uses and for the same reason: a fork is written in
-    /// the same millisecond as the transcript it forked from, and insertion order
-    /// is what decides which of the two is the conversation running now.
+    /// The session's transcripts, newest first, each with its generation. Newest is `created_at
+    /// DESC, rowid DESC` — the same tie-break `Store::list_sessions` uses and for the same
+    /// reason:
     fn chain(&self, session_id: &str) -> Result<Vec<ChainLink>, String> {
         let store = self.store();
         let conn = store.connection();
@@ -217,10 +185,9 @@ impl TranscriptSource for StoreTranscripts {
                     row.map_err(|e| format!("reading rows: {e}"))?;
                 scanned += 1;
                 let seq = seq as u32;
-                // The seq predicates address the CURRENT transcript's numbering, so
-                // they are only applied there — a `from`/`to` range meant for
-                // generation 0 would select arbitrary rows in generation 3, whose
-                // seq numbers mean something else entirely.
+                // The seq predicates address the CURRENT transcript's numbering, so they are only applied
+                // there — a `from`/`to` range meant for generation 0 would select arbitrary rows in
+                // generation 3, whose seq numbers mean something else entirely.
                 if link.generation == 0 {
                     if q.from_seq.is_some_and(|f| seq < f) {
                         continue;
@@ -236,9 +203,8 @@ impl TranscriptSource for StoreTranscripts {
                 // conversation is tens of thousands of rows and serde is the
                 // expensive part of this loop.
                 let Ok(item) = serde_json::from_str::<TranscriptItem>(&item_json) else {
-                    // A row this build cannot parse is a row written by another
-                    // build, not a corrupt one. Skipped rather than failing the
-                    // search, because one unreadable row should not hide the
+                    // A row this build cannot parse is a row written by another build, not a corrupt one.
+                    // Skipped rather than failing the search, because one unreadable row should not hide the
                     // twenty thousand readable ones around it.
                     continue;
                 };
@@ -266,12 +232,9 @@ impl TranscriptSource for StoreTranscripts {
             }
         }
 
-        // `last` is the newest N of what matched — applied after the predicates, so
-        // `last=20` with a `match` means the twenty newest matching rows and not
-        // "whichever of the twenty newest rows happened to match".
-        //
-        // Newest is generation ascending and seq descending: generation 0 is the
-        // conversation running now, and a higher generation is further back.
+        // `last` is the newest N of what matched — applied after the predicates, so `last=20` with
+        // a `match` means the twenty newest matching rows and not "whichever of the twenty newest
+        // rows happened to match". Newest is generation ascending and seq descending:
         matched.sort_by_key(|r| (r.generation, std::cmp::Reverse(r.seq)));
         if let Some(n) = q.last {
             matched.truncate(n as usize);
@@ -317,14 +280,9 @@ fn tool_name(item: &TranscriptItem) -> String {
     }
 }
 
-/// **A row as a person would see it**, which is what a text predicate must match
-/// against. The alternative — matching `item_json` — matches serde tags and field
-/// names, so `match=kind` hits every row in the store.
-///
-/// An assistant row carries its tool calls' names and arguments, because "when did
-/// I last run that" is asked of the calls and the calls are not rows of their own.
-/// A tool result carries its outcome word as well as its payload, so `match=denied`
-/// finds the refusals.
+/// **A row as a person would see it**, which is what a text predicate must match against.
+/// The alternative — matching `item_json` — matches serde tags and field names, so
+/// `match=kind` hits every row in the store.
 fn visible_text(item: &TranscriptItem) -> String {
     match item {
         TranscriptItem::System { text, .. } => text.clone(),

@@ -1,31 +1,11 @@
-//! **Where the gate's decisions go so they outlive the daemon.**
-//!
-//! > *"we should assemble my decisions and model decisions into corpus across our
-//! > letibot/leticode runs. and if gatekeeper is unsure it should say so and i still
-//! > asked - goes to corpus too."*
-//!
-//! `AdjudicatedGate::log` is a `Vec` in one process. It was always the right shape —
-//! the model's verdict and the operator's answer in separate fields, `shown` kept
-//! verbatim — and it was always discarded. Everything this harness ever decided died
-//! with the daemon that decided it.
-//!
-//! This is the write-through. One row per decision at the moment it is made; one
-//! update when the operator rules, which is a different event and often a later turn.
-//!
-//! # One handle onto the process's connection
-//!
-//! This used to open a **second** connection to the session store, because a
-//! [`letibot_tokencore::store::Store`] held a `rusqlite::Connection` — `Send` but not
-//! `Sync` — and a [`CorpusSink`] is shared across the gate's lifetime. Since the store
-//! became one connection per store file per process, this holds a handle onto that one
-//! connection — the same one the sessions write through — and opens nothing of its own.
-//!
-//! # A lost example is never a refused call
-//!
-//! Every failure here is swallowed into a counter. The gate has already decided by
-//! the time this runs; turning a full disk into a denial would make the corpus a
-//! thing that can *change* what the harness does, and a guard whose behaviour depends
-//! on the health of its own telemetry is worse than one with no telemetry.
+//! **Where the gate's decisions go so they outlive the daemon.** > *"we should assemble my
+//! decisions and model decisions into corpus across our > letibot/leticode runs. and if
+//! gatekeeper is unsure it should say so and i still > asked - goes to corpus too."*
+//! `AdjudicatedGate::log` is a `Vec` in one process. It was always the right shape — the
+//! model's verdict and the operator's answer in separate fields, `shown` kept verbatim —
+//! and it was always discarded. Everything this harness ever decided died with the daemon
+//! that decided it. This is the write-through. One row per decision at the moment it is
+//! made;
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,11 +34,9 @@ impl StoreCorpus {
         })
     }
 
-    /// What the corpus holds, and how much of it did not arrive.
-    ///
-    /// Reported together because a count shown without its losses is the denominator
-    /// defect in the one place it matters most: a corpus quietly dropping rows must
-    /// not read as one that is being kept.
+    /// What the corpus holds, and how much of it did not arrive. Reported together because a
+    /// count shown without its losses is the denominator defect in the one place it matters
+    /// most: a corpus quietly dropping rows must not read as one that is being kept.
     pub fn counts(&self) -> (letibot_tokencore::store::CorpusCounts, u64, u64) {
         let c = self
             .store
@@ -75,10 +53,9 @@ impl StoreCorpus {
 }
 
 impl CorpusSink for StoreCorpus {
-    /// From the table, so a resumed session's gate carries on numbering where the
-    /// last daemon stopped. Unreadable store, or a session with no rows yet, is
-    /// `0` — the same answer a fresh session gives, and the honest one when
-    /// nothing can be read.
+    /// From the table, so a resumed session's gate carries on numbering where the last daemon
+    /// stopped. Unreadable store, or a session with no rows yet, is `0` — the same answer a
+    /// fresh session gives, and the honest one when nothing can be read.
     fn decisions_recorded(&self, session_id: &str) -> u64 {
         self.store
             .lock()
@@ -88,12 +65,9 @@ impl CorpusSink for StoreCorpus {
     }
 
     fn decided(&self, row: &CorpusRow) {
-        // The trail is stored as JSON rather than as `AuthorisationTrail::render`'s
-        // prose: the prose is what the *model* was shown and is already in `shown`,
-        // and a corpus reader that wants to re-render it under a changed brief
-        // format needs the structure. A trail that will not serialise is recorded
-        // as the reason it would not, never as an empty trail — `{}` and "nobody
-        // looked" are the two facts this whole type exists to keep apart.
+        // The trail is stored as JSON rather than as `AuthorisationTrail::render`'s prose: the
+        // prose is what the *model* was shown and is already in `shown`, and a corpus reader that
+        // wants to re-render it under a changed brief format needs the structure.
         let trail_json = serde_json::to_string(&row.trail)
             .unwrap_or_else(|e| format!(r#"{{"unserialisable":{}}}"#, json_string(&e.to_string())));
         // Same rule for the arguments: a value that will not serialise is recorded
@@ -122,10 +96,9 @@ impl CorpusSink for StoreCorpus {
             verdict_basis: row.verdict_basis.clone(),
             p_allow: row.p_allow,
             oracle_ms: Some(row.decision_ms as i64),
-            // The oracle's own id is inside `verdict_by` (`model:<id>`) and is not
-            // separately reported today. Left NULL rather than parsed out of that
-            // string: a column filled by splitting prose is the column that breaks
-            // when the prose changes.
+            // The oracle's own id is inside `verdict_by` (`model:<id>`) and is not separately reported
+            // today. Left NULL rather than parsed out of that string: a column filled by splitting
+            // prose is the column that breaks when the prose changes.
             oracle_model: None,
             // Carried from the row rather than re-derived: the key a decision is
             // recorded under and the key a later call is looked up by must be one
@@ -146,10 +119,9 @@ impl CorpusSink for StoreCorpus {
             asked: row.asked,
         };
 
-        // **Written, not merely attempted.** `record_adjudication` is
-        // `INSERT OR IGNORE`, so a key that is already there answers `Ok(0)`;
-        // reading only `is_ok()` counted that as kept and is how a whole
-        // session's corpus went missing without `lost` ever moving.
+        // **Written, not merely attempted.** `record_adjudication` is `INSERT OR IGNORE`, so a key
+        // that is already there answers `Ok(0)`; reading only `is_ok()` counted that as kept and
+        // is how a whole session's corpus went missing without `lost` ever moving.
         let ok = self
             .store
             .lock()
@@ -160,11 +132,9 @@ impl CorpusSink for StoreCorpus {
             self.lost.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        // **At `supervised` the ruling arrives WITH the decision**, because the
-        // person answered this call with the model's verdict in front of them. Two
-        // statements rather than an eleven-argument insert with two more optional
-        // columns: `record_operator_ruling` is the one place the label is written,
-        // and a second path into those columns is a second place for them to drift.
+        // **At `supervised` the ruling arrives WITH the decision**, because the person answered
+        // this call with the model's verdict in front of them. Two statements rather than an
+        // eleven-argument insert with two more optional columns:
         if let Some(what) = &row.operator {
             self.ruled(&row.request_id, what);
         }
@@ -205,13 +175,9 @@ mod shape_cache_tests {
     use letibot_tools::runtime::{Gate, GateCall, GateDecision};
     use letibot_tools::schema::Access;
 
-    /// **The whole loop, end to end: approve once, restart, do not be asked again.**
-    ///
-    /// Every piece of this was unit-tested separately and the operator still had a
-    /// session that asked them about the same `grep` after a restart — because the
-    /// pieces were never joined up. This joins them: a real gate writes through a
-    /// real corpus sink into a real store, a second gate is built from that store the
-    /// way the daemon builds it, and the same shape is not asked about twice.
+    /// **The whole loop, end to end: approve once, restart, do not be asked again.** Every
+    /// piece of this was unit-tested separately and the operator still had a session that asked
+    /// them about the same `grep` after a restart — because the pieces were never joined up.
     #[test]
     fn a_shape_approved_before_a_restart_survives_it() {
         let dir = std::env::temp_dir().join(format!("letibot-shape-{}", std::process::id()));

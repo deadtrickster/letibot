@@ -151,10 +151,6 @@ impl ProgressDetector {
     }
 
     /// One tool result, as it came back. Call order, in call order.
-    ///
-    /// `payload` is the **rendered** result — the same string the transcript row
-    /// carries and the same one `ToolEvent::Finished` digests, so novelty here means
-    /// novelty in what the model actually got to read.
     pub fn observe(&mut self, call: &ToolCall, outcome: &ToolOutcome, payload: &str) {
         let key =
             letibot_turn::events::args_digest(&format!("{}\u{0}{}", call.name, call.arguments));
@@ -182,32 +178,8 @@ impl ProgressDetector {
     /// Close the round and score it. Call once per round that ran tools.
     pub fn end_round(&mut self) -> Round {
         let pending = std::mem::take(&mut self.pending);
-        // The rule, in one line: an `Ok` carrying bytes this turn has not seen — **or a
-        // round that STARTED A BACKGROUND JOB**.
-        //
-        // **`is_effect` cannot answer that, and asking it was a false positive.** The
-        // predicate is the intent ledger's, and from the ledger's side a `backgrounded`
-        // outcome is not an effect at all: the job was handed off and has not produced
-        // anything yet, so nothing can be recorded as done. That is right for a ledger
-        // about declared intentions and wrong here, where the question is *did this round
-        // tell the model something it did not know* — and a backgrounded call does, in the
-        // strongest sense: it says a job exists, names its handle, and the model can go and
-        // read it.
-        //
-        // MEASURED on the operator's own session, and it is what the nudge was complaining
-        // about: four rounds in a row, each backgrounding one job:
-        //
-        //     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
-        //     not already seen (4 backgrounded)
-        //
-        // Four jobs started, four rounds scored STALLED, and the turn was one round from
-        // being stopped for looping. **`backgrounded` was printed in the evidence while
-        // failing to be the thing that counted**, which is the shape of the bug: the
-        // instrument knew and the rule did not ask.
-        //
-        // `repeat_payload` still applies: backgrounding the same command twice with no
-        // other tool call in between is quiet, and the handle in the notice (which is what
-        // makes two of them differ) is not an excuse to call every round progress.
+        // The rule, in one line: an `Ok` carrying bytes this turn has not seen — **or a round that
+        // STARTED A BACKGROUND JOB**.
         if pending
             .iter()
             .any(|o| (o.effect || o.backgrounded) && !o.repeat_payload)
@@ -232,12 +204,9 @@ impl ProgressDetector {
         self.armed() && self.run >= self.stall_rounds
     }
 
-    /// The one mid-run correction, or `None`.
-    ///
-    /// Fires one round before [`ProgressDetector::exhausted`] would, so a turn that
-    /// is in fact working gets told what the harness sees and can say so, and a turn
-    /// that is looping is stopped one round later. See the module header on the
-    /// tolerance band.
+    /// The one mid-run correction, or `None`. Fires one round before
+    /// [`ProgressDetector::exhausted`] would, so a turn that is in fact working gets told what
+    /// the harness sees and can say so, and a turn that is looping is stopped one round later.
     pub fn nudge(&mut self) -> Option<String> {
         if !self.armed() || self.nudged || self.run + 1 < self.stall_rounds || self.run == 0 {
             return None;
@@ -255,11 +224,9 @@ impl ProgressDetector {
                  answer them.",
             ),
         }
-        // **Say what happens next.** The version before this one invited the model
-        // to "say so and carry on", which promised latitude the harness does not
-        // grant: one more stalled round and the turn stops regardless. A steer that
-        // offers a choice it cannot honour is the same defect one layer up as a gate
-        // returning *allowed* because nothing is wired.
+        // **Say what happens next.** The version before this one invited the model to "say so and
+        // carry on", which promised latitude the harness does not grant: one more stalled round
+        // and the turn stops regardless.
         msg.push_str(
             "\n\nIf you already have what you need, answer now. If you do not, ask a \
              *different* question \u{2014} the same one returns the same bytes. If the \
@@ -271,11 +238,8 @@ impl ProgressDetector {
         Some(msg)
     }
 
-    /// What the stalled window contained, with its denominator.
-    ///
-    /// `docs/tool-design-brief.md` §2.2: the size of what was examined travels with
-    /// the number. *"0"* on its own is indistinguishable from a window with no calls
-    /// in it, which is a different fact and would be a different bug.
+    /// What the stalled window contained, with its denominator. `docs/tool-design-brief.md`
+    /// §2.2: the size of what was examined travels with the number.
     pub fn window_summary(&self) -> String {
         let calls = self.window.len();
         let mut tally: Vec<(&'static str, usize)> = Vec::new();
@@ -299,13 +263,9 @@ impl ProgressDetector {
         )
     }
 
-    /// `` `read path=src/main.rs` ×3, `grep pattern=foo` ×2 ``, or `None` when no
-    /// call in the window had been made before — a real and different state, and the
-    /// one where the model was asking new questions that nothing could answer.
-    ///
-    /// The count is **calls this turn**, not calls in the window, and it is worded
-    /// that way where it is printed. The window is the last few rounds; the third
-    /// `read` of a file is evidence whether or not the first two are still inside it.
+    /// `` `read path=src/main.rs` ×3, `grep pattern=foo` ×2 ``, or `None` when no call in the
+    /// window had been made before — a real and different state, and the one where the model
+    /// was asking new questions that nothing could answer.
     pub fn repeats_clause(&self) -> Option<String> {
         let mut counts: Vec<(String, usize)> = Vec::new();
         for o in self.window.iter().filter(|o| o.repeat_call) {
@@ -357,10 +317,8 @@ impl ProgressDetector {
     }
 }
 
-/// The outcome, as one word, for the tally.
-///
-/// Deliberately not `Debug`: `NotRun { why: "…" }` would put a whole sentence into
-/// a count, and this is the axis a reader scans.
+/// The outcome, as one word, for the tally. Deliberately not `Debug`: `NotRun { why: "…" }`
+/// would put a whole sentence into a count, and this is the axis a reader scans.
 fn outcome_word(outcome: &ToolOutcome) -> &'static str {
     match outcome {
         ToolOutcome::Ok => "ok",
@@ -373,11 +331,8 @@ fn outcome_word(outcome: &ToolOutcome) -> &'static str {
     }
 }
 
-/// `read path=src/main.rs` — the call as a person would name it.
-///
-/// Every scalar argument, in the order the model wrote them, rather than a guess at
-/// which one is the interesting one. A guess would be wrong exactly on the tools
-/// nobody anticipated, and the label is evidence: it has to be the call that ran.
+/// `read path=src/main.rs` — the call as a person would name it. Every scalar argument, in
+/// the order the model wrote them, rather than a guess at which one is the interesting one.
 fn label(call: &ToolCall) -> String {
     let mut s = call.name.clone();
     if let Ok(serde_json::Value::Object(map)) =
@@ -425,18 +380,7 @@ mod tests {
     }
 
     /// **Starting a background job is progress**, and the operator's own session is where it
-    /// was measured: four rounds in a row, each backgrounding one job, scored as four STALLED
-    /// rounds and drew the nudge —
-    ///
-    ///     the last 4 rounds ran 4 calls and 0 of 4 returned a result this turn had
-    ///     not already seen (4 backgrounded)
-    ///
-    /// Four jobs started, and the turn one round from being stopped for looping.
-    ///
-    /// The cause was `is_effect`, which is the intent ledger's predicate and answers a
-    /// different question: from the ledger's side a backgrounded outcome is not an effect,
-    /// because the job was handed off and has produced nothing to record as done. Here the
-    /// question is whether the round told the model something new, and a job handle is new.
+    /// was measured:
     #[test]
     fn starting_a_background_job_is_not_a_stalled_round() {
         let mut d = ProgressDetector::new(5);

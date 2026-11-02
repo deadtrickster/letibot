@@ -1,24 +1,11 @@
-//! **The daemon's half of a session's leases** (RH9) — where a block of a shared host's ports is
-//! taken, and the two moments it goes back.
-//!
-//! `crates/tools/src/lease.rs` is the engine and the seam; this is the implementation of that seam
-//! over a real store, in the same shape `supervise::StoreBook` gives the process book: a path, a
-//! session, one lazily-opened connection.
-//!
-//! # The two moments a lease goes back
-//!
-//! * **A session closes** ([`release_session`], called by `Sessions::close` and
-//!   `close_backends`). That is an act, and it is the ordinary one.
-//! * **The owner is found GONE** ([`reap`], called by the supervisor's tick). A daemon that was
-//!   killed hard never ran the first one, and the row it left says the block is still held by a
-//!   session nobody serves. The measurement that asked for this is RH7's: a session's processes are
-//!   records so a restart finds them, and a lease is a record for the same reason.
-//!
-//! **A restart is not an owner being gone**, and the difference is [`GRACE_MS`]. A daemon that has
-//! just come up holds no session at all for the first second of its life, so a reaper that asked
-//! *is this session in the registry* would release every block on the box at each restart — which
-//! is the opposite of what a lease is for. So a session must be seen gone for the grace before its
-//! blocks go back, and a block taken in the last grace is never reaped at all.
+//! **The daemon's half of a session's leases** (RH9) — where a block of a shared host's
+//! ports is taken, and the two moments it goes back. `crates/tools/src/lease.rs` is the
+//! engine and the seam; this is the implementation of that seam over a real store, in the
+//! same shape `supervise::StoreBook` gives the process book: a path, a session, one
+//! lazily-opened connection. # The two moments a lease goes back * **A session closes**
+//! ([`release_session`], called by `Sessions::close` and `close_backends`). That is an act,
+//! and it is the ordinary one. * **The owner is found GONE** ([`reap`], called by the
+//! supervisor's tick).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -94,20 +81,15 @@ impl std::fmt::Debug for StoreLeases {
     }
 }
 
-/// **The engine a session's tools and a close both use**: the operator's hosts, this box's ssh
-/// material, and a [`StoreLeases`] behind it.
-///
-/// One function rather than two spellings, because a teardown that removed containers and a
-/// teardown that did not would be two answers to *what does closing a session do*.
+/// **The engine a session's tools and a close both use**: the operator's hosts, this box's
+/// ssh material, and a [`StoreLeases`] behind it.
 pub fn blocks(path: &Path, session: &str) -> Blocks {
     Blocks::new(session).with_leases(std::sync::Arc::new(StoreLeases::new(path, session)))
 }
 
 /// **Give back every block a session still holds, and remove exactly what it created** — a
-/// session's close, the daemon's stop, and the reaper's act, in one place.
-///
-/// Returns one line per lease, so the caller can log what happened: the block, what was removed
-/// from it, and any refusal the operator's never-touch list made.
+/// session's close, the daemon's stop, and the reaper's act, in one place. Returns one line
+/// per lease, so the caller can log what happened:
 pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
     let store = match Store::open(path) {
         Ok(s) => s,
@@ -137,16 +119,9 @@ pub fn release_session(path: &Path, session: &str, by: &str) -> Vec<String> {
     said
 }
 
-/// **Every block whose owner is gone goes back.**
-///
-/// `alive` is the daemon's own answer — the registry's — `seen` is the reaper's memory of *how long*
-/// each session has been gone, and `release` is the act that does it. Three arguments rather than
-/// one method call each because the three are tested apart: the grace is arithmetic, the act is a
-/// teardown over ssh, and a test of the first must not reach the second.
-///
-/// `seen` lives with the supervisor (one per process) rather than here, so this takes it as an
-/// argument and edits it: the fact is *the supervisor has been watching*, and a function that kept
-/// it privately would be a second clock.
+/// **Every block whose owner is gone goes back.** `alive` is the daemon's own answer — the
+/// registry's — `seen` is the reaper's memory of *how long* each session has been gone, and
+/// `release` is the act that does it.
 pub fn reap(
     store: &Store,
     alive: &dyn Fn(&str) -> bool,
@@ -171,12 +146,9 @@ pub fn reap(
     said
 }
 
-/// **Which sessions' leases are due to go back** — the grace, and nothing else.
-///
-/// A session seen alive is stamped with `at` and kept. A session not seen for [`GRACE_MS`] is due.
-/// **A session nobody has seen yet is not a session known to be gone**: the first tick that finds it
-/// gone stamps it, and the grace runs from there — which is what makes a restart a restart and not
-/// a wholesale release of every block on the box.
+/// **Which sessions' leases are due to go back** — the grace, and nothing else. A session
+/// seen alive is stamped with `at` and kept. A session not seen for [`GRACE_MS`] is due.
+/// **A session nobody has seen yet is not a session known to be gone**:
 pub fn due(
     held: &[Lease],
     alive: &dyn Fn(&str) -> bool,

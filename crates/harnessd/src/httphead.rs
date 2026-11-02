@@ -1,58 +1,11 @@
-//! **A head that speaks HTTP**, so a model behind harnessd can be used the way a
-//! bare llama-server is.
-//!
-//! # Why this exists
-//!
-//! The gatekeeper on this box is a llama-server: the oracle posts a brief to
-//! `/v1/chat/completions` and reads one verdict back. That works, and it means
-//! the guard has **no base prompt of its own** — every call has to carry
-//! everything it needs, because nothing else is holding any context for it.
-//!
-//! The operator, 2026-09-20: *"I want to be able to start harnessd against a
-//! model with my custom base prompt. Think of our oracle qwen. right now it is a
-//! bare llama endpoint. I want it to be a harnessd and another simple http
-//! head."*
-//!
-//! So: `--http ADDR` puts an OpenAI-shaped endpoint in front of a harnessd whose
-//! `--system` is whatever the operator wrote. The oracle's client does not
-//! change — same path, same request shape, same reply shape — and the guard
-//! gains a base prompt that the server has already prefilled.
-//!
-//! # What it is not
-//!
-//! **Stateless.** Every request opens a scratch transcript under the daemon's
-//! stable prefix, appends the request's messages, runs one turn and throws the
-//! transcript away. That is the right shape for a guard — each brief is judged
-//! on its own, and a verdict must not depend on the one before it — and it is
-//! the shape `compaction::summarise_one` already uses for the same reason.
-//!
-//! Nothing here is seated: no tools, no store, no gate. A request cannot make
-//! this daemon run a command, because there is no command to run. The turn is a
-//! prompt and its answer.
-//!
-//! # Concurrency is the server's, not this head's
-//!
-//! llama.cpp's slots ARE its batching unit: N slots means N sequences decoded in
-//! the same batch, each with its own KV cache. This head first served one
-//! request at a time, on the reasoning that concurrent turns would "queue at the
-//! server and thrash the prefix cache" — which has the relationship backwards,
-//! and the operator said so in four words: *"four slots means batching"*. The
-//! caches are per slot and do not evict one another, so four callers together
-//! are cheaper than four callers in a row.
-//!
-//! So: a thread per connection, bounded by what the endpoint says it can decode
-//! at once (`/props`'s `total_slots`), because past that the requests queue
-//! inside the server where this head can neither see them nor time them out.
-//! A server that does not say gets [`DEFAULT_PERMITS`], which is a bound rather
-//! than a guess about hardware.
-//!
-//! # The prefix is the point
-//!
-//! `engine.open` renders the prefix once per request, and the SERVER keeps its
-//! KV cache across requests because every request begins with the same bytes.
-//! That is the thing a bare endpoint cannot do for a base prompt of any size:
-//! the guard's instructions are prefilled once and reused, and only the brief is
-//! new.
+//! **A head that speaks HTTP**, so a model behind harnessd can be used the way a bare
+//! llama-server is. # Why this exists The gatekeeper on this box is a llama-server: the
+//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back. That works,
+//! and it means the guard has **no base prompt of its own** — every call has to carry
+//! everything it needs, because nothing else is holding any context for it. The operator,
+//! 2026-09-20: *"I want to be able to start harnessd against a model with my custom base
+//! prompt. Think of our oracle qwen. right now it is a bare llama endpoint. I want it to be
+//! a harnessd and another simple http head."* So:
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -69,10 +22,9 @@ use crate::harness::{Parts, engine_for};
 /// whole to then refuse it is how a listener becomes a memory bug.
 const MAX_BODY: usize = 1 << 20;
 
-/// In-flight requests when the endpoint does not report its slot count. One is
-/// wrong (it wastes a batching server) and a large number is wrong (it queues
-/// inside a server that cannot say how deep its queue is); four is llama.cpp's
-/// own default `-np`.
+/// In-flight requests when the endpoint does not report its slot count. One is wrong (it
+/// wastes a batching server) and a large number is wrong (it queues inside a server that
+/// cannot say how deep its queue is); four is llama.cpp's own default `-np`.
 const DEFAULT_PERMITS: usize = 4;
 
 /// A counting semaphore. `std` has none, and a channel of permits would make a
@@ -204,10 +156,9 @@ fn handle(
 
     match run_once(engine, prefix, &msgs) {
         Ok(text) => respond(stream, 200, &completion_json(&text)),
-        // The turn's own words. A guard that gets `{"error": ...}` back reads it
-        // as an unparseable verdict and answers `Unsure`, which is the honest
-        // outcome of "the model did not answer" and is what `Oracle::ask`
-        // already does with a body it cannot read.
+        // The turn's own words. A guard that gets `{"error": ...}` back reads it as an unparseable
+        // verdict and answers `Unsure`, which is the honest outcome of "the model did not answer"
+        // and is what `Oracle::ask` already does with a body it cannot read.
         Err(e) => respond(stream, 502, &err_json(&e)),
     }
 }
@@ -221,10 +172,9 @@ fn run_once(
     let items: Vec<TranscriptItem> = msgs
         .iter()
         .map(|m| match m.role.as_str() {
-            // A `system` message from the CLIENT is not this head's base prompt —
-            // that is `--system` and it is already in the prefix. It lands as an
-            // update inside the conversation, which is what it is: something the
-            // caller said, after the daemon's own instructions.
+            // A `system` message from the CLIENT is not this head's base prompt — that is `--system`
+            // and it is already in the prefix. It lands as an update inside the conversation, which is
+            // what it is: something the caller said, after the daemon's own instructions.
             "system" => TranscriptItem::System {
                 text: m.content.clone(),
                 origin: SystemOrigin::Update,
@@ -256,10 +206,9 @@ fn run_once(
     let ok = engine
         .run_turn(&mut scratch, &mut quiet)
         .map_err(|e| format!("the turn failed: {e}"))?;
-    // The visible text, the same way a summary turn reads its own: the
-    // assistant rows concatenated, reasoning left out. `harvest` is that rule in
-    // one place, so this head and compaction cannot disagree about what a turn
-    // said.
+    // The visible text, the same way a summary turn reads its own: the assistant rows
+    // concatenated, reasoning left out. `harvest` is that rule in one place, so this head and
+    // compaction cannot disagree about what a turn said.
     Ok(letibot_turn::compaction::harvest(&ok.items).summary)
 }
 
@@ -439,9 +388,8 @@ mod tests {
     }
 
     /// The reply is the shape `Oracle::ask` already reads: it walks
-    /// `choices[0].message.content` and treats anything it cannot walk as
-    /// `Unsure`. A head that answered a different shape would make every verdict
-    /// unsure without saying so.
+    /// `choices[0].message.content` and treats anything it cannot walk as `Unsure`. A head that
+    /// answered a different shape would make every verdict unsure without saying so.
     #[test]
     fn the_reply_is_the_shape_the_oracle_client_reads() {
         let body = completion_json("DENY");

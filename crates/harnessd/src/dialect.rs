@@ -1,30 +1,11 @@
-//! Which model this daemon speaks, as a table.
-//!
-//! Two dialects are wired: GLM-5.3-Flash, whose renderer is 139/139 against the
-//! training runtime, and Qwen3.8, whose renderer is 56/56 on its own corpus and
-//! covers both Qwen targets. Selecting one is the *only* place in the daemon that
-//! knows a model exists; everything downstream sees `PromptRenderer` and `Parser`.
-//!
-//! # The seam that did not fit, and what this file does about it
-//!
-//! `letibot_tools::Registry::tools_json()` produces
-//! `serde_json::to_string(schema)`, which uses `,`/`:` with **no spaces**. Both
-//! shipped templates render tool schemas through Hugging Face's `tojson`, which is
-//! `json.dumps(separators=(", ", ": "))`. So the registry's bytes are *not* the
-//! bytes either template emits, and `StablePrefix::tools_json` — which holds
-//! finished text — cannot be filled from the registry directly.
-//!
-//! It is not a rounding error. Every tool schema in the prompt differs, on the
-//! first bytes of the stable prefix, which is a cold prefill on every turn of every
-//! session. Nothing catches it: the daemon would run, the model would answer, and
-//! `f_keep` would sit at whatever the cache happened to give.
-//!
-//! So [`Wiring::tools_json`] re-serialises through the dialect's own tool-JSON
-//! function, and the *dialect* owns those bytes — which is where the rule already
-//! lived (`glm_tool_json`'s own doc says so). The registry's `tools_json()` is left
-//! alone: it is a reasonable thing for a dialect-free crate to produce, it just is
-//! not prompt-ready, and saying that here is cheaper than changing a contract two
-//! other strands are built on.
+//! Which model this daemon speaks, as a table. Two dialects are wired: GLM-5.3-Flash, whose
+//! renderer is 139/139 against the training runtime, and Qwen3.8, whose renderer is 56/56
+//! on its own corpus and covers both Qwen targets. Selecting one is the *only* place in the
+//! daemon that knows a model exists; everything downstream sees `PromptRenderer` and
+//! `Parser`. # The seam that did not fit, and what this file does about it
+//! `letibot_tools::Registry::tools_json()` produces `serde_json::to_string(schema)`, which
+//! uses `,`/`:` with **no spaces**. Both shipped templates render tool schemas through
+//! Hugging Face's `tojson`, which is `json.dumps(separators=(", ", ": "))`.
 
 use std::sync::Arc;
 
@@ -60,11 +41,9 @@ impl Dialect {
         }
     }
 
-    /// **The family name a `[model.<family>]` block is written under**, which is the
-    /// short one: `providers.toml` documents `[model.qwen]` and `[model.glm]`, and
-    /// [`Dialect::name`] answers `qwen3.8` — the served name, not the section name.
-    /// Two words for two readers, and conflating them would make every family block
-    /// in that file a block nothing matches.
+    /// **The family name a `[model.<family>]` block is written under**, which is the short one:
+    /// `providers.toml` documents `[model.qwen]` and `[model.glm]`, and [`Dialect::name`]
+    /// answers `qwen3.8` — the served name, not the section name.
     pub fn family(self) -> &'static str {
         match self {
             Dialect::Glm => "glm",
@@ -113,10 +92,9 @@ impl Dialect {
 /// A renderer and a parser, owned.
 pub struct Wiring {
     pub dialect: Dialect,
-    /// `Arc`, not `Box`: an engine CLONES these out, and after the switch to a
-    /// declared local model one session's engine can be built from another
-    /// dialect's wiring than its daemon opened with. A `Box` would force the
-    /// clone to move out of the shared `Arc<Wiring>`, which it cannot.
+    /// `Arc`, not `Box`: an engine CLONES these out, and after the switch to a declared local
+    /// model one session's engine can be built from another dialect's wiring than its daemon
+    /// opened with.
     pub renderer: Arc<dyn PromptRenderer>,
     pub parser: Arc<dyn Parser>,
 }
@@ -143,12 +121,9 @@ impl Wiring {
             .collect()
     }
 
-    /// §5.3's system update, in the form this dialect can actually render.
-    ///
-    /// GLM takes a real `System { origin: Update }` item; Qwen's template **raises**
-    /// on a mid-history system message, so it takes a user turn with a fixed
-    /// envelope. The daemon asks for a system change and gets whichever is
-    /// renderable, rather than each caller having to know.
+    /// §5.3's system update, in the form this dialect can actually render. GLM takes a real
+    /// `System { origin: Update }` item; Qwen's template **raises** on a mid-history system
+    /// message, so it takes a user turn with a fixed envelope.
     pub fn system_update(&self, seq: u64, text: &str) -> TranscriptItem {
         match self.dialect {
             Dialect::Glm => TranscriptItem::System {
@@ -243,10 +218,9 @@ mod tests {
 
     #[test]
     fn the_registry_bytes_are_not_the_prompt_bytes() {
-        // The seam this module exists to close. If this ever starts passing as
-        // equality, `Registry::tools_json()` became prompt-ready and this
-        // indirection can go — but until then, using it directly is a cold prefill
-        // on every turn.
+        // The seam this module exists to close. If this ever starts passing as equality,
+        // `Registry::tools_json()` became prompt-ready and this indirection can go — but until
+        // then, using it directly is a cold prefill on every turn.
         let reg = letibot_tools::read_only_tools(std::sync::Arc::new(
             letibot_tools::builtins::retrieval::Unavailable,
         ))

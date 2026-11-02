@@ -1,42 +1,11 @@
-//! **What a chip in the composer becomes in the transcript** — `PROTOCOL_VERSION` 50.
-//!
-//! The operator: *"how i can paste an image to letibot?"* Until this, a session could only be
+//! **What a chip in the composer becomes in the transcript** — `PROTOCOL_VERSION` 50. The
+//! operator: *"how i can paste an image to letibot?"* Until this, a session could only be
 //! shown a picture by naming its path and hoping the model called `read`. A chip in the
-//! composer travels as a [`letibot_sessionlog::protocol::Attachment`] and this module turns it
-//! into the [`UserPart`] the same file would have produced through `read`.
-//!
-//! # Why the daemon reads the file, and why it reads the BYTES
-//!
-//! The head sends a path, not a payload: one box, one file, and the copy the transcript keeps is
-//! made here ([`UserPart::Image`]'s `data_ref`), so nothing is gained by sending the bytes down
-//! the socket first. And a picture is recognised by its **magic number**, never by its name or
-//! by the kind the head reported: a `.png` that is really a PDF, a screenshot saved with no
-//! extension, and a head that called an image a file are all the same week's work otherwise.
-//! That rule is `letibot_transcript::media`'s and this module only obeys it.
-//!
-//! # The three outcomes, and no fourth
-//!
-//! * a picture the model server takes → [`UserPart::Image`] (a `data:` URI, the form the server
-//!   accepts — a bare path is a `HTTP 400 Failed to load image`);
-//! * a text file under a cap → its content, in its own part, under a header naming the file;
-//! * anything else → [`UserPart::FileRef`], a path and a digest the model can `read`.
-//!
-//! The operator's own words stay the FIRST part and stay whole, always. A head retires its
-//! `queued` echo by matching the row's leading lines against what it sent
-//! (`App::retire_pending`), and `row_words` reads a `User` row as its text parts newline-joined
-//! — so a part spliced in front of the words, or the words split into two, would leave the
-//! operator's sentence stuck on their own screen.
-//!
-//! # What a failure says, and to whom
-//!
-//! A file that is gone by the time the message lands is the case the head refuses at send time
-//! — it stats every chip before it writes the frame — and this side is the floor under it: a
-//! file can vanish between the two, and a prompt whose picture silently did not arrive is
-//! exactly the failure `Media::delivered` exists to name. So an attachment that cannot be read
-//! becomes a sentence IN the row (so the model is not left believing it was given a file) and a
-//! warning on the session's log for the operator (so the person is not left believing it
-//! either). Neither of them is silent, and neither of them is a refusal of the words: the
-//! operator wrote a sentence and it is sent.
+//! composer travels as a [`letibot_sessionlog::protocol::Attachment`] and this module turns
+//! it into the [`UserPart`] the same file would have produced through `read`. # Why the
+//! daemon reads the file, and why it reads the BYTES The head sends a path, not a payload:
+//! one box, one file, and the copy the transcript keeps is made here ([`UserPart::Image`]'s
+//! `data_ref`), so nothing is gained by sending the bytes down the socket first.
 
 use letibot_sessionlog::protocol::Attachment;
 use letibot_transcript::UserPart;
@@ -51,20 +20,13 @@ use sha2::{Digest, Sha256};
 /// big is too big*, and the second one would be discovered by the store.
 pub const MAX_IMAGE_BYTES: u64 = letibot_tools::builtins::grep::FILE_CEILING * 16;
 
-/// **How much of a text file is inlined** — 256 KiB, which is a long log, a whole source file,
-/// a large CSV.
-///
-/// Above it the part is a [`UserPart::FileRef`] instead, and the model reads what it needs:
-/// inlining a megabyte would spend the session's context on a file the model may only have been
-/// asked about, and the prompt has a budget the operator never chose to spend this way.
+/// **How much of a text file is inlined** — 256 KiB, which is a long log, a whole source
+/// file, a large CSV. Above it the part is a [`UserPart::FileRef`] instead, and the model
+/// reads what it needs:
 pub const MAX_INLINE_TEXT: u64 = 256 * 1024;
 
 /// **The parts the attachments add**, in the order they were chipped, plus one sentence per
-/// attachment that could not be read.
-///
-/// Pure with respect to the session: it reads the files and nothing else, so the caller decides
-/// where the sentences go (a warning on the log for the operator, and the same words as a part
-/// for the model — see the module's own note on failures).
+/// attachment that could not be read. Pure with respect to the session:
 pub fn parts(attachments: &[Attachment]) -> (Vec<UserPart>, Vec<String>) {
     let mut parts = Vec::with_capacity(attachments.len());
     let mut refused = Vec::new();
@@ -326,11 +288,8 @@ mod tests {
     }
 
     /// **The door the daemon actually reads a mid-turn prompt through** — `HubSteering` — turns
-    /// the frame's attachment into a part, keeps the operator's words first and whole, and binds
-    /// them to `Speaker::Operator`.
-    ///
-    /// This is the half a unit test of [`parts`] cannot show: that the queue carries the chips
-    /// from the frame to the engine's step boundary, which is where a mid-turn prompt lands.
+    /// the frame's attachment into a part, keeps the operator's words first and whole, and
+    /// binds them to `Speaker::Operator`.
     #[test]
     fn a_prompt_queued_mid_turn_reaches_the_engine_with_its_picture() {
         use letibot_sessionlog::hub::Hub;

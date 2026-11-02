@@ -90,12 +90,9 @@ impl Fold {
     }
 }
 
-/// **The release margin, in headrooms.** A stuck session is re-armed when a measured
-/// count is under `window − RELEASE_HEADROOMS × headroom` — at 1,000,000 with the
-/// sixteenth reserve, under 875,000. One headroom BELOW the wall rather than at it, so a
-/// count that hovers at the wall cannot flip the state once per round: re-armed, the
-/// pre-emptive door fires a headroom later, after a turn's worth of growth (the reserve
-/// is sized for one), not on the next round.
+/// **The release margin, in headrooms.** A stuck session is re-armed when a measured count
+/// is under `window − RELEASE_HEADROOMS × headroom` — at 1,000,000 with the sixteenth
+/// reserve, under 875,000.
 pub const RELEASE_HEADROOMS: u64 = 2;
 
 /// **The wall, in the units a measurement is in** — the window as configured and its
@@ -127,9 +124,7 @@ pub enum WallState {
     #[default]
     Armed,
     /// A fold ran onto `transcript`; what it left is unmeasured until a round on that
-    /// transcript reports `prompt_tokens`. `before` is the count it folded (measured
-    /// units), `estimate` the base as sized before the provider saw it — said with
-    /// `≈`, and never judged.
+    /// transcript reports `prompt_tokens`.
     Awaiting {
         fold: Fold,
         transcript: String,
@@ -169,10 +164,9 @@ pub enum Change {
     Released { measured: u64 },
 }
 
-/// **The controller**: the state and the last count a provider (or, locally, the
-/// prompt itself) measured. Carried on `Config`, the per-session object the settings
-/// rows are built from, so the state a head draws and the state a door reads are one
-/// value.
+/// **The controller**: the state and the last count a provider (or, locally, the prompt
+/// itself) measured. Carried on `Config`, the per-session object the settings rows are
+/// built from, so the state a head draws and the state a door reads are one value.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WallControl {
     pub state: WallState,
@@ -355,11 +349,9 @@ mod tests {
         }
     }
 
-    /// **The live case, replayed on the controller.** `s-1789919514688401228`: the fold
-    /// of 941,101 was ESTIMATED at 1,039,055 — past the window — and the first round on
-    /// `#t18` measured 507,355. On the estimate nothing is judged (the pre-emptive door
-    /// does not even fire again); on the measurement the fold helped, and nothing is
-    /// stood down.
+    /// **The live case, replayed on the controller.** `s-1789919514688401228`: the fold of
+    /// 941,101 was ESTIMATED at 1,039,055 — past the window — and the first round on `#t18`
+    /// measured 507,355.
     #[test]
     fn an_estimate_over_the_wall_whose_first_round_measures_well_under_it_stands_nothing_down() {
         let mut c = WallControl::default();

@@ -61,21 +61,9 @@ impl RedTarget {
     }
 }
 
-/// **Where a project's reviewers run** — `[queue] reviewers`, and the one thing a project can
-/// say about the review queue's own children.
-///
-/// The key is named for WHAT it chooses (which of the queue's children, and where they run)
-/// rather than for the machinery: `vm` happens to be a firecode microVM, and a name like
-/// `gatekeeper_vm` would make the mechanism the subject of a decision that is really about how
-/// much a reviewer is trusted with.
-///
-/// **`Host` is the default, and it is the operator's ruling of 2026-10-29** after watching a
-/// night of reviews: a VM-placed reviewer paid a guest exec per file read (one `firecode in`
-/// per `grep` candidate), lost a request between `socat`'s `OK` and the guest's first read, and
-/// took 30–60 minutes holding one of two slots — to isolate a reader less than the subagent that
-/// WROTE the branch, which already runs on this machine with the operator's credentials. `Vm`
-/// stays for a project that wants the isolation anyway; see
-/// `crate::sessions::gatekeeper::ReviewerPlacement` for what the choice costs.
+/// **Where a project's reviewers run** — `[queue] reviewers`, and the one thing a project
+/// can say about the review queue's own children. The key is named for WHAT it chooses
+/// (which of the queue's children, and where they run) rather than for the machinery:
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Reviewers {
     /// **On this machine** — a reviewer is a `gatekeeper`-seated child on the host, in a
@@ -125,34 +113,13 @@ pub struct QueueSettings {
     pub gate_carry: Vec<String>,
     /// Where this project's reviewers run ([`Reviewers`]). `Host` unless the project says `vm`.
     pub reviewers: Reviewers,
-    /// **How many approved branches one gate may judge together** — `[queue] gate_train`.
-    ///
-    /// `1` is one branch and one gate, which is what every project gets until it says otherwise
-    /// and what the queue did before this key existed: nothing about the default path changed.
-    /// Above `1` the queue takes up to this many approved rows, rebases them one onto the last in
-    /// approval order (a stacked child after its parent), and runs the target's gate **once** on
-    /// the final tree — see `serve.rs`'s `land_train`. A train of fewer than two branches is not a
-    /// train: a lone row takes the single path, bit for bit.
-    ///
-    /// The trade is the one the operator made on 2026-10-30 (*"we can batch merges at this point"*):
-    /// the gate is most of a landing's cost and it pays it per branch, while the REVIEW stays per
-    /// branch and is what says the branch is sound. A red train costs the review of its branches
-    /// again; a green one buys `N-1` gate runs.
+    /// **How many approved branches one gate may judge together** — `[queue] gate_train`. `1`
+    /// is one branch and one gate, which is what every project gets until it says otherwise and
+    /// what the queue did before this key existed: nothing about the default path changed.
     pub gate_train: usize,
     /// **Where this project's GATE runs** — `[queue] gate_host`, a name from the operator's
     /// `hosts.toml`, or `None` for this machine (the default, and what every project gets until
-    /// it says otherwise).
-    ///
-    /// The name is not checked here: whether it is a host at all is asked where it is used
-    /// ([`super::gate_host::run_on_host`]), which can name the file, the hosts the file does know
-    /// and what to do about it — the same rule [`crate::config::Config::reviewers`] follows for
-    /// the placement of a reviewer. A file that names a machine nobody declared therefore does not
-    /// stop the daemon; it blocks that project's gate with a sentence, which is the thing the
-    /// operator has to read anyway.
-    ///
-    /// **It is read by the DAEMON, not by the worker** (`Config::for_the_daemon`), because the
-    /// queue builds one gate runner for the whole daemon; a daemon seated above several
-    /// repositories reads the workspace's own file, exactly as it does for `reviewers`.
+    /// it says otherwise). The name is not checked here:
     pub gate_host: Option<String>,
     /// **The skills this project's reviewers are started with** — `[queue] reviewer_skills`. The
     /// bodies are preloaded into each reviewer's prompt, on top of the index every session gets

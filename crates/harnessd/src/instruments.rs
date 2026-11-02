@@ -1,21 +1,11 @@
 //! **The daemon's metrics instruments** — TODO R81 phase 1, `docs/metrics.md` §4 and §6.
-//!
-//! Every site in the daemon that records a measurement calls ONE function here, on one line, so
-//! a merge that moves the site moves one line and the arithmetic stays put. Each function builds
-//! a [`letibot_metrics::Event`] and emits it — a `try_send` on a bounded channel, never SQL and
-//! never a wait (the c12d044 rule; the module header of `letibot_metrics` says why). When metrics
-//! are off every function here returns at its first branch.
-//!
-//! **What a turn is, here**: a prompt — every round the harness runs for one door, through
-//! `turn_tail::run_turn` — keyed by the engine id of its FIRST round. The hub tap keys the
-//! operator's marks the same way (`letibot_sessionlog::metrics_tap`), so a mark joins its turn.
-//! [`TurnMeter`] is the harness's half: begun by the turn tail, fed each round and each tool
-//! call, and closed by the turn tail with one `turn.start` and one `turn.end` row.
-//!
-//! `turn.start` is written WITH the end, stamped with the moment the turn began: the id it is
-//! keyed by is only minted by the first round, and a start row with no id joins nothing. The
-//! cost is that a turn a crash interrupted has no rows; phase 2 can add a provisional start if
-//! that turns out to matter.
+//! Every site in the daemon that records a measurement calls ONE function here, on one
+//! line, so a merge that moves the site moves one line and the arithmetic stays put. Each
+//! function builds a [`letibot_metrics::Event`] and emits it — a `try_send` on a bounded
+//! channel, never SQL and never a wait (the c12d044 rule; the module header of
+//! `letibot_metrics` says why). When metrics are off every function here returns at its
+//! first branch. **What a turn is, here**: a prompt — every round the harness runs for one
+//! door, through `turn_tail::run_turn` — keyed by the engine id of its FIRST round.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -308,11 +298,9 @@ impl TurnMeter {
     }
 }
 
-/// **Start this daemon's metrics writer** — `metrics.db` beside the store (so on the operator's
-/// box `~/.local/share/letibot/metrics.db`, and a test's temp store gets a temp file), under the
-/// `[metrics]` section of `providers.toml` (on by default). A daemon with no store records
-/// nothing; a file that will not open is said on stderr and the daemon starts without it —
-/// metrics are never a reason a daemon does not start.
+/// **Start this daemon's metrics writer** — `metrics.db` beside the store (so on the
+/// operator's box `~/.local/share/letibot/metrics.db`, and a test's temp store gets a temp
+/// file), under the `[metrics]` section of `providers.toml` (on by default).
 pub fn start_writer(cfg: &crate::config::Config) {
     let Some(store) = &cfg.store else {
         return;
@@ -391,10 +379,8 @@ fn outcome_word(o: &letibot_transcript::ToolOutcome) -> String {
 }
 
 /// **One command's wait on the worker, and its run** (c12d044) — `Daemon::run`, around
-/// `sessions.dispatch`. n1 is from the head's submit to the dequeue; `dur` the dispatch. The queue
-/// depth the design names (n2) is not read in phase 1: no count of a hub's queue is to hand here.
-/// **A moment on both clocks** — the wall clock a row is stamped with, and the monotonic one a
-/// duration is measured on.
+/// `sessions.dispatch`. n1 is from the head's submit to the dequeue; `dur` the dispatch.
+/// The queue depth the design names (n2) is not read in phase 1:
 #[derive(Debug, Clone, Copy)]
 pub struct Clock {
     pub ms: u64,
@@ -609,10 +595,7 @@ pub fn wall(session: &str, turn: &str, e: &HarnessError, continues: usize) {
 
 /// **A wall controller transition** (`crate::wall`) — the judgement a fold is given once a
 /// count is MEASURED. Same kind as [`wall`] (the turn stop), told apart by `outcome`:
-/// `helped`, `escalated`, `stuck`, `released`. `n1` is what was folded (0 for a release),
-/// `n2` the measured count, `n3` the window; the fold and, for `escalated`, the next rung
-/// are attributes. The `compaction` row's `after` is the base's estimate; this row is the
-/// measurement it is judged by (pg-noop 2026-10-11: ≈ 1,039,055, measured 507,355).
+/// `helped`, `escalated`, `stuck`, `released`.
 pub fn wall_change(session: &str, c: &crate::wall::Change, window: u64, unit: &str) {
     if !letibot_metrics::enabled() {
         return;

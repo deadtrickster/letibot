@@ -1,51 +1,11 @@
-//! **A child's VM does not outlive the child** — the daemon's half: whose each live firecode VM
-//! is, by this store's records, and the reaper that brings down the ones whose owner is gone.
-//!
-//! The operator's report, 2026-10-15: pg-noop's review of `feat/memory-engine` said *"review ·
-//! waiting for a VM slot · every slot busy"* and *"VM slots exhausted · waited 33 min"* for
-//! hours. All four taps were held by orphaned firecracker VMs (parent pid 1), and what the store
-//! says about them is the whole story:
-//!
-//! * three were booted on 2026-10-14 at 17:18–17:20 UTC for grandchildren of
-//!   `s-1791151788256943467`. Each child's last transcript item is a tool call with no result
-//!   (17:21:48, 17:22:06, 17:36:54), and their rows in `subagent_run` still say `running`, owned
-//!   by daemon `d-404553`. That daemon's `daemon_life` row has no stop: its last heartbeat is
-//!   18:21:01 UTC, so it ended without an orderly stop and `firecode::down_all` — the daemon's
-//!   last act — never ran. Each VM's launcher (`firecode exec`, its own session leader) kept it
-//!   up. Two of the three were spawned by children whose own parent had FAILED a minute earlier
-//!   (`…-sub-1791998134948544726`, a store error at 17:18:21) — a child that ends on a failure
-//!   left its children running (fixed in `HarnessTaskRunner::run_to_completion`);
-//! * the fourth was a pg-noop great-grandchild booted on 2026-10-12 by a daemon older than
-//!   `daemon_life` and `subagent_run` — no record names its owner's state at all;
-//! * nothing on any later start looked at VMs, and the restart pass reads a dead daemon's child
-//!   rows only when the child's PARENT is opened again. These parents had finished, so nothing
-//!   was ever going to open them, and the rows say `running` to this day.
-//!
-//! # The record
-//!
-//! A child's VM is booted on its copy, `~/.cache/letibot/firecode/<child id>`
-//! (`FirecodeBackend::project_of`), and firecode writes that path into the run's record
-//! (`runs/<run>/project`) — so firecode's own record names the owning child, for every build
-//! that ever booted one, with nothing added to the store's schema (the store is shared by daemons
-//! of different builds). The child's `subagent_run` row says its state and which daemon runs it;
-//! that daemon's `daemon_life` row says whether it is alive. See
-//! `letibot_tools::firecode::held` for the VM half.
-//!
-//! # What may be reaped ([`judge`])
-//!
-//! Only a VM whose recorded owner is FINISHED (its row settled, longer ago than its own `down`
-//! can take to deliver the work), or whose owner's row says `running` under a daemon that is
-//! gone. Never a VM another live daemon's running child holds, never this daemon's own running
-//! child's, and never one with no record of its owner — those are named in the capacity notice
-//! and left to a person.
-//!
-//! # And a child whose parent is gone ends too
-//!
-//! A dead daemon's `running` row whose parent has finished is nobody's: no open will ever read
-//! it. Its VM is reaped and the row is settled `abandoned`, with why. In THIS daemon, a running
-//! child whose parent's row has been settled for [`STALL_MS`] and whose own transcript has not
-//! moved for as long is interrupted and its row written `killed` — after which its VM, if it
-//! still has one, is a finished owner's and is reaped like any other.
+//! **A child's VM does not outlive the child** — the daemon's half: whose each live
+//! firecode VM is, by this store's records, and the reaper that brings down the ones whose
+//! owner is gone. The operator's report, 2026-10-15: pg-noop's review of
+//! `feat/memory-engine` said *"review · waiting for a VM slot · every slot busy"* and *"VM
+//! slots exhausted · waited 33 min"* for hours. All four taps were held by orphaned
+//! firecracker VMs (parent pid 1), and what the store says about them is the whole story: *
+//! three were booted on 2026-10-14 at 17:18–17:20 UTC for grandchildren of
+//! `s-1791151788256943467`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

@@ -123,10 +123,8 @@ fn clock(ms: i64) -> Box<dyn Fn() -> i64 + Send + Sync> {
     Box::new(move || ms)
 }
 
-/// **A pid that is alive is not the job** — the identity is, and this is the whole reason the record
-/// carries one. Measured against this very process: the same pid with a different start time is not
-/// the process, and a probe that answered `alive` on the pid alone would report a job running for
-/// ever on a box that had reused its number.
+/// **A pid that is alive is not the job** — the identity is, and this is the whole reason
+/// the record carries one. Measured against this very process:
 #[test]
 fn a_live_pid_is_not_the_job_when_the_identity_differs() {
     let me = std::process::id();
@@ -516,12 +514,9 @@ fn a_tick_that_cannot_read_its_records_is_reported_rather_than_looking_quiet() {
     );
 }
 
-/// **`SshProbe`'s script against a real job directory**, run by a runner that executes it locally —
-/// the fake-ssh shape RH1's tests use, and never a real host.
-///
-/// Three jobs in one pass: one still running, one whose exit file says 7, and one whose pid is gone
-/// with no exit file at all. That is the whole remote state machine in one script, which is what the
-/// one-check-per-host rule costs and buys.
+/// **`SshProbe`'s script against a real job directory**, run by a runner that executes it
+/// locally — the fake-ssh shape RH1's tests use, and never a real host. Three jobs in one
+/// pass:
 #[test]
 fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     let root = std::env::temp_dir().join(format!(
@@ -613,11 +608,8 @@ fn the_ssh_probe_reads_a_job_directory_in_one_pass() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **A host over a temp root — or `None` when this box cannot delegate a cgroup v2 subtree.**
-///
-/// The same gate the crate's other host-spawning tests take: the absence is SAID and
-/// `LETIBOT_REQUIRE_APPARATUS=1` refuses the run, because a `#[ignore]` here would be a green
-/// suite that measured nothing.
+/// **A host over a temp root — or `None` when this box cannot delegate a cgroup v2
+/// subtree.** The same gate the crate's other host-spawning tests take:
 fn a_host(name: &str) -> Option<(std::path::PathBuf, Arc<letibot_tools::exec::HostProcesses>)> {
     letibot_tokencore::apparatus::present(
         "a process-lifetime tree (cgroup v2; process groups on macOS)",
@@ -635,15 +627,7 @@ fn a_host(name: &str) -> Option<(std::path::PathBuf, Arc<letibot_tools::exec::Ho
 }
 
 /// **END TO END: a real job, the real recorder, a real store — `running`, then `done(0)`.**
-///
-/// This is the wiring RH7 exists for, walked the way a daemon walks it: the job is spawned, its
-/// live [`letibot_tools::exec::JobView`] is handed to `JobRecorder::process` (which is what
-/// `JobWatchSink` does the moment a call is backgrounded), the job ends, and the settlement the
-/// watcher builds is handed to `JobRecorder::record`.
-///
-/// **Nothing here is invented in the record**: the pid, the identity and the scope are read off the
-/// live view, and the assertion on the identity is the one that matters after a restart —
-/// `start:<n>` names *which* process had that pid.
+/// This is the wiring RH7 exists for, walked the way a daemon walks it:
 #[test]
 fn a_real_job_reads_running_and_then_done_in_the_record() {
     use letibot_tokencore::store::{ProcState, SessionRecord, Store};
@@ -735,11 +719,8 @@ fn a_real_job_reads_running_and_then_done_in_the_record() {
 }
 
 /// **A RESTART, end to end: a fresh host adopts the record and the job is running again.**
-///
-/// The daemon that started this job is `host`; the one that finds it is `restarted`, which shares
-/// no memory with it — the store is the whole of what it has. What it must get back is a job the
-/// layers above can list, wait on and kill, and what it must NOT do is invent an exit: a process
-/// that has gone settles as [`letibot_tools::exec::JobState::Dead`].
+/// The daemon that started this job is `host`; the one that finds it is `restarted`, which
+/// shares no memory with it — the store is the whole of what it has.
 #[test]
 fn a_restarted_host_adopts_a_live_job_from_its_record() {
     use letibot_tokencore::store::Store;
@@ -905,17 +886,8 @@ fn a_never_touch_process_survives_a_teardown_and_the_pattern_is_named() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The operator's own workload on THIS box is not ours to end either** (FB) — the hole RH9 left
-/// open, closed.
-///
-/// `never_touch` used to be a `[host.NAME]` key, so a record with no host — a process on the machine
-/// the daemon runs on — had no list to be checked against at all, and the two doors that signal
-/// anything (`teardown_session` and the deadline kill) went through without asking. `[local]` is
-/// that list now, read by the same function and refused in the same sentence shape.
-///
-/// Both doors are measured here, because they are two call sites of one rule and the second is the
-/// one nobody thinks about: a **deadline** is letibot's own clock, and it is exactly as capable of
-/// killing the operator's fuzz as a teardown is.
+/// **The operator's own workload on THIS box is not ours to end either** (FB) — the hole
+/// RH9 left open, closed.
 #[test]
 fn a_never_touch_process_on_this_box_survives_a_teardown_and_a_deadline() {
     let dir = std::env::temp_dir().join(format!("letibot-never-local-{}", std::process::id()));
