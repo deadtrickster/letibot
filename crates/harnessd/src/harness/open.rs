@@ -1,21 +1,9 @@
-//! **Opening a session**: `Harness::open_with_registry` and the pieces it assembles
-//! (provider, vocabulary, roles, surroundings), plus the import of an existing
-//! conversation from opencode or Claude Code.
+//! Opening a session: `Harness::open_with_registry` and the pieces it assembles (provider,
+//! vocabulary, roles, surroundings), plus the import of an existing conversation from opencode or
+//! Claude Code.
 use super::*;
 
-/// **What the MODEL is told after the person re-seats its conversation** — the closing half
-/// of the stale-prompt notice it was being sent.
-///
-/// The operator: *"since reseated nag reaches the model and it starts nagging me — the result
-/// — that reseat happened shall reach the model too. and it should start the turn"*. The model
-/// is told, every idle window, that its prompt is stale and that it should keep asking for
-/// `/reseat` until somebody acts; when somebody did, the only trace on its side was a system
-/// row at the top of a forked transcript, and no turn ran to read it. So it went on asking.
-///
-/// Same shape as the stale notice (`nag_notice_naming`): the fact, then what to DO, because
-/// the rule has to travel with the notice. In the harness's voice (`Speaker::Agent`), as the
-/// nag is — this is the daemon reporting an act the person took, never the person's words.
-/// **Whether a verbatim reseat's carry can be sent** — see [`Harness::reingest`].
+/// Whether a verbatim reseat's carry can be sent: see [`Harness::reingest`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerbatimFit {
     /// It fits with a turn's room beside it.
@@ -27,9 +15,9 @@ pub enum VerbatimFit {
     Over,
 }
 
-/// The rule: refused only over the window. A schema change moves a conversation by a few
-/// thousand tokens; refusing it for the headroom a turn needs kept a session on its stale
-/// prompt at exactly the size it was already running at.
+/// The rule: refused only over the window. A schema change moves a conversation by a few thousand
+/// tokens, and refusing it for the headroom a turn needs kept a session on its stale prompt at
+/// exactly the size it was already running at.
 pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
     if carried >= window {
         VerbatimFit::Over
@@ -40,8 +28,8 @@ pub fn verbatim_fit(carried: u64, window: u64, headroom: u64) -> VerbatimFit {
     }
 }
 
-/// **What a VM-placed child copies**, or why it cannot be placed — `Ok(None)` is "the session's
-/// own copy source" (`Config::vm_copy_source`), as before.
+/// What a VM-placed child copies, or why it cannot be placed: `Ok(None)` is the session's own copy
+/// source (`Config::vm_copy_source`), as before.
 ///
 /// * a named `vm_source` (the model's `repo`, the review queue's entry) is resolved against the
 ///   session's workspace and must be a repository;
