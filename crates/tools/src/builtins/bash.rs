@@ -59,7 +59,7 @@
 
 use std::time::Duration;
 
-use letibot_transcript::Backgrounding;
+use letibot_transcript::{Backgrounding, text::tail_lines};
 use serde_json::Value;
 
 use crate::exec::memory::{Ask, Decision, Meminfo, MemoryAsk, MemoryGrant, MemoryPolicy};
@@ -888,7 +888,7 @@ impl Tool for Bash {
             );
         };
         let full = out.text();
-        let (body, capped) = clip_tail(&full, MAX_INLINE_BYTES, MAX_INLINE_LINES);
+        let (body, capped) = tail_lines(&full, MAX_INLINE_LINES, MAX_INLINE_BYTES);
 
         // **Absence must be legible.** A path the mount namespace does not contain
         // produces a bare `ENOENT`, and a model reads that as *the file does not
@@ -1500,27 +1500,6 @@ fn ask_if_waiting(
     });
 }
 
-/// Keep the tail, by bytes and by lines, and say whether anything was dropped.
-///
-/// pi's split, and the reasoning is the same: `read` keeps the head of a file,
-/// shell output keeps the tail, because a command that failed says why last. The
-/// cut is on a line boundary — a head joined to a tail mid-line reads as one line
-/// that never existed.
-fn clip_tail(text: &str, max_bytes: usize, max_lines: usize) -> (String, bool) {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut kept: Vec<&str> = if lines.len() > max_lines {
-        lines[lines.len() - max_lines..].to_vec()
-    } else {
-        lines.clone()
-    };
-    let mut capped = kept.len() < lines.len();
-    while kept.iter().map(|l| l.len() + 1).sum::<usize>() > max_bytes && !kept.is_empty() {
-        kept.remove(0);
-        capped = true;
-    }
-    (kept.join("\n"), capped)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1623,7 +1602,7 @@ mod tests {
     #[test]
     fn the_tail_is_what_survives_the_cap() {
         let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
-        let (kept, capped) = clip_tail(&text, 100_000, 10);
+        let (kept, capped) = tail_lines(&text, 10, 100_000);
         assert!(capped);
         assert!(kept.starts_with("line 90"), "{kept}");
         assert!(kept.ends_with("line 99"), "{kept}");
@@ -1632,7 +1611,7 @@ mod tests {
     #[test]
     fn a_cut_lands_on_a_line_boundary() {
         let text = "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc\n";
-        let (kept, capped) = clip_tail(text, 15, 100);
+        let (kept, capped) = tail_lines(text, 100, 15);
         assert!(capped);
         // No partial line: whatever survived is whole.
         assert!(text.lines().any(|l| l == kept.lines().next().unwrap()));

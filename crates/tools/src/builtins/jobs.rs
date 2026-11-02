@@ -32,6 +32,7 @@
 
 use std::time::Duration;
 
+use letibot_transcript::text::clip_chars;
 use serde_json::Value;
 
 use crate::exec::{JobId, JobView, ProcessHost, ScopeId, ScopeKind, Waited};
@@ -205,12 +206,9 @@ fn ambiguous_job(jobs: &[JobView], asked: &str, ids: &[JobId]) -> Invocation {
     )
 }
 
+/// A command on ONE line, cut to `n` characters. The cap is the caller's, and each has its own.
 fn clip(s: &str, n: usize) -> String {
-    let s = s.replace('\n', " ");
-    if s.chars().count() <= n {
-        return s;
-    }
-    format!("{}…", s.chars().take(n).collect::<String>())
+    clip_chars(&s.replace('\n', " "), n)
 }
 
 fn nearest(want: &str, have: &[String]) -> Option<String> {

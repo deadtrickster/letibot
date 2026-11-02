@@ -72,6 +72,7 @@
 use std::collections::{HashMap, HashSet};
 
 use letibot_tools::builtins::intent::ledger::is_effect;
+use letibot_transcript::text::clip_chars_within;
 use letibot_transcript::{ToolCall, ToolOutcome};
 
 /// What one round of the tool loop did.
@@ -401,14 +402,10 @@ fn label(call: &ToolCall) -> String {
     clip(&s, 90)
 }
 
-/// Truncate on a char boundary. A label is built from model-supplied text, so a
-/// byte slice would panic on the first non-ASCII path anybody has.
+/// A label on one line, at most `max` characters: model-supplied text, so a byte slice would split
+/// the first non-ASCII path anybody has.
 fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.replace(['\n', '\r'], " ");
-    }
-    let head: String = s.chars().take(max.saturating_sub(1)).collect();
-    format!("{}…", head.replace(['\n', '\r'], " "))
+    clip_chars_within(&s.replace(['\n', '\r'], " "), max)
 }
 
 #[cfg(test)]

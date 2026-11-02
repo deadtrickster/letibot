@@ -67,6 +67,8 @@
 //! today, and they would stop agreeing silently if either side changed. Filed here
 //! rather than in a doc because this is where somebody will look.
 
+use letibot_transcript::text::clip_chars;
+
 use super::host::Protected;
 
 /// What a process predicate in a command would do.
@@ -241,13 +243,9 @@ fn matches(pattern: &str, hay: &str) -> bool {
     }
 }
 
+/// An excerpt of a command for the row, on one line and never inside a character.
 fn clip(s: &str, n: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= n {
-        return s.to_string();
-    }
-    let cut: String = s.chars().take(n).collect();
-    format!("{cut}…")
+    clip_chars(s.trim(), n)
 }
 
 /// Split a command into words, treating shell separators as words of their own

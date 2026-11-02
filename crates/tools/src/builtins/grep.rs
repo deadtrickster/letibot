@@ -15,6 +15,7 @@
 //! 'improve' a tool's query … the rewrite must be visible in the tool result."*
 //! Every relaxation here is in the notes, in the words the model reads.
 
+use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
 
 use crate::backend::{DirEntry, default_skip, walk};
@@ -662,7 +663,12 @@ fn render_hits(hits: &[Hit], scope: &str) -> String {
     let mut out = format!("{} match(es) under `{scope}`:\n", hits.len());
     if hits.iter().all(|h| h.region.is_empty()) {
         for h in hits {
-            out.push_str(&format!("{}:{}: {}\n", h.path, h.line_no, clip(&h.line)));
+            out.push_str(&format!(
+                "{}:{}: {}\n",
+                h.path,
+                h.line_no,
+                clip_line_counted(&h.line, HIT_CAP)
+            ));
         }
         return out;
     }
@@ -685,7 +691,11 @@ fn render_hits(hits: &[Hit], scope: &str) -> String {
             // The match itself is marked, so a region does not have to be counted
             // through to find what was asked about.
             let mark = if *n == h.line_no { ':' } else { '-' };
-            out.push_str(&format!("{}:{n}{mark} {}\n", h.path, clip(text)));
+            out.push_str(&format!(
+                "{}:{n}{mark} {}\n",
+                h.path,
+                clip_line_counted(text, HIT_CAP)
+            ));
             last = Some((&h.path, *n));
         }
     }
@@ -714,30 +724,13 @@ fn where_it_occurs(hits: &[Hit], asked_scope: &str) -> String {
     )
 }
 
-/// A single matched line is shown up to a bound, with the omission counted.
-///
-/// Not a violation of clause 5: the payload as a whole is spilled, never
-/// truncated, and the full line is one `read` away at the path and line number
-/// printed beside it. What this avoids is one minified file turning a hit list
-/// into a megabyte.
-fn clip(line: &str) -> String {
-    const CAP: usize = 400;
-    if line.chars().count() <= CAP {
-        return line.trim_end().to_string();
-    }
-    let head: String = line.chars().take(CAP).collect();
-    format!(
-        "{head}… (+{} more characters on this line)",
-        line.chars().count() - CAP
-    )
-}
+/// A hit line is shown up to this many characters; the full line is one `read` away.
+const HIT_CAP: usize = 400;
 
-/// Whether the rendered output carried this line whole, which is what the
-/// shown-lines ledger may mark. `clip`'s 400-character cap is the boundary: a
-/// line it cut showed the model a prefix, and an edit aimed from that prefix is
-/// aimed at a memory.
+/// Whether the output carried this line whole. A clipped line showed the model a
+/// prefix, so the shown-lines ledger must not mark it.
 fn shown_in_full(line: &str) -> bool {
-    line.chars().count() <= 400
+    line.chars().count() <= HIT_CAP
 }
 
 /// Mark the hit and context lines this call rendered, for the shown-lines

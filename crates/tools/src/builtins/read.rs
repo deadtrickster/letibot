@@ -7,6 +7,7 @@
 //! "offset out of range" costs a whole extra call to learn a number the tool
 //! already had.
 
+use letibot_transcript::text::chars_head;
 use serde_json::Value;
 
 use crate::backend::BackendError;
@@ -325,7 +326,8 @@ impl Tool for Read {
     }
 }
 
-/// The first `max` characters of a line, and whether anything was cut.
+/// The first `max` characters of a line, whether anything was cut, and the cap named: a reader
+/// of the payload is the one who has to go and read the whole line.
 fn clip(line: &str, max: usize) -> (String, bool) {
     if line.chars().count() <= max {
         return (line.to_string(), false);
@@ -333,7 +335,7 @@ fn clip(line: &str, max: usize) -> (String, bool) {
     (
         format!(
             "{} … [line clipped at {max} characters]",
-            line.chars().take(max).collect::<String>()
+            chars_head(line, max)
         ),
         true,
     )

@@ -42,6 +42,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use letibot_transcript::ToolOutcome;
+use letibot_transcript::text::clip_bytes;
 
 use crate::events::{ToolEvent, ToolEventSink};
 
@@ -924,7 +925,7 @@ pub fn commitments(text: &str) -> Vec<String> {
             if !hit {
                 continue;
             }
-            out.push(clip(sentence.trim()));
+            out.push(clip_bytes(sentence.trim(), MAX_SENTENCE_BYTES));
             if out.len() >= MAX_COMMITMENTS {
                 return out;
             }
@@ -949,17 +950,6 @@ fn split_sentences(line: &str) -> Vec<&str> {
         out.push(line[start..].trim());
     }
     out
-}
-
-fn clip(s: &str) -> String {
-    if s.len() <= MAX_SENTENCE_BYTES {
-        return s.to_string();
-    }
-    let mut end = MAX_SENTENCE_BYTES;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
 }
 
 #[cfg(test)]

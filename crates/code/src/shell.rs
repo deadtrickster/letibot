@@ -63,6 +63,7 @@
 
 use std::fmt;
 
+use letibot_transcript::text::clip_chars;
 use rano::syntax::{Lang, Node, Stream};
 
 // ---------------------------------------------------------------------------
@@ -846,12 +847,9 @@ fn child_field<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
         .find(|c| c.field.as_deref() == Some(name))
 }
 
+/// A span's label: the source, trimmed, at most `n` characters and never inside one.
 fn clip(s: &str, n: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= n {
-        return s.to_string();
-    }
-    format!("{}…", s.chars().take(n).collect::<String>())
+    clip_chars(s.trim(), n)
 }
 
 fn certainty_of(ctx: &[Context]) -> Certainty {

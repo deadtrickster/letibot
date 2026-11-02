@@ -196,6 +196,7 @@
 use std::collections::BTreeSet;
 
 use letibot_code::shell::{self, Decides, Normalised, RedirectTarget, Stage, Word};
+use letibot_transcript::text::clip_chars;
 
 use crate::adjudicate::{FlowRule, Tier};
 use crate::runtime::{ScriptBody, ScriptSource};
@@ -2506,7 +2507,7 @@ fn apply_path(
                     "`$PATH` was resolved to `{}`, and the program `{name}` is not in it — so \
                      which file `{name}` would run cannot be established here, and the `PATH` \
                      is left unread rather than placed",
-                    shorten(&path)
+                    clip_chars(&path, 80)
                 ));
             };
             // The same binary the bare name already meant: nothing to say, and nothing for a
@@ -4261,7 +4262,7 @@ impl Baseline {
             self.findings.push(format!(
                 "`{program}` is handed shell text to run: {:?} — normalised separately, \
                  and its finding is folded in here",
-                shorten(text)
+                clip_chars(text, 80)
             ));
             self.fold(
                 inner,
@@ -5836,13 +5837,6 @@ fn heredoc_program(
         });
     }
     None
-}
-
-fn shorten(s: &str) -> String {
-    if s.chars().count() <= 80 {
-        return s.to_string();
-    }
-    format!("{}…", s.chars().take(80).collect::<String>())
 }
 
 fn stage_intents(s: &Stage) -> Vec<Intent> {

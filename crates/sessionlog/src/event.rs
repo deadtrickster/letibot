@@ -1037,11 +1037,10 @@ fn truncate_target(s: &str) -> String {
     // the output is allowed to exceed — which is exactly the class of off-by-a-few
     // that puts a status line one column past the terminal and scrolls the frame.
     const ELLIPSIS: &str = "…";
-    let mut end = TARGET_MAX_BYTES - ELLIPSIS.len();
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}{ELLIPSIS}", &s[..end])
+    format!(
+        "{}{ELLIPSIS}",
+        letibot_transcript::text::bytes_head(&s, TARGET_MAX_BYTES - ELLIPSIS.len())
+    )
 }
 
 /// **One section of a compaction's record, as the daemon read it back.**
@@ -2488,14 +2487,10 @@ pub struct Envelope {
     pub event: SessionEvent,
 }
 
-/// Unix millis now. Fails backwards to 0 rather than panicking: a clock before the
+/// Unix millis now, from the tree's one clock: re-exported because this path is what the head and
+/// the daemon already call. Fails backwards to 0 rather than panicking: a clock before the
 /// epoch is a broken clock, not a reason to lose a session.
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+pub use letibot_metrics::now_ms;
 
 #[cfg(test)]
 mod tests {

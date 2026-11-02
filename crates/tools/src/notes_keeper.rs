@@ -117,6 +117,7 @@
 
 use std::path::{Path, PathBuf};
 
+use letibot_transcript::text::clip_chars;
 use serde_json::Value;
 
 use crate::gatekeeper::{bullets, commas, label};
@@ -822,7 +823,7 @@ impl KeeperReport {
             if !measured && !self.diffs.is_empty() {
                 out.push(format!(
                     "the report says it changed `{}` and nothing on disk did",
-                    clip(c)
+                    clip_chars(c, 80)
                 ));
             }
         }
@@ -888,14 +889,6 @@ fn file_name(p: &Path) -> String {
     p.file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_default()
-}
-
-fn clip(s: &str) -> String {
-    const CAP: usize = 80;
-    if s.chars().count() <= CAP {
-        return s.to_string();
-    }
-    format!("{}…", s.chars().take(CAP).collect::<String>())
 }
 
 /// **One note's bytes before and after the keeper ran** — the diff of somebody's memory, which

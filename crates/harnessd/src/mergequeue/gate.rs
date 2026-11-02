@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 use letibot_tokencore::store::{MergeGateOutcome, MergeGateStep};
 use letibot_tools::exec::memory::{Amount, Ask, Meminfo};
 use letibot_tools::exec::{MemoryUse, SiblingScope, join_script};
+use letibot_transcript::text::bytes_head;
 
 use super::git;
 
@@ -1433,11 +1434,7 @@ fn clip(s: &str, width: usize) -> String {
     if s.len() <= width {
         return s.to_string();
     }
-    let mut end = width;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{} …", &s[..end])
+    format!("{} …", bytes_head(s, width))
 }
 
 /// `s` cut to **at most `room` bytes** and ending with `marker` — the marker is inside the room,
@@ -2026,12 +2023,9 @@ impl Drop for GateScratch {
     }
 }
 
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+/// The queue's clock, from the tree's one, re-exported because every row this module moves is
+/// stamped through `gate::now_ms()`.
+pub(crate) use letibot_metrics::now_ms;
 
 /// The gate's steps and the install steps split off them ([`INSTALL_MARK`]).
 pub type GateAndInstall = (Vec<String>, Vec<String>);

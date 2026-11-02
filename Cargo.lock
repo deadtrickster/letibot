@@ -975,6 +975,7 @@ dependencies = [
 name = "letibot-code"
 version = "0.5.1"
 dependencies = [
+ "letibot-transcript",
  "rano",
 ]
 

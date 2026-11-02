@@ -119,6 +119,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
 
 use crate::runtime::{Invocation, InvokeCtx, Tool};
@@ -396,21 +397,6 @@ fn age_of(meta: &std::fs::Metadata) -> String {
     } else {
         format!("{} ago", crate::exec::procs::age_word(d))
     }
-}
-
-/// One line of a note, cut at a length a `search` answer can carry — the cap
-/// `grep`'s `clip` keeps, and for the same reason: a minified note is one line
-/// of forty kilobytes, and printing it whole turns a match into a page.
-fn clip(line: &str) -> String {
-    const CAP: usize = 400;
-    if line.chars().count() <= CAP {
-        return line.trim_end().to_string();
-    }
-    let head: String = line.chars().take(CAP).collect();
-    format!(
-        "{head}… (+{} more characters on this line)",
-        line.chars().count() - CAP
-    )
 }
 
 /// The short line every read of a note carries. Why it exists: a note is a
@@ -935,7 +921,7 @@ impl NotesTool {
                 found += 1;
                 if printed < MAX_SEARCH_LINES {
                     printed += 1;
-                    out.push_str(&format!("  {n}: {}\n", clip(line)));
+                    out.push_str(&format!("  {n}: {}\n", clip_line_counted(line, 400)));
                 }
             }
         }

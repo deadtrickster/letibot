@@ -56,6 +56,7 @@ use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::pane::{Block, Line, LookSpec, Panel, Role, Unavailable, View};
 use letibot_sessionlog::registry::PaneDriver;
+use letibot_transcript::text::clip_chars_within;
 use serde_json::{Value, json};
 
 pub mod conditions;
@@ -1901,12 +1902,7 @@ fn pane_list(panes: &[String]) -> String {
 
 /// A field in the stack view: long enough to recognise, short enough to line up.
 fn truncate(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        text.to_string()
-    } else {
-        let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-        format!("{kept}…")
-    }
+    clip_chars_within(text, width)
 }
 
 impl PaneDriver for PluginHost {

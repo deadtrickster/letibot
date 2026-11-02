@@ -22,6 +22,7 @@ use letibot_tokencore::store::{
     HealthState, MergeRow, MergeState, QueueLease, ReviewRow, ReviewState, Store, TargetHealth,
 };
 use letibot_tools::builtins::queue::QueueDesk;
+use letibot_transcript::text::clip_chars;
 
 use super::gate::{self, now_ms};
 use super::{git, notices, settings, verbs};
@@ -897,12 +898,8 @@ fn short_sha(sha: &str) -> String {
 /// A row's own words, cut to `cap` characters when a bounded answer asked for it.
 fn shorten(s: &str, cap: Option<usize>) -> String {
     match cap {
-        Some(n) if s.chars().count() > n => {
-            let mut kept: String = s.chars().take(n).collect();
-            kept.push('…');
-            kept
-        }
-        _ => s.to_string(),
+        Some(n) => clip_chars(s, n),
+        None => s.to_string(),
     }
 }
 

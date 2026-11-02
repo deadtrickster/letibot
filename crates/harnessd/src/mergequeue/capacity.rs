@@ -35,6 +35,7 @@
 //! third, as before.
 
 use letibot_tokencore::store::QueueTransition;
+use letibot_transcript::text::clip_chars;
 
 /// **The clause a review waiting for a VM slot leads its move (and `failure`) with** — what the
 /// claim reads to hold the row until its not-before time, and what [`streak`] counts.
@@ -216,17 +217,7 @@ pub fn gist(why: &str) -> String {
         }
         None => why.lines().next().unwrap_or("").trim().to_string(),
     };
-    clip(&line, 240)
-}
-
-/// At most `max` characters, on a character boundary, with `…` when cut.
-pub fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max).collect();
-    out.push('…');
-    out
+    clip_chars(&line, 240)
 }
 
 /// **The sentence a reviewer's `needs_human` turned on** — the one that says what stops it: a
@@ -240,7 +231,7 @@ pub fn decisive_reason(reasons: &[String]) -> String {
         .or_else(|| sentences.iter().find(|s| s.contains(" BUT ")))
         .or_else(|| sentences.iter().find(|s| s.contains(" but ")))
         .or_else(|| sentences.first());
-    clip(pick.map(String::as_str).unwrap_or(""), 400)
+    clip_chars(pick.map(String::as_str).unwrap_or(""), 400)
 }
 
 /// Sentences of one reason: split after `.`, `!` or `?` followed by a space and a capital (or a

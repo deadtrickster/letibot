@@ -22,6 +22,10 @@ pub mod testing;
 /// rule for a block that is never closed live here, once. Same reason as `media` above.
 pub mod citation;
 
+/// **Cutting text to a bound**, once: a payload, a queue row, a card and a status line all cut,
+/// and a second copy of the arithmetic is a second place a character can be split.
+pub mod text;
+
 /// **Who asked for a tool call** — R24 part two, decision 1.
 ///
 /// One variant today, and the enum exists rather than a `bool` or an `Option<String>` for the

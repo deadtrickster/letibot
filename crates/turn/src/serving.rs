@@ -28,6 +28,7 @@
 //! command that fixes it.
 
 use crate::http::{self, Endpoint};
+use letibot_transcript::text::clip_bytes;
 
 /// The model alias the server reports, or why the question could not be answered.
 ///
@@ -47,7 +48,7 @@ pub fn served_model(endpoint: &Endpoint) -> Result<String, String> {
     }
     Err(format!(
         "/props answered but named no model: {}",
-        truncate(&body, 200)
+        clip_bytes(&body, 200)
     ))
 }
 
@@ -430,14 +431,6 @@ fn json_string(body: &str, key: &str) -> Option<String> {
             }
             _ => unreachable!("find stopped on a byte that is neither"),
         }
-    }
-}
-
-fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..n])
     }
 }
 

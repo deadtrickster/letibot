@@ -29,3 +29,5 @@ repository.workspace = true
 # consumers, for the same reason: rano is an operator-local project, not a
 # published crate.
 rano = { git = "https://github.com/deadtrickster/rano", rev = "f4c624e58e6b0e965eda10010518965e0170e6cf" }
+# One truncation helper for a header it prints, from the crate that owns the text helpers.
+letibot-transcript.workspace = true

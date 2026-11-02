@@ -129,6 +129,7 @@
 //! * **No clock.** The beat between "quiet" and "waiting" belongs to the wait loop that
 //!   already has one.
 
+use letibot_transcript::text::clip_front_chars;
 use std::os::fd::RawFd;
 // `is_char_device` is a `FileTypeExt` method and not a `FileType` one, so the trait has to be
 // in scope where `stdin_of` asks whether fd 0's target is a character device.
@@ -476,7 +477,7 @@ pub fn is_a_tty_read(wchan: &str) -> bool {
 pub fn last_line(tail: &str) -> Option<String> {
     let line = tail.rsplit(['\n', '\r']).find(|l| !l.trim().is_empty())?;
     let line = line.trim_end();
-    (!line.is_empty()).then(|| clip_front(line, MAX_SHOWN))
+    (!line.is_empty()).then(|| clip_front_chars(line, MAX_SHOWN))
 }
 
 /// **The most of the program's own line the card carries.**
@@ -485,17 +486,6 @@ pub fn last_line(tail: &str) -> Option<String> {
 /// from the **front**, because the tail of a prompt is where the answer's own shape lives
 /// (`Continue? [Y/n]`) and the head of it is context a person can live without.
 pub const MAX_SHOWN: usize = 200;
-
-/// Keep the end, and say a front was dropped rather than pretending the line began there.
-fn clip_front(line: &str, max: usize) -> String {
-    if line.chars().count() <= max {
-        return line.to_string();
-    }
-    let skip = line.chars().count() - max;
-    let mut s = String::from("…");
-    s.extend(line.chars().skip(skip));
-    s
-}
 
 #[cfg(test)]
 mod tests {
